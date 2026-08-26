@@ -81,10 +81,33 @@ function verifyMusicSig(q) {
   } catch { return false; }
 }
 
+// ── 玩具中继页的专用钥匙 ────────────────────────────────────
+//
+// 🔴 **这个东西的来历：2026-08-26 发现 NOX_TOKEN 在公网上裸奔。**
+//
+//   https://noxtang.com/toy.html  →  200，不需要任何认证
+//   页面源码里                     →  明文写着 NOX_TOKEN
+//
+// 拿它能打 `/api/*` 的全部路由：聊天记录、健康数据、待办、记忆，
+// 还有往她手机推通知。**一个玩具中继页泄露了整套系统的钥匙。**
+//
+// 根因是这个页面必须在浏览器里跑（Web Bluetooth 只能在页面里用），
+// 而它要轮询 `/api/toy/state` —— 于是当初直接把万能钥匙写了进去。
+//
+// 现在给它一把**只能开玩具**的钥匙。页面泄露的话，
+// 最坏情况是别人能动那个设备（已经很糟，所以页面本身也换了随机路径），
+// 但至少不再是整套系统。
+const TOY_TOKEN = process.env.NOX_TOY_TOKEN || "";
+
 function ensureApiAuth(req, res, next) {
   if (req.path === "/auth/login") return next();
   // 音乐流带有效签名就放行。签名只对这一首歌有效，过期即失效
   if (req.path === "/music/stream" && verifyMusicSig(req.query)) return next();
+  // 🔴 玩具钥匙**只开玩具**。`startsWith("/toy/")` 而不是 includes ——
+  // 前者是路径前缀，后者能被 `/api/anything?x=/toy/` 这种糊弄过去
+  if (TOY_TOKEN && req.path.startsWith("/toy/") && readAuthToken(req) === TOY_TOKEN) {
+    return next();
+  }
   if (!AUTH_TOKEN) return next();
   if (readAuthToken(req) === AUTH_TOKEN) return next();
   res.status(403).json({ error: "forbidden" });

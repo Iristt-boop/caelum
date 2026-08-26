@@ -1,9 +1,14 @@
+# 🔴 root 密码从环境变量读，不写在文件里。
+# 2026-08-26 之前这一批脚本里有 14 个把它硬编码了 ——
+# 而这种一次性运维脚本最容易被顺手 commit、顺手贴出去。
+#   用法：set VPS_ROOT_PASSWORD=...  然后再跑
+import os
 import paramiko, time
 
 # 1. Stop OB on old VPS
 old = paramiko.SSHClient()
 old.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-old.connect('47.93.219.252', username='root', password='Tangtang980213!!', timeout=15, look_for_keys=False, allow_agent=False)
+old.connect('47.93.219.252', username='root', password=os.environ['VPS_ROOT_PASSWORD'], timeout=15, look_for_keys=False, allow_agent=False)
 
 old.exec_command('systemctl stop ombre-brain', timeout=5)
 time.sleep(3)
@@ -26,7 +31,7 @@ old.close()
 
 # 4. Download
 t = paramiko.Transport(('47.93.219.252', 22))
-t.connect(username='root', password='Tangtang980213!!')
+t.connect(username='root', password=os.environ['VPS_ROOT_PASSWORD'])
 sftp = paramiko.SFTPClient.from_transport(t)
 sftp.get('/tmp/full-ob.tar.gz', r'd:\claude-code\vps-scripts\full-ob.tar.gz')
 sftp.close()
@@ -35,7 +40,7 @@ print('Downloaded')
 
 # 5. Upload to new VPS
 t2 = paramiko.Transport(('47.84.92.71', 22))
-t2.connect(username='root', password='Tangtang980213!!')
+t2.connect(username='root', password=os.environ['VPS_ROOT_PASSWORD'])
 sftp2 = paramiko.SFTPClient.from_transport(t2)
 sftp2.put(r'd:\claude-code\vps-scripts\full-ob.tar.gz', '/tmp/full-ob.tar.gz')
 sftp2.close()
@@ -45,7 +50,7 @@ print('Uploaded to new VPS')
 # 6. Replace OB on new VPS
 new = paramiko.SSHClient()
 new.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-new.connect('47.84.92.71', username='root', password='Tangtang980213!!', timeout=15, look_for_keys=False, allow_agent=False)
+new.connect('47.84.92.71', username='root', password=os.environ['VPS_ROOT_PASSWORD'], timeout=15, look_for_keys=False, allow_agent=False)
 
 new.exec_command('systemctl stop ombre-brain', timeout=5)
 time.sleep(2)
@@ -64,7 +69,7 @@ with open(r'd:\claude-code\vps-scripts\config-tmp.yaml', 'w') as f:
 
 # Upload modified config
 t3 = paramiko.Transport(('47.84.92.71', 22))
-t3.connect(username='root', password='Tangtang980213!!')
+t3.connect(username='root', password=os.environ['VPS_ROOT_PASSWORD'])
 sftp3 = paramiko.SFTPClient.from_transport(t3)
 sftp3.put(r'd:\claude-code\vps-scripts\config-tmp.yaml', '/root/ombre-brain/config.yaml')
 sftp3.close()
@@ -82,7 +87,7 @@ new.close()
 # Restart old OB
 old2 = paramiko.SSHClient()
 old2.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-old2.connect('47.93.219.252', username='root', password='Tangtang980213!!', timeout=15, look_for_keys=False, allow_agent=False)
+old2.connect('47.93.219.252', username='root', password=os.environ['VPS_ROOT_PASSWORD'], timeout=15, look_for_keys=False, allow_agent=False)
 old2.exec_command('systemctl start ombre-brain', timeout=5)
 old2.close()
 print('Old OB restarted')

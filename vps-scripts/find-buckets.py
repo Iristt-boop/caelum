@@ -1,7 +1,12 @@
+# 🔴 root 密码从环境变量读，不写在文件里。
+# 2026-08-26 之前这一批脚本里有 14 个把它硬编码了 ——
+# 而这种一次性运维脚本最容易被顺手 commit、顺手贴出去。
+#   用法：set VPS_ROOT_PASSWORD=...  然后再跑
+import os
 import paramiko
 new = paramiko.SSHClient()
 new.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-new.connect('47.84.92.71', username='root', password='Tangtang980213!!', timeout=15, look_for_keys=False, allow_agent=False)
+new.connect('47.84.92.71', username='root', password=os.environ['VPS_ROOT_PASSWORD'], timeout=15, look_for_keys=False, allow_agent=False)
 
 # Check new VPS OB files
 stdin, stdout, stderr = new.exec_command('ls -la /root/ombre-brain/buckets/', timeout=5)

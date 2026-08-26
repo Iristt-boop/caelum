@@ -1,3 +1,6 @@
+# 🔴 root 密码从环境变量读（2026-08-26 之前是硬编码的）。
+#   用法：set VPS_ROOT_PASSWORD=...  然后再跑
+import os
 #!/usr/bin/env python3
 """Upload monitor.sh to VPS via SSH + set up cron"""
 import paramiko, os, sys
@@ -23,7 +26,7 @@ def main():
     ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
 
     try:
-        ssh.connect(VPS_IP, username=VPS_USER, password="Tangtang980213!!", timeout=15, look_for_keys=False, allow_agent=False)
+        ssh.connect(VPS_IP, username=VPS_USER, password=os.environ['VPS_ROOT_PASSWORD'], timeout=15, look_for_keys=False, allow_agent=False)
         print("Connected.")
     except Exception as e:
         print(f"SSH connection failed: {e}")

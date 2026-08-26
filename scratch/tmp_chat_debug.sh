@@ -1,4 +1,6 @@
 #!/bin/bash
+# 🔴 token 从环境变量读（2026-08-26 之前是内联在 curl 里的）
+: "${NOX_TOKEN:?先 export NOX_TOKEN，见 ~/.caelum/env}"
 echo "=== Bridge 服务状态 ==="
 systemctl status bridge --no-pager | head -3
 
@@ -28,7 +30,7 @@ r = db.execute(\"SELECT id FROM conversations WHERE id NOT LIKE 'test-%' ORDER B
 print(r[0] if r else 'none')
 ")
 echo "Session: $SID"
-curl -s -H "X-Nox-Token: REDACTED-BRIDGE-TOKEN" "http://localhost:3003/api/messages?sessionId=$SID" | python3 -c "
+curl -s -H "X-Nox-Token: $NOX_TOKEN" "http://localhost:3003/api/messages?sessionId=$SID" | python3 -c "
 import sys,json
 msgs = json.load(sys.stdin)
 print(f'返回 {len(msgs)} 条消息')
