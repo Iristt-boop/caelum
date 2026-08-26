@@ -5142,6 +5142,37 @@ Chat 读不到 → 现建一个空会话 →「之前聊的全没了」
 **WebSocket 的 upgrade 握手没做**。以后接语音通话（`/ws/stt`）时，
 生产模式会连不上，得先补 upgrade。dev 模式没这问题（vite 自己会代理）。
 
+### 玩具中继搬进 OS（糖糖 2026-08-26 提，先记着不做）
+
+> 「toy 能不能做到 app 里的页面？每次用的时候，他掉一次工具，
+> 我还要切到那个页面才会变化。」
+
+现在的形状是：他调 `toy_set` → 状态落 bridge 的 `settings` 表 →
+**一个独立网页轮询** → Web Bluetooth 写设备。那个页面必须开着、
+而且必须在她当前看的那一屏上，否则他调了也没反应。
+
+**桌面端是对的落点。** 页面自己写着「iPhone 用 Bluefy，电脑用 Chrome」——
+说明现在本来就是靠电脑连的，而 Caelum OS 是常驻的。搬进去之后
+「他调工具 → 设备就动」，不用她切页面。
+
+技术上可行，但有两个坑要先知道：
+
+1. 🔴 **Electron 的 `navigator.bluetooth.requestDevice()` 默认会永远挂住。**
+   必须在主进程监听 `webContents.on('select-bluetooth-device')` 并
+   `callback(deviceId)`，否则那个 Promise 不 resolve、也不 reject ——
+   表现是「点了配对没反应」，控制台一个字都没有。
+   `nox-app/desktop/main.js` 现在**完全没有蓝牙相关代码**。
+2. 连接要活在**一个不会被卸载的地方**。挂在某个页面组件里的话，
+   她一切走页面蓝牙就断了 —— 那等于换个方式重现现在这个问题。
+   得放在 App 层（和 `WorkBanner` 一样的位置），或者干脆放主进程。
+
+⚠️ 手机端做不了：iOS Safari 没有 Web Bluetooth（所以页面才让她装 Bluefy）。
+这件事只对桌面端成立。
+
+顺带：这个页面 2026-08-26 换过路径和钥匙 —— 它曾经把 `NOX_TOKEN`
+明文挂在公网上（见 bridge/server.js 的 `TOY_TOKEN`）。搬进 OS 之后
+这个问题自然消失：Caelum OS 本来就带着 token，不需要页面自己揣一把。
+
 ---
 
 ## 三十八、Caelum OS 的 Life 一栏：五间房盖起来了（2026-08-20）
