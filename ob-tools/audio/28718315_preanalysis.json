@@ -1,0 +1,52 @@
+{
+ "songId": "28718315",
+ "name": "",
+ "artist": "",
+ "duration": 214.8,
+ "bpm": 81,
+ "key": "E",
+ "segments": [
+  {
+   "start": 0.0,
+   "end": 35.8,
+   "avgEnergy": 0.0914,
+   "maxEnergy": 0.3383
+  },
+  {
+   "start": 35.8,
+   "end": 71.5,
+   "avgEnergy": 0.1623,
+   "maxEnergy": 0.3466
+  },
+  {
+   "start": 71.6,
+   "end": 107.3,
+   "avgEnergy": 0.1548,
+   "maxEnergy": 0.3452
+  },
+  {
+   "start": 107.3,
+   "end": 143.1,
+   "avgEnergy": 0.1774,
+   "maxEnergy": 0.3411
+  },
+  {
+   "start": 143.1,
+   "end": 178.9,
+   "avgEnergy": 0.1786,
+   "maxEnergy": 0.3404
+  },
+  {
+   "start": 178.9,
+   "end": 214.7,
+   "avgEnergy": 0.1291,
+   "maxEnergy": 0.3399
+  }
+ ],
+ "energy": 0.1489,
+ "dynamics": 0.0811,
+ "brightness": 2109.5,
+ "harmonicRatio": 0.625,
+ "analyzedBy": "local",
+ "analyzedAt": "2026-08-11T11:47:26"
+}

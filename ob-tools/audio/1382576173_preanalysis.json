@@ -1,0 +1,52 @@
+{
+ "songId": "1382576173",
+ "name": "Cruel Summer",
+ "artist": "Taylor Swift",
+ "duration": 178.5,
+ "bpm": 112,
+ "key": "C#",
+ "segments": [
+  {
+   "start": 0.0,
+   "end": 29.7,
+   "avgEnergy": 0.2248,
+   "maxEnergy": 0.4036
+  },
+  {
+   "start": 29.7,
+   "end": 59.5,
+   "avgEnergy": 0.2397,
+   "maxEnergy": 0.4077
+  },
+  {
+   "start": 59.5,
+   "end": 89.2,
+   "avgEnergy": 0.2452,
+   "maxEnergy": 0.4153
+  },
+  {
+   "start": 89.2,
+   "end": 119.0,
+   "avgEnergy": 0.2376,
+   "maxEnergy": 0.3981
+  },
+  {
+   "start": 119.0,
+   "end": 148.7,
+   "avgEnergy": 0.235,
+   "maxEnergy": 0.4117
+  },
+  {
+   "start": 148.7,
+   "end": 178.4,
+   "avgEnergy": 0.1959,
+   "maxEnergy": 0.4011
+  }
+ ],
+ "energy": 0.2296,
+ "dynamics": 0.0792,
+ "brightness": 2139.3,
+ "harmonicRatio": 0.633,
+ "analyzedBy": "local",
+ "analyzedAt": "2026-08-09T19:46:05"
+}

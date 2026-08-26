@@ -1,0 +1,14 @@
+[Unit]
+Description=App Tracker
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/app-tracker
+ExecStart=/usr/bin/python3 main.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

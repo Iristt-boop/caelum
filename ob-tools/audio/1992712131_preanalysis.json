@@ -1,0 +1,52 @@
+{
+ "songId": "1992712131",
+ "name": "",
+ "artist": "",
+ "duration": 208.4,
+ "bpm": 129,
+ "key": "A#",
+ "segments": [
+  {
+   "start": 0.0,
+   "end": 34.7,
+   "avgEnergy": 0.2659,
+   "maxEnergy": 0.5865
+  },
+  {
+   "start": 34.7,
+   "end": 69.4,
+   "avgEnergy": 0.3036,
+   "maxEnergy": 0.593
+  },
+  {
+   "start": 69.4,
+   "end": 104.1,
+   "avgEnergy": 0.3469,
+   "maxEnergy": 0.5813
+  },
+  {
+   "start": 104.1,
+   "end": 138.8,
+   "avgEnergy": 0.4234,
+   "maxEnergy": 0.5855
+  },
+  {
+   "start": 138.9,
+   "end": 173.5,
+   "avgEnergy": 0.3268,
+   "maxEnergy": 0.6035
+  },
+  {
+   "start": 173.6,
+   "end": 208.3,
+   "avgEnergy": 0.3184,
+   "maxEnergy": 0.5779
+  }
+ ],
+ "energy": 0.3307,
+ "dynamics": 0.1291,
+ "brightness": 1369.7,
+ "harmonicRatio": 0.774,
+ "analyzedBy": "local",
+ "analyzedAt": "2026-08-11T11:46:45"
+}

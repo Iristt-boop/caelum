@@ -1,0 +1,866 @@
+:root {
+  color-scheme: light dark;
+  --bg: #f7f4ef;
+  --panel: rgba(255, 255, 255, 0.72);
+  --panel-strong: rgba(255, 255, 255, 0.9);
+  --text: #1f1e1b;
+  --muted: #8a8883;
+  --line: rgba(45, 42, 36, 0.1);
+  --accent: #d9795c;
+  --accent-soft: rgba(217, 121, 92, 0.14);
+  --blue-soft: rgba(108, 142, 184, 0.16);
+  --shadow: 0 18px 60px rgba(36, 31, 24, 0.08);
+  font-family:
+    -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Segoe UI", sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: var(--bg);
+  color: var(--text);
+}
+
+button,
+textarea {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+.app {
+  display: grid;
+  grid-template-columns: 320px 320px minmax(0, 1fr);
+  min-height: 100vh;
+}
+
+.sidebar,
+.chapters,
+.reader {
+  min-width: 0;
+  padding: 28px;
+}
+
+.sidebar,
+.chapters {
+  border-right: 1px solid var(--line);
+}
+
+.topbar,
+.panel-head,
+.reader-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
+.reader-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.topbar-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.eyebrow {
+  margin: 0 0 6px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+h1,
+h2 {
+  margin: 0;
+  letter-spacing: 0;
+}
+
+h1 {
+  font-size: 42px;
+  line-height: 1;
+}
+
+h2 {
+  font-size: 28px;
+  line-height: 1.12;
+}
+
+.books,
+.chunk-list {
+  display: grid;
+  gap: 12px;
+}
+
+.book-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: stretch;
+}
+
+.book,
+.chunk,
+.note-card {
+  width: 100%;
+  border: 1px solid transparent;
+  border-radius: 18px;
+  background: var(--panel);
+  color: inherit;
+  text-align: left;
+  box-shadow: none;
+}
+
+.book,
+.chunk {
+  padding: 16px;
+}
+
+.book:hover,
+.chunk:hover,
+.book.active,
+.chunk.active,
+.book-row.active .book {
+  border-color: var(--accent-soft);
+  background: var(--panel-strong);
+}
+
+/* 当前选中的书/章节：明显高亮。
+   左边那道粗条用 inset box-shadow，不用 border-left ——
+   border 会占盒模型：1px 改 3px 会让内容宽度少 2px，文字跟着重新换行，
+   整张卡片的高度会跳一下。阴影画在盒子内部，不影响任何布局。 */
+.chunk.active,
+.book-row.active .book {
+  border-color: var(--accent);
+  box-shadow: inset 3px 0 0 var(--accent);
+  background: var(--accent-soft);
+}
+
+.chunk.active .chunk-title,
+.book-row.active .book-title {
+  color: var(--accent);
+}
+
+.book-delete {
+  align-self: stretch;
+  border: 1px solid transparent;
+  border-radius: 18px;
+  background: transparent;
+  color: var(--muted);
+  padding: 0 12px;
+  font-size: 13px;
+}
+
+.book-delete:hover {
+  border-color: var(--accent-soft);
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.book-title,
+.chunk-title {
+  display: block;
+  font-weight: 800;
+}
+
+.book-meta,
+.chunk-meta {
+  display: block;
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.progress {
+  /* ⚠️ 这个 display 不能省。.progress 是个 <span>，默认 inline，
+     而 inline 非替换元素**不吃 height，也不吃 overflow** ——
+     结果里面那条 display:block 的进度条挣脱出去，
+     渲染成 46px 高、圆角 999px 的竖药丸，从卡片下沿漏出来 29px。
+     那就是书架上"选中的书下面挂着一条红条"的真凶。 */
+  display: block;
+  overflow: hidden;
+  height: 5px;
+  margin-top: 12px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.08);
+}
+
+.progress span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+}
+
+.reader {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 760px) 300px;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: 22px 28px;
+  overflow: hidden;
+  justify-content: center;
+}
+
+/* 没有页边笔记时，笔记栏收起，正文独占并居中，右边不再空一条 */
+.reader:has(#margins:empty) {
+  grid-template-columns: minmax(0, 820px);
+}
+
+.reader-head {
+  grid-column: 1 / -1;
+  margin-bottom: 0;
+}
+
+.text {
+  overflow: auto;
+  min-height: 0;
+  padding: 10px 2px 96px;
+  font-family: Georgia, "Times New Roman", "Songti SC", serif;
+  font-size: 24px;
+  line-height: 1.78;
+  white-space: pre-wrap;
+}
+
+.text mark {
+  border-radius: 5px;
+  background: var(--accent-soft);
+  color: inherit;
+  cursor: pointer;
+}
+
+.text mark.shared {
+  background: linear-gradient(90deg, var(--accent-soft), var(--blue-soft));
+}
+
+.text mark.active {
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+.shared-bookmark {
+  display: inline-block;
+  margin-left: 0.35em;
+  color: var(--muted);
+  font-family:
+    -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
+  font-size: 0.54em;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  vertical-align: 0.12em;
+}
+
+.empty {
+  color: var(--muted);
+  font-family: inherit;
+}
+
+.margins {
+  overflow: auto;
+  min-height: 0;
+  padding-bottom: 96px;
+}
+
+.note-card {
+  padding: 14px;
+  margin-bottom: 12px;
+}
+
+.note-card.open {
+  border-color: var(--accent-soft);
+}
+
+.note-card.active {
+  border-color: var(--accent);
+  background: var(--panel-strong);
+}
+
+.shared-line {
+  margin: 0 0 10px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.inline-note {
+  display: block;
+  margin: 14px 0 18px;
+  padding: 14px 16px;
+  border-left: 3px solid var(--accent);
+  border-radius: 16px;
+  background: var(--panel-strong);
+  box-shadow: var(--shadow);
+  font-family:
+    -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
+  font-size: 16px;
+  line-height: 1.55;
+  white-space: normal;
+}
+
+.inline-note-kicker {
+  margin: 0 0 8px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.note-quote {
+  margin: 0 0 10px;
+  padding-left: 10px;
+  border-left: 3px solid var(--accent);
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.note-body {
+  margin: 0;
+  line-height: 1.55;
+}
+
+.note-meta {
+  margin-top: 10px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.thread {
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.reply {
+  margin-left: calc(var(--reply-depth, 0) * 10px);
+  padding: 10px 12px;
+  border-left: 3px solid transparent;
+  border-radius: 12px;
+  background: transparent;
+}
+
+.reply.other-author {
+  background: rgba(0, 0, 0, 0.035);
+}
+
+.reply-body {
+  margin: 0;
+  line-height: 1.5;
+}
+
+.reply-children {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.reply-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: end;
+}
+
+.note-form,
+.submitbar {
+  position: fixed;
+  right: 28px;
+  border: 1px solid rgba(255, 255, 255, 0.78);
+  border-radius: 24px;
+  background: rgba(255, 255, 255, 0.78);
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(22px);
+}
+
+.toast {
+  position: fixed;
+  z-index: 13;
+  left: 50%;
+  bottom: 92px;
+  transform: translateX(-50%);
+  max-width: min(420px, calc(100vw - 32px));
+  border: 1px solid rgba(255, 255, 255, 0.76);
+  border-radius: 999px;
+  padding: 12px 18px;
+  background: rgba(255, 255, 255, 0.86);
+  color: var(--text);
+  box-shadow: 0 18px 50px rgba(36, 31, 24, 0.12);
+  backdrop-filter: blur(20px);
+  font-size: 15px;
+  font-weight: 800;
+}
+
+.card-panel {
+  position: fixed;
+  z-index: 12;
+  top: 28px;
+  right: 28px;
+  width: min(420px, calc(100vw - 56px));
+  max-height: calc(100vh - 56px);
+  overflow: auto;
+  border: 1px solid rgba(255, 255, 255, 0.76);
+  border-radius: 28px;
+  padding: 16px;
+  background: rgba(255, 255, 255, 0.82);
+  box-shadow: 0 24px 80px rgba(36, 31, 24, 0.16);
+  backdrop-filter: blur(24px);
+}
+
+.card-panel-head,
+.card-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.card-panel-head {
+  margin-bottom: 14px;
+}
+
+.card-panel-head h2 {
+  font-size: 22px;
+}
+
+.card-preview {
+  display: grid;
+  justify-items: center;
+}
+
+.ritual-card {
+  position: relative;
+  width: min(420px, 100%);
+  max-width: 420px;
+  min-height: 440px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 18px;
+  overflow: hidden;
+  border-radius: 24px;
+  padding: 28px;
+  background:
+    radial-gradient(circle at 18% 12%, rgba(255, 255, 255, 0.76), transparent 28%),
+    linear-gradient(145deg, #fbf4ed, #ece8df 58%, #dfe5e6);
+  color: #28241f;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.72);
+}
+
+.ritual-card.card-compact {
+  min-height: 360px;
+}
+
+.ritual-card.card-standard {
+  min-height: 440px;
+}
+
+.ritual-card.card-tall {
+  min-height: 540px;
+}
+
+.card-art {
+  position: absolute;
+  inset: 0;
+  color: rgba(155, 115, 85, 0.75);
+  pointer-events: none;
+}
+
+.card-art svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.card-content {
+  position: relative;
+  z-index: 1;
+  min-height: 384px;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
+  gap: 18px;
+}
+
+.card-compact .card-content {
+  min-height: 304px;
+}
+
+.card-tall .card-content {
+  min-height: 484px;
+}
+
+.ritual-card.echo,
+.ritual-card.art-ripple {
+  background:
+    radial-gradient(circle at 76% 12%, rgba(255, 255, 255, 0.5), transparent 30%),
+    linear-gradient(145deg, #f8f3ec, #eee9df 58%, #e6e5dc);
+}
+
+.ritual-card.art-ripple .card-art {
+  color: rgba(116, 96, 78, 0.52);
+}
+
+.ritual-card.art-fold .card-art {
+  color: rgba(88, 80, 72, 0.45);
+}
+
+.ritual-card.art-stardust .card-art {
+  color: rgba(98, 86, 70, 0.62);
+}
+
+.ritual-card.finish {
+  background:
+    radial-gradient(circle at 20% 18%, rgba(217, 121, 92, 0.18), transparent 28%),
+    linear-gradient(145deg, #fbf6ee, #eeece4 60%, #e4e8df);
+}
+
+.ritual-card.quiet {
+  background:
+    radial-gradient(circle at 72% 18%, rgba(255, 255, 255, 0.76), transparent 32%),
+    linear-gradient(145deg, #f8f5ef, #eeeae2 62%, #e8e6df);
+}
+
+.card-kicker {
+  margin: 0;
+  color: #7d7971;
+  font-size: 15px;
+  font-weight: 800;
+}
+
+.ritual-card h3 {
+  margin: 0;
+  font-size: 34px;
+  line-height: 1.05;
+  letter-spacing: 0;
+}
+
+.card-subtitle {
+  margin: -8px 0 0;
+  color: #868178;
+  font-size: 14px;
+}
+
+.ritual-card blockquote {
+  margin: clamp(22px, 7vh, 64px) 0 0;
+  padding: 0;
+  color: #34302b;
+  font-family: Georgia, "Times New Roman", "Songti SC", serif;
+  font-size: 24px;
+  line-height: 1.45;
+}
+
+.card-voices {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.card-voices,
+.ritual-card footer {
+  margin-top: auto;
+}
+
+.card-voices.single {
+  grid-template-columns: 1fr;
+}
+
+.card-voices section {
+  min-width: 0;
+  border-top: 1px solid rgba(40, 36, 31, 0.14);
+  padding-top: 10px;
+}
+
+.card-voices span {
+  color: #817b72;
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.card-voices p,
+.ritual-card footer {
+  margin: 6px 0 0;
+  color: #4b463f;
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.ritual-card footer {
+  color: #817b72;
+}
+
+.card-actions {
+  justify-content: flex-end;
+  margin-top: 12px;
+}
+
+.note-form {
+  left: max(28px, calc(320px + 320px + 56px));
+  bottom: 92px;
+  padding: 16px;
+}
+
+.quote-preview {
+  max-height: 72px;
+  overflow: auto;
+  margin-bottom: 12px;
+  padding-left: 10px;
+  border-left: 3px solid var(--accent);
+  color: var(--muted);
+}
+
+textarea {
+  width: 100%;
+  resize: vertical;
+  border: 0;
+  border-radius: 16px;
+  padding: 14px;
+  background: rgba(255, 255, 255, 0.86);
+  color: inherit;
+  outline: none;
+}
+
+.form-actions,
+.submitbar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.submit-actions {
+  display: flex;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+.form-actions {
+  margin-top: 12px;
+}
+
+.submitbar {
+  left: max(28px, calc(320px + 320px + 56px));
+  bottom: 24px;
+  min-height: 52px;
+  padding: 10px 12px 10px 18px;
+  color: var(--muted);
+}
+
+.primary-button,
+.secondary-button,
+.icon-button {
+  border: 0;
+  border-radius: 999px;
+  min-height: 40px;
+  padding: 0 16px;
+}
+
+.primary-button {
+  background: var(--accent);
+  color: white;
+  font-weight: 800;
+}
+
+.secondary-button,
+.icon-button {
+  background: rgba(0, 0, 0, 0.06);
+  color: var(--text);
+}
+
+button:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.icon-button {
+  width: 42px;
+  padding: 0;
+  font-size: 20px;
+}
+
+@media (max-width: 980px) {
+  .app {
+    grid-template-columns: 1fr;
+  }
+
+  .sidebar,
+  .chapters {
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .sidebar,
+  .chapters,
+  .reader {
+    padding: 22px 18px;
+  }
+
+  .topbar,
+  .panel-head,
+  .reader-head {
+    align-items: flex-start;
+    margin-bottom: 16px;
+  }
+
+  .books,
+  .chunk-list {
+    grid-template-columns: 1fr;
+  }
+
+  /* 选中书/章节后把列表压成滚动区，把地方让给正文。
+     左右 padding 必须**对称**：以前只给了 padding-right，
+     选中态左侧那道 3px 强调条正好压在 overflow 的裁剪线上，看着像溢出。
+     底部留一点，免得最后一张卡被切在半腰上。 */
+  body.has-book .books,
+  body.has-chunk .chunk-list {
+    overflow: auto;
+    padding: 2px 2px 10px;
+    /* 键盘/程序滚动时给选中项留出边距，不会紧贴容器边 */
+    scroll-padding: 12px;
+    /* 细滚动条，不再挤掉内容宽度 */
+    scrollbar-width: thin;
+  }
+  /* 试过在这儿加底部渐隐遮罩，撤了：书少到不需要滚动时，
+     最后一张卡的底部也会被无端淡掉。滚动条本身就够说明"下面还有"。 */
+
+  body.has-book .books {
+    max-height: 42vh;
+  }
+
+  body.has-chunk .chunk-list {
+    max-height: 40vh;
+  }
+
+  .reader {
+    grid-template-columns: 1fr;
+    overflow: visible;
+    gap: 16px;
+  }
+
+  .reader-head {
+    position: sticky;
+    top: 0;
+    z-index: 4;
+    padding: 12px 0;
+    background: color-mix(in srgb, var(--bg) 88%, transparent);
+    backdrop-filter: blur(16px);
+  }
+
+  .reader-actions {
+    flex: 0 0 auto;
+  }
+
+  .reader-actions .secondary-button {
+    min-height: 36px;
+    padding: 0 12px;
+  }
+
+  .text {
+    padding-bottom: 140px;
+    font-size: 22px;
+    line-height: 1.82;
+  }
+
+  .note-form,
+  .submitbar {
+    left: 16px;
+    right: 16px;
+  }
+
+  .card-panel {
+    top: 16px;
+    left: 16px;
+    right: 16px;
+    width: auto;
+    max-height: calc(100vh - 128px);
+  }
+
+  .ritual-card {
+    width: min(420px, 100%);
+    min-height: 460px;
+    padding: 24px;
+  }
+
+  .ritual-card h3 {
+    font-size: 30px;
+  }
+
+  .ritual-card blockquote {
+    font-size: 22px;
+  }
+
+  .submitbar {
+    align-items: stretch;
+    flex-direction: column;
+    z-index: 9;
+    padding-bottom: max(12px, env(safe-area-inset-bottom));
+  }
+
+  .toast {
+    bottom: calc(124px + env(safe-area-inset-bottom));
+  }
+
+  .submit-actions {
+    justify-content: flex-end;
+  }
+
+  .margins {
+    overflow: visible;
+  }
+
+  .inline-note {
+    margin: 12px 0 16px;
+    font-size: 15px;
+  }
+
+  .reply-form {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #11100f;
+    --panel: rgba(255, 255, 255, 0.07);
+    --panel-strong: rgba(255, 255, 255, 0.12);
+    --text: #f3eee8;
+    --muted: #aaa29a;
+    --line: rgba(255, 255, 255, 0.1);
+    --accent-soft: rgba(217, 121, 92, 0.22);
+    --blue-soft: rgba(132, 169, 207, 0.2);
+    --shadow: 0 18px 60px rgba(0, 0, 0, 0.28);
+  }
+
+  textarea {
+    background: rgba(255, 255, 255, 0.1);
+  }
+
+  .note-form,
+  .submitbar,
+  .card-panel,
+  .toast {
+    border-color: rgba(255, 255, 255, 0.14);
+    background: rgba(28, 27, 26, 0.78);
+  }
+
+  .reply {
+    background: transparent;
+  }
+
+  .reply.other-author {
+    background: rgba(255, 255, 255, 0.07);
+  }
+}

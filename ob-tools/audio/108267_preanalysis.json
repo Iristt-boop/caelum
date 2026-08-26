@@ -1,0 +1,52 @@
+{
+ "songId": "108267",
+ "name": "",
+ "artist": "",
+ "duration": 213.7,
+ "bpm": 136,
+ "key": "F",
+ "segments": [
+  {
+   "start": 0.0,
+   "end": 35.6,
+   "avgEnergy": 0.128,
+   "maxEnergy": 0.3704
+  },
+  {
+   "start": 35.6,
+   "end": 71.2,
+   "avgEnergy": 0.1786,
+   "maxEnergy": 0.3763
+  },
+  {
+   "start": 71.2,
+   "end": 106.8,
+   "avgEnergy": 0.218,
+   "maxEnergy": 0.3713
+  },
+  {
+   "start": 106.9,
+   "end": 142.5,
+   "avgEnergy": 0.298,
+   "maxEnergy": 0.3894
+  },
+  {
+   "start": 142.5,
+   "end": 178.1,
+   "avgEnergy": 0.281,
+   "maxEnergy": 0.4009
+  },
+  {
+   "start": 178.1,
+   "end": 213.7,
+   "avgEnergy": 0.1095,
+   "maxEnergy": 0.3267
+  }
+ ],
+ "energy": 0.2022,
+ "dynamics": 0.0961,
+ "brightness": 1790.9,
+ "harmonicRatio": 0.781,
+ "analyzedBy": "local",
+ "analyzedAt": "2026-08-11T11:46:32"
+}

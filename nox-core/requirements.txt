@@ -1,0 +1,19 @@
+# Nox Core 依赖
+#
+# anthropic / openai 都装：adapter 是延迟导入的，只配一家时另一个不会被 import，
+# 但装着才能随时切换后端而不用改环境。
+
+anthropic>=0.40.0
+openai>=1.50.0
+
+# Ombre Brain 走 MCP streamable-http
+mcp>=1.2.0
+
+# API 层
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+pydantic>=2.9.0
+
+# 测试
+pytest>=8.0.0
+pytest-asyncio>=0.24.0

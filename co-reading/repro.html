@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>共读书架 · 溢出复现</title>
+    <link rel="stylesheet" href="./public/reader.css" />
+  </head>
+  <body>
+    <!-- 用真实的 reader.html 骨架 + renderBooks() 生成的真实 DOM，
+         只是把数据写死，好让 Playwright 量出来到底哪儿溢出 -->
+    <main class="app">
+      <section class="sidebar" aria-label="图书馆">
+        <header class="topbar">
+          <div>
+            <p class="eyebrow">共读</p>
+            <h1>图书馆</h1>
+          </div>
+          <div class="topbar-actions">
+            <button class="icon-button">＋</button>
+            <button class="icon-button">↻</button>
+          </div>
+        </header>
+        <div id="books" class="books" aria-live="polite">
+          <div class="book-row">
+            <button class="book" data-book="b1">
+              <span class="book-title">The Anthropic Guidelines</span>
+              <span class="book-meta">未知作者 · 2/14 · 2 条笔记</span>
+              <span class="progress"><span style="width: 14%"></span></span>
+            </button>
+            <button class="book-delete" title="删除这本书">删除</button>
+          </div>
+          <div class="book-row active">
+            <button class="book" data-book="b2">
+              <span class="book-title">大问题_简明哲学导论</span>
+              <span class="book-meta">罗伯特·所罗门 · 3/58 · 1 条笔记</span>
+              <span class="progress"><span style="width: 5%"></span></span>
+            </button>
+            <button class="book-delete" title="删除这本书">删除</button>
+          </div>
+          <div class="book-row">
+            <button class="book" data-book="b3">
+              <span class="book-title">西西弗斯神话</span>
+              <span class="book-meta">加缪 · 0/22 · 0 条笔记</span>
+              <span class="progress"><span style="width: 0%"></span></span>
+            </button>
+            <button class="book-delete" title="删除这本书">删除</button>
+          </div>
+        </div>
+      </section>
+      <section class="chapters"><header class="panel-head"><p class="eyebrow">选择一本书</p><h2>书架</h2></header><div class="chunk-list"></div></section>
+      <section class="reader"><header class="reader-head"><div><p class="eyebrow">未选择章节</p><h2>打开一章开始阅读</h2></div></header></section>
+    </main>
+  </body>
+</html>

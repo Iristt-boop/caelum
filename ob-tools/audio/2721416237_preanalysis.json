@@ -1,0 +1,52 @@
+{
+ "songId": "2721416237",
+ "name": "",
+ "artist": "",
+ "duration": 236.4,
+ "bpm": 117,
+ "key": "C",
+ "segments": [
+  {
+   "start": 0.0,
+   "end": 39.4,
+   "avgEnergy": 0.0944,
+   "maxEnergy": 0.321
+  },
+  {
+   "start": 39.4,
+   "end": 78.7,
+   "avgEnergy": 0.1726,
+   "maxEnergy": 0.3694
+  },
+  {
+   "start": 78.8,
+   "end": 118.1,
+   "avgEnergy": 0.197,
+   "maxEnergy": 0.3611
+  },
+  {
+   "start": 118.1,
+   "end": 157.5,
+   "avgEnergy": 0.2308,
+   "maxEnergy": 0.3804
+  },
+  {
+   "start": 157.5,
+   "end": 196.9,
+   "avgEnergy": 0.1998,
+   "maxEnergy": 0.4015
+  },
+  {
+   "start": 196.9,
+   "end": 236.3,
+   "avgEnergy": 0.2398,
+   "maxEnergy": 0.3791
+  }
+ ],
+ "energy": 0.189,
+ "dynamics": 0.0825,
+ "brightness": 2675.2,
+ "harmonicRatio": 0.735,
+ "analyzedBy": "local",
+ "analyzedAt": "2026-08-11T11:47:21"
+}

@@ -1,0 +1,52 @@
+{
+ "songId": "2067668284",
+ "name": "",
+ "artist": "",
+ "duration": 183.7,
+ "bpm": 70,
+ "key": "C#",
+ "segments": [
+  {
+   "start": 0.0,
+   "end": 30.6,
+   "avgEnergy": 0.1309,
+   "maxEnergy": 0.2276
+  },
+  {
+   "start": 30.6,
+   "end": 61.2,
+   "avgEnergy": 0.1647,
+   "maxEnergy": 0.232
+  },
+  {
+   "start": 61.2,
+   "end": 91.8,
+   "avgEnergy": 0.1651,
+   "maxEnergy": 0.233
+  },
+  {
+   "start": 91.8,
+   "end": 122.4,
+   "avgEnergy": 0.1599,
+   "maxEnergy": 0.2217
+  },
+  {
+   "start": 122.4,
+   "end": 153.0,
+   "avgEnergy": 0.1688,
+   "maxEnergy": 0.231
+  },
+  {
+   "start": 153.0,
+   "end": 183.6,
+   "avgEnergy": 0.1074,
+   "maxEnergy": 0.2277
+  }
+ ],
+ "energy": 0.1494,
+ "dynamics": 0.0535,
+ "brightness": 452.0,
+ "harmonicRatio": 0.927,
+ "analyzedBy": "local",
+ "analyzedAt": "2026-08-11T11:46:56"
+}

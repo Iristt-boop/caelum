@@ -1,0 +1,52 @@
+{
+ "songId": "1984303443",
+ "name": "",
+ "artist": "",
+ "duration": 81.0,
+ "bpm": 78,
+ "key": "A",
+ "segments": [
+  {
+   "start": 0.0,
+   "end": 13.5,
+   "avgEnergy": 0.0498,
+   "maxEnergy": 0.2085
+  },
+  {
+   "start": 13.5,
+   "end": 27.0,
+   "avgEnergy": 0.0601,
+   "maxEnergy": 0.1931
+  },
+  {
+   "start": 27.0,
+   "end": 40.4,
+   "avgEnergy": 0.1326,
+   "maxEnergy": 0.3077
+  },
+  {
+   "start": 40.5,
+   "end": 53.9,
+   "avgEnergy": 0.1805,
+   "maxEnergy": 0.3035
+  },
+  {
+   "start": 54.0,
+   "end": 67.4,
+   "avgEnergy": 0.2133,
+   "maxEnergy": 0.3084
+  },
+  {
+   "start": 67.5,
+   "end": 80.9,
+   "avgEnergy": 0.1672,
+   "maxEnergy": 0.3402
+  }
+ ],
+ "energy": 0.1338,
+ "dynamics": 0.0831,
+ "brightness": 1316.8,
+ "harmonicRatio": 0.833,
+ "analyzedBy": "local",
+ "analyzedAt": "2026-08-11T11:46:36"
+}

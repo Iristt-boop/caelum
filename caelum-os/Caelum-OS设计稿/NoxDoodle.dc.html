@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<div style="position:relative;display:inline-block;line-height:0">
+  <svg width="{{ w }}" viewBox="0 0 104 116" style="overflow:visible">
+    <g fill="none" stroke="#5A3D5C" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M25 30 21 9c-.4-2 1.4-3 2.8-1.9L42 20" fill="#FFF8FB"></path>
+      <path d="M79 29 84 9.5c.5-2-1.3-3.1-2.7-2L62 19.6" fill="#FFF8FB"></path>
+      <path d="M52 15c19.5-.4 33 13.5 33.6 31.4C86.2 65 72.5 79.6 52.6 80 32 80.4 18 66.6 17.6 47.8 17.2 29.6 31.6 15.4 52 15Z" fill="#FFF8FB"></path>
+      <path d="M40 84c-7 3.5-12 8-14.5 14.5M64 84c7.5 3.2 12.8 7.8 15.5 14.4"></path>
+      <path d="M28.5 104c6.5-6 40.5-6.5 47.5.5"></path>
+    </g>
+    <ellipse cx="33" cy="57" rx="7" ry="4.2" fill="rgba(240,182,214,.55)"></ellipse>
+    <ellipse cx="71" cy="57" rx="7" ry="4.2" fill="rgba(240,182,214,.55)"></ellipse>
+    <sc-if value="{{ eyesOpen }}" hint-placeholder-val="{{ true }}">
+      <g fill="#5A3D5C"><ellipse cx="39" cy="47" rx="4.2" ry="4.8"></ellipse><ellipse cx="66" cy="47" rx="4.2" ry="4.8"></ellipse></g>
+      <g fill="#FFF8FB"><circle cx="40.6" cy="45.2" r="1.5"></circle><circle cx="67.6" cy="45.2" r="1.5"></circle></g>
+    </sc-if>
+    <sc-if value="{{ eyesClosed }}" hint-placeholder-val="{{ false }}">
+      <g fill="none" stroke="#5A3D5C" stroke-width="2.6" stroke-linecap="round"><path d="M33.5 48c2.5 3.4 8 3.4 10.6 0"></path><path d="M60.5 48c2.6 3.4 8.1 3.4 10.7 0"></path></g>
+    </sc-if>
+    <sc-if value="{{ mouthOpen }}" hint-placeholder-val="{{ false }}">
+      <path d="M46 60c3.4-1.4 8-1.4 11.4 0 .8 5.4-2 8.6-5.7 8.6S45.2 65.4 46 60Z" fill="#E8A4C8" stroke="#5A3D5C" stroke-width="2.2" stroke-linejoin="round"></path>
+    </sc-if>
+    <sc-if value="{{ mouthSmile }}" hint-placeholder-val="{{ true }}">
+      <path d="M45 60.5c2.4 3 4.6 3.2 7 .4 2.4 2.9 4.7 2.6 7-.5" fill="none" stroke="#5A3D5C" stroke-width="2.4" stroke-linecap="round"></path>
+    </sc-if>
+    <sc-if value="{{ glasses }}" hint-placeholder-val="{{ false }}">
+      <g fill="rgba(232,224,248,.45)" stroke="#5A3D5C" stroke-width="2.4"><path d="M27.5 44.5c0-3.4 3.4-5.4 8.6-5.4 5.4 0 8.8 1.8 8.8 5.4 0 4.4-3.2 7.4-8.6 7.4s-8.8-3-8.8-7.4Z"></path><path d="M59 44.6c0-3.5 3.5-5.5 8.8-5.5 5.3 0 8.7 1.9 8.7 5.5 0 4.4-3.3 7.3-8.7 7.3-5.5 0-8.8-2.9-8.8-7.3Z"></path><path d="M45 44.4c2.5-1.6 6.2-1.7 13.6-.2" fill="none"></path></g>
+    </sc-if>
+    <sc-if value="{{ sleeping }}" hint-placeholder-val="{{ false }}">
+      <g fill="none" stroke="#E8A4C8" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M84 26h9l-9 10h9.5"></path><path d="M96 8h6.5l-6.5 7.5h7"></path>
+      </g>
+    </sc-if>
+    <path d="M14 46c-3.5 1.4-6.5 1-9-1M14 55c-3.6.6-6.6-.4-8.8-2.8M90 46c3.6 1.2 6.6.8 9-1.2M90 55c3.7.5 6.7-.6 8.9-3" fill="none" stroke="rgba(90,61,92,.5)" stroke-width="1.8" stroke-linecap="round"></path>
+  </svg>
+  <sc-if value="{{ hasCaption }}" hint-placeholder-val="{{ false }}">
+    <div style="margin-top:6px;text-align:center;font-family:'Zhi Mang Xing','Caveat',cursive;font-size:17px;color:#7B5A78;line-height:1.3">{{ caption }}</div>
+  </sc-if>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:180,&quot;height&quot;:190},&quot;mood&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;idle&quot;,&quot;working&quot;,&quot;singing&quot;,&quot;sleepy&quot;],&quot;default&quot;:&quot;idle&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;size&quot;:{&quot;editor&quot;:&quot;int&quot;,&quot;default&quot;:104,&quot;min&quot;:48,&quot;max&quot;:200,&quot;tsType&quot;:&quot;number&quot;},&quot;caption&quot;:{&quot;editor&quot;:&quot;text&quot;,&quot;default&quot;:&quot;&quot;,&quot;tsType&quot;:&quot;string&quot;}}">
+class Component extends DCLogic {
+  renderVals() {
+    const mood = this.props.mood || 'idle';
+    return {
+      w: this.props.size ?? 104,
+      eyesOpen: mood !== 'sleepy',
+      eyesClosed: mood === 'sleepy',
+      mouthOpen: mood === 'singing',
+      mouthSmile: mood !== 'singing',
+      glasses: mood === 'working',
+      sleeping: mood === 'sleepy',
+      caption: this.props.caption || '',
+      hasCaption: !!this.props.caption
+    };
+  }
+}
+</script>
+</body>
+</html>

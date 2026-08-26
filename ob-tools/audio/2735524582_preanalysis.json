@@ -1,0 +1,52 @@
+{
+ "songId": "2735524582",
+ "name": "",
+ "artist": "",
+ "duration": 239.7,
+ "bpm": 129,
+ "key": "F",
+ "segments": [
+  {
+   "start": 0.0,
+   "end": 39.9,
+   "avgEnergy": 0.1351,
+   "maxEnergy": 0.2976
+  },
+  {
+   "start": 39.9,
+   "end": 79.9,
+   "avgEnergy": 0.1967,
+   "maxEnergy": 0.4462
+  },
+  {
+   "start": 79.9,
+   "end": 119.8,
+   "avgEnergy": 0.2591,
+   "maxEnergy": 0.4554
+  },
+  {
+   "start": 119.8,
+   "end": 159.7,
+   "avgEnergy": 0.2378,
+   "maxEnergy": 0.4417
+  },
+  {
+   "start": 159.8,
+   "end": 199.7,
+   "avgEnergy": 0.2087,
+   "maxEnergy": 0.4411
+  },
+  {
+   "start": 199.7,
+   "end": 239.6,
+   "avgEnergy": 0.2417,
+   "maxEnergy": 0.4648
+  }
+ ],
+ "energy": 0.2131,
+ "dynamics": 0.1063,
+ "brightness": 3377.0,
+ "harmonicRatio": 0.678,
+ "analyzedBy": "local",
+ "analyzedAt": "2026-08-09T19:46:09"
+}

@@ -1,0 +1,52 @@
+{
+ "songId": "2654774730",
+ "name": "",
+ "artist": "",
+ "duration": 296.6,
+ "bpm": 96,
+ "key": "D",
+ "segments": [
+  {
+   "start": 0.0,
+   "end": 49.4,
+   "avgEnergy": 0.1002,
+   "maxEnergy": 0.2918
+  },
+  {
+   "start": 49.4,
+   "end": 98.8,
+   "avgEnergy": 0.1994,
+   "maxEnergy": 0.3656
+  },
+  {
+   "start": 98.9,
+   "end": 148.3,
+   "avgEnergy": 0.2379,
+   "maxEnergy": 0.4222
+  },
+  {
+   "start": 148.3,
+   "end": 197.7,
+   "avgEnergy": 0.2434,
+   "maxEnergy": 0.4627
+  },
+  {
+   "start": 197.7,
+   "end": 247.2,
+   "avgEnergy": 0.317,
+   "maxEnergy": 0.4546
+  },
+  {
+   "start": 247.2,
+   "end": 296.6,
+   "avgEnergy": 0.2092,
+   "maxEnergy": 0.451
+  }
+ ],
+ "energy": 0.2178,
+ "dynamics": 0.1132,
+ "brightness": 2131.2,
+ "harmonicRatio": 0.768,
+ "analyzedBy": "local",
+ "analyzedAt": "2026-08-11T11:47:13"
+}

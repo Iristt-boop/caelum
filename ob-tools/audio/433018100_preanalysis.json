@@ -1,0 +1,52 @@
+{
+ "songId": "433018100",
+ "name": "",
+ "artist": "",
+ "duration": 202.3,
+ "bpm": 96,
+ "key": "B",
+ "segments": [
+  {
+   "start": 0.0,
+   "end": 33.7,
+   "avgEnergy": 0.1516,
+   "maxEnergy": 0.5002
+  },
+  {
+   "start": 33.7,
+   "end": 67.4,
+   "avgEnergy": 0.2943,
+   "maxEnergy": 0.4936
+  },
+  {
+   "start": 67.4,
+   "end": 101.1,
+   "avgEnergy": 0.2678,
+   "maxEnergy": 0.499
+  },
+  {
+   "start": 101.1,
+   "end": 134.8,
+   "avgEnergy": 0.3236,
+   "maxEnergy": 0.483
+  },
+  {
+   "start": 134.9,
+   "end": 168.6,
+   "avgEnergy": 0.3383,
+   "maxEnergy": 0.4793
+  },
+  {
+   "start": 168.6,
+   "end": 202.3,
+   "avgEnergy": 0.222,
+   "maxEnergy": 0.4924
+  }
+ ],
+ "energy": 0.2662,
+ "dynamics": 0.1172,
+ "brightness": 2352.8,
+ "harmonicRatio": 0.66,
+ "analyzedBy": "local",
+ "analyzedAt": "2026-08-11T11:47:43"
+}

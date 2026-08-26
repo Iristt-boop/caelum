@@ -1,0 +1,124 @@
+diff --git a/packages/sandbox/sandbox-windows-acl/src/ffi.ts b/packages/sandbox/sandbox-windows-acl/src/ffi.ts
+index 698f0dc2ee..42708428f3 100644
+--- a/packages/sandbox/sandbox-windows-acl/src/ffi.ts
++++ b/packages/sandbox/sandbox-windows-acl/src/ffi.ts
+@@ -43,6 +43,7 @@ type Ptr = ReturnType<typeof koffi.pointer>
+ export interface StartupInfoInput {
+   cb: number
+   dwFlags: number
++  wShowWindow?: number
+   hStdInput: NativePtr
+   hStdOutput: NativePtr
+   hStdError: NativePtr
+diff --git a/packages/sandbox/sandbox-windows-acl/src/spawn.ts b/packages/sandbox/sandbox-windows-acl/src/spawn.ts
+index eafcb252ce..dbd8fbad4e 100644
+--- a/packages/sandbox/sandbox-windows-acl/src/spawn.ts
++++ b/packages/sandbox/sandbox-windows-acl/src/spawn.ts
+@@ -1,11 +1,18 @@
+ /**
+  * Restricted-process spawning: anonymous pipes for stdio, STARTUPINFOW with
+- * STARTF_USESTDHANDLES, CreateProcessAsUserW under the restricted token, then
+- * asynchronous pipe draining and exit waiting. Console isolation
+- * (CREATE_NO_WINDOW / CREATE_NEW_CONSOLE) is intentionally absent: under this
+- * restriction scheme hidden-console children die with STATUS_DLL_INIT_FAILED
+- * (0xC0000142) — verified empirically, see win32-abi.ts. Stdio redirection is
+- * pipe-based and unaffected; the child shares the host console.
++ * STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW (wShowWindow=SW_HIDE),
++ * CreateProcessAsUserW under the restricted token, then asynchronous pipe
++ * draining and exit waiting.
++ *
++ * ⚠️ Console isolation via CREATE_NO_WINDOW / CREATE_NEW_CONSOLE is
++ * intentionally absent: under this restriction scheme hidden-console children
++ * die with STATUS_DLL_INIT_FAILED (0xC0000142) — verified empirically, see
++ * win32-abi.ts. Instead we use STARTF_USESHOWWINDOW + SW_HIDE, which hides the
++ * child's console window WITHOUT detaching its console — the child still gets
++ * a console (so no DLL_INIT_FAILED), it's just not shown. Added 2026-08-14:
++ * the host DSH process has no console of its own, so without this every pwsh
++ * spawn flashed a console window on the desktop. Stdio redirection is
++ * pipe-based and unaffected.
+  * @module @deepseek-ai/dsh-sandbox-windows-acl/spawn
+  */
+ 
+@@ -113,7 +120,8 @@ export function spawnSandboxed(
+   const startupInfo = allocStartupInfo()
+   encodeStartupInfo(startupInfo, {
+     cb: abi.STARTUPINFOW_SIZE,
+-    dwFlags: abi.STARTF_USESTDHANDLES,
++    dwFlags: abi.STARTF_USESTDHANDLES | abi.STARTF_USESHOWWINDOW,
++    wShowWindow: abi.SW_HIDE,
+     hStdInput: stdIn.read,
+     hStdOutput: stdOut.write,
+     hStdError: stdErr.write,
+@@ -297,7 +305,8 @@ export function spawnSandboxedInherited(
+   const startupInfo = allocStartupInfo()
+   encodeStartupInfo(startupInfo, {
+     cb: abi.STARTUPINFOW_SIZE,
+-    dwFlags: abi.STARTF_USESTDHANDLES,
++    dwFlags: abi.STARTF_USESTDHANDLES | abi.STARTF_USESHOWWINDOW,
++    wShowWindow: abi.SW_HIDE,
+     hStdInput: stdIn,
+     hStdOutput: stdOut,
+     hStdError: stdErr,
+diff --git a/packages/sandbox/sandbox-windows-acl/src/win32-abi.ts b/packages/sandbox/sandbox-windows-acl/src/win32-abi.ts
+index 5af4496af7..b5cf4f4da0 100644
+--- a/packages/sandbox/sandbox-windows-acl/src/win32-abi.ts
++++ b/packages/sandbox/sandbox-windows-acl/src/win32-abi.ts
+@@ -17,9 +17,10 @@
+  *    correct WinConsoleLogonSid does produce a valid S-1-2-1, but the child
+  *    then still dies with STATUS_DLL_INIT_FAILED (0xC0000142) whenever
+  *    CREATE_NO_WINDOW / CREATE_NEW_CONSOLE is used.
+- *  - Console isolation: under this restriction scheme a hidden console is not
+- *    attainable, so children share the host console (stdio redirection is
+- *    pipe-based and unaffected).
++ *  - Console isolation via CREATE_NO_WINDOW is unattainable under this
++ *    restriction; children instead get a console whose window is hidden via
++ *    STARTF_USESHOWWINDOW + SW_HIDE (see spawn.ts header). Stdio redirection
++ *    is pipe-based and unaffected.
+  * @module @deepseek-ai/dsh-sandbox-windows-acl/win32-abi
+  */
+ 
+@@ -139,6 +140,18 @@ export const SUB_CONTAINERS_AND_OBJECTS_INHERIT = 0x3 // == OBJECT_INHERIT_ACE |
+  * handles, required because Node clears stdio inheritability at startup.
+  */
+ export const STARTF_USESTDHANDLES = 0x00000100
++/**
++ * STARTF_USESHOWWINDOW: STARTUPINFOW dwFlags — honor wShowWindow when the
++ * child first shows a window. Combined with SW_HIDE this hides the child's
++ * console window WITHOUT detaching its console (unlike CREATE_NO_WINDOW,
++ * which under the restricted-token scheme kills the child with
++ * STATUS_DLL_INIT_FAILED 0xC0000142 — see spawn.ts header).
++ * Added 2026-08-14: pwsh spawns were flashing a console window on the
++ * desktop because the host DSH process has no console to share.
++ */
++export const STARTF_USESHOWWINDOW = 0x00000001
++/** SW_HIDE: wShowWindow value — hide the window on first show. */
++export const SW_HIDE = 0x0
+ /** HANDLE_FLAG_INHERIT: SetHandleInformation flag re-enabling handle inheritance for the spawned child's stdio handles. */
+ export const HANDLE_FLAG_INHERIT = 0x1
+ /** INFINITE: never-timeout wait value. */
+diff --git a/packages/subprocess/subprocess-local/src/spawn.ts b/packages/subprocess/subprocess-local/src/spawn.ts
+index 433ba01791..cd628b3553 100644
+--- a/packages/subprocess/subprocess-local/src/spawn.ts
++++ b/packages/subprocess/subprocess-local/src/spawn.ts
+@@ -278,7 +278,9 @@ export function taskkillProcessTree(pid: number): void {
+   // Outcome deliberately unchecked: an already-absent tree (status 128), exit
+   // races, and a missing taskkill binary (spawnSync reports, never throws) are
+   // as tolerable here as ESRCH is for a POSIX group signal.
+-  spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore' })
++  // windowsHide: taskkill is a console program; without this it flashes a
++  // console window on the desktop (the host DSH process has no console).
++  spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true })
+ }
+ 
+ /**
+@@ -358,6 +360,10 @@ export function spawnSubprocess(spec: SubprocessSpawnSpec, internals: SpawnInter
+     // `detached` gives teardown a tree root on POSIX (its own process group);
+     // Windows terminates by root pid through taskkill /T instead.
+     detached: platform !== 'win32',
++    // Hide the child's console window on Windows: the host DSH process has no
++    // console of its own, so without this every spawned console program (e.g.
++    // pwsh) flashed a console window on the desktop. Harmless no-op on POSIX.
++    windowsHide: platform === 'win32',
+   })
+ 
+   const collectStream = (mode: SubprocessOutputMode, stream: Readable | null, label: string): OutputCollector | undefined => {

@@ -1,0 +1,52 @@
+{
+ "songId": "666312",
+ "name": "",
+ "artist": "",
+ "duration": 238.0,
+ "bpm": 152,
+ "key": "C",
+ "segments": [
+  {
+   "start": 0.0,
+   "end": 39.6,
+   "avgEnergy": 0.2062,
+   "maxEnergy": 0.5023
+  },
+  {
+   "start": 39.7,
+   "end": 79.3,
+   "avgEnergy": 0.2916,
+   "maxEnergy": 0.4822
+  },
+  {
+   "start": 79.3,
+   "end": 119.0,
+   "avgEnergy": 0.2851,
+   "maxEnergy": 0.5257
+  },
+  {
+   "start": 119.0,
+   "end": 158.6,
+   "avgEnergy": 0.2838,
+   "maxEnergy": 0.503
+  },
+  {
+   "start": 158.6,
+   "end": 198.3,
+   "avgEnergy": 0.2681,
+   "maxEnergy": 0.4925
+  },
+  {
+   "start": 198.3,
+   "end": 237.9,
+   "avgEnergy": 0.2052,
+   "maxEnergy": 0.4419
+  }
+ ],
+ "energy": 0.2566,
+ "dynamics": 0.102,
+ "brightness": 2609.8,
+ "harmonicRatio": 0.65,
+ "analyzedBy": "local",
+ "analyzedAt": "2026-08-11T11:47:56"
+}

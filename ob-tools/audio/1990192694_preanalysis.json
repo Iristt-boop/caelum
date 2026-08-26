@@ -1,0 +1,52 @@
+{
+ "songId": "1990192694",
+ "name": "",
+ "artist": "",
+ "duration": 200.7,
+ "bpm": 96,
+ "key": "B",
+ "segments": [
+  {
+   "start": 0.0,
+   "end": 33.4,
+   "avgEnergy": 0.2164,
+   "maxEnergy": 0.4622
+  },
+  {
+   "start": 33.4,
+   "end": 66.9,
+   "avgEnergy": 0.2899,
+   "maxEnergy": 0.488
+  },
+  {
+   "start": 66.9,
+   "end": 100.3,
+   "avgEnergy": 0.28,
+   "maxEnergy": 0.4777
+  },
+  {
+   "start": 100.3,
+   "end": 133.7,
+   "avgEnergy": 0.2907,
+   "maxEnergy": 0.473
+  },
+  {
+   "start": 133.7,
+   "end": 167.2,
+   "avgEnergy": 0.1719,
+   "maxEnergy": 0.4628
+  },
+  {
+   "start": 167.2,
+   "end": 200.6,
+   "avgEnergy": 0.2361,
+   "maxEnergy": 0.4787
+  }
+ ],
+ "energy": 0.2474,
+ "dynamics": 0.0972,
+ "brightness": 2068.5,
+ "harmonicRatio": 0.737,
+ "analyzedBy": "local",
+ "analyzedAt": "2026-08-11T11:46:45"
+}

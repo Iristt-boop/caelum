@@ -1,0 +1,52 @@
+{
+ "songId": "2056050651",
+ "name": "",
+ "artist": "",
+ "duration": 612.3,
+ "bpm": 89,
+ "key": "B",
+ "segments": [
+  {
+   "start": 0.0,
+   "end": 102.0,
+   "avgEnergy": 0.1605,
+   "maxEnergy": 0.56
+  },
+  {
+   "start": 102.0,
+   "end": 204.0,
+   "avgEnergy": 0.1864,
+   "maxEnergy": 0.5674
+  },
+  {
+   "start": 204.1,
+   "end": 306.1,
+   "avgEnergy": 0.1747,
+   "maxEnergy": 0.5712
+  },
+  {
+   "start": 306.1,
+   "end": 408.1,
+   "avgEnergy": 0.1752,
+   "maxEnergy": 0.5571
+  },
+  {
+   "start": 408.1,
+   "end": 510.1,
+   "avgEnergy": 0.1785,
+   "maxEnergy": 0.5624
+  },
+  {
+   "start": 510.1,
+   "end": 612.1,
+   "avgEnergy": 0.1679,
+   "maxEnergy": 0.5623
+  }
+ ],
+ "energy": 0.1738,
+ "dynamics": 0.0927,
+ "brightness": 1766.1,
+ "harmonicRatio": 0.708,
+ "analyzedBy": "local",
+ "analyzedAt": "2026-08-11T11:47:13"
+}

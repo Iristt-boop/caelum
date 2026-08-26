@@ -1,0 +1,52 @@
+{
+ "songId": "19292852",
+ "name": "",
+ "artist": "",
+ "duration": 352.2,
+ "bpm": 161,
+ "key": "G#",
+ "segments": [
+  {
+   "start": 0.0,
+   "end": 58.7,
+   "avgEnergy": 0.121,
+   "maxEnergy": 0.2316
+  },
+  {
+   "start": 58.7,
+   "end": 117.4,
+   "avgEnergy": 0.2279,
+   "maxEnergy": 0.4107
+  },
+  {
+   "start": 117.4,
+   "end": 176.1,
+   "avgEnergy": 0.2626,
+   "maxEnergy": 0.4166
+  },
+  {
+   "start": 176.1,
+   "end": 234.8,
+   "avgEnergy": 0.3131,
+   "maxEnergy": 0.4179
+  },
+  {
+   "start": 234.8,
+   "end": 293.5,
+   "avgEnergy": 0.254,
+   "maxEnergy": 0.4219
+  },
+  {
+   "start": 293.5,
+   "end": 352.2,
+   "avgEnergy": 0.2726,
+   "maxEnergy": 0.4173
+  }
+ ],
+ "energy": 0.2419,
+ "dynamics": 0.0942,
+ "brightness": 3026.0,
+ "harmonicRatio": 0.715,
+ "analyzedBy": "local",
+ "analyzedAt": "2026-08-11T11:46:40"
+}

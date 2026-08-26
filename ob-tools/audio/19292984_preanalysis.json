@@ -1,0 +1,52 @@
+{
+ "songId": "19292984",
+ "name": "",
+ "artist": "",
+ "duration": 236.3,
+ "bpm": 117,
+ "key": "D",
+ "segments": [
+  {
+   "start": 0.0,
+   "end": 39.4,
+   "avgEnergy": 0.1024,
+   "maxEnergy": 0.3001
+  },
+  {
+   "start": 39.4,
+   "end": 78.7,
+   "avgEnergy": 0.2343,
+   "maxEnergy": 0.3773
+  },
+  {
+   "start": 78.8,
+   "end": 118.1,
+   "avgEnergy": 0.2461,
+   "maxEnergy": 0.3823
+  },
+  {
+   "start": 118.1,
+   "end": 157.5,
+   "avgEnergy": 0.2982,
+   "maxEnergy": 0.4009
+  },
+  {
+   "start": 157.5,
+   "end": 196.9,
+   "avgEnergy": 0.2349,
+   "maxEnergy": 0.3893
+  },
+  {
+   "start": 196.9,
+   "end": 236.3,
+   "avgEnergy": 0.265,
+   "maxEnergy": 0.4052
+  }
+ ],
+ "energy": 0.2302,
+ "dynamics": 0.0947,
+ "brightness": 2704.3,
+ "harmonicRatio": 0.703,
+ "analyzedBy": "local",
+ "analyzedAt": "2026-08-11T11:46:33"
+}

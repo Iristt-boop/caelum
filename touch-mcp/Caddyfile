@@ -1,0 +1,59 @@
+noxtang.com {
+    handle_path /ombre/REDACTED-CADDY-TOKEN/* {
+        reverse_proxy localhost:8002
+    }
+    handle_path /tracker/REDACTED-CADDY-TOKEN/* {
+        reverse_proxy localhost:8000
+    }
+    handle_path /toy-mcp/REDACTED-CADDY-TOKEN/* {
+        reverse_proxy localhost:8003
+    }
+    handle_path /ha-mcp/REDACTED-CADDY-TOKEN/* {
+        reverse_proxy localhost:8004
+    }
+    handle_path /touch/REDACTED-TOUCH-TOKEN/* {
+        reverse_proxy localhost:9336
+    }
+    # 健康数据接收（iPhone 快捷指令 POST 进来）。
+    # 用 handle 不用 handle_path —— handle_path 会把 /health 前缀剥掉，
+    # 而后端的路由就叫 /health/sync，剥了就 404。
+    handle /health/* {
+        reverse_proxy localhost:8102
+    }
+    # MCP 客户端连接前会探测这两个路径判断「要不要登录」。
+    # 不挡的话它们会落到下面的 catch-all，bridge 对未知路径返回前端 HTML，
+    # 客户端拿 200+HTML 去当 JSON 解析 → 报「无法注册 sign-in service」。
+    # 返回 404 才是「这里不需要 OAuth，直接连」的正确答复。
+    # ⚠️ 只挡 oauth-*，/.well-known/acme-challenge/ 是续证书用的，不能挡。
+    handle /.well-known/oauth-authorization-server* {
+        respond 404
+    }
+    handle /.well-known/oauth-protected-resource* {
+        respond 404
+    }
+
+
+    handle {
+        reverse_proxy localhost:3003
+    }
+}
+
+reading.noxtang.com {
+    reverse_proxy localhost:3100
+}
+# 2026-08-01 迁移时新增。老机上 Home Assistant 的 8123 是直接暴露在公网的，
+# 明文 HTTP、没有 TLS。糖糖在外面要用，所以改成走 Caddy，证书自动签。
+# 防火墙里 8123 不再放行。
+ha.noxtang.com {
+    reverse_proxy localhost:8123
+}
+
+# eryu music player
+music.noxtang.com {
+    reverse_proxy localhost:9090
+}
+
+# netease-music-mcp
+netease-mcp.noxtang.com {
+    reverse_proxy localhost:3456
+}

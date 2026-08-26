@@ -1,0 +1,52 @@
+{
+ "songId": "488388942",
+ "name": "",
+ "artist": "",
+ "duration": 340.4,
+ "bpm": 83,
+ "key": "D",
+ "segments": [
+  {
+   "start": 0.0,
+   "end": 56.7,
+   "avgEnergy": 0.0985,
+   "maxEnergy": 0.2724
+  },
+  {
+   "start": 56.7,
+   "end": 113.4,
+   "avgEnergy": 0.2508,
+   "maxEnergy": 0.4514
+  },
+  {
+   "start": 113.5,
+   "end": 170.2,
+   "avgEnergy": 0.1949,
+   "maxEnergy": 0.4336
+  },
+  {
+   "start": 170.2,
+   "end": 226.9,
+   "avgEnergy": 0.2742,
+   "maxEnergy": 0.4541
+  },
+  {
+   "start": 226.9,
+   "end": 283.6,
+   "avgEnergy": 0.277,
+   "maxEnergy": 0.4707
+  },
+  {
+   "start": 283.6,
+   "end": 340.3,
+   "avgEnergy": 0.2188,
+   "maxEnergy": 0.4675
+  }
+ ],
+ "energy": 0.219,
+ "dynamics": 0.1069,
+ "brightness": 2657.2,
+ "harmonicRatio": 0.713,
+ "analyzedBy": "local",
+ "analyzedAt": "2026-08-11T11:47:58"
+}

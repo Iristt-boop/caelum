@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<div style="position:relative;display:inline-block;padding:8px 10px 6px;background:#FFF8FB;border-radius:14px 12px 15px 11px;box-shadow:0 1.5px 0 rgba(232,164,200,.45),0 8px 18px rgba(232,164,200,.28);line-height:0">
+  <svg width="{{ w }}" viewBox="0 0 96 84" style="overflow:visible">
+    <g fill="{{ fill }}" stroke="#5A3D5C" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M30 26 26 9c-.4-1.8 1.2-2.8 2.6-1.8L43 17"></path>
+      <path d="M66 25 71 9c.5-1.8-1.1-2.9-2.5-1.9L55 16.4"></path>
+      <path d="M48.5 13c14.5-.3 24.6 9.8 25 23.2.4 13.6-9.8 24.4-24.6 24.8C33.6 61.4 23 51.2 22.6 37.4 22.3 24 33.6 13.3 48.5 13Z"></path>
+      <path d="M30 58c-4.6 5-6.6 11-6 18.4 8.6 3.4 40 3.6 49 .4.8-7.6-1-13.8-5.6-19"></path>
+      <path d="M78 74c8-1.4 12.4-6.6 11-14.4-1.2-6.4-5.6-9.6-10.4-9" fill="none"></path>
+    </g>
+    <g fill="#5A3D5C"><ellipse cx="40" cy="35" rx="3.4" ry="4"></ellipse><ellipse cx="58" cy="35" rx="3.4" ry="4"></ellipse></g>
+    <path d="M45.6 43.5c1.8 2 3.2 2 4.8.2" fill="none" stroke="#5A3D5C" stroke-width="2.2" stroke-linecap="round"></path>
+    <ellipse cx="33" cy="43" rx="5" ry="3" fill="rgba(240,182,214,.5)"></ellipse>
+    <ellipse cx="65" cy="43" rx="5" ry="3" fill="rgba(240,182,214,.5)"></ellipse>
+    <path d="M20 33c-4 .4-7-.6-9-3M20 41c-4 1.6-7.2 1.4-9.6-.6M78 33c4 .3 7-.8 8.8-3.2M78 41c4 1.5 7.2 1.2 9.4-.9" fill="none" stroke="rgba(90,61,92,.45)" stroke-width="1.7" stroke-linecap="round"></path>
+  </svg>
+  <div style="margin-top:2px;text-align:center;font-family:'Ma Shan Zheng','Caveat',cursive;font-size:15px;color:#7B5A78;line-height:1.2">{{ label }}</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:150,&quot;height&quot;:150},&quot;label&quot;:{&quot;editor&quot;:&quot;text&quot;,&quot;default&quot;:&quot;七七&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;tone&quot;:{&quot;editor&quot;:&quot;color&quot;,&quot;options&quot;:[&quot;#FFF8FB&quot;,&quot;#F6DCEB&quot;,&quot;#E8E0F8&quot;,&quot;#5A3D5C&quot;],&quot;default&quot;:&quot;#FFF8FB&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;size&quot;:{&quot;editor&quot;:&quot;int&quot;,&quot;default&quot;:86,&quot;min&quot;:48,&quot;max&quot;:160,&quot;tsType&quot;:&quot;number&quot;}}">
+class Component extends DCLogic {
+  renderVals() {
+    return {
+      w: this.props.size ?? 86,
+      label: this.props.label || '七七',
+      fill: this.props.tone || '#FFF8FB'
+    };
+  }
+}
+</script>
+</body>
+</html>

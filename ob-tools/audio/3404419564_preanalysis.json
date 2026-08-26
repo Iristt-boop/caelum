@@ -1,0 +1,52 @@
+{
+ "songId": "3404419564",
+ "name": "",
+ "artist": "",
+ "duration": 168.1,
+ "bpm": 108,
+ "key": "D#",
+ "segments": [
+  {
+   "start": 0.0,
+   "end": 28.0,
+   "avgEnergy": 0.1288,
+   "maxEnergy": 0.462
+  },
+  {
+   "start": 28.0,
+   "end": 56.0,
+   "avgEnergy": 0.1166,
+   "maxEnergy": 0.4056
+  },
+  {
+   "start": 56.0,
+   "end": 84.0,
+   "avgEnergy": 0.1292,
+   "maxEnergy": 0.3886
+  },
+  {
+   "start": 84.0,
+   "end": 112.0,
+   "avgEnergy": 0.1273,
+   "maxEnergy": 0.374
+  },
+  {
+   "start": 112.0,
+   "end": 140.0,
+   "avgEnergy": 0.1313,
+   "maxEnergy": 0.4918
+  },
+  {
+   "start": 140.0,
+   "end": 168.0,
+   "avgEnergy": 0.1209,
+   "maxEnergy": 0.5052
+  }
+ ],
+ "energy": 0.1256,
+ "dynamics": 0.1139,
+ "brightness": 2348.5,
+ "harmonicRatio": 0.77,
+ "analyzedBy": "local",
+ "analyzedAt": "2026-08-11T11:47:35"
+}

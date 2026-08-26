@@ -1,0 +1,52 @@
+{
+ "songId": "3353721067",
+ "name": "晚霞(SUN DOWN)",
+ "artist": "MULA SAKEE",
+ "duration": 192.0,
+ "bpm": 136,
+ "key": "C#",
+ "segments": [
+  {
+   "start": 0.0,
+   "end": 32.0,
+   "avgEnergy": 0.25,
+   "maxEnergy": 0.6376
+  },
+  {
+   "start": 32.0,
+   "end": 64.0,
+   "avgEnergy": 0.3235,
+   "maxEnergy": 0.6518
+  },
+  {
+   "start": 64.0,
+   "end": 96.0,
+   "avgEnergy": 0.3515,
+   "maxEnergy": 0.6303
+  },
+  {
+   "start": 96.0,
+   "end": 128.0,
+   "avgEnergy": 0.3341,
+   "maxEnergy": 0.625
+  },
+  {
+   "start": 128.0,
+   "end": 160.0,
+   "avgEnergy": 0.3185,
+   "maxEnergy": 0.5941
+  },
+  {
+   "start": 160.0,
+   "end": 192.0,
+   "avgEnergy": 0.2329,
+   "maxEnergy": 0.6785
+  }
+ ],
+ "energy": 0.3016,
+ "dynamics": 0.1259,
+ "brightness": 2537.6,
+ "harmonicRatio": 0.693,
+ "analyzedBy": "local",
+ "analyzedAt": "2026-08-09T19:46:06"
+}

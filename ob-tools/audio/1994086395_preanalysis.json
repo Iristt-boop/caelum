@@ -1,0 +1,52 @@
+{
+ "songId": "1994086395",
+ "name": "",
+ "artist": "",
+ "duration": 74.3,
+ "bpm": 89,
+ "key": "A#",
+ "segments": [
+  {
+   "start": 0.0,
+   "end": 12.4,
+   "avgEnergy": 0.0942,
+   "maxEnergy": 0.2739
+  },
+  {
+   "start": 12.4,
+   "end": 24.7,
+   "avgEnergy": 0.1705,
+   "maxEnergy": 0.2966
+  },
+  {
+   "start": 24.8,
+   "end": 37.1,
+   "avgEnergy": 0.2663,
+   "maxEnergy": 0.5435
+  },
+  {
+   "start": 37.1,
+   "end": 49.5,
+   "avgEnergy": 0.1893,
+   "maxEnergy": 0.529
+  },
+  {
+   "start": 49.5,
+   "end": 61.9,
+   "avgEnergy": 0.148,
+   "maxEnergy": 0.3654
+  },
+  {
+   "start": 61.9,
+   "end": 74.2,
+   "avgEnergy": 0.0466,
+   "maxEnergy": 0.1846
+  }
+ ],
+ "energy": 0.1524,
+ "dynamics": 0.1143,
+ "brightness": 1991.2,
+ "harmonicRatio": 0.595,
+ "analyzedBy": "local",
+ "analyzedAt": "2026-08-11T11:46:39"
+}

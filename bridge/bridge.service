@@ -1,0 +1,18 @@
+[Unit]
+Description=Nox Bridge
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/bridge
+ExecStart=/usr/bin/node server.js
+Restart=always
+RestartSec=5
+Environment=PORT=3003
+Environment=DB_PATH=/data/nox-bridge.db
+Environment=API_BASE=https://comeu.ai/v1
+Environment=API_MODEL=claude-sonnet-4-6
+
+[Install]
+WantedBy=multi-user.target

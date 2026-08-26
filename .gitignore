@@ -1,0 +1,100 @@
+# ⚠️ 这份清单是 2026-08-26 给整个工作区接 git 时重写的。
+#
+# 接 git 的直接原因：Nox 现在能「一次点头连改 40 个文件」
+#（多步执行，见 CAELUM-HARNESS-ARCHITECTURE.md 八之七）。
+# 在那之前每改一个文件都要糖糖单独点头，最多一次错一个；
+# 现在不是了，所以需要一条能撤回的路。
+#
+# 🔴 **加新目录之前先想一遍：里面会不会有密钥。**
+# 首次提交前实测有 9 个文件带密钥形状的内容，
+# 其中 5 个是旧清单拦不住的。
+
+# ============ 密钥 ============
+# 🔴 这一段只增不减。删任何一行之前先确认那个文件里没有凭证。
+**/.env
+**/.env.local
+**/.env.*.local
+LOCAL-SECRETS.md
+secrets/
+
+#: 实测扫出来带凭证的，逐个点名 ——
+#: 用通配符会漏（`config.yaml` 这种名字太普通）
+.mcp.json
+.claude/settings.local.json
+Ombre-Brain/config.yaml
+vps-scripts/config-tmp.yaml
+vps-scripts/set-api-key.py
+
+#: 🔴 **源码里硬编码了真密钥的三个脚本。**
+#: 首次提交前扫内容才发现的 —— 按文件名挡不住它们，
+#: 它们看起来就是普通脚本。
+#:
+#:   scratch/tmp_full_debug.sh     NOX_TOKEN 写死在里面
+#:   vps-scripts/enable-auth.py    同上
+#:   vps-scripts/notion-search.py  Notion integration token
+#:
+#: ⚠️ 忽略只是不让它们进历史。**密钥仍然明文躺在盘上**，
+#: 正确的修法是改成读环境变量 / ~/.caelum/env。
+scratch/tmp_full_debug.sh
+vps-scripts/enable-auth.py
+vps-scripts/notion-search.py
+
+#: 我自己排查时留下的临时文件常常带密钥（.caelum-secrets.tmp 那种）。
+#: 一律不进库
+*.tmp
+*.key
+*.pem
+
+#: 备份目录里躺着历史版本的配置，同样可能带凭证
+backups/
+
+# ============ 独立仓库（8 个）============
+# 这些目录各自有 .git。嵌套仓库在父仓库里只会变成一个尴尬的
+# 「untracked embedded repo」：内容既不被父仓库跟踪、又碍事。
+#
+# ⚠️ 而且其中 `scratch/CcCompanion` 是个**一次提交都没有的空仓库** ——
+# 不排掉的话整个 `git add -A` 会直接失败：
+#   error: 'scratch/CcCompanion/' does not have a commit checked out
+#   fatal: adding files failed
+#
+# 🔴 **代价说清楚：这些目录不在本仓库的撤销范围内。**
+# 尤其 `nox-app/` —— caelum-os-ui 和 desktop 都在里面，
+# 也就是说**前端的撤销要去 nox-app 那个 repo 做**，不在这儿。
+nox-app/
+Ombre-Brain/
+ai-fishing-game/
+dsh-vscode-layout/
+haven-ombre/
+pixel-beads-generator/
+stackchan-mcp/
+scratch/CcCompanion/
+
+# ============ 构建产物 / 依赖 ============
+**/node_modules/
+**/dist/
+**/build/
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/.venv/
+**/venv/
+.pytest_cache/
+
+# ============ 运行时数据 ============
+#: 数据库是她的真实数据，不该进版本控制（也太大）
+**/*.db
+**/*.db-shm
+**/*.db-wal
+**/*.log
+logs/
+.playwright-mcp/
+
+#: 手工备份的历史版本（server.js.bak-20260724 那种）。
+#: 接了 git 之后这套就不需要了，但先留在盘上，只是不进库
+*.bak-*
+
+# ============ 杂物 ============
+.vscode/
+.DS_Store
+Thumbs.db
+.trash-*/

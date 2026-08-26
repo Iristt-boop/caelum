@@ -1,0 +1,55 @@
+"""工具名不许重复。
+
+2026-08-05 踩过：`tools/todo.py` 注册了一个 `add_todo`，和
+`tools/daily.py` 里早就有的同名工具撞了。后注册的赢，结果 Nox
+再也没法往 App 的「今天」页记东西 —— 没有任何报错，静默换了行为。
+
+模型看到的是一张扁平的工具表，重名就是覆盖。这条守着别再来一次。
+"""
+
+from __future__ import annotations
+
+from collections import Counter
+
+from tools import daily as daily_tools
+from tools import intimate as intimate_tools
+from tools import todo as todo_tools
+
+
+def _spec_names(module) -> list[str]:
+    from agent.llm import ToolSpec
+
+    return [
+        v.name for v in vars(module).values()
+        if isinstance(v, ToolSpec)
+    ]
+
+
+def test_no_duplicate_tool_names_across_modules():
+    names: list[str] = []
+    for mod in (daily_tools, intimate_tools, todo_tools):
+        names += _spec_names(mod)
+
+    dupes = [n for n, c in Counter(names).items() if c > 1]
+    assert not dupes, f"工具重名会互相覆盖: {dupes}"
+
+
+def test_待办工具全在daily里():
+    """2026-08-18：GitHub todo.md 退役，读写都走 bridge 的本地清单。
+
+    `tools/todo.py` 只剩纯函数（给 api/server.py 的存档端点用），
+    **不许再定义 ToolSpec** —— 和 daily.py 重名会静默覆盖。
+    """
+    assert "add_todo" in _spec_names(daily_tools)
+    assert "complete_todo" in _spec_names(daily_tools)
+    assert _spec_names(todo_tools) == []
+
+
+def test_add_todo_能传时间模型():
+    """没有这几个参数，他就只能记「随时」档 —— 那种永远不会提醒她。"""
+    props = daily_tools.ADD_TODO_SPEC.parameters["properties"]
+    for key in ("at", "repeat", "due", "weekdays", "times"):
+        assert key in props, f"add_todo 少了 {key}，那种时间模型他设不了"
+    assert set(props["repeat"]["enum"]) == {
+        "anytime", "once", "daily", "weekly", "weekly_count"
+    }

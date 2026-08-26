@@ -1,0 +1,52 @@
+{
+ "songId": "233888",
+ "name": "",
+ "artist": "",
+ "duration": 280.7,
+ "bpm": 152,
+ "key": "A",
+ "segments": [
+  {
+   "start": 0.0,
+   "end": 46.7,
+   "avgEnergy": 0.1407,
+   "maxEnergy": 0.3459
+  },
+  {
+   "start": 46.8,
+   "end": 93.5,
+   "avgEnergy": 0.2086,
+   "maxEnergy": 0.4013
+  },
+  {
+   "start": 93.5,
+   "end": 140.3,
+   "avgEnergy": 0.204,
+   "maxEnergy": 0.3789
+  },
+  {
+   "start": 140.3,
+   "end": 187.0,
+   "avgEnergy": 0.2367,
+   "maxEnergy": 0.3968
+  },
+  {
+   "start": 187.1,
+   "end": 233.8,
+   "avgEnergy": 0.2322,
+   "maxEnergy": 0.3986
+  },
+  {
+   "start": 233.8,
+   "end": 280.6,
+   "avgEnergy": 0.1691,
+   "maxEnergy": 0.3875
+  }
+ ],
+ "energy": 0.1985,
+ "dynamics": 0.067,
+ "brightness": 1900.5,
+ "harmonicRatio": 0.721,
+ "analyzedBy": "local",
+ "analyzedAt": "2026-08-11T11:47:02"
+}

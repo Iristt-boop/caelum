@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<div style="position:relative;box-sizing:border-box;width:100%;height:100%;border-radius:0 26px 22px 0;background:rgba(255,248,251,.52);backdrop-filter:blur(40px);-webkit-backdrop-filter:blur(40px);border-right:1.5px solid rgba(250,212,228,.65);box-shadow:inset -2px 0 8px rgba(232,164,200,.12);display:flex;flex-direction:column;align-items:center;padding:12px 0 14px;overflow:hidden">
+  <svg width="34" height="17" viewBox="0 0 48 24" style="overflow:visible"><g fill="rgba(250,212,228,.85)" stroke="#E8A4C8" stroke-width="1.6" stroke-linejoin="round"><path d="M21 12C16.5 4.5 6.5 2.6 4.4 8.2 2.6 13 10.6 16.4 21 12Z"></path><path d="M27 12c4.8-7.6 14.8-9.2 16.6-3.4C45.2 13.6 37 16.6 27 12Z"></path><circle cx="24" cy="12.2" r="3.4"></circle><path d="M21.5 15c-2 2.6-3.4 5-4 7.4M26.5 15c2.2 2.4 3.8 4.6 4.6 6.9" fill="none"></path></g></svg>
+
+  <div style="position:relative;width:56px;height:56px;margin-top:8px">
+    <svg width="72" height="72" viewBox="0 0 72 72" style="position:absolute;left:-8px;top:-8px"><path d="M36 4.5c17 0 30.5 13.6 31 30.5.5 18-13.5 32.5-31.5 32.5C18.6 67.5 4.5 53.4 4.5 36 4.5 18.4 18.8 4.5 36 4.5Z" fill="none" stroke="rgba(232,164,200,.55)" stroke-width="1.6" stroke-dasharray="5 4" stroke-linecap="round"></path></svg>
+    <div style="width:56px;height:56px;border-radius:50%;background:linear-gradient(150deg,#F5E1F0,#DCC9F1);border:2px solid #FFF8FB;display:flex;align-items:center;justify-content:center;box-shadow:0 5px 16px rgba(232,164,200,.3);overflow:hidden">
+      <dc-import name="NoxDoodle" mood="{{ noxMood }}" size="{{ 46 }}" hint-size="46px,52px" style="margin-top:8px"></dc-import>
+    </div>
+    <span style="position:absolute;right:-1px;bottom:0;width:12px;height:12px;border-radius:50%;background:#E8A4C8;border:2px solid #FFF8FB"></span>
+  </div>
+
+  <div style="display:flex;flex-direction:column;align-items:center;gap:7px;margin-top:18px">
+    <div style="position:relative;width:48px;height:48px;border-radius:17px 15px 18px 14px;display:flex;align-items:center;justify-content:center;background:{{ homeBg }};transform:rotate(-1.5deg) scale({{ homeScale }});box-shadow:{{ homeShadow }}">
+      <svg width="26" height="26" viewBox="0 0 24 24" style="color:{{ homeColor }}"><g fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><path d="M3.4 11.6 12 4.1l8.8 7.7"></path><path d="M5.7 12.6v6.8c0 .6.4 1 1 1h10.7c.6 0 1-.4 1-1v-7"></path><path d="M9.7 20.3v-4.2c0-1.2 1-2 2.3-2 1.2 0 2.1.9 2.1 2.1v4.1"></path><path d="M6.2 8.8 5 5.2l3.3 2M17.8 8.6 19 5l-3.3 2"></path></g></svg>
+      <sc-if value="{{ homeActive }}" hint-placeholder-val="{{ true }}"><span style="position:absolute;right:-11px;top:13px;width:3.5px;height:22px;border-radius:2px;background:#E8A4C8;transform:rotate(3deg)"></span></sc-if>
+    </div>
+
+    <svg width="14" height="14" viewBox="0 0 20 20"><path d="M10 2.2c1.4 4.2 2.6 5.6 7.4 6.6-4.6 1.6-5.8 3-7 9-1.6-5.6-2.8-7-7.6-8.4 4.8-1.2 6-2.6 7.2-7.2Z" fill="none" stroke="rgba(232,164,200,.8)" stroke-width="1.6" stroke-linejoin="round"></path></svg>
+
+    <div style="position:relative;width:48px;height:48px;border-radius:15px 18px 14px 17px;display:flex;align-items:center;justify-content:center;background:{{ chatBg }};transform:rotate(1.5deg) scale({{ chatScale }});box-shadow:{{ chatShadow }}">
+      <svg width="26" height="26" viewBox="0 0 24 24" style="color:{{ chatColor }}"><g fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><path d="M4.2 8.6C4.2 6 6.2 4.3 9 4.2h6.2c2.8 0 4.7 1.8 4.7 4.5v4.6c0 2.7-1.9 4.4-4.7 4.4h-4.6l-4.2 2.8.3-3.1c-1.7-.7-2.5-2-2.5-4.1V8.6Z"></path><path d="M6.6 6.6 5.8 3.9l2.4 1.4M17.4 6.4l.9-2.6-2.5 1.4"></path></g><g fill="currentColor"><circle cx="9.6" cy="10.4" r="1.3"></circle><circle cx="14.6" cy="10.4" r="1.3"></circle></g><path d="M10.8 13.2c.8.7 1.9.7 2.6-.1" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"></path></svg>
+      <sc-if value="{{ chatActive }}" hint-placeholder-val="{{ false }}"><span style="position:absolute;right:-11px;top:13px;width:3.5px;height:22px;border-radius:2px;background:#E8A4C8;transform:rotate(-3deg)"></span></sc-if>
+    </div>
+
+    <svg width="14" height="14" viewBox="0 0 20 20"><path d="M10 2.2c1.4 4.2 2.6 5.6 7.4 6.6-4.6 1.6-5.8 3-7 9-1.6-5.6-2.8-7-7.6-8.4 4.8-1.2 6-2.6 7.2-7.2Z" fill="none" stroke="rgba(232,164,200,.8)" stroke-width="1.6" stroke-linejoin="round"></path></svg>
+
+    <div style="position:relative;width:48px;height:48px;border-radius:18px 14px 17px 15px;display:flex;align-items:center;justify-content:center;background:{{ musicBg }};transform:rotate(-2deg) scale({{ musicScale }});box-shadow:{{ musicShadow }}">
+      <svg width="26" height="26" viewBox="0 0 24 24" style="color:{{ musicColor }}"><g fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"><path d="M9.6 17.4V7.2l8.8-2.6v9.6"></path><ellipse cx="7.2" cy="18" rx="2.9" ry="2.4"></ellipse><ellipse cx="16" cy="15.2" rx="2.9" ry="2.4"></ellipse><path d="M18.4 4.6c2.6.2 4 1.9 3.3 3.6-.5 1.3-2.1 1.4-2.8.3"></path></g></svg>
+      <sc-if value="{{ musicActive }}" hint-placeholder-val="{{ false }}"><span style="position:absolute;right:-11px;top:13px;width:3.5px;height:22px;border-radius:2px;background:#E8A4C8;transform:rotate(2deg)"></span></sc-if>
+    </div>
+
+    <svg width="14" height="14" viewBox="0 0 20 20"><path d="M10 2.2c1.4 4.2 2.6 5.6 7.4 6.6-4.6 1.6-5.8 3-7 9-1.6-5.6-2.8-7-7.6-8.4 4.8-1.2 6-2.6 7.2-7.2Z" fill="none" stroke="rgba(232,164,200,.8)" stroke-width="1.6" stroke-linejoin="round"></path></svg>
+
+    <div style="position:relative;width:48px;height:48px;border-radius:16px 17px 15px 18px;display:flex;align-items:center;justify-content:center;background:{{ setBg }};transform:rotate(1deg) scale({{ setScale }});box-shadow:{{ setShadow }}">
+      <svg width="27" height="27" viewBox="0 0 24 24" style="color:{{ setColor }}"><g fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.4c1.7 0 2.4 1.5 3.6 1.9 1.3.4 2.7-.6 3.8.6s.1 2.6.5 3.9c.4 1.2 2 1.9 2 3.5s-1.7 2.2-2.1 3.4c-.5 1.3.6 2.7-.6 3.8-1.2 1.1-2.6.1-3.9.5-1.2.4-1.9 1.9-3.5 1.9s-2.3-1.6-3.5-2c-1.3-.5-2.7.6-3.8-.6-1.1-1.2-.1-2.6-.5-3.8-.4-1.2-1.9-1.9-1.9-3.5s1.5-2.3 1.9-3.5c.4-1.3-.6-2.7.6-3.8 1.2-1.1 2.6-.1 3.8-.5C9.6 5 10.4 3.4 12 3.4Z"></path><path d="M12 15.4c-2.4-1.8-3.5-3-3.5-4.3 0-1.1.9-1.9 1.9-1.9.6 0 1.2.3 1.6.9.4-.6 1-.9 1.6-.9 1 0 1.9.8 1.9 1.9 0 1.3-1.1 2.5-3.5 4.3Z"></path></g></svg>
+      <sc-if value="{{ setActive }}" hint-placeholder-val="{{ false }}"><span style="position:absolute;right:-11px;top:13px;width:3.5px;height:22px;border-radius:2px;background:#E8A4C8;transform:rotate(-2deg)"></span></sc-if>
+    </div>
+  </div>
+
+  <div style="margin-top:auto;display:flex;flex-direction:column;align-items:center;gap:11px">
+    <div style="position:relative;width:32px;height:32px;border-radius:50%;background:radial-gradient(circle at 34% 28%,#F7D3E7,#E8A4C8 52%,#D4C4F0);border:1.5px solid #FAD4E4;box-shadow:0 5px 14px rgba(232,164,200,.4);display:flex;align-items:center;justify-content:center">
+      <div style="position:absolute;left:5px;top:4px;width:11px;height:6px;border-radius:50%;background:rgba(255,255,255,.85);filter:blur(1.6px);transform:rotate(-24deg)"></div>
+      <svg width="11" height="11" viewBox="0 0 20 20"><path d="M10 2.2c1.4 4.2 2.6 5.6 7.4 6.6-4.6 1.6-5.8 3-7 9-1.6-5.6-2.8-7-7.6-8.4 4.8-1.2 6-2.6 7.2-7.2Z" fill="#FFF8FB"></path></svg>
+    </div>
+    <svg width="24" height="24" viewBox="0 0 24 24" style="color:rgba(90,61,92,.55)"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M12 3.9c1.6 0 2.2 1.4 3.4 1.8 1.2.4 2.5-.6 3.5.5 1.1 1.1.1 2.4.5 3.6.4 1.1 1.8 1.8 1.8 3.2s-1.5 2.1-1.9 3.2c-.4 1.2.6 2.5-.5 3.5-1.1 1.1-2.4.1-3.6.5-1.1.4-1.7 1.8-3.2 1.8s-2.1-1.5-3.3-1.9c-1.2-.4-2.5.6-3.5-.5-1-1.1-.1-2.4-.5-3.5-.4-1.2-1.8-1.8-1.8-3.2s1.4-2.1 1.8-3.3c.4-1.2-.6-2.5.5-3.5 1.1-1 2.4-.1 3.5-.5C9.9 5.3 10.5 3.9 12 3.9Z"></path><circle cx="12" cy="13" r="2.4"></circle></g></svg>
+    <svg width="30" height="15" viewBox="0 0 48 24" style="overflow:visible"><g fill="rgba(250,212,228,.75)" stroke="#E8A4C8" stroke-width="1.6" stroke-linejoin="round"><path d="M21 12C16.5 4.5 6.5 2.6 4.4 8.2 2.6 13 10.6 16.4 21 12Z"></path><path d="M27 12c4.8-7.6 14.8-9.2 16.6-3.4C45.2 13.6 37 16.6 27 12Z"></path><circle cx="24" cy="12.2" r="3.4"></circle></g></svg>
+  </div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;$preview&quot;:{&quot;width&quot;:72,&quot;height&quot;:600},&quot;active&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;home&quot;,&quot;chat&quot;,&quot;music&quot;,&quot;settings&quot;],&quot;default&quot;:&quot;home&quot;,&quot;tsType&quot;:&quot;string&quot;},&quot;noxMood&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;idle&quot;,&quot;working&quot;,&quot;singing&quot;,&quot;sleepy&quot;],&quot;default&quot;:&quot;idle&quot;,&quot;tsType&quot;:&quot;string&quot;}}">
+class Component extends DCLogic {
+  renderVals() {
+    const a = this.props.active || 'home';
+    const on = '#FAD4E4', off = 'transparent';
+    const shOn = '0 2px 0 rgba(232,164,200,.5),0 8px 18px rgba(232,164,200,.4)', shOff = 'none';
+    const mk = k => ({
+      bg: a === k ? on : off,
+      color: a === k ? '#FFF8FB' : '#5A3D5C',
+      scale: a === k ? 1.08 : 1,
+      shadow: a === k ? shOn : shOff,
+      active: a === k
+    });
+    const h = mk('home'), c = mk('chat'), m = mk('music'), s = mk('settings');
+    return {
+      noxMood: this.props.noxMood || 'idle',
+      homeBg: h.bg, homeColor: h.color, homeScale: h.scale, homeShadow: h.shadow, homeActive: h.active,
+      chatBg: c.bg, chatColor: c.color, chatScale: c.scale, chatShadow: c.shadow, chatActive: c.active,
+      musicBg: m.bg, musicColor: m.color, musicScale: m.scale, musicShadow: m.shadow, musicActive: m.active,
+      setBg: s.bg, setColor: s.color, setScale: s.scale, setShadow: s.shadow, setActive: s.active
+    };
+  }
+}
+</script>
+</body>
+</html>

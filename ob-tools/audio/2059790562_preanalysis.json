@@ -1,0 +1,52 @@
+{
+ "songId": "2059790562",
+ "name": "",
+ "artist": "",
+ "duration": 318.0,
+ "bpm": 103,
+ "key": "G",
+ "segments": [
+  {
+   "start": 0.0,
+   "end": 53.0,
+   "avgEnergy": 0.2271,
+   "maxEnergy": 0.3808
+  },
+  {
+   "start": 53.0,
+   "end": 106.0,
+   "avgEnergy": 0.2709,
+   "maxEnergy": 0.4336
+  },
+  {
+   "start": 106.0,
+   "end": 158.9,
+   "avgEnergy": 0.2923,
+   "maxEnergy": 0.4282
+  },
+  {
+   "start": 159.0,
+   "end": 211.9,
+   "avgEnergy": 0.3216,
+   "maxEnergy": 0.4353
+  },
+  {
+   "start": 212.0,
+   "end": 264.9,
+   "avgEnergy": 0.2239,
+   "maxEnergy": 0.4281
+  },
+  {
+   "start": 264.9,
+   "end": 317.9,
+   "avgEnergy": 0.2772,
+   "maxEnergy": 0.4404
+  }
+ ],
+ "energy": 0.2688,
+ "dynamics": 0.0817,
+ "brightness": 2652.8,
+ "harmonicRatio": 0.733,
+ "analyzedBy": "local",
+ "analyzedAt": "2026-08-11T11:46:58"
+}

@@ -1,0 +1,52 @@
+{
+ "songId": "19292862",
+ "name": "Long Live",
+ "artist": "Taylor Swift",
+ "duration": 318.0,
+ "bpm": 103,
+ "key": "G",
+ "segments": [
+  {
+   "start": 0.0,
+   "end": 53.0,
+   "avgEnergy": 0.1881,
+   "maxEnergy": 0.3479
+  },
+  {
+   "start": 53.0,
+   "end": 106.0,
+   "avgEnergy": 0.2447,
+   "maxEnergy": 0.4138
+  },
+  {
+   "start": 106.0,
+   "end": 158.9,
+   "avgEnergy": 0.2726,
+   "maxEnergy": 0.4368
+  },
+  {
+   "start": 159.0,
+   "end": 211.9,
+   "avgEnergy": 0.3039,
+   "maxEnergy": 0.4231
+  },
+  {
+   "start": 212.0,
+   "end": 264.9,
+   "avgEnergy": 0.2327,
+   "maxEnergy": 0.4226
+  },
+  {
+   "start": 264.9,
+   "end": 317.9,
+   "avgEnergy": 0.2685,
+   "maxEnergy": 0.4346
+  }
+ ],
+ "energy": 0.2517,
+ "dynamics": 0.0794,
+ "brightness": 2654.6,
+ "harmonicRatio": 0.704,
+ "analyzedBy": "local",
+ "analyzedAt": "2026-08-09T19:46:13"
+}

@@ -1,0 +1,52 @@
+{
+ "songId": "77426",
+ "name": "",
+ "artist": "",
+ "duration": 262.2,
+ "bpm": 103,
+ "key": "G",
+ "segments": [
+  {
+   "start": 0.0,
+   "end": 43.7,
+   "avgEnergy": 0.0922,
+   "maxEnergy": 0.2246
+  },
+  {
+   "start": 43.7,
+   "end": 87.3,
+   "avgEnergy": 0.1066,
+   "maxEnergy": 0.211
+  },
+  {
+   "start": 87.4,
+   "end": 131.0,
+   "avgEnergy": 0.083,
+   "maxEnergy": 0.2847
+  },
+  {
+   "start": 131.0,
+   "end": 174.7,
+   "avgEnergy": 0.0982,
+   "maxEnergy": 0.2585
+  },
+  {
+   "start": 174.7,
+   "end": 218.4,
+   "avgEnergy": 0.1509,
+   "maxEnergy": 0.2847
+  },
+  {
+   "start": 218.4,
+   "end": 262.0,
+   "avgEnergy": 0.0762,
+   "maxEnergy": 0.2752
+  }
+ ],
+ "energy": 0.1011,
+ "dynamics": 0.0607,
+ "brightness": 2460.7,
+ "harmonicRatio": 0.708,
+ "analyzedBy": "local",
+ "analyzedAt": "2026-08-09T19:46:18"
+}

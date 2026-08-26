@@ -1,0 +1,52 @@
+{
+ "songId": "1330348068",
+ "name": "起风了",
+ "artist": "买辣椒也用券",
+ "duration": 325.9,
+ "bpm": 152,
+ "key": "C#",
+ "segments": [
+  {
+   "start": 0.0,
+   "end": 54.3,
+   "avgEnergy": 0.25,
+   "maxEnergy": 0.439
+  },
+  {
+   "start": 54.3,
+   "end": 108.6,
+   "avgEnergy": 0.3214,
+   "maxEnergy": 0.4486
+  },
+  {
+   "start": 108.6,
+   "end": 162.9,
+   "avgEnergy": 0.2971,
+   "maxEnergy": 0.4387
+  },
+  {
+   "start": 162.9,
+   "end": 217.2,
+   "avgEnergy": 0.3441,
+   "maxEnergy": 0.4512
+  },
+  {
+   "start": 217.2,
+   "end": 271.5,
+   "avgEnergy": 0.2829,
+   "maxEnergy": 0.4453
+  },
+  {
+   "start": 271.6,
+   "end": 325.8,
+   "avgEnergy": 0.2178,
+   "maxEnergy": 0.4538
+  }
+ ],
+ "energy": 0.2856,
+ "dynamics": 0.0949,
+ "brightness": 2774.2,
+ "harmonicRatio": 0.758,
+ "analyzedBy": "local",
+ "analyzedAt": "2026-08-09T19:33:31"
+}

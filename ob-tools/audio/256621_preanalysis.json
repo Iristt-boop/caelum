@@ -1,0 +1,52 @@
+{
+ "songId": "256621",
+ "name": "至少还有你",
+ "artist": "林忆莲",
+ "duration": 274.8,
+ "bpm": 123,
+ "key": "E",
+ "segments": [
+  {
+   "start": 0.0,
+   "end": 45.8,
+   "avgEnergy": 0.0822,
+   "maxEnergy": 0.2009
+  },
+  {
+   "start": 45.8,
+   "end": 91.6,
+   "avgEnergy": 0.2067,
+   "maxEnergy": 0.3691
+  },
+  {
+   "start": 91.6,
+   "end": 137.3,
+   "avgEnergy": 0.2118,
+   "maxEnergy": 0.3728
+  },
+  {
+   "start": 137.4,
+   "end": 183.1,
+   "avgEnergy": 0.2437,
+   "maxEnergy": 0.4219
+  },
+  {
+   "start": 183.2,
+   "end": 228.9,
+   "avgEnergy": 0.2627,
+   "maxEnergy": 0.4981
+  },
+  {
+   "start": 228.9,
+   "end": 274.7,
+   "avgEnergy": 0.2048,
+   "maxEnergy": 0.4136
+  }
+ ],
+ "energy": 0.2019,
+ "dynamics": 0.0884,
+ "brightness": 2230.5,
+ "harmonicRatio": 0.748,
+ "analyzedBy": "local",
+ "analyzedAt": "2026-08-09T19:46:10"
+}

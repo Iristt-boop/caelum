@@ -1,0 +1,52 @@
+{
+ "songId": "1891456146",
+ "name": "",
+ "artist": "",
+ "duration": 613.0,
+ "bpm": 92,
+ "key": "C",
+ "segments": [
+  {
+   "start": 0.0,
+   "end": 102.1,
+   "avgEnergy": 0.1663,
+   "maxEnergy": 0.4616
+  },
+  {
+   "start": 102.2,
+   "end": 204.3,
+   "avgEnergy": 0.2522,
+   "maxEnergy": 0.4571
+  },
+  {
+   "start": 204.3,
+   "end": 306.5,
+   "avgEnergy": 0.2709,
+   "maxEnergy": 0.4509
+  },
+  {
+   "start": 306.5,
+   "end": 408.6,
+   "avgEnergy": 0.2277,
+   "maxEnergy": 0.4638
+  },
+  {
+   "start": 408.7,
+   "end": 510.8,
+   "avgEnergy": 0.2276,
+   "maxEnergy": 0.4484
+  },
+  {
+   "start": 510.8,
+   "end": 613.0,
+   "avgEnergy": 0.118,
+   "maxEnergy": 0.3826
+  }
+ ],
+ "energy": 0.2104,
+ "dynamics": 0.0941,
+ "brightness": 1880.9,
+ "harmonicRatio": 0.741,
+ "analyzedBy": "local",
+ "analyzedAt": "2026-08-11T11:46:55"
+}

@@ -1,0 +1,52 @@
+{
+ "songId": "108914",
+ "name": "",
+ "artist": "",
+ "duration": 267.9,
+ "bpm": 117,
+ "key": "D",
+ "segments": [
+  {
+   "start": 0.0,
+   "end": 44.6,
+   "avgEnergy": 0.0966,
+   "maxEnergy": 0.373
+  },
+  {
+   "start": 44.7,
+   "end": 89.3,
+   "avgEnergy": 0.1531,
+   "maxEnergy": 0.3944
+  },
+  {
+   "start": 89.3,
+   "end": 133.9,
+   "avgEnergy": 0.1626,
+   "maxEnergy": 0.4062
+  },
+  {
+   "start": 134.0,
+   "end": 178.6,
+   "avgEnergy": 0.1919,
+   "maxEnergy": 0.4027
+  },
+  {
+   "start": 178.6,
+   "end": 223.2,
+   "avgEnergy": 0.1833,
+   "maxEnergy": 0.4078
+  },
+  {
+   "start": 223.3,
+   "end": 267.9,
+   "avgEnergy": 0.1237,
+   "maxEnergy": 0.3966
+  }
+ ],
+ "energy": 0.1518,
+ "dynamics": 0.0807,
+ "brightness": 2319.7,
+ "harmonicRatio": 0.713,
+ "analyzedBy": "local",
+ "analyzedAt": "2026-08-11T11:46:35"
+}

@@ -1,0 +1,52 @@
+{
+ "songId": "29812781",
+ "name": "",
+ "artist": "",
+ "duration": 303.9,
+ "bpm": 78,
+ "key": "G#",
+ "segments": [
+  {
+   "start": 0.0,
+   "end": 50.6,
+   "avgEnergy": 0.1058,
+   "maxEnergy": 0.266
+  },
+  {
+   "start": 50.6,
+   "end": 101.3,
+   "avgEnergy": 0.1883,
+   "maxEnergy": 0.325
+  },
+  {
+   "start": 101.3,
+   "end": 151.9,
+   "avgEnergy": 0.2291,
+   "maxEnergy": 0.467
+  },
+  {
+   "start": 151.9,
+   "end": 202.5,
+   "avgEnergy": 0.2677,
+   "maxEnergy": 0.4141
+  },
+  {
+   "start": 202.6,
+   "end": 253.2,
+   "avgEnergy": 0.2627,
+   "maxEnergy": 0.4568
+  },
+  {
+   "start": 253.2,
+   "end": 303.8,
+   "avgEnergy": 0.1938,
+   "maxEnergy": 0.4405
+  }
+ ],
+ "energy": 0.2079,
+ "dynamics": 0.0986,
+ "brightness": 2292.2,
+ "harmonicRatio": 0.771,
+ "analyzedBy": "local",
+ "analyzedAt": "2026-08-11T11:47:43"
+}

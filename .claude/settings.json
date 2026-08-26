@@ -1,0 +1,27 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell($css = Invoke-RestMethod -Uri \"https://nox-app-0p37.onrender.com/assets/index-DGOYvxsi.css\" -TimeoutSec 20; $pxCount = \\([regex]::Matches\\($css, 'px-\\\\d'\\)\\).Count; Write-Host \"px- classes in CSS: $pxCount\"; if \\($css -match '\\\\.px-8\\\\{'\\) { Write-Host '✓ .px-8{} rule exists' } else { Write-Host '✗ NO .px-8{} rule' }; if \\($css -match '\\\\.px-6\\\\{'\\) { Write-Host '✓ .px-6{} rule exists' } else { Write-Host '✗ NO .px-6{}' }; if \\($css -match '\\\\.px-5\\\\{'\\) { Write-Host '✓ .px-5{} rule exists' } else { Write-Host '✗ NO .px-5{}' })",
+      "PowerShell(Start-Sleep 140; $html = Invoke-RestMethod -Uri \"https://nox-app-0p37.onrender.com/\" -TimeoutSec 20; if \\($html -match 'src=\"\\([^\"]+\\\\.js\\)\"'\\) { $jsFile = $matches[1]; Write-Host \"JS: $jsFile\"; $js = Invoke-RestMethod -Uri \"https://nox-app-0p37.onrender.com$jsFile\" -TimeoutSec 20; if \\($js -match \"10B981\"\\) { Write-Host \"DEPLOYED: 绿点+间距+对比度 全部上线\" } else { Write-Host \"STILL BUILDING\" } })",
+      "PowerShell($env:HTTP_PROXY=\"http://127.0.0.1:7897\"; $env:HTTPS_PROXY=\"http://127.0.0.1:7897\"; cd \"d:\\\\claude-code\\\\nox-app\"; git push origin main 2>&1)",
+      "PowerShell(Start-Sleep 170; $html = Invoke-RestMethod -Uri \"https://nox-app-0p37.onrender.com/\" -TimeoutSec 20; if \\($html -match 'src=\"\\([^\"]+\\\\.js\\)\"'\\) { $jsFile = $matches[1]; Write-Host \"JS: $jsFile\"; $js = Invoke-RestMethod -Uri \"https://nox-app-0p37.onrender.com$jsFile\" -TimeoutSec 20; if \\($js -match \"confused\"\\) { Write-Host \"DEPLOYED: 20表情包已上线\" } else { Write-Host \"STILL BUILDING\" } })",
+      "PowerShell(Start-Sleep 160; try { $h = Invoke-RestMethod -Uri \"https://nox-app-0p37.onrender.com/\" -TimeoutSec 20; if \\($h -match 'src=\"\\([^\"]+\\\\.js\\)\"'\\) { $jsFile = $matches[1]; Write-Host \"JS: $jsFile\"; $resp = Invoke-RestMethod -Uri \"https://nox-app-0p37.onrender.com/api/health\" -TimeoutSec 10; Write-Host \"API: $\\($resp.status\\) model=$\\($resp.model\\)\" } } catch { Write-Host \"Error: $_\" })",
+      "PowerShell(Start-Sleep 160; try { $h = Invoke-RestMethod -Uri \"https://nox-app-0p37.onrender.com/\" -TimeoutSec 20; if \\($h -match 'src=\"\\([^\"]+\\\\.js\\)\"'\\) { Write-Host \"JS: $\\($matches[1]\\)\" }; $r = Invoke-RestMethod -Uri \"https://nox-app-0p37.onrender.com/api/health\" -TimeoutSec 10; Write-Host \"API: $\\($r.status\\)\" } catch { Write-Host \"Error: $_\" })",
+      "PowerShell($env:HTTP_PROXY=\"http://127.0.0.1:7897\"; $env:HTTPS_PROXY=\"http://127.0.0.1:7897\"; cd \"d:\\\\claude-code\\\\nox-app\"; git push origin main 2>&1; Invoke-RestMethod -Uri \"https://api.render.com/deploy/srv-d8sd8436sc1c73cbcrf0?key=JbhWsu_IPXk\" -Method POST -TimeoutSec 15)",
+      "PowerShell(git clone https://github.com/rullerzhou-afk/clawd-on-desk.git \"d:\\\\claude code��Ŀ\\\\clawd-on-desk\")",
+      "PowerShell(git clone https://github.com/rullerzhou-afk/clawd-on-desk.git \"d:\\\\claude code��Ŀ\\\\clawd-on-desk\" -c http.proxy=http://127.0.0.1:7897 -c https.proxy=http://127.0.0.1:7897)",
+      "PowerShell(git clone https://gitcode.com/gh_mirrors/cl/clawd-on-desk.git \"d:\\\\claude code��Ŀ\\\\clawd-on-desk\")",
+      "PowerShell(curl -x http://127.0.0.1:7897 -L -o \"d:\\\\claude code��Ŀ\\\\clawd-on-desk.zip\" \"https://github.com/rullerzhou-afk/clawd-on-desk/archive/refs/heads/main.zip\")",
+      "PowerShell(curl.exe -x http://127.0.0.1:7897 -L -o \"d:\\\\claude code��Ŀ\\\\clawd-on-desk.zip\" \"https://github.com/rullerzhou-afk/clawd-on-desk/archive/refs/heads/main.zip\")",
+      "PowerShell(git clone -c http.proxy=http://127.0.0.1:7897 -c https.proxy=http://127.0.0.1:7897 -c http.sslVerify=false \"https://github.com/rullerzhou-afk/clawd-on-desk.git\" \"d:\\\\claude code��Ŀ\\\\clawd-on-desk\")",
+      "PowerShell(cd \"d:\\\\claude-code\\\\clawd-on-desk\"; Remove-Item -Recurse -Force node_modules -ErrorAction SilentlyContinue; $env:ELECTRON_MIRROR=\"https://npmmirror.com/mirrors/electron/\"; $env:ELECTRON_CUSTOM_DIR=\"32.4.2\"; npm install 2>&1 | Select-Object -Last 10)",
+      "PowerShell(Get-Command gh -ErrorAction SilentlyContinue)",
+      "PowerShell(if \\($?\\) { \"gh available\" } else { \"gh not available\" })",
+      "PowerShell(curl.exe -x http://127.0.0.1:7897 --connect-timeout 10 -I https://github.com 2>&1)"
+    ],
+    "additionalDirectories": [
+      "d:\\claude code��Ŀ\\nox-app\\frontend\\public",
+      "d:\\claude code��Ŀ"
+    ]
+  }
+}

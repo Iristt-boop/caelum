@@ -1,0 +1,52 @@
+{
+ "songId": "2719777632",
+ "name": "",
+ "artist": "",
+ "duration": 298.9,
+ "bpm": 129,
+ "key": "C#",
+ "segments": [
+  {
+   "start": 0.0,
+   "end": 49.8,
+   "avgEnergy": 0.1435,
+   "maxEnergy": 0.3946
+  },
+  {
+   "start": 49.8,
+   "end": 99.6,
+   "avgEnergy": 0.2529,
+   "maxEnergy": 0.4689
+  },
+  {
+   "start": 99.6,
+   "end": 149.4,
+   "avgEnergy": 0.2134,
+   "maxEnergy": 0.4479
+  },
+  {
+   "start": 149.4,
+   "end": 199.2,
+   "avgEnergy": 0.27,
+   "maxEnergy": 0.4741
+  },
+  {
+   "start": 199.2,
+   "end": 249.0,
+   "avgEnergy": 0.2895,
+   "maxEnergy": 0.4682
+  },
+  {
+   "start": 249.0,
+   "end": 298.8,
+   "avgEnergy": 0.2284,
+   "maxEnergy": 0.4563
+  }
+ ],
+ "energy": 0.2329,
+ "dynamics": 0.1058,
+ "brightness": 1842.6,
+ "harmonicRatio": 0.822,
+ "analyzedBy": "local",
+ "analyzedAt": "2026-08-11T11:47:20"
+}
