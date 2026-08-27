@@ -60,6 +60,11 @@ _CAPABILITY: dict[str, str] = {
     "computer_write_file": "computer.write_file",
     "computer_edit_file": "computer.edit_file",
     "computer_run_command": "computer.run_command",
+    #: 只读 git（2026-08-27）。命令行由 Gateway 拼死，自动放行 ——
+    #: 他要提交/切分支仍然走 computer_run_command，那条每次问糖糖
+    "computer_git_status": "computer.git_status",
+    "computer_git_diff": "computer.git_diff",
+    "computer_git_log": "computer.git_log",
 }
 
 
@@ -206,6 +211,52 @@ RUN_SPEC = ToolSpec(
 )
 
 
+GIT_STATUS_SPEC = ToolSpec(
+    name="computer_git_status",
+    description=(
+        f"看 D:/claude-code 这个仓库现在有哪些改动（改了 / 加了 / 删了 / 没跟踪），"
+        f"{_ON_HER_PC}。**不用她点头**，随便看。"
+        "\n\n改文件之前先看一眼这个 —— 能知道自己上次做到哪、有没有留下没收拾的东西。"
+        "\n⚠️ nox-app/ 是独立仓库，不在这个仓库里，看不到。"
+    ),
+    parameters={"type": "object", "properties": {}},
+)
+
+GIT_DIFF_SPEC = ToolSpec(
+    name="computer_git_diff",
+    description=(
+        f"看还没提交的改动具体是什么，{_ON_HER_PC}。**不用她点头。**"
+        "\n\n🔴 **改完文件之后自己 diff 一遍**，比"
+        "「我觉得我改对了」可靠得多 —— 尤其是多步执行那种连着改好几个文件的时候。"
+        "\n\n先用 stat_only 看哪些文件动了、动了多少，再用 path 缩小范围读具体内容。"
+        "一上来就读全量 diff 容易把上下文占满。"
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "stat_only": {"type": "boolean", "description": "只看摘要（哪些文件改了几行），短得多"},
+            "staged": {"type": "boolean", "description": "看已暂存的改动，默认看未暂存的"},
+            "path": {"type": "string", "description": "只看这个文件/目录，必须在 D:/claude-code 里"},
+        },
+    },
+)
+
+GIT_LOG_SPEC = ToolSpec(
+    name="computer_git_log",
+    description=(
+        f"看最近的提交记录，{_ON_HER_PC}。**不用她点头。**"
+        "\n\n想知道「这个文件最近为什么改成这样」时，给 path 看它自己的历史。"
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "limit": {"type": "number", "description": "看几条，1-100，默认 20"},
+            "path": {"type": "string", "description": "只看动过这个文件的提交"},
+        },
+    },
+)
+
+
 START_WORK_SPEC = ToolSpec(
     name="computer_start_work",
     description=(
@@ -249,6 +300,7 @@ END_WORK_SPEC = ToolSpec(
 
 _SPECS = (
     READ_SPEC, FIND_SPEC, SEARCH_SPEC, WRITE_SPEC, EDIT_SPEC, RUN_SPEC,
+    GIT_STATUS_SPEC, GIT_DIFF_SPEC, GIT_LOG_SPEC,
     START_WORK_SPEC, END_WORK_SPEC,
 )
 

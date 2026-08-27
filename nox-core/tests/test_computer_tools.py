@@ -68,7 +68,8 @@ def _handlers(link):
 # --------------------------------------------------------------- 注册顺序
 
 
-def test_八件都注册上了():
+def test_十一件都注册上了():
+    """⚠️ 顺序也锁着 —— 工具定义是缓存前缀的一部分，顺序变了缓存就失效。"""
     loop = _Loop()
     computer_tools.register_all(loop, FakeLink())
     assert loop.registered == [
@@ -78,9 +79,23 @@ def test_八件都注册上了():
         "computer_write_file",
         "computer_edit_file",
         "computer_run_command",
+        #: 只读 git（2026-08-27）
+        "computer_git_status",
+        "computer_git_diff",
+        "computer_git_log",
         "computer_start_work",
         "computer_end_work",
     ]
+
+
+def test_只读_git_不占用她点头的额度():
+    """🔴 这三件的意义就是**不打扰她**。
+
+    进了 `_NEEDS_HER_NOD` 的话，`git diff` 也要弹窗 ——
+    那就退回到「用 run_command 跑 git」那个状态了，白做。
+    """
+    for n in ("computer_git_status", "computer_git_diff", "computer_git_log"):
+        assert n not in computer_tools._NEEDS_HER_NOD, n
 
 
 def test_remind_myself_仍然是最后一个(monkeypatch, tmp_path):

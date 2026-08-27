@@ -32,7 +32,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from agent.adapters import OpenAICompatAdapter  # noqa: E402
-from agent.llm import Message  # noqa: E402
+from agent.llm import Message, ToolCall, ToolResult  # noqa: E402
 from config import LLMConfig  # noqa: E402
 
 SYS = "静态系统提示"
@@ -48,20 +48,40 @@ def _adapter(base_url: str) -> OpenAICompatAdapter:
     return OpenAICompatAdapter(cfg)
 
 
+class _Spy:
+    """假客户端：把 adapter 真正准备发出去的 kwargs 截下来。
+
+    🔴 **不许在测试里手抄一遍拼装逻辑。**
+
+    这个文件第一版就是那么写的 —— `_native()` 里复制了一份
+    `complete()` 的组装代码。结果是：真代码里那个
+    `insert(len-1)` 的 bug（把动态块插进 tool_calls 和结果中间，
+    线上 400）**测试完全测不到**，因为测试测的是副本。
+
+    现在走真的 `complete()`，只把最后那次网络调用换掉。
+    """
+
+    def __init__(self) -> None:
+        self.kwargs: dict = {}
+        outer = self
+
+        class _Completions:
+            def create(self, **kw):
+                outer.kwargs = kw
+                raise RuntimeError("到此为止，我们只要 kwargs")
+
+        class _Chat:
+            completions = _Completions()
+
+        self.chat = _Chat()
+
+
 def _native(a: OpenAICompatAdapter, msgs, dynamic=DYN):
-    """拿到它准备发出去的消息数组（复刻 complete 里的拼装）。"""
-    native = []
-    if SYS:
-        native.append(a._system_message(SYS, dynamic))
-    elif dynamic and a._supports_cache:
-        native.append({"role": "system", "content": dynamic})
-    for m in msgs:
-        native.extend(a._to_native(m))
-    if not a._supports_cache:
-        tail = a._tail_block(dynamic)
-        if tail is not None:
-            native.insert(max(0, len(native) - 1), tail)
-    return native
+    """跑真的 `complete()`，返回它拼出来的 messages 数组。"""
+    spy = _Spy()
+    a._client = spy          # type: ignore[assignment]
+    a.complete(list(msgs), [], system=SYS, dynamic_system=dynamic)
+    return spy.kwargs["messages"]
 
 
 HIST = [
@@ -111,6 +131,77 @@ class Test自动前缀缓存的后端:
         native = _native(a, long_hist)
         # 动态块在倒数第二，说明前面 50 条全在稳定前缀里
         assert native.index({"role": "system", "content": DYN}) == len(native) - 2
+
+
+class Test工具循环里不许插坏配对:
+    """🔴 2026-08-27 线上 400 的复现。
+
+    第一版把动态块插在「倒数第二条」。工具循环里最后两条是
+    `assistant(tool_calls)` + `tool(结果)` —— 于是它正好插进了中间，
+    把配对切断了：
+
+    ```text
+    assistant(tool_calls)
+    system(动态块)        ← 插错地方
+    tool(结果)
+    ```
+
+    DeepSeek 直接 400：
+
+        An assistant message with 'tool_calls' must be followed by
+        tool messages responding to each 'tool_call_id'
+
+    表现是糖糖问了句话，他答「我这会儿连不上」—— 而工具其实**执行成功了**，
+    审计里两条都是 ok=True。错在最后那次回话的请求上。
+    """
+
+    @staticmethod
+    def _loop_msgs():
+        """一轮工具调用之后的消息形状。"""
+        return [
+            Message(role="user", text="历史问题"),
+            Message(role="assistant", text="历史回答"),
+            Message(role="user", text="看一下 git 状态"),
+            Message(role="tool_calls", tool_calls=[
+                ToolCall(id="c1", name="computer_git_status", arguments={})]),
+            Message(role="tool_results", tool_results=[
+                ToolResult(call_id="c1", content="## master")]),
+        ]
+
+    def test_动态块不插进_tool_calls_和结果中间(self):
+        a = _adapter("https://api.deepseek.com")
+        native = _native(a, self._loop_msgs())
+        roles = [m.get("role") for m in native]
+        #: 找到带 tool_calls 的那条，它后面必须紧跟 tool
+        for i, m in enumerate(native):
+            if m.get("tool_calls"):
+                assert native[i + 1].get("role") == "tool", (
+                    f"配对被切断了：{roles}")
+
+    def test_动态块在最后一条_user_之前(self):
+        a = _adapter("https://api.deepseek.com")
+        native = _native(a, self._loop_msgs())
+        i = next(j for j, m in enumerate(native)
+                 if m.get("role") == "system" and m.get("content") == DYN)
+        assert native[i + 1]["content"] == "看一下 git 状态"
+
+    def test_循环里位置稳定_所以缓存不掉(self):
+        """🔴 循环每轮追加 assistant/tool，而动态块的位置不动 ——
+        前缀逐轮不变，缓存才命中。"""
+        a = _adapter("https://api.deepseek.com")
+        one = _native(a, self._loop_msgs())
+        # 再来一轮工具调用
+        more = self._loop_msgs() + [
+            Message(role="tool_calls", tool_calls=[
+                ToolCall(id="c2", name="computer_git_log", arguments={})]),
+            Message(role="tool_results", tool_results=[
+                ToolResult(call_id="c2", content="abc 提交")]),
+        ]
+        two = _native(a, more)
+        #: 前面那一段（到动态块 + user 为止）逐字相同
+        i = next(j for j, m in enumerate(one)
+                 if m.get("role") == "system" and m.get("content") == DYN)
+        assert one[: i + 2] == two[: i + 2]
 
 
 class Test有断点的后端:

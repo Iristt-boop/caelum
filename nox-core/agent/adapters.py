@@ -374,19 +374,30 @@ class OpenAICompatAdapter:
         for m in messages:
             native.extend(self._to_native(m))
 
-        # 🔴 动态块插在**最后一条消息之前**（见 `_tail_block`）。
+        # 🔴 动态块插在**最后一条 user 消息之前**（见 `_tail_block`）。
         #
         # OpenRouter 那条路已经用 cache_control 断点处理过了，不重复插；
         # DeepSeek 这条没有断点，位置就是一切。
         #
-        # 插在倒数第二而不是最末：那样它排在用户这句话前面，
-        # 读起来是「现在是这个情况 → 她说了这句」，顺序对。
-        # 而工具循环里最后一条是 tool 结果，插它前面同样在尾巴上，
-        # 前面的历史照常命中。
+        # ⚠️ **不能简单地插在"倒数第二"。** 第一版就是那么写的，
+        # 结果工具循环里正好插进了 `assistant(tool_calls)` 和 `tool` 结果
+        # 中间，把配对切断了 —— DeepSeek 直接 400：
+        #
+        #   An assistant message with 'tool_calls' must be followed by
+        #   tool messages responding to each 'tool_call_id'
+        #
+        # 找最后一条 user 是因为它在工具循环里**位置稳定**：
+        # 循环追加的是 assistant/tool，user 那条不动 ——
+        # 所以前缀（system + 历史 + 动态 + user）逐轮不变，缓存照常命中。
         if not self._supports_cache:
             tail = self._tail_block(dynamic_system)
             if tail is not None:
-                native.insert(max(0, len(native) - 1), tail)
+                at = next(
+                    (i for i in range(len(native) - 1, -1, -1)
+                     if native[i].get("role") == "user"),
+                    len(native),
+                )
+                native.insert(at, tail)
 
         kwargs: dict[str, Any] = {
             "model": self.cfg.model,
@@ -503,19 +514,30 @@ class OpenAICompatAdapter:
         for m in messages:
             native.extend(self._to_native(m))
 
-        # 🔴 动态块插在**最后一条消息之前**（见 `_tail_block`）。
+        # 🔴 动态块插在**最后一条 user 消息之前**（见 `_tail_block`）。
         #
         # OpenRouter 那条路已经用 cache_control 断点处理过了，不重复插；
         # DeepSeek 这条没有断点，位置就是一切。
         #
-        # 插在倒数第二而不是最末：那样它排在用户这句话前面，
-        # 读起来是「现在是这个情况 → 她说了这句」，顺序对。
-        # 而工具循环里最后一条是 tool 结果，插它前面同样在尾巴上，
-        # 前面的历史照常命中。
+        # ⚠️ **不能简单地插在"倒数第二"。** 第一版就是那么写的，
+        # 结果工具循环里正好插进了 `assistant(tool_calls)` 和 `tool` 结果
+        # 中间，把配对切断了 —— DeepSeek 直接 400：
+        #
+        #   An assistant message with 'tool_calls' must be followed by
+        #   tool messages responding to each 'tool_call_id'
+        #
+        # 找最后一条 user 是因为它在工具循环里**位置稳定**：
+        # 循环追加的是 assistant/tool，user 那条不动 ——
+        # 所以前缀（system + 历史 + 动态 + user）逐轮不变，缓存照常命中。
         if not self._supports_cache:
             tail = self._tail_block(dynamic_system)
             if tail is not None:
-                native.insert(max(0, len(native) - 1), tail)
+                at = next(
+                    (i for i in range(len(native) - 1, -1, -1)
+                     if native[i].get("role") == "user"),
+                    len(native),
+                )
+                native.insert(at, tail)
 
         kwargs: dict[str, Any] = {
             "model": self.cfg.model,
