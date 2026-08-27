@@ -239,6 +239,11 @@ try { db.run(`ALTER TABLE todos ADD COLUMN done_log TEXT DEFAULT ''`); } catch {
 // `done_log` 只存日期（周配额要按天算），落不到「Nox 的一天」的时间轴上 ——
 // 那条轴要的是 14:48 这种精度，不是 2026-08-18。
 try { db.run(`ALTER TABLE todos ADD COLUMN last_done_at TEXT DEFAULT ''`); } catch { /* 已加过 */ }
+// 2026-08-27：备注与分类标签（App / OS 双端 Today/Todo 重构加的）。
+// tag 是轻量分类：没有后台字典，前端按名字取色画彩点；note 纯文本，
+// 条目行上收起、点开才展示，列表接口原样透传即可。
+try { db.run(`ALTER TABLE todos ADD COLUMN note TEXT DEFAULT ''`); } catch { /* 已加过 */ }
+try { db.run(`ALTER TABLE todos ADD COLUMN tag TEXT DEFAULT ''`); } catch { /* 已加过 */ }
 // 聊天消息表（搜索用 + Nox 兼容）
 db.run(`CREATE TABLE IF NOT EXISTS conversations (
   id TEXT, role TEXT, content TEXT, timestamp TEXT, metadata TEXT
@@ -1835,6 +1840,10 @@ app.get("/api/todo/list", (req, res) => {
       weekdays: t.weekdays || "", due: t.due || "", times: t.times || 0,
       when, bucket,
       doneThisWeek: rep === "weekly_count" ? doneThisWeek(t, now) : undefined,
+      // 2026-08-27 双端重构：备注 / 分类标签 / 他今天追过没（OS「他的喋喋」模块）
+      note: t.note || "", tag: t.tag || "",
+      chasedToday: (t.fired_on || "") === now.date,
+      createdAt: t.created_at || "",
     });
   }
   res.json({ ok: true, sections, items, source: "local" });
@@ -1862,6 +1871,9 @@ app.get("/api/todo/due", (req, res) => {
 // 为了完整历史加一张事件表，代价比收益大。
 app.get("/api/todo/events", (req, res) => {
   const date = /^\d{4}-\d{2}-\d{2}$/.test(req.query.date || "") ? req.query.date : cnNow().date;
+  // ?range=N：顺带回最近 N 天（含当天）的完成计数，OS 的完成热力用。
+  // 一发请求代替前端挨天打 N 发；上限 60 天，防着谁手滑传个 3650。
+  const range = Math.min(Math.max(parseInt(req.query.range) || 0, 0), 60);
   const rows = dbAll("SELECT id, text, created_at, last_done_at, repeat FROM todos");
   const out = [];
   for (const t of rows) {
@@ -1880,7 +1892,24 @@ app.get("/api/todo/events", (req, res) => {
     }
   }
   out.sort((a, b) => String(a.at).localeCompare(String(b.at)));
-  res.json({ ok: true, date, items: out });
+  let heat;
+  if (range > 0) {
+    heat = [];
+    for (let i = range - 1; i >= 0; i--) {
+      const d = new Date(Date.now() - i * 86400000)
+        .toLocaleString("sv-SE", { timeZone: "Asia/Shanghai" }).slice(0, 10);
+      heat.push({
+        date: d,
+        count: rows.filter((t) => {
+          const on = t.last_done_at
+            ? new Date(t.last_done_at).toLocaleString("sv-SE", { timeZone: "Asia/Shanghai" }).slice(0, 10)
+            : "";
+          return on === d;
+        }).length,
+      });
+    }
+  }
+  res.json({ ok: true, date, items: out, ...(heat ? { heat } : {}) });
 });
 
 // 最近的记忆。Ombre Brain 的 /recent 是 2026-08-18 专门为「给程序读」开的
@@ -2140,7 +2169,8 @@ app.post("/api/todo/complete", (req, res) => {
 app.post("/api/today", (req, res) => {
   // repeat/at/weekdays/due 是 2026-08-18 的时间模型，都可选：
   // 什么都不给就是「随时」档，只进清单、不占提醒名额
-  const { text, time, date, repeat, at, weekdays, due, times } = req.body;
+  // note/tag 是 2026-08-27 双端重构加的：条目备注与轻量分类
+  const { text, time, date, repeat, at, weekdays, due, times, note, tag } = req.body;
   if (!text) return res.status(400).json({ error: "text required" });
   const id = randomUUID();
   // 指定日期时把 created_at 锚到那天（比如在"明天"页加的计划就落在明天）
@@ -2153,11 +2183,12 @@ app.post("/api/today", (req, res) => {
     : (clock ? "once" : "anytime");
 
   dbRun(
-    `INSERT INTO todos (id, text, time, done, created_at, synced, repeat, at, weekdays, due, times)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+    `INSERT INTO todos (id, text, time, done, created_at, synced, repeat, at, weekdays, due, times, note, tag)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     [id, text, time || "", 0, createdAt, 0, rep, clock,
      weekdays || "", due || (rep === "once" ? createdAt.slice(0, 10) : ""),
-     rep === "weekly_count" ? Math.max(1, parseInt(times) || 1) : 0]
+     rep === "weekly_count" ? Math.max(1, parseInt(times) || 1) : 0,
+     String(note || "").slice(0, 2000), String(tag || "").trim().slice(0, 24)]
   );
   res.json({ id, ok: true, repeat: rep, at: clock, times: parseInt(times) || 0 });
 });
