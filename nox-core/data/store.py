@@ -42,7 +42,9 @@ CREATE TABLE IF NOT EXISTS sessions (
     created_at  TEXT NOT NULL,
     updated_at  TEXT NOT NULL,
     title       TEXT,
-    summary     TEXT
+    summary     TEXT,
+    -- 已折进 summary 的消息条数（增量压缩的水位，见 get_summary_state）
+    summary_upto INTEGER DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS messages (
@@ -97,6 +99,11 @@ class Store:
             cols = {r["name"] for r in self._conn.execute("PRAGMA table_info(sessions)")}
             if "summary" not in cols:
                 self._conn.execute("ALTER TABLE sessions ADD COLUMN summary TEXT")
+            #: 增量压缩的水位（已折进 summary 的条数）。
+            #: 老库补 0 —— 那等于「下次全压一遍」，一次之后就进入增量了
+            if "summary_upto" not in cols:
+                self._conn.execute(
+                    "ALTER TABLE sessions ADD COLUMN summary_upto INTEGER DEFAULT 0")
             # WAL 让读写不互相阻塞；对单机小服务是纯赚
             self._conn.execute("PRAGMA journal_mode=WAL")
             self._conn.execute("PRAGMA foreign_keys=ON")
@@ -220,24 +227,42 @@ class Store:
 
     def get_summary(self, session_id: str) -> str | None:
         """该会话已压缩的摘要。没压过返回 None。"""
+        return self.get_summary_state(session_id)[0]
+
+    def get_summary_state(self, session_id: str) -> tuple[str | None, int]:
+        """摘要 + **已经折进摘要的消息条数**（水位）。
+
+        🔴 这个水位是增量压缩的关键。没有它的话，每次压缩都要把
+        「窗口之前的全部历史」重压一遍 —— 2026-08-26 查账发现那条会话
+        每次压缩要读 118K token（约 0.12 元），而且**永远不会下降，只会涨**。
+
+        用条数而不是 seq，是因为 `load_full` 按 seq 正序返回、
+        而**库里原文永不删除**（见 compactor.py 开头），
+        所以下标就是稳定的水位。
+        """
         with self._lock:
             cur = self._conn.execute(
-                "SELECT summary FROM sessions WHERE id = ?", (session_id,)
+                "SELECT summary, summary_upto FROM sessions WHERE id = ?", (session_id,)
             )
             row = cur.fetchone()
         if row is None:
-            return None
-        return row["summary"] or None
+            return None, 0
+        return (row["summary"] or None), int(row["summary_upto"] or 0)
 
-    def set_summary(self, session_id: str, text: str) -> None:
-        """写入/更新该会话的摘要。幂等：重复写同一份覆盖即可。"""
+    def set_summary(self, session_id: str, text: str, upto: int = 0) -> None:
+        """写入/更新摘要和水位。幂等：重复写同一份覆盖即可。
+
+        @param upto - 这份摘要已经折进了最老的多少条消息。
+            下次压缩从第 `upto` 条之后开始读。
+        """
         with self._lock:
             self._conn.execute(
-                "INSERT INTO sessions(id, created_at, updated_at, summary) "
-                "VALUES(?, ?, ?, ?) "
+                "INSERT INTO sessions(id, created_at, updated_at, summary, summary_upto) "
+                "VALUES(?, ?, ?, ?, ?) "
                 "ON CONFLICT(id) DO UPDATE SET summary = excluded.summary, "
+                "summary_upto = excluded.summary_upto, "
                 "updated_at = excluded.updated_at",
-                (session_id, _now(), _now(), text),
+                (session_id, _now(), _now(), text, int(upto)),
             )
             self._conn.commit()
 

@@ -12,7 +12,7 @@
 from __future__ import annotations
 
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -28,6 +28,20 @@ from attention.store import AttentionStore  # noqa: E402
 from world_model import WorldModel  # noqa: E402
 
 CST = timezone(timedelta(hours=8))
+
+
+# 🔴 **日期要相对「今天」算，不能写死。**
+#
+# 2026-08-26 踩到的：这几条测试原来写死 2026-08-12~15，
+# 而 `_short_streak` 查的是 `days=14`（相对真实 now）。
+# 时间一过，最老那天掉出窗口 —— 连续天数从 4 变成 3，测试红了。
+#
+# **它不是「今天坏了」，是从写下那天起就在倒计时。**
+# 这种测试最难查：改的人和红的人不是同一个，而且中间隔了两周。
+_TODAY = datetime.now(CST).replace(hour=10, minute=0, second=0, microsecond=0)
+def _day(back: int) -> datetime:
+    """`back` 天前的早上 9 点。"""
+    return (_TODAY - timedelta(days=back)).replace(hour=9)
 
 
 class FakeProvider:
@@ -103,19 +117,19 @@ def test_streak_makes_it_stronger_and_says_so(rig):
     「昨晚睡得少」→「已经连着 4 天没睡够了」
     """
     _, world = rig
-    for d, h in [(12, 5.0), (13, 5.1), (14, 5.2), (15, 4.9)]:
+    for back, h in [(3, 5.0), (2, 5.1), (1, 5.2), (0, 4.9)]:
         world.observe(source="health", type="sleep_duration",
                       observed={"value": h, "unit": "hour"},
-                      observed_at=datetime(2026, 8, d, 9, 0, tzinfo=CST),
-                      dedup_key=f"sleep/2026-08-{d}")
+                      observed_at=_day(back),
+                      dedup_key=f"sleep/{_day(back):%Y-%m-%d}")
 
     rel = RelationshipState()
     reg = AttentionRegistry()
-    now = datetime(2026, 8, 15, 10, 0, tzinfo=CST)
+    now = _TODAY
 
-    lone = AttentionEvaluator(rel).evaluate(_evt(4.9, "2026-08-15"), reg, now)
+    lone = AttentionEvaluator(rel).evaluate(_evt(4.9, f"{_TODAY:%Y-%m-%d}"), reg, now)
     trend = AttentionEvaluator(rel, world=world).evaluate(
-        _evt(4.9, "2026-08-15"), reg, now)
+        _evt(4.9, f"{_TODAY:%Y-%m-%d}"), reg, now)
 
     assert trend.strength > lone.strength, "连着几天该更担心"
     assert "连着 4 天" in trend.summary
@@ -126,22 +140,22 @@ def test_one_good_night_breaks_the_streak(rig):
     """中间睡好一天，连续就断了 —— 「上周有三天没睡好」和
     「连着三天没睡好」是两件事。"""
     _, world = rig
-    for d, h in [(12, 5.0), (13, 5.1), (14, 8.0), (15, 4.9)]:
+    for back, h in [(3, 5.0), (2, 5.1), (1, 8.0), (0, 4.9)]:
         world.observe(source="health", type="sleep_duration",
                       observed={"value": h, "unit": "hour"},
-                      observed_at=datetime(2026, 8, d, 9, 0, tzinfo=CST),
-                      dedup_key=f"sleep/2026-08-{d}")
+                      observed_at=_day(back),
+                      dedup_key=f"sleep/{_day(back):%Y-%m-%d}")
 
     d = AttentionEvaluator(RelationshipState(), world=world).evaluate(
-        _evt(4.9, "2026-08-15"), AttentionRegistry(),
-        datetime(2026, 8, 15, 10, 0, tzinfo=CST))
+        _evt(4.9, f"{_TODAY:%Y-%m-%d}"), AttentionRegistry(),
+        _TODAY)
     assert "连着" not in d.summary, "只数连续的，一天补回来就断"
 
 
 def test_no_world_model_falls_back_to_single_night(rig):
     """没接 World Model 时，行为和接入之前完全一样。"""
     d = AttentionEvaluator(RelationshipState(), world=None).evaluate(
-        _evt(4.9, "2026-08-15"), AttentionRegistry(),
-        datetime(2026, 8, 15, 10, 0, tzinfo=CST))
+        _evt(4.9, f"{_TODAY:%Y-%m-%d}"), AttentionRegistry(),
+        _TODAY)
     assert d.action == "upsert"
     assert "连着" not in d.summary

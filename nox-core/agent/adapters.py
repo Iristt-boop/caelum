@@ -302,8 +302,16 @@ class OpenAICompatAdapter:
 
     def _system_message(self, system: str, dynamic: str | None = None) -> dict[str, Any]:
         if not self._supports_cache:
-            text = f"{system}\n\n{dynamic}" if dynamic else system
-            return {"role": "system", "content": text}
+            # 🔴 **动态块不能拼进来。** 见 `_tail_block()`。
+            #
+            # 这里原来是 `f"{system}\n\n{dynamic}"`。DeepSeek 走的是
+            # **自动前缀缓存**（没有 cache_control 断点），system 是第一条消息 ——
+            # 拼进来之后它一变，整条请求从第一个 token 就失配。
+            #
+            # 2026-08-26 实测（同样 9,138 token 的请求，只改动态块）：
+            #   拼进 system   命中 0      （0%）
+            #   放到尾部      命中 9,088  （99%）
+            return {"role": "system", "content": system}
         # 数组形式才能带 cache_control；OpenRouter 会翻译成后端的原生格式。
         # 动态块放在打了断点的静态块**之后**，这样前缀照常命中缓存。
         blocks: list[dict[str, Any]] = [
@@ -316,6 +324,37 @@ class OpenAICompatAdapter:
         if dynamic:
             blocks.append({"type": "text", "text": dynamic})
         return {"role": "system", "content": blocks}
+
+    def _tail_block(self, dynamic: str | None) -> dict[str, Any] | None:
+        """每轮可变的那段，做成一条**放在最后面**的 system 消息。
+
+        ## 🔴 为什么必须在尾部
+
+        OpenRouter 那条路靠 `cache_control` 打断点，动态块跟在断点之后就行。
+        **DeepSeek 没有断点** —— 它是自动前缀缓存，匹配的是整条请求的
+        最长公共前缀。所以位置就是一切：
+
+        ```text
+        system(静态) + 动态 + 历史 + 用户   →  动态一变，历史全废
+        system(静态) + 历史 + 动态 + 用户   →  动态一变，只有尾巴重算
+        ```
+
+        2026-08-26 实测（9,138 token 的请求，只改动态块那一句）：
+
+        ```text
+        拼进 system   命中 0      （0%）
+        放到尾部      命中 9,088  （99%）
+        ```
+
+        ⚠️ `context/base.py` 那条「渲染结果只能进 dynamic_system」的约束
+        本来就是为这个 —— 但只在 OpenRouter 那条路上兑现了，
+        DeepSeek 这条把它拼了回去，等于那条约束白写。
+
+        @returns `None` 表示这轮没有动态内容，调用方不要插空消息
+        """
+        if not dynamic:
+            return None
+        return {"role": "system", "content": dynamic}
 
     def complete(
         self,
@@ -330,10 +369,24 @@ class OpenAICompatAdapter:
         native: list[dict[str, Any]] = []
         if system:
             native.append(self._system_message(system, dynamic_system))
-        elif dynamic_system:
+        elif dynamic_system and self._supports_cache:
             native.append({"role": "system", "content": dynamic_system})
         for m in messages:
             native.extend(self._to_native(m))
+
+        # 🔴 动态块插在**最后一条消息之前**（见 `_tail_block`）。
+        #
+        # OpenRouter 那条路已经用 cache_control 断点处理过了，不重复插；
+        # DeepSeek 这条没有断点，位置就是一切。
+        #
+        # 插在倒数第二而不是最末：那样它排在用户这句话前面，
+        # 读起来是「现在是这个情况 → 她说了这句」，顺序对。
+        # 而工具循环里最后一条是 tool 结果，插它前面同样在尾巴上，
+        # 前面的历史照常命中。
+        if not self._supports_cache:
+            tail = self._tail_block(dynamic_system)
+            if tail is not None:
+                native.insert(max(0, len(native) - 1), tail)
 
         kwargs: dict[str, Any] = {
             "model": self.cfg.model,
@@ -445,10 +498,24 @@ class OpenAICompatAdapter:
         native: list[dict[str, Any]] = []
         if system:
             native.append(self._system_message(system, dynamic_system))
-        elif dynamic_system:
+        elif dynamic_system and self._supports_cache:
             native.append({"role": "system", "content": dynamic_system})
         for m in messages:
             native.extend(self._to_native(m))
+
+        # 🔴 动态块插在**最后一条消息之前**（见 `_tail_block`）。
+        #
+        # OpenRouter 那条路已经用 cache_control 断点处理过了，不重复插；
+        # DeepSeek 这条没有断点，位置就是一切。
+        #
+        # 插在倒数第二而不是最末：那样它排在用户这句话前面，
+        # 读起来是「现在是这个情况 → 她说了这句」，顺序对。
+        # 而工具循环里最后一条是 tool 结果，插它前面同样在尾巴上，
+        # 前面的历史照常命中。
+        if not self._supports_cache:
+            tail = self._tail_block(dynamic_system)
+            if tail is not None:
+                native.insert(max(0, len(native) - 1), tail)
 
         kwargs: dict[str, Any] = {
             "model": self.cfg.model,

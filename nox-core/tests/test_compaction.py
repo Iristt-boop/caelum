@@ -18,6 +18,7 @@ from context.compactor import (  # noqa: E402
     plan_compaction,
     render_segment,
     summarize,
+    tail_within,
 )
 from data.store import Store  # noqa: E402
 
@@ -124,6 +125,109 @@ def test_summarize_returns_text():
     out = summarize(fa, None, [Message(role="user", text="hi")])
     assert out == fa.text
     assert fa.calls == 1
+
+
+class Test增量压缩:
+    """🔴 只压新增的，不把旧的重压一遍。
+
+    2026-08-26 查账发现：每次压缩都读「窗口之前的全部」——
+    那条会话 118K token ≈ 0.12 元一次，一天二三十次。
+    **而且这个成本永远不会下降，只会随历史变长而涨。**
+
+    `SUMMARIZE_SYSTEM` 本来就写着「有旧摘要就合并」，
+    也就是说它本来就是为增量设计的，只是调用方一直按全量喂。
+    """
+
+    @staticmethod
+    def _hist(n: int) -> list[Message]:
+        #: 每条都够长，保证会超预算
+        return [Message(role="user" if i % 2 == 0 else "assistant",
+                        text=f"第{i}条" + "内容" * 200) for i in range(n)]
+
+    def test_有水位时只压新增的(self):
+        full = self._hist(60)
+        plan = plan_compaction(full, recent_window_tokens=500,
+                               budget_tokens=2000, already=40)
+        assert plan.should_compact
+        #: 压的是第 40 条之后，不是从头
+        assert plan.compressible[0].text.startswith("第40条")
+        assert len(plan.compressible) < 25, "不该把前 40 条重压一遍"
+
+    def test_没水位时从头压(self):
+        full = self._hist(60)
+        plan = plan_compaction(full, recent_window_tokens=500,
+                               budget_tokens=2000, already=0)
+        assert plan.compressible[0].text.startswith("第0条")
+
+    def test_没有新增就不压_也不调模型(self):
+        """重压一遍旧的既费钱、又不会让上下文变短。"""
+        full = self._hist(60)
+        # 水位已经到窗口起点了
+        recent = tail_within(full, 500)
+        plan = plan_compaction(full, recent_window_tokens=500, budget_tokens=2000,
+                               already=len(full) - len(recent))
+        assert not plan.should_compact
+        assert "没有新增" in plan.reason
+
+    def test_水位越界时重压一遍_而不是从错的位置开始(self, caplog):
+        """🔴 从错的位置开始会**跳过中间一段，而且没有任何报错** ——
+        表现是他忘了中间那段对话，而日志里什么都看不到。"""
+        full = self._hist(60)
+        with caplog.at_level("WARNING"):
+            plan = plan_compaction(full, recent_window_tokens=500,
+                                   budget_tokens=2000, already=9999)
+        assert plan.should_compact
+        assert plan.compressible[0].text.startswith("第0条"), "该退回全压"
+        assert "水位" in " ".join(r.message for r in caplog.records)
+
+    def test_水位默认_0_不传也能用(self):
+        """老调用方不传 already 时行为不变。"""
+        full = self._hist(60)
+        a = plan_compaction(full, 500, 2000)
+        b = plan_compaction(full, 500, 2000, already=0)
+        assert len(a.compressible) == len(b.compressible)
+
+
+class Test给够_max_tokens:
+    """🔴 2026-08-26 查账查出来的一个静默漏钱。
+
+    日志里每天 10-21 条「压缩未产出内容: max_tokens」——
+    `stop_reason` 是 max_tokens，而 `turn.text` 是空的：
+    **会思考的模型 reasoning 和正文共用这个预算，4096 全花在思考上了。**
+
+    代价不只是「这次没压成」：每次失败都完整读了一遍历史
+    （实测那条会话 118K token ≈ 0.12 元），16 次/天 ≈ 1.9 元/天全打水漂。
+    而且压不掉的话上下文继续涨，下一次更贵 —— 是个会自己变大的洞。
+
+    见记忆 `reasoning-tokens-eat-max-tokens`。
+    """
+
+    def test_预算要远大于_summary_上限(self):
+        seen = {}
+
+        class Spy:
+            def complete(self, messages, tools, **kw):
+                seen.update(kw)
+                return Turn(stop_reason="end_turn", text="ok", usage=Usage())
+
+        summarize(Spy(), None, [Message(role="user", text="hi")])
+        #: summary 本身上限约 3000 token（MAX_SUMMARY_CHARS）。
+        #: 预算只比它大一点的话，思考一多就又出不来正文了
+        assert seen["max_tokens"] >= 8000, "给少了会被思考 token 吃光"
+
+    def test_没产出时要报出白读了多少(self, caplog):
+        """⚠️ 只报 stop_reason 的话，看不出一次失败有多贵 ——
+        这个洞就是因此漏了不知道多久。"""
+        class Empty:
+            def complete(self, *a, **kw):
+                return Turn(stop_reason="max_tokens", text="", usage=Usage())
+
+        seg = [Message(role="user", text="很长的一段" * 200) for _ in range(5)]
+        with caplog.at_level("WARNING"):
+            assert summarize(Empty(), None, seg) is None
+        msg = " ".join(r.message for r in caplog.records)
+        assert "max_tokens" in msg
+        assert "白读了" in msg and "5 条" in msg
 
 
 def test_summarize_failure_returns_none():

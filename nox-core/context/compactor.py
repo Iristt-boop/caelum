@@ -74,16 +74,29 @@ def plan_compaction(
     recent_window_tokens: int,
     budget_tokens: int,
     current_text: str = "",
+    already: int = 0,
 ) -> CompactPlan:
     """决定要不要压缩、切哪一段。
 
     full_history 是**全部**历史（load_full 的结果，时间正序）。
+
+    @param already - 最老的多少条**已经折进上一份 summary 了**（水位）。
+        只压这之后的新增部分。
+
     规则：
     1. 估算全部历史 token；没超过预算（减去当前消息预留）就不压。
     2. 超过则：从尾部往前保留 recent_window_tokens 的原文窗口，
-       窗口之前的部分全部进 summary。
-    3. 至少保留一条可压缩的（compressible 非空）才压 —— 窗口占了全部
-       说明消息本身太短，不值得压。
+       窗口之前、**且水位之后**的部分进 summary。
+    3. 没有新增可压的就不压 —— 重压一遍旧的既费钱又不会让上下文变短。
+
+    ## 🔴 `already` 是 2026-08-26 加的，原因是钱
+
+    在那之前每次压缩都把「窗口之前的全部」重压一遍。实测那条会话
+    每次要读 118K token（约 0.12 元），一天二三十次 ——
+    **而且这个成本永远不会下降，只会随着历史变长而涨。**
+
+    `SUMMARIZE_SYSTEM` 里本来就写着「如果已经有旧摘要，把它和新对话合并」，
+    也就是说这个函数本来就是为增量设计的，只是调用方一直在按全量喂。
     """
     if not full_history:
         return CompactPlan([], [], False, "空历史")
@@ -98,14 +111,29 @@ def plan_compaction(
 
     # 超预算：尾部保留原文窗口
     recent = full_history[-len(tail_within(full_history, recent_window_tokens)):]
-    compressible = full_history[: len(full_history) - len(recent)]
+    window_start = len(full_history) - len(recent)
+
+    #: ⚠️ 水位越界 = 历史比上次短了（理论上不该发生，库里原文永不删除）。
+    #: 那时候宁可重压一遍，也不能从一个错的位置开始 ——
+    #: 那会**跳过中间一段，而且没有任何报错**
+    start = already
+    if start > window_start:
+        logger.warning(
+            "水位 %d 超过窗口起点 %d（历史变短了？）—— 这次全压一遍", already, window_start)
+        start = 0
+
+    compressible = full_history[start:window_start]
 
     if not compressible:
-        return CompactPlan([], recent, False, "窗口已占满全部历史，没有可压缩的")
+        return CompactPlan(
+            [], recent, False,
+            f"没有新增可压的（水位 {already}，窗口起点 {window_start}）",
+        )
 
     return CompactPlan(
         compressible, recent, True,
-        f"超预算：{total} > {threshold}，压 {len(compressible)} 条 → summary",
+        f"超预算：{total} > {threshold}，压第 {start}–{window_start} 条"
+        f"（{len(compressible)} 条）→ summary",
     )
 
 
@@ -171,14 +199,32 @@ def summarize(
             msgs, [],
             system=None,
             depth="low",
-            max_tokens=4096,
+            # 🔴 **给够。4096 会被思考 token 吃光，正文一个字都出不来。**
+            #
+            # 2026-08-26 查账查出来的：日志里每天 10-21 条
+            # 「压缩未产出内容: max_tokens」—— `stop_reason` 是 max_tokens
+            # 而 `turn.text` 是空的。会思考的模型（deepseek-v4-flash）
+            # reasoning 和正文共用这个预算，4096 全花在思考上了。
+            #
+            # 代价不只是"这次没压成"：**每次失败都完整读了一遍历史**
+            # （实测那条会话 118K token ≈ 0.12 元），16 次/天 ≈ 1.9 元/天
+            # 全打水漂。而且压不掉的话上下文继续涨，下次更贵。
+            #
+            # summary 上限是 MAX_SUMMARY_CHARS（约 3000 token），
+            # 给 16000 是让思考有地方去 —— 多出来的不产出就不收费。
+            max_tokens=16000,
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("压缩调用失败: %s", exc)
         return None
 
     if turn.stop_reason in ("error", "refusal") or not turn.text:
-        logger.warning("压缩未产出内容: %s", turn.stop_reason)
+        # ⚠️ 这条要带上「读了多少」—— 不然看不出一次失败有多贵。
+        # 2026-08-26 之前只报 stop_reason，于是这个洞漏了不知道多久
+        logger.warning(
+            "压缩未产出内容: %s（白读了 %d 条 / 约 %d token）",
+            turn.stop_reason, len(segment), estimate_tokens(segment),
+        )
         return None
 
     text = turn.text.strip()
@@ -201,21 +247,27 @@ def maybe_compact(
     """
     try:
         full = store.load_full(session_id)
-        plan = plan_compaction(full, recent_window_tokens, budget_tokens, current_text)
+        #: 上一份 summary 折到哪儿了 —— 只压这之后的
+        old, already = store.get_summary_state(session_id)
+        plan = plan_compaction(
+            full, recent_window_tokens, budget_tokens, current_text, already)
         if not plan.should_compact:
             logger.debug("会话 %s 无需压缩: %s", session_id[:8], plan.reason)
             return False
 
-        old = store.get_summary(session_id)
         summary = summarize(adapter, old, plan.compressible)
         if not summary:
             logger.warning("会话 %s 压缩失败，保留现状", session_id[:8])
             return False
 
-        store.set_summary(session_id, summary)
+        #: 新水位 = 窗口起点。这一步之前的全都在 summary 里了
+        upto = len(full) - len(plan.recent)
+        store.set_summary(session_id, summary, upto)
         logger.info(
-            "会话 %s 已压缩 %d 条 → summary %d 字符 (recent %d 条原文)",
-            session_id[:8], len(plan.compressible), len(summary), len(plan.recent),
+            "会话 %s 已压缩 %d 条（第 %d–%d）→ summary %d 字符，"
+            "recent %d 条原文，水位 %d",
+            session_id[:8], len(plan.compressible), upto - len(plan.compressible),
+            upto, len(summary), len(plan.recent), upto,
         )
         return True
     except Exception as exc:  # noqa: BLE001
