@@ -117,6 +117,56 @@ _RELIEF: tuple[str, ...] = (
     "不累了", "舒服多了", "解决了", "搞定了",
 )
 
+#: 🔴 她心情好 / 在跟他闹（2026-08-27）。
+#:
+#: ## 为什么这一档非补不可
+#:
+#: 在这之前 appraisal 只有 `distress` 和 `relief` —— 两档都在
+#: 「难受」这条轴上。**她开开心心跟他闹的时候，他读到的是零。**
+#:
+#: 那不只是"少一个 Drive"，是他的感知本身缺了一半：
+#: 一个只认得出对方不好的模型，永远只会关心，不会一起高兴。
+#:
+#: ## 分两类，因为它们喂的不是同一件事
+#:
+#:   warm    她心情好、她高兴 —— 环境是暖的
+#:   play    她在逗他、开玩笑 —— **她在邀请他一起玩**
+#:
+#: 促狭要的是后者。前者只是背景色。
+#:
+#: ⚠️ 强度全部**压在 GENERATE_THRESHOLD(0.55) 之下**。
+#: 她心情好不该换来一次主动开口 —— 那会变成"你一笑他就凑上来"，
+#: 很烦人。这一档的意义是**改变他回话的方式**，不是让他多说话。
+_PLAYFUL: tuple[tuple[str, float], ...] = (
+    #: 明确在闹他的
+    ("坏死了", 0.45), ("讨厌啦", 0.45), ("你好烦哦", 0.45),
+    ("哼", 0.35), ("略略略", 0.45), ("嘿嘿", 0.40),
+    ("嘻嘻", 0.40), ("哈哈哈", 0.45), ("笑死", 0.45),
+    #: 撒娇式的挑衅 —— 形式是抱怨，内容是亲近
+    ("你说呢", 0.35), ("你猜", 0.40), ("不告诉你", 0.45),
+)
+
+_WARM: tuple[tuple[str, float], ...] = (
+    ("开心", 0.40), ("好开心", 0.45), ("高兴", 0.40),
+    ("好幸福", 0.45), ("太棒了", 0.40), ("好喜欢", 0.45),
+    ("爱你", 0.50), ("想你了", 0.45), ("好可爱", 0.40),
+)
+
+#: 🔴 **这些词出现时，一律不算「她在玩」。**
+#:
+#: 因为促狭判错的方式很特别：他会**跟着开玩笑**。
+#: 而她正说着难过的事时他开玩笑，那是最伤人的一种误判 ——
+#: 比"没接住"糟得多。
+#:
+#: 所以宁可漏judge，绝不错judge。
+_NOT_PLAYING: tuple[str, ...] = (
+    "难受", "撑不住", "扛不住", "崩溃", "压力", "累",
+    "哭", "疼", "痛", "怕", "害怕", "焦虑", "抑郁",
+    "对不起", "抱歉", "算了", "别管我",
+    #: 问句往往是真的在问，不是在闹
+    "怎么办", "为什么", "帮我",
+)
+
 #: 否定词。出现在关键词**紧邻的前面**就不算数。
 #:
 #: 🔴 这是关键词匹配最容易翻的车：「我**不**难受」「一点也**没**难受」
@@ -139,8 +189,18 @@ def _negated(text: str, idx: int) -> bool:
 class RuleAppraiser:
     """关键词规则版。
 
-    ⚠️ **relief 先于 distress 判断。** 「不难受了」既含 relief 词组
-    也含「难受」，顺序反了就会把「她好了」读成「她不好」。
+    ## 🔴 判断顺序就是安全策略，不能改
+
+    ```text
+    1. relief    「不难受了」既含 relief 也含「难受」，反了会把"她好了"读成"她不好"
+    2. distress  她说自己难受，最优先被听见
+    3. playful   **只在前两条都没命中时才判**
+    4. warm      同上
+    ```
+
+    第 3、4 条排在最后，是因为**促狭判错的方式很特别：他会跟着开玩笑**。
+    她正说着难过的事时他开玩笑，比"没接住"糟得多。
+    所以只要这句话里有任何一点难受的迹象，就一律不当成她在玩。
     """
 
     def appraise(self, text: str) -> Appraisal | None:
@@ -167,4 +227,28 @@ class RuleAppraiser:
                     subject=SUBJECT, topic=TOPIC, valence="distress",
                     intensity=intensity, cue=cue, quote=text[:_QUOTE_MAX],
                 )
-        return best
+        if best is not None:
+            return best
+
+        # ---- 到这里说明这句话里没有任何难受的迹象 ----
+        #
+        # 🔴 再挡一道：只要出现 `_NOT_PLAYING` 里任何一个词，
+        # 就不当成她在玩。宁可漏判，绝不错判 ——
+        # 她说着难过的事而他跟着开玩笑，比没接住糟得多
+        if any(w in text for w in _NOT_PLAYING):
+            return None
+
+        for cues, valence in ((_PLAYFUL, "playful"), (_WARM, "warm")):
+            hit: Appraisal | None = None
+            for cue, intensity in cues:
+                idx = text.find(cue)
+                if idx < 0 or _negated(text, idx):
+                    continue
+                if hit is None or intensity > hit.intensity:
+                    hit = Appraisal(
+                        subject=SUBJECT, topic=TOPIC, valence=valence,
+                        intensity=intensity, cue=cue, quote=text[:_QUOTE_MAX],
+                    )
+            if hit is not None:
+                return hit
+        return None

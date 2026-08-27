@@ -35,6 +35,7 @@ from agent.llm import Message
 from attention.service import (
     DEJECTION_KEY,
     LONGING_KEY,
+    PLAYFUL_KEY,
     REGRET_KEY,
     CARE_INTERVAL_S,
     DEFAULT_INTERVAL_S,
@@ -45,6 +46,7 @@ from attention.service import (
 from attention.care.watching import WatchingCheck
 from attention.events import ExperienceEvent
 from attention.dejection import looks_like_giving_up
+from attention.appraisal import RuleAppraiser
 from tools.local_link import LocalLink, read_secret
 from tools import computer as computer_tools
 from attention.speaker import build_speaker
@@ -66,6 +68,14 @@ from personality.mood import now_cst
 from planner.push import finalize_push_text, prepare_morning
 
 logger = logging.getLogger(__name__)
+
+#: 促狭要用的 appraiser。**单例** —— 它是无状态的纯规则匹配，
+#: 每轮 new 一个只是白白多几次对象创建
+_APPRAISER = RuleAppraiser()
+
+
+def _appraiser() -> RuleAppraiser:
+    return _APPRAISER
 
 # 内部结局 → 给糖糖看的话。
 # 语气跟着人设走：坦白说不行，不找借口，不装作没事。
@@ -702,6 +712,28 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
                     origin_context={"sid": sid},
                 )
             )
+            # 促狭（2026-08-27）：喂这一轮的 valence。
+            #
+            # 🔴 **每一轮都要喂，不管是什么 valence。**
+            # 只喂 playful 的话，她「哈哈哈」之后说十句正事，
+            # 窗口里还是三条 playful —— 他会一直贫下去。
+            # 正经的那些正是让气氛散掉的东西（见 playfulness.py）。
+            try:
+                #: ⚠️ appraiser 挂在 **evaluator** 上，不是 engine 上。
+                #: 写错属性路径的话 AttributeError 会被下面那个 except 吞掉，
+                #: 于是促狭永远是 0 —— 今天已经被同类问题咬过两次了
+                ap = _appraiser().appraise(text)
+                attention.playfulness.on_turn(
+                    _now_utc,
+                    valence=ap.valence if ap is not None else "neutral",
+                    cue=ap.cue if ap is not None else "",
+                )
+                attention.store.set_source_state(
+                    PLAYFUL_KEY, attention.playfulness.to_dict()
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception("促狭更新失败（不影响对话）")
+
             logger.info(
                 "ConversationEvent 进入 Attention：%.40s｜%s（%s）",
                 text, decision.action, decision.reason,

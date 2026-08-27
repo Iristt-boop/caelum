@@ -50,6 +50,7 @@ from datetime import datetime, timezone
 
 from attention.longing import LongingState
 from attention.dejection import DejectionState
+from attention.playfulness import PlayfulnessState
 from attention.registry import FLOOR, Attention, AttentionRegistry
 
 logger = logging.getLogger(__name__)
@@ -145,11 +146,15 @@ class ResonanceState:
         registry: AttentionRegistry,
         longing: "LongingState | None" = None,
         dejection: "DejectionState | None" = None,
+        playfulness: "PlayfulnessState | None" = None,
     ) -> None:
         self._registry = registry
         #: 低落（2026-08-27）。和 longing 一样是自维护的 ——
         #: 它不是"一件没解决的事"，是"好几次没帮上"叠出来的状态
         self._dejection = dejection
+        #: 促狭（2026-08-27）。形状又不一样 —— 它是**最近几轮的气氛**，
+        #: 不累加不衰减，她说句正经的就立刻散（见 playfulness.py）
+        self._playfulness = playfulness
         #: 想念（V3.5）。**它不在 Registry 里** —— 形状和 Concern 是反的
         #: （一直都在、时间让它涨、见到她才落），塞进去会被 prune 删掉，
         #: 表现成「她太久没说话，于是他不想她了」。见 longing.py
@@ -208,6 +213,22 @@ class ResonanceState:
             if value > 0 and because:
                 drives["dejection"] = Drive(
                     name="dejection",
+                    intensity=value,
+                    load=value,
+                    because=because,
+                    evidence=[],
+                    source_count=len(because),
+                    computed_at=now,
+                )
+        # 促狭：她在闹，他可以接。同样不参与 kind 分组
+        if self._playfulness is not None:
+            value = self._playfulness.value_at(now)
+            because = self._playfulness.because(now)
+            #: 同低落 —— 值为 0 时这个 Drive 根本不该存在，
+            #: 而不是挂一个 0.00 在自省接口里
+            if value > 0 and because:
+                drives["playfulness"] = Drive(
+                    name="playfulness",
                     intensity=value,
                     load=value,
                     because=because,

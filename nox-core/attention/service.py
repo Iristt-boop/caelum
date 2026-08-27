@@ -58,6 +58,7 @@ from attention.gate import DailyGate
 from attention.intent import GENERATE_THRESHOLD, Intent, IntentEngine
 from attention.longing import LongingState
 from attention.dejection import DejectionState
+from attention.playfulness import PlayfulnessState
 from attention.regret import RegretWatch
 from attention.resonance import ResonanceState
 from attention.relationship import RelationshipState
@@ -97,6 +98,8 @@ LONGING_KEY = "resonance.longing"
 REGRET_KEY = "resonance.regret"
 #: 低落（2026-08-27）。存盘理由见 dejection.py 的「持久化」那段
 DEJECTION_KEY = "resonance.dejection"
+#: 促狭（2026-08-27）。20 分钟就过期，存着只是为了重启时别突然一本正经
+PLAYFUL_KEY = "resonance.playfulness"
 
 #: 追待办的节奏。糖糖 2026-08-17 定的「默认 1 小时一次，可调」
 TODO_CHASE_GAP_MIN = 60
@@ -146,7 +149,11 @@ class AttentionService:
         #: 低落（2026-08-27）：想帮但帮不上。自维护，不进 Registry ——
         #: 它不是"一件没解决的事"，是"好几次没帮上"叠出来的状态
         self.dejection = DejectionState.from_dict(store.get_source_state(DEJECTION_KEY))
-        self.resonance = ResonanceState(self.engine.registry, self.longing, self.dejection)
+        #: 促狭（2026-08-27）：她在闹，他可以接
+        self.playfulness = PlayfulnessState.from_dict(store.get_source_state(PLAYFUL_KEY))
+        self.resonance = ResonanceState(
+            self.engine.registry, self.longing, self.dejection, self.playfulness,
+        )
         self.intents = store.load_intents()
         #: 他给自己留的纸条（唤醒链）。糖糖 2026-08-11 定的那条线。
         self.wakeups = store.load_wakeups()

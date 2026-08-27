@@ -255,6 +255,22 @@ class AttentionEvaluator:
                 summary="",
             )
 
+        # 🔴 **她心情好 / 在跟他闹 —— 不是「担心」。**
+        #
+        # 2026-08-27 加 playful/warm 这两档时差点栽在这儿：下面那段
+        # 无条件 `upsert ... kind="concern"`，于是「她说哈哈哈」
+        # 会被记成一条**担心**，还会衰减、还会攒着、还可能触发他来关心。
+        #
+        # 那是彻底反的 —— 她笑了，他跟过来问「你还好吗」。
+        #
+        # 这两档的意义是**改变他回话的方式**（Resonance 那边读），
+        # 不是往 Registry 里塞东西。所以在这里就地返回，不进 Registry。
+        if appraisal.valence in ("playful", "warm"):
+            return _ignore(
+                appraisal.subject,
+                f"她「{appraisal.cue}」—— 心情是好的，不用记挂",
+            )
+
         weight = self.relationship.care_weight(appraisal.topic)
         strength = min(1.0, appraisal.intensity * (1.0 + (_MAX_BOOST - 1.0) * weight))
 
