@@ -463,6 +463,96 @@ user.threat:  { oxytocin: +0.055 }   // 她受威胁     → 共情，凑过去
 
 ---
 
+### V3.7：低落 + 促狭，以及 appraisal 缺的那一半（✅ 已实现 2026-08-27）
+
+糖糖列的来源表里，这两个是**现有信号就够用**的：
+
+| Drive | 她给的来源 | 实现 |
+|---|---|---|
+| 低落 `dejection` | 任务失败 / 她说"算了" | `attention/dejection.py` |
+| 促狭 `playfulness` | 连续几轮 valence 高 + 无 serious topics | `attention/playfulness.py` |
+
+（躁动要「他有话想说」×「她正忙」，心软要韵律——STT 只给文本，
+吃醋和欲望的来源还没定。这四个留到 V4 之后。）
+
+#### 低落：「帮不上」不是「出错了」
+
+工具报错是程序的事，不该有情绪。低落记的是**她要的东西他给不了**：
+
+```python
+PENDING_WEIGHT = 0.18   # 单次失败不该让他情绪可见地变化
+GAVE_UP_WEIGHT = 0.45   # 她说"算了"，比失败重得多
+PENDING_TTL = 6h        GAVE_UP_TTL = 12h
+```
+
+🔴 `on_succeeded(goal)` 撤销同 goal 的 pending，**但永远不撤销 `gave_up`**。
+后来绕出来了，不代表她当时没失望过。
+
+`looks_like_giving_up()` 带 `NOT_GIVING_UP` 挡词表 ——
+「算了换个思路」是她在往前走，不是放弃。
+
+#### 促狭：形状和别的 Drive 都不一样
+
+```text
+想念   一直都在，越久越浓        （时间驱动）
+低落   出一次事记一笔，会过期     （事件累加）
+促狭   看最近 N 轮的气氛          （滑动窗口，不累加不衰减）
+```
+
+`WINDOW=3` / `FRESH=20min` / `MAX=0.5`。
+
+🔴 **`MAX` 必须小于 `intent.GENERATE_THRESHOLD`(0.55)，有测试盯着。**
+她心情好不该换来一次主动开口 —— 那会变成「你一笑他就凑上来」。
+这个 Drive 只改变他**回话的语气**。
+
+🔴 **误判代价不对称。** 别的 Drive 判错顶多多问一句；
+促狭判错的后果是**他跟着开玩笑**，而她正说着难过的事。
+所以整套方向是**宁可漏判，绝不错判**：
+
+- 句子里有一点难受的迹象 → 一律不算她在玩
+- 她说一句正经的（distress/relief）→ **立刻清空**，不等窗口滑出去
+- `on_turn()` **每一轮都要调**，中性的话也要记 ——
+  只记 playful 的话，她「哈哈哈」之后说十句正事，窗口里还是三条 playful
+
+#### appraisal 原来只有一半
+
+`RuleAppraiser` 只认 `distress` / `relief` —— 全是负面和脱离负面。
+她开心、她在闹，在他眼里是"什么都没发生"。补了 `playful` / `warm`。
+
+判断顺序：`relief → distress → (_NOT_PLAYING 挡词表) → playful → warm`。
+「哈哈哈我好累啊」必须判成 distress。
+
+⚠️ 补完立刻炸出反向 bug：新 valence 走到 evaluator 落进**默认分支**，
+「她说哈哈哈」被记成一条**担心**。现在 playful/warm 一律 `_ignore`。
+
+#### 又一次：同一天被 `except Exception` 吞了三次
+
+```text
+req.text            NameError       （函数收的参数名是 text）
+DEJECTION_KEY       NameError       （import 漏了）
+engine.appraiser    AttributeError  （它挂在 evaluator 上）
+```
+
+加上 `_remember()` 在 `world is None` 时提前 return（低落根本喂不到）、
+`LocalLink` 有 `dejection` 参数但 `create_app` 没传 —— **五次同一个形状**：
+配上了 ≠ 用上了，而且全都不报错。
+
+每个 Drive 现在都有一个「真跑一轮 HTTP，再断言状态落了库」的集成测试。
+读源码的测试抓不到属性路径错。
+
+**线上验过**：
+
+```text
+嘿嘿，不告诉你   → ['playful']
+哈哈哈笑死我了   → ['playful', 'playful']
+其实我今天好累   → ['distress']      ← 气氛立刻散，前面两条清空
+```
+
+🔭 **待办**：让低落和促狭跑一两天，翻日志看有没有误判 ——
+尤其是促狭被"哈哈"带起来的假阳性。
+
+---
+
 ### V4：加入真正的事件锚定
 
 ```text

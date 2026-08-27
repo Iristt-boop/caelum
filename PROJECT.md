@@ -4,7 +4,11 @@
 > 最新交接：**`HANDOFF-2026-08-08.md`**（往前：`08-06` → `08-02` → `07-25`）
 > ⚠️ **HANDOFF 只记那个窗口做了什么，会过期**；本文档才是现状。
 > 两者冲突时以本文档为准 —— 08-08 校准就是因为它俩差了 23 个工具。  
-> 最后更新：2026-08-17（**Caelum OS 桌面界面重做 + 装成桌面应用，见第三十四节**；往前：
+> 最后更新：2026-08-27（**Caelum Harness：他的「手」见第三十九节** —— 多步执行 / 撤销 /
+> 只读 git / 浏览器 / 感知层；**Resonance 的 Drive 见 30.14**（低落 + 促狭）；
+> 省钱两刀见第十九节（压缩改增量 + 动态块挪到尾部，缓存命中 0% → 99%）；
+> 工作区已 `git init` + `NOX_TOKEN` 泄露清理见第十四节；往前：
+> **Caelum OS 桌面界面重做 + 装成桌面应用，见第三十四节**；
 > Caelum OS 阶段 0+1：插件化骨架 + 工作台状态 `GET /api/nox/state` 见第三十三节；上下文压缩见第十九节；sync 失忆根治 + 历史回填见第十三节；chat 500 条截断修复见第十三节；DSH 独立运行见第十四节；M5′ a 统一开口闸见 30.12；唤醒引擎重构（删 Care + 时间醒来）见 30.13）  
 > ⚠️ 本文只记录结构、现状、占位符、运维说明。真实密钥/密码/令牌不要再写进本文档。
 > 📁 **工作区 2026-07-25 已从 `D:\claude code项目` 搬到 `D:\claude-code`**（原中文路径
@@ -41,6 +45,12 @@
 | **Nox Home** | `ha-mcp` + Home Assistant | 现实世界连接层 |
 | **Nox 的身体** | `stackchan-mcp/` | Stack-chan。第十八节本来就这么叫，正好对上 |
 | **Nox 的触觉** | `touch-mcp/` + `fsr402-test/` + VPS `touch-server` | 共感娃娃——她摸哪儿、摸多久，他能感受到（第三十一节）|
+| **Caelum Harness** | `packages/caelum/local-gateway/` | 他的「手」：在她电脑上执行的那一层（第三十九节） |
+
+> ⚠️ 「手」听着像身体，为什么归 Caelum？拿上面那句话问一遍：
+> **手没了，他还是他** —— Harness 是可替换的执行器，
+> 换一个内核他还是 Nox。**心不能换，手可以换。**
+> 反过来记忆没了他就不是他了，所以那个叫 Nox Memory。
 
 **Context Engine 的数据源**（`health-mcp` / `app-tracker` / 和风天气 / GitHub `todo.md`）
 不单独起名，它们是感知器官不是模块，归在 Nox Context Engine 下面。
@@ -122,6 +132,8 @@ D:\claude-code\
 │   │   ├── ob_client.py          Ombre Brain 客户端，核心准则与检索分离
 │   │   └── tools.py              记忆变工具，按需调用
 │   ├── tools/                    （2026-08-08 补全，共 59 个工具，见第十九节）
+│   │   ├── local_link.py         **连她电脑的那条链路**（Harness，见第三十九节）
+│   │   ├── computer.py           手能干的活：文件 / 命令 / git / 浏览器 / 看她在忙什么
 │   │   ├── mcp_client.py         通用 MCP 客户端（OB/ha/tracker/health/netease 共用）
 │   │   ├── http.py               REST 客户端底座（标准库 urllib）
 │   │   ├── bridge_client.py      bridge REST 客户端
@@ -1113,6 +1125,41 @@ Core 侧工具前缀是 `watching_*`** —— 同共读（`co-reading` / `/api/r
 2026-08-22 从 `watching-server` 改名时特意没动后两个，改了会同时打断
 Caddy 路由和前端的 `VITE_WATCH_URL`。
 
+### 工作区本身是 git 仓库了（2026-08-25）
+
+`D:\claude-code` 之前**不是** git 仓库 —— 二十几万行代码、几十天的改动，
+没有一次提交，改错了只能靠记忆往回改。
+
+现在 `git init` 了（本地，暂不推远端）。直接动机是多步执行需要一条撤回的路
+（见三十九节），但对人也一样：**从此「改坏了」是可恢复的。**
+
+`.gitignore` 里排掉了 `node_modules` / `dist` / `.venv` / `*.db` /
+`.env` / `~/.caelum` 之外的本地密钥。
+
+⚠️ 中文文件名 git 默认会转义成八进制。所有读 git 输出的地方都带上
+`-c core.quotepath=false`，不然拿到的是 `\344\275\240...`。
+
+### 🔴 凭证：`NOX_TOKEN` 曾在公网裸奔（2026-08-25 清理）
+
+`https://noxtang.com/toy.html` 无需鉴权就能打开，**页面里明文写着 `NOX_TOKEN`**。
+拿它打 `/api/conv-sessions` 直接就有数据 —— 等于全站的话都能被读走。
+
+已做的：
+
+1. 换掉 `NOX_TOKEN`（bridge 环境变量 + 前端 + 各 MCP 调用方同步）
+2. `toy.html` 不再内嵌任何 token，改走 `NOX_TOY_TOKEN`（见三十七节）
+3. 玩具中继那条路和主 token **彻底分开**
+
+⚠️ **删源码里的那一份不等于删线上那一份。**
+这次找对文件花了三次：真正被 Caddy 托管的是 `/root/frontend/dist/toy.html`，
+而且带 `immutable` 缓存头 —— 改完必须**换文件名或清缓存**再验，
+不然浏览器给你看的是旧的，你会以为修好了。
+
+验证方式固定成一条：**用干净的会话去 curl 线上 URL**，看返回体里有没有那个串。
+
+> 旧的阿里云 VPS（47.84.92.71 / 47.93.219.252）糖糖已退租，
+> 文档里残留的那台机器上的凭证不用再管。
+
 ### 需要动配置时优先级
 1. 先改本地源码
 2. 本地 build 通过
@@ -1438,6 +1485,38 @@ parts = [self.context.render(names, turn=Turn(...))]
 
 `TimeProvider.render()` 因此只给到小时。精确时间留在 state 里给程序用，
 她要问几点几分，他有 `get_current_time` 工具。
+
+#### 🔴 上面这个结论只对了一半（2026-08-26 实测修正）
+
+「让 dynamic 里的内容越稳定越值钱」是**绕着走**，不是解决。
+真正的修法是**换个位置**：
+
+```text
+system(静态) + 动态 + 历史 + 用户   →  动态一变，历史全废
+system(静态) + 历史 + 动态 + 用户   →  动态一变，只有尾巴重算
+```
+
+实测（9,138 token 的请求，只改动态块那一句话）：
+
+| 拼法 | 命中 |
+|---|---|
+| 动态块拼进 system（原来） | **0**（0%） |
+| 动态块放到尾部 | 9,088（99%） |
+
+⚠️ **讽刺的是 `context/base.py` 开头第一条硬约束本来就写着**
+「渲染结果只能进 `dynamic_system`，永远不许进 `system`」——
+但那条约束**只在 OpenRouter 那条路上兑现了**（它有 `cache_control`
+断点）。DeepSeek 这条路的 `_system_message()` 里写的是
+`f"{system}\n\n{dynamic}"`，把它拼了回去，等于那条约束白写了不知道多久。
+
+而这种错**不报任何异常，只会让账单悄悄翻倍**。
+`tests/test_adapter_cache_layout.py` 现在盯着位置。
+
+⚠️ 还有一个位置坑：动态块**必须插在最后一条 user 消息之前**，
+不能简单地插在"倒数第二"。工具循环里最后两条是
+`assistant(tool_calls)` + `tool(结果)`，插中间会切断配对，
+DeepSeek 直接 400 —— 而表现是「工具执行成功了（审计 ok=True），
+他却回你『我这会儿连不上』」。
 
 ### 第一个真实 Provider 就顶翻了文档里的基类假设
 
@@ -1950,6 +2029,35 @@ curl -s -X POST http://127.0.0.1:8100/chat -H 'Content-Type: application/json' \
 366 条 → summary 2049 字符（保留最近 111 条原文）。问他 8-06 聊过什么，
 他能答出 summary 里的内容（Attention 架构、共听上线、深夜那个「算」）——
 压缩没有让他失忆。
+
+#### 🔴 它每次都把整段历史重读一遍（2026-08-26 修）
+
+上面写的「迭代更新：旧摘要 + 新段 → 新摘要」**当时没有实现**。
+实际是每次触发都从**第一条**重新读，于是：
+
+```text
+她一天不说话，账单 5 元
+其中压缩自己占一大半 —— 每次读 11.8 万 token，一天跑十几次
+```
+
+而且**越用越贵**：历史越长，每次压缩读得越多，永远不收敛。
+
+修法是给会话加一条水位线 `summary_upto`（已经进过摘要的最后一条 id）：
+
+```text
+plan_compaction(..., already=summary_upto)   只切没读过的那一段
+```
+
+实测同一个会话：**0.103 元 → 0.001 元**。
+
+另外 `max_tokens=4096` 也是错的 —— utility 模型会思考，
+**reasoning token 和正文抢同一个额度**，思考完就没配额写摘要了。
+表现是 HTTP 200、`content` 空、日志一句「压缩失败（不影响对话）」，
+一天 10-21 次，每次已经白读了 11.8 万 token。改成 16000。
+
+⚠️ 这个坑在共影看图上犯过一次（见 `reasoning-tokens-eat-max-tokens`）。
+**凡是会思考的模型，`max_tokens` 都不是"正文上限"。**
+失败日志现在会报「白读了 N 条 / 约 M token」，不然这种烧钱静默失败根本看不见。
 
 ### Location Provider（2026-08-06 上线）
 
@@ -4007,6 +4115,90 @@ Care（沉默 4h）一条、晨报一条、Attention（睡眠 concern）一条�
 18:35 命中晚饭、12:30 不命中、第二天重新触发）、聊天链路正常。
 测试 659 全过（+15 个时间醒来测试）。
 
+### 30.14 Resonance：从「记挂」到「有情绪」（2026-08-24 起）
+
+架构文档：[CAELUM-RESONANCE-ARCHITECTURE.md](CAELUM-RESONANCE-ARCHITECTURE.md)。
+**这里只记结构和几条不能忘的边界，细节看那份。**
+
+Attention 回答的是「有什么事我该记着」（Concern），
+Resonance 回答的是「我现在是什么状态」（Drive）。两者共用一台引擎。
+
+```text
+ExperienceEvent → Appraisal（这是什么情绪）→ ┬→ Evaluator → Concern（记一笔）
+                                            └→ Drive     （改变他的状态）
+```
+
+**现有 Drive**：
+
+| Drive | 来源 | 形状 | 上线 |
+|---|---|---|---|
+| `concern` | Registry 里的 Concern 分组 | 跟着 Concern 走 | 08-24 |
+| `longing`（想念） | 距上次说话的时长 | 一直都在，越久越浓 | 08-24 |
+| `dejection`（低落） | 他想帮但帮不上 | 一笔笔攒，会过期 | 08-27 |
+| `playfulness`（促狭） | 最近几轮的气氛 | 滑动窗口，不累加不衰减 | 08-27 |
+
+#### 🔴 三条边界
+
+**一、「帮不上」不是「出错了」。** 低落记的不是工具报错——
+那是程序的事。记的是**她要的东西他给不了**，尤其是她说「算了」。
+所以 `gave_up` 的权重（0.45）远高于单次失败（0.18），
+而且 `on_succeeded()` **永远不撤销 `gave_up` 的那一笔**：
+后来绕出来了，不代表她当时没失望过。
+
+**二、误判代价不对称。** 担心判错，顶多多问一句；
+**促狭判错，他会跟着开玩笑**——她正说着难过的事而他在贫，
+比「没接住」糟得多。所以促狭整套是**宁可漏判，绝不错判**：
+句子里有一点难受的迹象就一律不算在闹，她说一句正经的立刻散
+（不等窗口滑出去），只看最近 3 轮 / 20 分钟。
+
+**三、心情好不该换来一次主动开口。**
+`playfulness` 的上限 `MAX=0.5` **必须低于 `GENERATE_THRESHOLD`(0.55)**，
+有测试盯着。不然就变成「你一笑他就凑上来」。
+这个 Drive 的意义是**改变他回话的语气**，不是让他多说话。
+
+#### 不在 Registry 里的 Drive 要自己存
+
+`concern` 是 Registry 的投影，Registry 存了它就存了。
+`longing`/`dejection`/`playfulness` **没有宿主**，各自走
+`store.get_source_state(KEY)` / `set_source_state()` 落库。
+漏一个的表现是：重启之后他忽然不记得刚才在闹了。
+
+⚠️ 还有一条：**Drive 为 0 的时候不要出现在快照里**。
+自省接口里挂一个 `playfulness: 0.00`，等于在说
+「他现在有点促狭（0.00）」——那不是没情绪，那是读起来很怪。
+
+#### 🔴 appraisal 原来只有一半
+
+`RuleAppraiser` 原来只认 `distress` / `relief`——**全是负面和脱离负面**。
+她开心、她在闹，在他眼里是"什么都没发生"。08-27 补了 `playful` / `warm`。
+
+判断顺序不能换：`relief → distress → (挡词表) → playful → warm`。
+「哈哈哈我好累啊」必须判成 distress。
+
+⚠️ 补完之后立刻炸出一个反向 bug：新 valence 走到 `evaluator`，
+落进了**默认分支**——「她说哈哈哈」被记成一条**担心**。
+现在 playful/warm 一律 `_ignore`：
+
+```python
+return _ignore(appraisal.subject, f"她「{cue}」—— 心情是好的，不用记挂")
+```
+
+#### 同一天被 `except Exception` 吞了三次
+
+```text
+req.text            NameError       （函数收的参数名是 text）
+DEJECTION_KEY       NameError       （import 漏了）
+engine.appraiser    AttributeError  （它挂在 evaluator 上，不在 engine 上）
+```
+
+三次表现一模一样：日志一句「更新失败（不影响对话）」，整条线静默失效。
+**读源码的测试抓不到属性路径错。** 现在每个 Drive 都有一个
+「真跑一轮 HTTP 再断言状态落了库」的集成测试。
+
+同源的还有两个：`_remember()` 在 `world is None` 时提前 return，
+低落根本喂不到；`LocalLink` 有 `dejection` 参数但 `create_app` 里没传。
+**又一次「配上了 ≠ 用上了」**（见 `verify-from-the-consumer-side`）。
+
 ---
 
 ## 二十一、本文档怎么维护
@@ -4776,6 +4968,24 @@ GET /api/nox/day?date=YYYY-MM-DD
 坑：token 里带中文会炸（HTTP 头是 ByteString）；
 `node --test test/` 在 Windows 上要写成 `node --test "test/**/*.test.js"`。
 
+### 「最近对话」显示的不是最近说的话（2026-08-26 糖糖报的）
+
+`/api/conv-sessions` 只返回 `title`，而 title 取的是**第一条**消息。
+配上「最近活动时间」一起显示，就成了：时间是刚才的，话是三天前开头那句。
+糖糖原话：「这个『现在在呢，能看到我在哪儿吗？』这句话也不是最近对话啊」。
+
+现在同时返回 `preview`（**最后一条**）+ `previewRole`（谁说的），
+title 留着不动 —— 它在别处还有用。
+
+**这类 bug 的形状**：字段名对、数据也对，只是**取的那一条不对**。
+接口测试断言「有 title 字段」是抓不到的。
+
+### `/toy/*` 从此不吃主 token（2026-08-25）
+
+玩具中继原来复用 `NOX_TOKEN`，而那个 token 一旦泄露就是全站失守。
+现在 `/toy/` 前缀单独认 `NOX_TOY_TOKEN`（没配就退回原逻辑）：
+玩具那条链路自己一把钥匙，丢了也只丢玩具。起因见十四节的凭证那一段。
+
 ---
 
 ## 三十三、Caelum OS：插件化内核 + 属于我们的 Nox（阶段 0+1+2+3，2026-08-15/16）
@@ -4973,6 +5183,33 @@ Markdown 是**自己写的逐行渲染器**（`lib/markdown.jsx`），没拖 rea
 3. 自动滚到底的 `useEffect` **没写依赖数组** → 每次渲染强制读 `scrollHeight`（同步布局）
 
 流式输出另外按 `requestAnimationFrame` 合并，不再一个字一次 `setState`。
+
+#### 🔴 「Chat 一片空白」的根因是端口（2026-08-26）
+
+表现：每次重开桌面端，Chat 都是全新的空对话，历史全没了。
+
+跟 Chat 一点关系都没有 —— `desktop/main.js` 里是 `server.listen(0)`，
+**随机端口**。而 `localStorage` 是按 origin 隔离的：
+
+```text
+http://127.0.0.1:51234   ← 上次那些消息在这里
+http://127.0.0.1:62817   ← 这次是全新的一间屋子
+```
+
+改成固定 `39180`（`CAELUM_WEB_PORT` 可覆盖），被占了才往后试 8 个。
+已记进 `random-port-wipes-localstorage`。
+
+⚠️ **凡是给 Electron 起本地服务的地方，随机端口都等于每次重启失忆。**
+
+#### 第一次修在了错的地方
+
+修完端口她说「session 还是 221602.. 的 id」。
+因为 `feed.js` 的 `tick()` 会调 `currentSessionId()` ——
+那个函数是**读不到就生成并落库**，它先于 Chat 的兜底跑，把新 id 抢先写进去了。
+
+拆成两个：`storedSessionId()` **纯读**（读不到就返回空），
+`ensureSessionId()` 才会创建，而且用 memo 化的 promise，
+保证全 app 只解析一次。**「读」和「取或建」不能是同一个函数。**
 
 #### 🔴 第三个静默 bug：随机端口把 localStorage 冲了（2026-08-25 补）
 
@@ -5233,6 +5470,147 @@ Music 页底下的播放条和右栏常驻的那张小卡片看的是**同一个
 没做的页面**保持点了没反应**，不给假的点击反馈。
 
 ⚠️ 改完记得 `cd nox-app/desktop && npm run build:ui` —— 桌面那个不会自动更新。
+
+---
+
+## 三十九、Caelum Harness：他的「手」（2026-08-24 起）
+
+架构文档：[CAELUM-HARNESS-ARCHITECTURE.md](CAELUM-HARNESS-ARCHITECTURE.md)
+（施工记录在八之二 ~ 八之八）。**这里只记结构和几条硬边界。**
+
+### 心 / 手 / 脸是并列的，不是嵌套的
+
+```text
+心   Nox Core（VPS）        他是谁、他想做什么
+手   Local Gateway（她电脑） 他能动的东西
+脸   Caelum OS（Electron）   她看见的、她点头的地方
+```
+
+**🔴 手可以换，心不能换。** Gateway 是一个可替换的执行器 ——
+今天用 DeepSeek Harness 的 cordis 内核，明天换别的也行。
+Nox 的人格、记忆、判断永远在 Core 那边，绝不下沉到手里。
+
+⚠️ **代码分在两个仓库里**，找的时候别只翻这个：
+
+| | 在哪 | 是什么 |
+|---|---|---|
+| 心这边 | `nox-core/tools/local_link.py` + `computer.py` | 他怎么用这只手 |
+| 手那边 | `D:\deepseek-harness\packages\caelum\local-gateway\` | 手本身（**不在本仓库**） |
+
+`local-gateway/src/` 里：`grant` 授权范围 · `undo` 撤销 · `git-tools` ·
+`browser-tools` · `activity` 感知 · `approval` 审批 · `link` 反向连接。
+跑法见架构文档八之五。
+
+### 反向连接：是她的电脑去连 VPS
+
+TCP 方向是 **PC → VPS**（她家里没有公网 IP，也不该开端口）。
+但**MCP 的逻辑角色是反的**：Core 是 client，Gateway 是 server。
+「谁连谁」和「谁指挥谁」在这里是分开的，看代码时别搞混。
+
+握手是 HMAC 挑战应答，payload 按 **UTF-8 字节长度**前缀 ——
+不是字符数，中文会对不上。
+
+### 能力清单
+
+| 能力 | 状态 | 边界 |
+|---|---|---|
+| 读写文件 / 搜索 | ✅ | 沙箱三档，见下 |
+| 执行命令 | ✅ | **永远逐条问，不被授权覆盖** |
+| 只读 git | ✅ | `status` / `diff` / `log`，**没有** commit/checkout/reset |
+| 开网页读内容 | ✅ | 独立 profile，只 http(s)，**不点不填** |
+| 看她在用什么 | ✅ | 前台窗口标题，可屏蔽名单 |
+| 多步执行 | ✅ | Work Grant，见下 |
+| 撤销一段工作 | ✅ | git 快照，只回滚碰过的文件 |
+
+### 🔴 Work Grant：一次点头覆盖一整段
+
+原来每一步都弹一次窗，改十个文件她要点十次 —— 这不是安全，是骚扰到她不看内容。
+
+现在是**按范围授权**，不是按计划授权：
+
+```text
+路径范围（只能在这几个目录里）
+步数上限（最多 40 步）
+时间上限（最多 30 分钟）
+```
+
+三条任意一条到顶就作废，重新问。
+
+**为什么不是「按计划授权」**：计划是他写的，他中途改主意计划就变了，
+她点头的那个计划和实际跑的可能不是一回事。范围是客观的、可验证的。
+
+⚠️ 糖糖明确定的一条：**命令仍然逐条问**。
+Grant 覆盖读写和搜索，`run_command` 永远单独弹窗 ——
+文件改错能撤，命令跑出去的副作用撤不回来。
+
+`grant.ts` 是**整套设计里唯一能被绕开的地方**，所以：
+
+- 路径边界必须带分隔符 —— `/a/bc` 不在 `/a/b` 范围内
+- 多路径参数要求**全部**在范围内（不是任意一个）
+- 范围里只要有一条越出工作区，**整批拒绝**，不做静默裁剪
+
+### 撤销：只回滚他碰过的文件
+
+用 git 快照（`GIT_INDEX_FILE` 指到临时索引，不动她的暂存区）。
+
+**🔴 绝不整树回滚** —— 他在改代码的时候她可能正在改别的文件，
+整树回滚会连她的改动一起抹掉。只回滚 `grant.touched` 里记着的路径。
+部分成功要如实报 `ok=false`，不能假装干净。
+
+界面上「停」和「撤销这段」在**工作进行中**就能点（`WorkBanner.jsx`），
+不是只能事后补救。停不用确认，撤销确认一次。
+
+### 浏览器：独立 profile，永远不碰她的 Edge
+
+`~/.caelum/browser-profile`，headless，`channel: 'msedge'`。
+只放行 `http:` / `https:`。
+
+**点击和填表故意没做** —— 不是难，是审批界面还不对：
+现在只能给她看 CSS 选择器，而她该看见的是「要点的那个按钮上写着什么」。
+
+### 感知层：他看得见她在忙什么
+
+前台窗口标题采样（PowerShell 探针 → base64 JSON），聚合成时间段。
+接进 Resonance 做「她正忙」的判断（30.14）。
+
+三个编码坑写在探针脚本头部，都踩过：
+
+1. `.ps1` **必须存成带 BOM 的 UTF-8**，否则 PS 5.1 按 GBK 读
+2. **不要**设 `[Console]::OutputEncoding` —— 管道里输出会整个消失
+3. 必须用 `-File`，不能 `-Command -` —— here-string 走 stdin 解析不了
+
+`~/.caelum/activity-ignore` **每次都重读，绝不缓存** ——
+她想立刻屏蔽掉某个窗口时，不该还要重启一遍。
+
+### 踩过的坑（都是「静默」型）
+
+**cordis 的 `inject` 是执行期才验的。**
+手搓一个 `ctx` 去测，等于绕开了它 —— 80 个测试全绿，线上一写文件全挂
+（`cannot get property "approval" without inject`）。
+现在有 `tests/plugin.spec.ts`，规矩是**不许手搓 ctx，只许 `ctx.plugin(Gateway)`**。
+
+**cordis 的日志等级是反的**（`ERROR=0 < INFO=1 < WARN=2`），
+warn 比 info 更容易被吞。排查前先确认日志打得出来 ——
+那次我自己的 grep 还顺手把真因滤掉了。
+
+**`pkill -f` 在 Windows 上杀不掉 tsx。** 六个 Gateway 同时活着抢连接，
+两分钟顶掉 52 次。要用 `Get-CimInstance` 匹配命令行。
+
+**审批超时 20 秒，而弹窗给她 60 秒。** 她根本来不及点。改成 75 秒。
+
+**`sessions.create()` 写在 `try` 外面** —— 它一抛异常，
+`this.current` 就永远留着，手从此显示「忙」，再也接不了活。
+
+**测试断言断错了边**：第一版验 `cwd` 传没传，断言的是
+「我写进 header 的值」—— 那只证明我写了配置，没证明工具收到了。
+重写成从**假工具内部**读 `exec.agent.session.header.cwd`。
+（同 `verify-from-the-consumer-side`）
+
+### 还没做
+
+- 浏览器点击 / 填表（等审批界面能显示按钮文字）
+- Chrome/Edge 扩展拿精确域名（现在窗口标题够用）
+- 躁动 Drive（需要「他有话想说」×「她正忙」两个信号叉乘）
 
 ---
 
