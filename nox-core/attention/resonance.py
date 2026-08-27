@@ -49,6 +49,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from attention.longing import LongingState
+from attention.dejection import DejectionState
 from attention.registry import FLOOR, Attention, AttentionRegistry
 
 logger = logging.getLogger(__name__)
@@ -143,8 +144,12 @@ class ResonanceState:
         self,
         registry: AttentionRegistry,
         longing: "LongingState | None" = None,
+        dejection: "DejectionState | None" = None,
     ) -> None:
         self._registry = registry
+        #: 低落（2026-08-27）。和 longing 一样是自维护的 ——
+        #: 它不是"一件没解决的事"，是"好几次没帮上"叠出来的状态
+        self._dejection = dejection
         #: 想念（V3.5）。**它不在 Registry 里** —— 形状和 Concern 是反的
         #: （一直都在、时间让它涨、见到她才落），塞进去会被 prune 删掉，
         #: 表现成「她太久没说话，于是他不想她了」。见 longing.py
@@ -192,6 +197,24 @@ class ResonanceState:
                 source_count=1 if because else 0,
                 computed_at=now,
             )
+        # 低落：想帮但帮不上。同样不参与 kind 分组
+        if self._dejection is not None:
+            because = self._dejection.because(now)
+            value = self._dejection.value_at(now)
+            #: ⚠️ **值为 0 时不放这个 Drive**。
+            #: 放一个 0.00 的「低落」进去，自省接口里就永远挂着它 ——
+            #: 而「他现在不低落」不该表现成"低落 0.00"，
+            #: 该表现成这个 Drive 根本不存在
+            if value > 0 and because:
+                drives["dejection"] = Drive(
+                    name="dejection",
+                    intensity=value,
+                    load=value,
+                    because=because,
+                    evidence=[],
+                    source_count=len(because),
+                    computed_at=now,
+                )
         return drives
 
     def get(self, name: str, now: datetime | None = None) -> Drive | None:

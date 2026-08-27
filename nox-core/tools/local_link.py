@@ -116,10 +116,14 @@ class LocalLink:
     她要等到旧连接超时才能重新连上 —— 那可能是几分钟。
     """
 
-    def __init__(self, name: str = "computer", world: Any = None) -> None:
+    def __init__(self, name: str = "computer", world: Any = None,
+                 dejection: Any = None) -> None:
         self.name = name
         #: World Model。**可以为 None** —— 那样只是不记，链路照常
         self.world = world
+        #: 低落（2026-08-27）。执行失败 → 「想帮但帮不上」。
+        #: **可以为 None** —— 那样只是不喂那个 Drive，链路照常
+        self.dejection = dejection
         self._ws: Any = None
         self._device: str = ""
         self._next_id = 1
@@ -370,15 +374,38 @@ class LocalLink:
         这里不再往里加。
 
         ⚠️ **整个函数不抛** —— 记不下来不该影响链路。
+
+        ⚠️ 这里**不能因为 `world is None` 就提前 return**。
+        2026-08-27 栽过：那一行挡在最前面，于是「低落」那个 Drive
+        一条失败都收不到 —— 而 World Model 和它是两个独立的消费者，
+        一个没配不该让另一个也失聪。
         """
-        if self.world is None:
-            return
         try:
             capability = str(summary.get("capability") or "")
             if not capability:
                 return
             paths = summary.get("paths") or []
             ok = bool(summary.get("ok"))
+
+            # 🔴 喂给「低落」。**这是它唯一的自动来源。**
+            #
+            # 语义是「想帮但帮不上」，不是「出错了」—— 所以失败记一笔、
+            # 同一件事后来成了就勾掉（见 dejection.py 开头）。
+            # 一次失败不该让他情绪可见地变化，三四次连着不成才攒得起来。
+            #
+            # ⚠️ 放在 try 里、在 world.observe 之前 —— 记不进 World Model
+            # 不该连带让这个 Drive 也收不到
+            if self.dejection is not None:
+                when = _parse_at(summary.get("at"))
+                if ok:
+                    self.dejection.on_succeeded(capability, when)
+                else:
+                    self.dejection.on_failed(capability, when)
+
+            #: World Model 没接就到此为止 —— 上面那个 Drive 已经喂过了。
+            #: **不能把这个判断挪到函数开头**，理由见 docstring
+            if self.world is None:
+                return
 
             #: dedup_key 用 at + capability + 路径 —— 同一次执行
             #  重复收到时不会记两遍（World Model 的幂等靠它）

@@ -57,6 +57,7 @@ from attention.gate import STATE_KEY as GATE_KEY
 from attention.gate import DailyGate
 from attention.intent import GENERATE_THRESHOLD, Intent, IntentEngine
 from attention.longing import LongingState
+from attention.dejection import DejectionState
 from attention.regret import RegretWatch
 from attention.resonance import ResonanceState
 from attention.relationship import RelationshipState
@@ -94,6 +95,8 @@ LEDGER_KEY = "care.ledger"
 LONGING_KEY = "resonance.longing"
 #: 后悔的落盘键（V3.6，见 regret.py）
 REGRET_KEY = "resonance.regret"
+#: 低落（2026-08-27）。存盘理由见 dejection.py 的「持久化」那段
+DEJECTION_KEY = "resonance.dejection"
 
 #: 追待办的节奏。糖糖 2026-08-17 定的「默认 1 小时一次，可调」
 TODO_CHASE_GAP_MIN = 60
@@ -140,7 +143,10 @@ class AttentionService:
         #: （事件驱动、会淡出、会被解决），所以 Resonance 按 kind 分组时
         #: 自然多一个 Drive，不需要注册表
         self.regret = RegretWatch.from_dict(store.get_source_state(REGRET_KEY))
-        self.resonance = ResonanceState(self.engine.registry, self.longing)
+        #: 低落（2026-08-27）：想帮但帮不上。自维护，不进 Registry ——
+        #: 它不是"一件没解决的事"，是"好几次没帮上"叠出来的状态
+        self.dejection = DejectionState.from_dict(store.get_source_state(DEJECTION_KEY))
+        self.resonance = ResonanceState(self.engine.registry, self.longing, self.dejection)
         self.intents = store.load_intents()
         #: 他给自己留的纸条（唤醒链）。糖糖 2026-08-11 定的那条线。
         self.wakeups = store.load_wakeups()
@@ -298,6 +304,17 @@ class AttentionService:
             self.store.set_source_state(REGRET_KEY, self.regret.to_dict())
         except Exception:  # noqa: BLE001
             logger.exception("后悔判定失败，这轮跳过")
+
+        # 2.46 低落（2026-08-27）：想帮但帮不上。
+        #
+        # 这里只做两件事：**清过期的** + 存盘。
+        # 值本身是 `_pending` 里那几笔算出来的，不需要 tick 去推 ——
+        # 和想念不一样（那个是时间让它涨）。
+        try:
+            self.dejection.prune(now)
+            self.store.set_source_state(DEJECTION_KEY, self.dejection.to_dict())
+        except Exception:  # noqa: BLE001
+            logger.exception("低落更新失败，这轮跳过")
 
         # 2.5 Resonance（V3）：那些还没解决的关心，加起来是多重。
         #

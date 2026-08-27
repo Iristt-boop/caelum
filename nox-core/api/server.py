@@ -33,6 +33,7 @@ from pydantic import BaseModel, Field
 from agent import vision
 from agent.llm import Message
 from attention.service import (
+    DEJECTION_KEY,
     LONGING_KEY,
     REGRET_KEY,
     CARE_INTERVAL_S,
@@ -43,6 +44,7 @@ from attention.service import (
 )
 from attention.care.watching import WatchingCheck
 from attention.events import ExperienceEvent
+from attention.dejection import looks_like_giving_up
 from tools.local_link import LocalLink, read_secret
 from tools import computer as computer_tools
 from attention.speaker import build_speaker
@@ -511,6 +513,14 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
     #: 现在 `_world` 有了，把 World Model 交给那只手（⑧ 执行摘要写入）。
     #: attention 没开时是 None —— 那样只是不记，链路照常
     local_hand.world = _world()
+    # 🔴 低落（2026-08-27）：执行成败要喂给那个 Drive。
+    #
+    # 和 `world` 同一个理由晚绑 —— `attention` 在这一行之前才装配完。
+    #
+    # ⚠️ **不接这一行的话，「低落」永远是 0，而且没有任何报错。**
+    # 这正是记忆里那条「配上了 ≠ 用上了」：dejection.py 写完了、
+    # 测试全绿、service 里也 new 出来了，但没人把失败交给它。
+    local_hand.dejection = attention.dejection if attention is not None else None
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -649,8 +659,28 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
             attention.store.set_source_state(
                 REGRET_KEY, attention.regret.to_dict()
             )
+
+            # 低落（2026-08-27）：想帮但帮不上。
+            #
+            # 🔴 **两件事，顺序不能反。**
+            #
+            # 先判「她说算了」—— 那是把最近一笔坐实。
+            # 再 `on_contact` 淡化悬着的那些。
+            #
+            # 反过来的话，她说「算了」这句话本身会先把要坐实的那笔
+            # 清掉，然后坐实到一笔不存在的事上 —— 于是他记住的是
+            # 「她放弃了（不知道什么）」，而真正那件事被抹了。
+            #: ⚠️ 用参数 `text`，**不是 `req.text`** —— 这个函数拿不到
+            #: 请求体（2026-08-27 栽过：NameError 被 except 兜住，
+            #: 于是「她说算了」这条线一直静默失效）
+            if looks_like_giving_up(text) is not None:
+                attention.dejection.on_gave_up(_now_utc, quote=text)
+            attention.dejection.on_contact(_now_utc)
+            attention.store.set_source_state(
+                DEJECTION_KEY, attention.dejection.to_dict()
+            )
         except Exception:  # noqa: BLE001
-            logger.exception("想念/后悔回落失败（不影响对话）")
+            logger.exception("想念/后悔/低落回落失败（不影响对话）")
 
         # Resonance V1：让对话进入 Attention。
         #
