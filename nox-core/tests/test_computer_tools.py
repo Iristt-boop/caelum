@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timedelta, timezone
 import sys
 import threading
 from pathlib import Path
@@ -68,7 +69,7 @@ def _handlers(link):
 # --------------------------------------------------------------- 注册顺序
 
 
-def test_十一件都注册上了():
+def test_十二件都注册上了():
     """⚠️ 顺序也锁着 —— 工具定义是缓存前缀的一部分，顺序变了缓存就失效。"""
     loop = _Loop()
     computer_tools.register_all(loop, FakeLink())
@@ -83,6 +84,7 @@ def test_十一件都注册上了():
         "computer_git_status",
         "computer_git_diff",
         "computer_git_log",
+        "computer_browse",
         "computer_start_work",
         "computer_end_work",
     ]
@@ -195,6 +197,110 @@ class Test等她点头要给够时间:
         assert m._NEEDS_HER_NOD == {
             "computer_write_file", "computer_edit_file", "computer_run_command",
         }
+
+
+class Test感知层:
+    """她在电脑上干什么（2026-08-27）。
+
+    ## 🔴 为什么存活性要三态
+
+    app-tracker 的教训：那个服务 `is-active` 一直是 active，
+    但数据源在 2026-08-02 就停了，**25 天没人发现**。
+
+    `unknown`（我不知道）和 `idle`（我知道她没在用）**必须分开** ——
+    混成一个的话，传感器挂掉会被读成「她一整天没碰电脑」，
+    而 Resonance 会据此判断她的状态。
+    """
+
+    @staticmethod
+    def _link(connected=True, last_activity=None):
+        from tools.local_link import LocalLink
+        lk = LocalLink(world=_FakeWorld())
+        if connected:
+            lk._ws = object()
+            lk._device = "糖糖的电脑"
+        lk._last_activity_at = last_activity
+        return lk
+
+    def test_没连上时是_unknown(self):
+        assert self._link(connected=False).sense_state() == "unknown"
+
+    def test_连上了但一条没收到过_也是_unknown(self):
+        """🔴 不能说成「她没在用电脑」—— 我们只是还不知道。"""
+        lk = self._link(last_activity=None)
+        assert lk.sense_state() == "unknown"
+        assert "看不到她在用什么" in lk.describe()
+
+    def test_刚收到过是_live(self):
+        lk = self._link(last_activity=datetime.now(timezone.utc))
+        assert lk.sense_state() == "live"
+        assert "看得到" in lk.describe()
+
+    def test_很久没收到是_stale_而且要说出来(self):
+        """⚠️ 不说的话他会把「没有活动数据」当成「她没在用电脑」。"""
+        old = datetime.now(timezone.utc) - timedelta(hours=2)
+        lk = self._link(last_activity=old)
+        assert lk.sense_state() == "stale"
+        assert "别据此判断" in lk.describe()
+
+    def test_存活性看的是收到时刻_不是数据里的时间戳(self):
+        """🔴 用后者的话，一条迟到的旧数据会让死掉的传感器看起来还活着。"""
+        lk = self._link(last_activity=None)
+        lk._remember_activity({
+            "app": "msedge", "title": "某页面", "seconds": 300,
+            #: 数据里写的是三小时前
+            "at": (datetime.now(timezone.utc) - timedelta(hours=3)).isoformat(),
+        })
+        #: 但我们是刚收到的 —— 所以是 live
+        assert lk.sense_state() == "live"
+
+    def test_挂机不记(self):
+        """她去做饭了不是一种「活动」，记下来会让他以为她在专注做什么。"""
+        lk = self._link()
+        lk._remember_activity({"app": "idle", "title": "", "seconds": 3600,
+                               "at": datetime.now(timezone.utc).isoformat()})
+        assert lk.world.written == []
+
+    def test_正常的一段记进_World_Model(self):
+        lk = self._link()
+        lk._remember_activity({
+            "app": "msedge", "title": "底特律 变人 攻略 - Microsoft Edge",
+            "seconds": 720, "device": "糖糖的电脑",
+            "at": datetime.now(timezone.utc).isoformat(),
+        })
+        assert len(lk.world.written) == 1
+        w = lk.world.written[0]
+        assert w["source"] == "desktop"
+        assert w["observed"]["应用"] == "msedge"
+        assert w["observed"]["待了多久秒"] == 720
+        assert "攻略" in w["observed"]["窗口标题"]
+
+    def test_没有标题时不塞空字段(self):
+        lk = self._link()
+        lk._remember_activity({"app": "game.exe", "title": "", "seconds": 600,
+                               "at": datetime.now(timezone.utc).isoformat()})
+        assert "窗口标题" not in lk.world.written[0]["observed"]
+
+    def test_记不下来不影响链路(self):
+        """感知是加分项，挂了不该拖累那只手。"""
+        lk = self._link()
+        lk.world = _BoomWorld()
+        lk._remember_activity({"app": "x", "seconds": 60,
+                               "at": datetime.now(timezone.utc).isoformat()})
+        #: 没抛出来就算过
+
+
+class _FakeWorld:
+    def __init__(self):
+        self.written = []
+
+    def observe(self, **kw):
+        self.written.append(kw)
+
+
+class _BoomWorld:
+    def observe(self, **kw):
+        raise RuntimeError("World Model 挂了")
 
 
 class Test多步执行:

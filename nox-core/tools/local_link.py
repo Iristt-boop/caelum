@@ -127,6 +127,8 @@ class LocalLink:
         #: WS 所属的事件循环。见 `call()` —— 同步接口要靠它把协程
         #: 投回正确的循环，不能自己新开一个
         self._loop: asyncio.AbstractEventLoop | None = None
+        #: 最后一次收到活动段的时刻。感知层存活性靠它（见 `sense_state`）
+        self._last_activity_at: datetime | None = None
 
     # ------------------------------------------------------------ 状态
 
@@ -143,11 +145,43 @@ class LocalLink:
     def device_id(self) -> str:
         return self._device
 
+    #: 🔴 感知层多久没出声就算它挂了。
+    #:
+    #: app-tracker 的教训：那个服务 `is-active` 一直是 active，
+    #: 但数据源在 2026-08-02 就停了，**25 天没人发现**。
+    #: 一个喂给死传感器的判断不会报错，它只会安静地永远不触发 ——
+    #: 或者更糟，把三周前的数据当成"她现在在刷抖音"。
+    #:
+    #: 30 分钟：她可能只是一直在同一个窗口里（那样不发新段），
+    #: 所以不能设太短；但超过半小时没有任何段结束，多半是挂了
+    SENSE_STALE_S = 30 * 60
+
+    def sense_state(self, now: datetime | None = None) -> str:
+        """感知层现在算不算活着。**三态，不是两态。**
+
+        `unknown` 和 `idle` 必须分开 —— 前者是"我不知道她在干嘛"，
+        后者是"我知道她没在用电脑"。混成一个的话，
+        传感器挂掉会被读成"她一整天没碰电脑"。
+        """
+        if not self.is_ready:
+            return "unknown"          # 电脑都没连上，更别说感知
+        if self._last_activity_at is None:
+            return "unknown"          # 连上了但一条都没收到过
+        age = ((now or datetime.now(timezone.utc)) - self._last_activity_at).total_seconds()
+        return "live" if age < self.SENSE_STALE_S else "stale"
+
     def describe(self) -> str:
         """一句人话，进上下文给他看。"""
         if not self.is_ready:
             return "她的电脑现在没连上"
-        return f"她的电脑连着（{self._device}）"
+        state = self.sense_state()
+        if state == "live":
+            return f"她的电脑连着（{self._device}），看得到她在用什么"
+        if state == "stale":
+            # ⚠️ **要说出来。** 不说的话他会把"没有活动数据"
+            # 当成"她没在用电脑"，然后据此判断她的状态
+            return f"她的电脑连着（{self._device}），但活动感知半小时没数据了 —— 别据此判断她在不在"
+        return f"她的电脑连着（{self._device}），但看不到她在用什么"
 
     # ------------------------------------------------------------ 服务端：接受连接
 
@@ -245,9 +279,12 @@ class LocalLink:
     def _on_message(self, msg: dict[str, Any]) -> None:
         mid = msg.get("id")
         if mid is None:
-            #: 通知 —— 现在只有执行摘要（⑦）
-            if msg.get("method") == "caelum/event":
+            #: 通知（不要回应）
+            method = msg.get("method")
+            if method == "caelum/event":
                 self._remember(msg.get("params") or {})
+            elif method == "caelum/activity":
+                self._remember_activity(msg.get("params") or {})
             return
         pending = self._pending.pop(int(mid), None)
         if pending is None:
@@ -260,6 +297,60 @@ class LocalLink:
             if not pending.future.done():
                 pending.future.set_exception(ConnectionError(why))
         self._pending.clear()
+
+    def _remember_activity(self, seg: dict[str, Any]) -> None:
+        """她在电脑上待了一段（感知层 ①②，2026-08-27）。
+
+        喂给 Resonance —— 见 `CAELUM-RESONANCE-ARCHITECTURE.md`。
+        糖糖的原话：「browser 除了能控制之外，也需要跟 resonance 结合」。
+
+        ## 记什么
+
+        **哪个应用 · 什么标题 · 待了多久。不含内容。**
+        窗口标题已经在 Gateway 那边过了她的忽略名单
+        （`~/.caelum/activity-ignore`），命中的整段根本不会发过来。
+
+        ## 🔴 这条不该让他"知道得太具体"
+
+        记的是事实，不是判断。「她在 Edge 上看了 12 分钟《底特律》攻略」
+        是事实；「她在摸鱼」是判断 —— 那个判断该由 Resonance 在
+        看到一串事实之后自己形成，而不是在入口处就写死。
+
+        ⚠️ 整个函数不抛 —— 感知记不下来不该影响那只手。
+        """
+        if self.world is None:
+            return
+        try:
+            app = str(seg.get("app") or "").strip()
+            if not app or app == "idle":
+                #: 挂机不记。她去做饭了不是一种"活动"，
+                #: 记下来只会让 Resonance 以为她在专注做什么
+                return
+            seconds = int(seg.get("seconds") or 0)
+            if seconds <= 0:
+                return
+
+            at = _parse_at(seg.get("at"))
+            #: 🔴 存活性看的是「什么时候**收到**的」，不是段里的时间戳 ——
+            #: 用后者的话，一条迟到的旧数据会让死掉的传感器看起来还活着
+            self._last_activity_at = datetime.now(timezone.utc)
+            title = str(seg.get("title") or "")
+            #: dedup_key 用 设备+起始时刻+应用 —— 重连时重发不会记两遍
+            key = f"{seg.get('device') or 'pc'}|{seg.get('at')}|{app}"
+            self.world.observe(
+                source="desktop",
+                type="她在电脑上做的事",
+                observed={
+                    "应用": app,
+                    **({"窗口标题": title} if title else {}),
+                    "待了多久秒": seconds,
+                    "设备": str(seg.get("device") or "pc"),
+                },
+                observed_at=at,
+                dedup_key=key,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("记录活动失败（不影响链路）: %s", exc)
 
     def _remember(self, summary: dict[str, Any]) -> None:
         """把一次执行记进 World Model（⑧）。

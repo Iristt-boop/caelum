@@ -65,6 +65,8 @@ _CAPABILITY: dict[str, str] = {
     "computer_git_status": "computer.git_status",
     "computer_git_diff": "computer.git_diff",
     "computer_git_log": "computer.git_log",
+    #: 浏览器只读（2026-08-27）。**他自己的浏览器，不是她的**
+    "computer_browse": "computer.browse",
 }
 
 
@@ -257,6 +259,27 @@ GIT_LOG_SPEC = ToolSpec(
 )
 
 
+BROWSE_SPEC = ToolSpec(
+    name="computer_browse",
+    description=(
+        "打开一个网址，把页面正文读回来。**不用她点头。**"
+        "\n\n🔴 **这是他自己的浏览器，不是糖糖那个。**"
+        "它是干净的、没有任何登录态 —— 需要登录才能看的页面，"
+        "他看到的会是登出状态。**别据此判断她的账号里有什么。**"
+        "\n\n适合：查文档、看一篇文章、读一个公开页面。"
+        "\n不适合：任何需要她账号的东西（邮箱、网盘、后台）。那些他看不到，也不该看。"
+        "\n\n⚠️ 只支持 http/https。页面很长会截断，截断了会说。"
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "url": {"type": "string", "description": "要打开的网址，http 或 https"},
+        },
+        "required": ["url"],
+    },
+)
+
+
 START_WORK_SPEC = ToolSpec(
     name="computer_start_work",
     description=(
@@ -300,7 +323,7 @@ END_WORK_SPEC = ToolSpec(
 
 _SPECS = (
     READ_SPEC, FIND_SPEC, SEARCH_SPEC, WRITE_SPEC, EDIT_SPEC, RUN_SPEC,
-    GIT_STATUS_SPEC, GIT_DIFF_SPEC, GIT_LOG_SPEC,
+    GIT_STATUS_SPEC, GIT_DIFF_SPEC, GIT_LOG_SPEC, BROWSE_SPEC,
     START_WORK_SPEC, END_WORK_SPEC,
 )
 
