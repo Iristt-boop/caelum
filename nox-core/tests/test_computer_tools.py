@@ -69,7 +69,7 @@ def _handlers(link):
 # --------------------------------------------------------------- 注册顺序
 
 
-def test_十三件都注册上了():
+def test_十八件都注册上了():
     """⚠️ 顺序也锁着 —— 工具定义是缓存前缀的一部分，顺序变了缓存就失效。"""
     loop = _Loop()
     computer_tools.register_all(loop, FakeLink())
@@ -87,6 +87,12 @@ def test_十三件都注册上了():
         "computer_browse",
         #: 看图（2026-08-28）
         "computer_read_image",
+        #: 常驻终端（2026-08-28）
+        "computer_terminal_open",
+        "computer_terminal_send",
+        "computer_terminal_read",
+        "computer_terminal_list",
+        "computer_terminal_close",
         "computer_start_work",
         "computer_end_work",
     ]
@@ -147,6 +153,7 @@ def test_工具名翻成能力名():
 #: 给它们一份最小可用参数，不然这个循环验的是"挡下来了"而不是"翻对了"
 _MIN_ARGS: dict[str, dict] = {
     "computer_read_image": {"path": "a.png"},
+    "computer_terminal_send": {"id": "sh1", "text": "echo hi"},
 }
 
 
@@ -205,6 +212,8 @@ class Test等她点头要给够时间:
         from tools import computer as m
         assert m._NEEDS_HER_NOD == {
             "computer_write_file", "computer_edit_file", "computer_run_command",
+            #: 往终端里打字 = 执行命令（2026-08-28）
+            "computer_terminal_send",
         }
 
 

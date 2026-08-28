@@ -1400,6 +1400,95 @@ Core 那边那条会直接去读手的源码比对。
 
 ---
 
+## 八之十、常驻终端（2026-08-28）
+
+> 糖糖：「有了它他才能自己起服务、自己看日志，不用每次让我跑。」
+
+`run_command` 是一次性的 —— 起一个 dev server 会把那条调用**永远卡住**。
+
+### 🔴 harness 那套用不了：它要一个本地大脑
+
+harness 有完整的一套（`dsh-terminal` + `terminal-bash` + `tool-terminal`），
+但所有权是**按 Agent 划分**的：
+
+```text
+isLiveOwner(owner) = ctx.get('agents')?.get(owner.id) === owner
+```
+
+要一个**真正注册过的 Agent**。而注册 Agent 要 `agents.setFactory()`，
+唯一的工厂实现是 `dsh-agent-loop` —— 它的 `inject` 里有 **`llm`**。
+
+也就是说：用它就得在这只手里装一个模型。**那和第〇节正好反着来。**
+
+所以和 git / 浏览器 / 看图一样自己写（`terminal-tools.ts`），
+直接站在更底下那个原语上：`ctx.subprocess.spawnTerminal()`。
+**沙箱照套** —— `ctx.sandbox.confine()`，和 `terminal-bash` 同一行代码，
+拿不到 sandbox provider 就不开，绝不裸跑。
+
+⚠️ 工具名是 `shell_*` 不是 `terminal_*`，避免哪天有人装了官方那套时重名覆盖
+（和 `look_at_image` 同一个考虑）。对外仍然叫 `computer.terminal_*`。
+
+### 权限：谁真的会跑命令
+
+| | 档 | 为什么 |
+|---|---|---|
+| `open` | 自动 | **开完什么也干不了**，一个 shell 停在提示符上 |
+| `send` | **每次问她** | 往里打字 = 执行命令，和 `run_command` 同一件事 |
+| `read` / `list` / `close` | 自动 | 读输出、列自己开的、收自己开的 |
+
+🔴 `computer.terminal_send` 同时进了 `NEEDS_APPROVAL` **和 `ALWAYS_ASK`**。
+只进前者的话，**Work Grant 会顺手把它放行** —— 而那正是糖糖说过不行的事
+（命令永远逐条问）。有测试专门盯这条。
+
+### 🔴 审批弹窗差点是空的
+
+`approval.ts` 的 `commandOf()` 原来只认 `command` 这个键，
+而 `terminal_send` 的参数叫 `text`。不改的话她看到的是
+「Nox 要用 terminal_send」**而看不到任何命令内容** ——
+等于让她闭着眼睛点同意，那还不如不问。
+
+**加任何新的执行类能力，先回去看那个函数。**
+
+### 没有 `interrupt`：做不到就不给
+
+本来做了 Ctrl+C。实测三种写法**全废**：
+
+```text
+写 ETX(0x03)       死循环照跑
+写 ETX + CR        死循环照跑
+signalForeground   返回成功，死循环照跑
+```
+
+沙箱的受限令牌壳夹在中间，conpty 的 Ctrl+C 传不到前台进程组。
+
+**所以那件工具删掉了。** 一个「报告打断成功、其实什么都没干」的工具
+比没有更糟 —— 他会以为进程停了，然后基于错的前提接着做。
+要停跑飞的东西就 `close` 整个 shell，那个是真的会杀掉整棵进程树。
+
+### 两件"看不见但很贵"的事
+
+**ANSI 要洗掉。** pwsh 的输出里全是 `\x1b[93m` 这种着色和光标控制，
+一屏日志能有一半是控制字符，而它们会**原样进他的上下文**。
+设 `TERM=dumb` 没用，Windows 上照样吐。
+
+⚠️ 洗的时候要处理**跨 chunk 被切断的序列**：PTY 输出是流，
+一个 `ESC [ ? 2 5 h` 完全可能被切成两块，逐块洗会漏出个 `?m` 进正文。
+残尾要留到下一块再洗。
+
+**PSReadLine 的历史文件写不进去。** 沙箱不让写 AppData，
+于是**每一条命令都会带回一段「访问被拒绝」**，他会以为自己的命令失败了。
+开场发一句 `Set-PSReadLineOption -HistorySaveStyle SaveNothing` 关掉，
+然后**等它安静下来再清缓冲** —— 写死一个毫秒数的话，
+那条报错正好在清理之后冒出来，挂在第一条命令的输出里。
+
+### 边界
+
+最多 4 个 shell · 每个留 200KB 输出 · 闲置 30 分钟自动收 ·
+`cwd` 必须在工作区里 · 一次 `send` 最多等 20 秒就返回（**进程继续跑**，
+这正是常驻的意义，而且要**说出来**，不然他会拿半截输出下结论）。
+
+---
+
 ## 九、和旧文档的关系
 
 | 旧文档 | 状态 |

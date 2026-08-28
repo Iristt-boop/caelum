@@ -5501,8 +5501,8 @@ Nox 的人格、记忆、判断永远在 Core 那边，绝不下沉到手里。
 | 手那边 | `D:\deepseek-harness\packages\caelum\local-gateway\` | 手本身（**不在本仓库**） |
 
 `local-gateway/src/` 里：`grant` 授权范围 · `undo` 撤销 · `git-tools` ·
-`browser-tools` · `image-tools` 看图 · `activity` 感知 · `approval` 审批 ·
-`link` 反向连接。跑法见架构文档八之五。
+`browser-tools` · `image-tools` 看图 · `terminal-tools` 常驻终端 ·
+`activity` 感知 · `approval` 审批 · `link` 反向连接。跑法见架构文档八之五。
 
 ⚠️ **看图这条 base64 绝不能进他的上下文**（一张图约 27 万字符，
 而且会存进会话历史，之后每轮都带着）。闸在 `computer.py::_split_image`，
@@ -5526,6 +5526,7 @@ TCP 方向是 **PC → VPS**（她家里没有公网 IP，也不该开端口）�
 | 只读 git | ✅ | `status` / `diff` / `log`，**没有** commit/checkout/reset |
 | 开网页读内容 | ✅ | 独立 profile，只 http(s)，**不点不填** |
 | 看图 | ✅ | 工作区 + 她的投递口；**他看到的是转述，不是图** |
+| 常驻终端 | ✅ | 五件（开/发/读/列/关）。**发命令每次问她**；没有 Ctrl+C |
 | 看她在用什么 | ✅ | 前台窗口标题，可屏蔽名单 |
 | 多步执行 | ✅ | Work Grant，见下 |
 | 撤销一段工作 | ✅ | git 快照，只回滚碰过的文件 |
@@ -5616,9 +5617,9 @@ warn 比 info 更容易被吞。排查前先确认日志打得出来 ——
 
 ### 还没做
 
-- `terminal_*`（常驻终端）—— harness 现成有。`run_command` 是一次性的，
-  **起不了 dev server**，起了就卡死在那儿
-- `read_image` 之外 harness 还现成躺着 `bash`（能力和 pwsh 重叠，不接）、
+- Ctrl+C：沙箱挡着，conpty 传不进前台进程组，三种写法实测全废。
+  现在停跑飞的进程只能关掉整个 shell（架构文档八之十）
+- harness 还现成躺着 `bash`（能力和 pwsh 重叠，不接）、
   `ask_user_question`（他干到一半反问她）
 - 浏览器点击 / 填表（等审批界面能显示按钮文字）
 - Chrome/Edge 扩展拿精确域名（现在窗口标题够用）

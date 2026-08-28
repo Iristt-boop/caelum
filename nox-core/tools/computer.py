@@ -49,6 +49,10 @@ _NEEDS_HER_NOD = frozenset({
     "computer_write_file",
     "computer_edit_file",
     "computer_run_command",
+    #: 往常驻终端里打字 = 执行命令，和 run_command 完全同一件事
+    #: （2026-08-28）。**Gateway 的 `ALWAYS_ASK` 里也有它** ——
+    #: 那边才是真正把关的，这边只管「等她多久」
+    "computer_terminal_send",
 })
 
 
@@ -70,6 +74,13 @@ _CAPABILITY: dict[str, str] = {
     #: 看图（2026-08-28）。⚠️ 这条**不走 `run`**，有自己的 handler ——
     #: 图片字节必须先过视觉模型，绝不能直接进他的上下文
     "computer_read_image": "computer.read_image",
+    #: 常驻终端（2026-08-28）。`run_command` 是一次性的，起 dev server
+    #: 会把那条调用永远卡住；这几件给他一个活着的 shell
+    "computer_terminal_open": "computer.terminal_open",
+    "computer_terminal_send": "computer.terminal_send",
+    "computer_terminal_read": "computer.terminal_read",
+    "computer_terminal_list": "computer.terminal_list",
+    "computer_terminal_close": "computer.terminal_close",
 }
 
 
@@ -319,6 +330,89 @@ READ_IMAGE_SPEC = ToolSpec(
 )
 
 
+TERMINAL_OPEN_SPEC = ToolSpec(
+    name="computer_terminal_open",
+    description=(
+        "在她电脑上开一个**常驻的 shell**。命令跑完它还在，变量、当前目录都留着。"
+        "**不用她点头**（开一个 shell 本身不执行任何东西）。"
+        "\n\n🔴 什么时候用它、什么时候用 computer_run_command："
+        "\n- 会**一直跑**的（dev server / watch / 日志跟随）→ 用这个。"
+        "run_command 会被它永远卡住"
+        "\n- 要**接着上一条**的（先 cd、再装依赖、再跑）→ 用这个，状态是连着的"
+        "\n- 一条跑完就结束的 → 用 run_command，别开 shell"
+        "\n\n最多同时开 4 个。用完记得 computer_terminal_close。"
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "name": {"type": "string", "description": "起个短标签，比如 dev、tests"},
+            "cwd": {"type": "string", "description": "工作目录，必须在工作区里面。不给就是工作区根目录"},
+        },
+    },
+)
+
+
+TERMINAL_SEND_SPEC = ToolSpec(
+    name="computer_terminal_send",
+    description=(
+        "在常驻 shell 里跑一条命令。**每一次都要糖糖点头。**"
+        "\n\n发完会等一会儿，把这段时间的输出带回来 —— "
+        "**但进程不会被中断**。像 dev server 这种一直跑的，"
+        "等到上限就先返回，它继续在后台跑，用 computer_terminal_read 接着看。"
+        "\n\n⚠️ **这台机器上 Ctrl+C 传不进去**（沙箱挡着）。"
+        "要停掉一个跑飞的东西，只能 computer_terminal_close 掉整个 shell。"
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "id": {"type": "string", "description": "shell 的 id，从 open 或 list 拿"},
+            "text": {"type": "string", "description": "要跑的命令"},
+            "submit": {"type": "boolean", "description": "命令后面是否回车，默认 true"},
+        },
+        "required": ["id", "text"],
+    },
+)
+
+
+TERMINAL_READ_SPEC = ToolSpec(
+    name="computer_terminal_read",
+    description=(
+        "读常驻 shell 的输出。**不用她点头。**"
+        "默认只给上次读过之后**新出来的**那部分 —— 跟一个 dev server 的日志就用这个。"
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "id": {"type": "string", "description": "shell 的 id"},
+            "all": {"type": "boolean", "description": "true 就把留着的全部输出都给你，默认只给新的"},
+        },
+        "required": ["id"],
+    },
+)
+
+
+TERMINAL_LIST_SPEC = ToolSpec(
+    name="computer_terminal_list",
+    description="列出他自己开着的常驻 shell。**不用她点头。**",
+    parameters={"type": "object", "properties": {}},
+)
+
+
+TERMINAL_CLOSE_SPEC = ToolSpec(
+    name="computer_terminal_close",
+    description=(
+        "关掉一个常驻 shell，**里面在跑的东西一起结束**。不用她点头。"
+        "\n\n干完活就关 —— 留着会一直占她的内存。"
+        "这也是这台机器上**唯一能停下一个跑飞进程**的办法。"
+    ),
+    parameters={
+        "type": "object",
+        "properties": {"id": {"type": "string", "description": "shell 的 id"}},
+        "required": ["id"],
+    },
+)
+
+
 START_WORK_SPEC = ToolSpec(
     name="computer_start_work",
     description=(
@@ -364,6 +458,8 @@ _SPECS = (
     READ_SPEC, FIND_SPEC, SEARCH_SPEC, WRITE_SPEC, EDIT_SPEC, RUN_SPEC,
     GIT_STATUS_SPEC, GIT_DIFF_SPEC, GIT_LOG_SPEC, BROWSE_SPEC,
     READ_IMAGE_SPEC,
+    TERMINAL_OPEN_SPEC, TERMINAL_SEND_SPEC, TERMINAL_READ_SPEC,
+    TERMINAL_LIST_SPEC, TERMINAL_CLOSE_SPEC,
     START_WORK_SPEC, END_WORK_SPEC,
 )
 
