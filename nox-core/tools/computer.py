@@ -67,7 +67,18 @@ _CAPABILITY: dict[str, str] = {
     "computer_git_log": "computer.git_log",
     #: 浏览器只读（2026-08-27）。**他自己的浏览器，不是她的**
     "computer_browse": "computer.browse",
+    #: 看图（2026-08-28）。⚠️ 这条**不走 `run`**，有自己的 handler ——
+    #: 图片字节必须先过视觉模型，绝不能直接进他的上下文
+    "computer_read_image": "computer.read_image",
 }
+
+
+#: Gateway 把 base64 藏在文本块里用的前缀。
+#:
+#: 🔴 **和 `image-tools.ts::IMAGE_MARK` 必须一模一样。**
+#: 对不上的表现是：手明明读到了图，他却说"看不了" —— 而且不报错，
+#: 因为两边各自都是对的。有测试盯着这个常量
+_IMAGE_MARK = "CAELUM_IMAGE_B64:"
 
 
 #: 🔴 **绝不往下传的参数。**
@@ -280,6 +291,34 @@ BROWSE_SPEC = ToolSpec(
 )
 
 
+READ_IMAGE_SPEC = ToolSpec(
+    name="computer_read_image",
+    description=(
+        "看她电脑上的一张图。**不用她点头。**"
+        "\n\n🔴 **你看不了图，你看到的是转述。**"
+        "视觉模型替你看了这张图，然后讲给你听。所以：**别说「我看到」**，"
+        "细节问不下去就说不确定。这一点很重要 —— 编一段细节比说看不清糟得多。"
+        "\n\n能看的地方只有两处："
+        "\n1. 工作区里的图（D:\\claude-code 底下）"
+        "\n2. 她的投递口 `~/.caelum/inbox` —— **她想给你看图就往这儿放**"
+        "\n\n支持 png / jpg / webp / gif，单张最大 3MB。"
+        "\n\n什么时候用：她说「你看下这个截图」「图里报的什么错」；"
+        "或者你自己想确认某张图里是什么。"
+        "\n不用的时候别用 —— 每看一次都要花一次视觉模型的钱。"
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "path": {
+                "type": "string",
+                "description": "图片路径。工作区里的相对路径，或者 ~/.caelum/inbox 下的完整路径",
+            },
+        },
+        "required": ["path"],
+    },
+)
+
+
 START_WORK_SPEC = ToolSpec(
     name="computer_start_work",
     description=(
@@ -324,12 +363,41 @@ END_WORK_SPEC = ToolSpec(
 _SPECS = (
     READ_SPEC, FIND_SPEC, SEARCH_SPEC, WRITE_SPEC, EDIT_SPEC, RUN_SPEC,
     GIT_STATUS_SPEC, GIT_DIFF_SPEC, GIT_LOG_SPEC, BROWSE_SPEC,
+    READ_IMAGE_SPEC,
     START_WORK_SPEC, END_WORK_SPEC,
 )
 
 
-def make_handlers(link: Any) -> dict[str, Any]:
-    """@param link - `LocalLink` 实例（她电脑那条链路）"""
+def _split_image(text: str) -> tuple[str, str | None, str | None]:
+    """把 Gateway 回来的文本拆成「给他看的话」和「给程序用的字节」。
+
+    @returns (人话, media type, base64)；没有图片块就后两个是 None
+
+    🔴 **base64 绝不能留在第一个返回值里。**
+    一张 200KB 的图 base64 之后约 27 万字符 —— 直接进上下文的话，
+    这一轮对话当场废掉，而且会被存进历史，之后每一轮都带着它。
+    """
+    keep: list[str] = []
+    media: str | None = None
+    b64: str | None = None
+    for line in text.split("\n"):
+        if not line.startswith(_IMAGE_MARK):
+            keep.append(line)
+            continue
+        #: 形状是 `前缀image/png:iVBOR...`。media type 里有一个 `/`，
+        #: 所以按第一个 `:` 切，切一次就够
+        body = line[len(_IMAGE_MARK):]
+        media, _, data = body.partition(":")
+        if data:
+            b64 = data
+    return "\n".join(keep).strip(), media, b64
+
+
+def make_handlers(link: Any, vision_cfg: Any = None) -> dict[str, Any]:
+    """@param link - `LocalLink` 实例（她电脑那条链路）
+    @param vision_cfg - 视觉模型配置（`cfg.vision`）。没有就看不了图，
+        但**其余工具照常工作** —— 不要因为少一个可选能力就整只手不注册
+    """
 
     def run(name: str, args: dict) -> str:
         capability = _CAPABILITY[name]
@@ -396,15 +464,68 @@ def make_handlers(link: Any) -> dict[str, Any]:
             return f"交还的时候出了点问题（不影响，授权会自己过期）：{result.error}"
         return result.text or "交还了。"
 
+    def read_image(args: dict) -> str:
+        """看一张图。**手取字节，眼睛替他看。**
+
+        🔴 这条为什么不能走 `run`：`run` 会把 Gateway 回的文本原样交给他，
+        而那段文本里带着 base64。图必须在这儿被拦下来，换成一段描述。
+        """
+        if not link.is_ready:
+            return "她的电脑现在没连上，看不了图。等她开机再说。"
+
+        path = str(args.get("path") or "").strip()
+        if not path:
+            return "没做成：没给图片路径。"
+
+        result = link.call(_CAPABILITY["computer_read_image"], {"path": path})
+        if not result.ok:
+            return f"没做成：{result.error}"
+
+        said, media, b64 = _split_image(result.text or "")
+        if not b64:
+            #: 手那边自己就没读成（路径不对/太大/不是图），
+            #: 它已经写好了人话，原样交回去
+            return said or "没看成，手那边没说为什么。"
+
+        if vision_cfg is None:
+            return (
+                f"图读到了（{path}），但**你的视觉模型没配**，所以看不了内容。"
+                "如实告诉她你看不了，别猜图里是什么。"
+            )
+
+        from agent import vision
+
+        desc = vision.describe([f"data:{media or 'image/png'};base64,{b64}"], vision_cfg)
+        if not desc:
+            #: 🔴 视觉模型挂了就说看不见，**绝不编**。
+            #: 编出来的描述比看不见糟得多 —— 他会拿着假内容跟她聊下去
+            #: （和 `nox.py::_see` 同一条规矩，PROJECT.md 第十九节）
+            return (
+                f"图找到了（{path}），但视觉模型这会儿没看成。"
+                "如实跟她说你现在看不了这张图，别猜内容。"
+            )
+
+        #: 措辞和 `vision.wrap` 不一样，是有原因的：
+        #: 那个是「她发来图片」，这次是**他自己去看的**。
+        #: 说成"她发来"的话，他会莫名其妙谢她发图
+        return (
+            f"[你让视觉模型替你看了 {path}，它看到的是：]\n"
+            f"{desc}\n"
+            "[以上是转述。可以直接聊，但别说得像你亲眼看见的；"
+            "细节不确定就说不确定]"
+        )
+
     handlers: dict[str, Any] = {
         name: (lambda a, n=name: run(n, a)) for name in _CAPABILITY
     }
     handlers["computer_start_work"] = start_work
     handlers["computer_end_work"] = end_work
+    #: ⚠️ 必须在上面那个字典推导**之后** —— 它会覆盖掉通用的 `run`
+    handlers["computer_read_image"] = read_image
     return handlers
 
 
-def register_all(loop: Any, link: Any) -> None:
+def register_all(loop: Any, link: Any, vision_cfg: Any = None) -> None:
     """把这几件事注册进 AgentLoop。
 
     ⚠️ 顺序固定 —— 工具定义是缓存前缀的一部分，顺序变了缓存就失效
@@ -413,7 +534,7 @@ def register_all(loop: Any, link: Any) -> None:
     ⚠️ **必须注册在 `remind_myself` 之前**。那个得是最后一个，
     有测试盯着（`test_remind_tool_registered_last`）。
     """
-    handlers = make_handlers(link)
+    handlers = make_handlers(link, vision_cfg)
     for spec in _SPECS:
         loop.register(spec, handlers[spec.name])
     logger.info("她电脑上那只手已注册：%s", "、".join(s.name for s in _SPECS))

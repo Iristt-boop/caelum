@@ -1,15 +1,16 @@
 # Caelum 项目知识库
 > 每次新开 CC 窗口，先读这个文件，再读最新的 `HANDOFF-*.md`。  
 > 本文记「现在长什么样」，HANDOFF 记「为什么这么改 / 哪些坑别再踩」。  
-> 最新交接：**`HANDOFF-2026-08-08.md`**（往前：`08-06` → `08-02` → `07-25`）
-> ⚠️ **HANDOFF 只记那个窗口做了什么，会过期**；本文档才是现状。
+> 最新交接：**`HANDOFF-2026-08-28.md`**（往前：`08-08` → `08-06` → `08-02` → `07-25`）  
+> ⚠️ **HANDOFF 只记那个窗口做了什么，会过期**；本文档才是现状。  
 > 两者冲突时以本文档为准 —— 08-08 校准就是因为它俩差了 23 个工具。  
-> 最后更新：2026-08-27（**Caelum Harness：他的「手」见第三十九节** —— 多步执行 / 撤销 /
-> 只读 git / 浏览器 / 感知层；**Resonance 的 Drive 见 30.14**（低落 + 促狭）；
+> 最后更新：2026-08-28（**主题真源统一 + Todo/Music 双端重构上线，见第四十节**；往前：
+> Caelum Harness：他的「手」见第三十九节 —— 多步执行 / 撤销 / 只读 git / 浏览器 / 感知层；
+> **Resonance 的 Drive 见 30.14**（低落 + 促狭）；
 > 省钱两刀见第十九节（压缩改增量 + 动态块挪到尾部，缓存命中 0% → 99%）；
 > 工作区已 `git init` + `NOX_TOKEN` 泄露清理见第十四节；往前：
 > **Caelum OS 桌面界面重做 + 装成桌面应用，见第三十四节**；
-> Caelum OS 阶段 0+1：插件化骨架 + 工作台状态 `GET /api/nox/state` 见第三十三节；上下文压缩见第十九节；sync 失忆根治 + 历史回填见第十三节；chat 500 条截断修复见第十三节；DSH 独立运行见第十四节；M5′ a 统一开口闸见 30.12；唤醒引擎重构（删 Care + 时间醒来）见 30.13）  
+> Caelum OS 阶段 0+1：插件化骨架 + 工作台状态 `GET /api/nox/state` 见第三十三节；上下文压缩见第十九节；sync 失忆根治 + 历史回填见第十三节；DSH 独立运行见第十四节；M5′ a 统一开口闸见 30.12；唤醒引擎重构（删 Care + 时间醒来）见 30.13）  
 > ⚠️ 本文只记录结构、现状、占位符、运维说明。真实密钥/密码/令牌不要再写进本文档。
 > 📁 **工作区 2026-07-25 已从 `D:\claude code项目` 搬到 `D:\claude-code`**（原中文路径
 > 会让 Python editable 安装静默失效，详见第十一节第 6 条）。
@@ -101,7 +102,9 @@ D:\claude-code\
 │   ├── src/lib/                  api.js（失败不许编）/ chat.js / noxState.js / markdown.jsx
 │   ├── src/components/room/      RoomScene（手画 SVG 房间）+ RoomArt（真图优先）
 │   ├── src/pages/                Home（做完）/ Chat（做完）/ RoomPlaceholder（其余 8 个 tab）
-│   └── public/room/              房间真图放这儿，文件名按主题 id（认别名）
+│   └── public/room/              主页房间真图放这儿，文件名按主题 id（认别名）
+├── nox-app/shared/theme/         **主题真源**（App 与 OS 共用，2026-08-27 起）：palettes.css
+│                                 按 [data-theme] 出色板 + meta.mjs 出元数据。改主题只改这里（见第四十节）
 ├── nox-app/desktop/              Caelum OS 桌面壳：Electron **无边框**单窗口
 │   ├── main.js                   dev 连 5273；生产自己托管 dist 并转发 /api
 │   └── build/icon.ico            应用图标（7 档），由 build/make-icon.js 生成
@@ -5498,8 +5501,12 @@ Nox 的人格、记忆、判断永远在 Core 那边，绝不下沉到手里。
 | 手那边 | `D:\deepseek-harness\packages\caelum\local-gateway\` | 手本身（**不在本仓库**） |
 
 `local-gateway/src/` 里：`grant` 授权范围 · `undo` 撤销 · `git-tools` ·
-`browser-tools` · `activity` 感知 · `approval` 审批 · `link` 反向连接。
-跑法见架构文档八之五。
+`browser-tools` · `image-tools` 看图 · `activity` 感知 · `approval` 审批 ·
+`link` 反向连接。跑法见架构文档八之五。
+
+⚠️ **看图这条 base64 绝不能进他的上下文**（一张图约 27 万字符，
+而且会存进会话历史，之后每轮都带着）。闸在 `computer.py::_split_image`，
+细节见架构文档八之九。
 
 ### 反向连接：是她的电脑去连 VPS
 
@@ -5518,6 +5525,7 @@ TCP 方向是 **PC → VPS**（她家里没有公网 IP，也不该开端口）�
 | 执行命令 | ✅ | **永远逐条问，不被授权覆盖** |
 | 只读 git | ✅ | `status` / `diff` / `log`，**没有** commit/checkout/reset |
 | 开网页读内容 | ✅ | 独立 profile，只 http(s)，**不点不填** |
+| 看图 | ✅ | 工作区 + 她的投递口；**他看到的是转述，不是图** |
 | 看她在用什么 | ✅ | 前台窗口标题，可屏蔽名单 |
 | 多步执行 | ✅ | Work Grant，见下 |
 | 撤销一段工作 | ✅ | git 快照，只回滚碰过的文件 |
@@ -5608,6 +5616,10 @@ warn 比 info 更容易被吞。排查前先确认日志打得出来 ——
 
 ### 还没做
 
+- `terminal_*`（常驻终端）—— harness 现成有。`run_command` 是一次性的，
+  **起不了 dev server**，起了就卡死在那儿
+- `read_image` 之外 harness 还现成躺着 `bash`（能力和 pwsh 重叠，不接）、
+  `ask_user_question`（他干到一半反问她）
 - 浏览器点击 / 填表（等审批界面能显示按钮文字）
 - Chrome/Edge 扩展拿精确域名（现在窗口标题够用）
 - 躁动 Drive（需要「他有话想说」×「她正忙」两个信号叉乘）
@@ -5685,3 +5697,59 @@ Daily Planner 从「在做」改为「已上线」、VAPID 从「不存在」改
 已换通义 `text-embedding-v4`，203 条全部补齐）、
 21 条隐形记忆重打标、Dream 选材（D1）交付、OB 上了 git。
 完整方案见 `D:\WorkBuddy\Nox-OB-优化方案.md`。*
+
+## 四十、主题真源统一 + Todo/Music 双端重构（2026-08-27/28 上线）
+
+### 40.1 主题真源：两 App 共用一份（`nox-app/shared/theme/`）
+
+- `palettes.css`：全部主题的 `[data-theme="…"]` 色板（唯一改颜色的地方）；
+  `meta.mjs`：名字/色块/深浅/底色（`bgBase`，iOS 状态栏和开屏用）。
+- 切主题 = 根元素设 `data-theme` 属性（OS 原本就这样，App 从「JS 派生 20 个内联变量」改了过来）。
+- 现存 **5 套**：warm（根）+ sunset/deepspace/rainbow/dreamy；2026-08-27 删掉旧 7 套
+  （粉糯梦境/海盐葡萄/薄荷曼波/椰风海岛/青提芭乐/美式复古/暗夜），失效存档在初始化处回落。
+- ⚠️ **别名桥**在 palettes.css 尾部：旧 `--color-*` 名到新令牌的过渡引用，**页面全部迁完后整段删**。
+- ⚠️ **双写点**：`frontend/index.html` 的开屏 BG 表是 meta.mjs `bgBase` 的手抄副本
+  （iOS 在 React 起来前就画完状态栏），加主题两处都要改。
+- 桌面默认 rainbow、手机默认 warm（原桌面默认粉糯已删）。
+
+### 40.2 Todo 双端（App 页面名从 Today 改成 **Todo**）
+
+- App：标题下**圆形周历**滑块；`frontend/src/lib/schedule.js` 纯函数把 repeat 推导到任意一天
+  （once/daily/weekly 落日，weekly_count 是周配额不落日）；**非今天只读预览不能勾**
+  （完成史只有今天粒度，页面上不说假话）；条目带时刻/备注/循环标注/分类标签；长按删除断认。
+- OS：dashboard 十模块——接下来倒数卡、今天、时间轴（紧凑窗口只画有事的时段）、
+  循环健康度（Ring 配额环 + 周点阵）、他的喋喋（`chasedToday`）、今日完成墙、完成热力（events `?range=N`）、
+  月视图日历（任务条直摆、360px 定高内部滚动）。
+- bridge 数据层：todos 幂等加 `note`/`tag` 列并透传；`chasedToday`（fired_on 推导）；
+  **勾掉循环任务会清 fired_on**（做完了就不追了，喋喋模块因此消失是正确行为）。
+
+### 40.3 Music 双端
+
+- **歌单封面链路**（此前「歌名搜 eryu 补图」土办法已退役）：netease-mcp 三个工具
+  （list_my_playlists / get_playlist_songs / get_play_history）文本尾部加 ` | <封面URL>` 段，
+  bridge 正则解析 + http→https 化；**正则名字段用贪婪匹配吃到最后一个 " - "**，
+  不然 Merry-Go-Round 会被从连字符劈开。新增 `/api/music/netease/history`（本周最听）。
+- App（`07074e5`）：「和 Nox 听过」共听英雄区置顶（双头像读 localStorage `nox-avatar-*`、
+  真实次数、最常一首大卡）→ 每日推荐 → 最近听的 → 歌单 2 列大图。
+- OS（`12a3842` 设计稿版）：大播放 Hero（封面全幅 + 频谱条纯装饰 + 进度条与音浪**同宽 129px** +
+  控三键）→ 今晚听什么 → 我的歌单大图横滑 → 和 Nox 听过压缩横滑；右列 **col-span-3 缩窄**、
+  正在播放竖排、最近播放（相对时间）、歌单内的歌。Hi-Res/场景标签/推荐语/歌词/随机循环音量
+  **无数据链一律不放**。
+- 踩过：主列纵向 flex 会把自然高度面板**压瘪**（overflow-hidden 的盒子 min-height:auto 失效），
+  自然面板一律 `shrink-0`，滚动归主列。
+
+### 40.4 页面级主题背景（`usePageArt`）
+
+- 约定：`caelum-os-ui/public/<页面>/<主题别名或id>.<ext>`，一张通用放 `<页面>.<ext>`。
+  主页 `room/`（已有四张）、Music `music/`（她放了 deep space.png / rainbow.png）、
+  Diary 以后 `diary/` —— 丢图进目录即被 `usePageArt` 探到，**零代码**。
+- ⚠️ 桌面应用跑的是 **`dist/`**：`public/` 丢图后要 `npm run build` 才会拷进去
+  （或同时手动拷一份进 `dist/<页面>/`）。
+- Music Hero 取图优先级：主题背景图 → 当前歌封面 → 主题渐变。
+
+### 40.5 版本管理与回滚
+
+- **nox-app 2026-08-27 才收进 git**（`f3dd128` 基线：此前 themes.js/pages/OS 全部未跟踪，
+  无法回滚），此后每阶段独立 commit。
+- 回滚点：`/root/bridge/server.js.bak-20260827`、`bak2-20260827`、
+  `/root/netease-music-mcp/server/mcp-server/server.py.bak-20260827`、`/root/frontend/dist-old`。

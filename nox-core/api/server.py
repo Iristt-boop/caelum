@@ -506,7 +506,11 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
     #: （2026-08-19 线上 500 就是这么来的，见 `_world` 的注释）。
     #: 所以下面晚绑
     local_hand = LocalLink()
-    computer_tools.register_all(core.loop, local_hand)
+    #: 视觉配置要传进去 —— 主模型读不了图，`computer_read_image`
+    #: 拿到字节之后得找视觉模型替他看（`agent/vision.py`）。
+    #: ⚠️ 没配 key 也照常注册，只是那一件会如实说"看不了"
+    computer_tools.register_all(
+        core.loop, local_hand, getattr(core.cfg, "vision", None))
 
     attention = _build_attention(core, sessions, db)
 

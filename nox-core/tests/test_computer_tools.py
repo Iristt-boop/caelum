@@ -69,7 +69,7 @@ def _handlers(link):
 # --------------------------------------------------------------- 注册顺序
 
 
-def test_十二件都注册上了():
+def test_十三件都注册上了():
     """⚠️ 顺序也锁着 —— 工具定义是缓存前缀的一部分，顺序变了缓存就失效。"""
     loop = _Loop()
     computer_tools.register_all(loop, FakeLink())
@@ -85,6 +85,8 @@ def test_十二件都注册上了():
         "computer_git_diff",
         "computer_git_log",
         "computer_browse",
+        #: 看图（2026-08-28）
+        "computer_read_image",
         "computer_start_work",
         "computer_end_work",
     ]
@@ -141,11 +143,18 @@ def test_工具名翻成能力名():
     assert link.calls[0][0] == "computer.edit_file"
 
 
+#: 有几件工具参数不给就会在本地挡下来，根本不发请求。
+#: 给它们一份最小可用参数，不然这个循环验的是"挡下来了"而不是"翻对了"
+_MIN_ARGS: dict[str, dict] = {
+    "computer_read_image": {"path": "a.png"},
+}
+
+
 def test_每件工具都翻对():
     for name, capability in computer_tools._CAPABILITY.items():
         link = FakeLink()
-        _handlers(link)[name]({})
-        assert link.calls[0][0] == capability
+        _handlers(link)[name](_MIN_ARGS.get(name, {}))
+        assert link.calls[0][0] == capability, name
 
 
 def test_空的可选参数不往下传():
@@ -526,3 +535,140 @@ def test_断开时把循环也清掉():
         assert not link.call("computer.read_file", {}).ok
     finally:
         loop.call_soon_threadsafe(loop.stop)
+
+
+# --------------------------------------------------------------- 看图
+#
+# 🔴 这一段盯的是**一件致命的事**：base64 绝不能进他的上下文。
+#
+# 一张 200KB 的图 base64 之后约 27 万字符。真漏进去的话不只是这一轮废掉 ——
+# 它会被存进会话历史，之后每一轮都带着它，直到有人发现账单不对。
+# 而且**不报任何错**，他还会照常回话。
+
+
+_B64 = "iVBORw0KGgoAAAANSUhEUg" * 40   # 假装是一张图
+_FROM_HAND = (
+    "已经读到这张图了（180 KB，image/png）。等视觉模型看完再说内容。\n"
+    f"CAELUM_IMAGE_B64:image/png:{_B64}"
+)
+
+
+class _Vision:
+    """假的视觉模型。记下被喂了什么。"""
+
+    def __init__(self, desc="一张截图，上面写着 ECONNRESET"):
+        self.desc = desc
+        self.seen: list[list[str]] = []
+
+    def describe(self, images, cfg, user_text="", timeout=40.0):
+        self.seen.append(images)
+        return self.desc
+
+
+@pytest.fixture
+def vision(monkeypatch):
+    from agent import vision as real
+    fake = _Vision()
+    monkeypatch.setattr(real, "describe", fake.describe)
+    return fake
+
+
+def _look(link, vision_cfg=object(), args=None):
+    h = computer_tools.make_handlers(link, vision_cfg)
+    return h["computer_read_image"]({"path": "shot.png", **(args or {})})
+
+
+class Test字节不进上下文:
+    def test_base64_一个字都不许漏出去(self, vision):
+        """🔴 这条挂了就别上线。"""
+        out = _look(FakeLink(result=CallResult(True, text=_FROM_HAND)))
+        assert _B64 not in out
+        assert "CAELUM_IMAGE_B64" not in out
+        #: 连片段都不行 —— 截断过的 base64 一样会吃掉上下文
+        assert _B64[:60] not in out
+
+    def test_图真的送到了视觉模型(self, vision):
+        _look(FakeLink(result=CallResult(True, text=_FROM_HAND)))
+        assert len(vision.seen) == 1
+        assert vision.seen[0][0] == f"data:image/png;base64,{_B64}"
+
+    def test_描述进得来(self, vision):
+        out = _look(FakeLink(result=CallResult(True, text=_FROM_HAND)))
+        assert "ECONNRESET" in out
+
+
+class Test措辞:
+    def test_明说是转述(self, vision):
+        """他没有眼睛。说成「我看到」的话，细节问不下去还得圆谎。"""
+        out = _look(FakeLink(result=CallResult(True, text=_FROM_HAND)))
+        assert "转述" in out
+        assert "别说得像你亲眼看见" in out
+
+    def test_不说成是她发来的(self, vision):
+        """🔴 这次是**他自己去看的**。说成"她发来"他会莫名其妙谢她。"""
+        out = _look(FakeLink(result=CallResult(True, text=_FROM_HAND)))
+        assert "她发来" not in out
+
+
+class Test看不了的时候不编:
+    def test_视觉模型挂了就说看不了(self, monkeypatch):
+        from agent import vision as real
+        monkeypatch.setattr(real, "describe", lambda *a, **k: None)
+        out = _look(FakeLink(result=CallResult(True, text=_FROM_HAND)))
+        assert "看不了" in out
+        assert "别猜" in out
+
+    def test_没配视觉模型也不硬撑(self):
+        out = _look(FakeLink(result=CallResult(True, text=_FROM_HAND)),
+                    vision_cfg=None)
+        assert "看不了" in out
+        #: 即使不看图，base64 也不许漏
+        assert _B64 not in out
+
+    def test_手那边的说法原样交回(self, vision):
+        """路径不对/太大/不是图 —— 手已经写好人话了，别再概括一遍。"""
+        link = FakeLink(result=CallResult(True, text="这张图太大了（8.2 MB，上限 3.0 MB）。"))
+        out = _look(link)
+        assert "8.2 MB" in out
+        assert vision.seen == [], "没有图还去调视觉模型，那是白花钱"
+
+    def test_电脑没连上不发请求(self, vision):
+        link = FakeLink(ready=False)
+        out = _look(link)
+        assert link.calls == []
+        assert "没连上" in out
+
+    def test_没给路径就不发请求(self, vision):
+        link = FakeLink()
+        h = computer_tools.make_handlers(link, object())
+        out = h["computer_read_image"]({"path": "  "})
+        assert link.calls == []
+        assert "没给" in out
+
+
+class Test两边的暗号:
+    def test_前缀和_Gateway_那边一致(self):
+        """🔴 `image-tools.ts::IMAGE_MARK` 改了这里必须跟着改。
+
+        对不上的表现是：手明明读到了图，他却说看不了 ——
+        **两边各自都是对的，所以谁都不报错。**
+        """
+        ts = (Path(__file__).resolve().parents[2] / ".." / "deepseek-harness"
+              / "packages" / "caelum" / "local-gateway" / "src" / "image-tools.ts")
+        if not ts.exists():
+            pytest.skip("手那边的仓库不在这台机器上")
+        src = ts.read_text(encoding="utf-8")
+        assert f"IMAGE_MARK = '{computer_tools._IMAGE_MARK}'" in src
+
+
+class Test拆分:
+    def test_没有图片块时原样返回(self):
+        said, media, b64 = computer_tools._split_image("就是一句话")
+        assert (said, media, b64) == ("就是一句话", None, None)
+
+    def test_media_type_里的斜杠不会切坏(self):
+        said, media, b64 = computer_tools._split_image(
+            f"看到了\nCAELUM_IMAGE_B64:image/jpeg:{_B64}")
+        assert media == "image/jpeg"
+        assert b64 == _B64
+        assert said == "看到了"
