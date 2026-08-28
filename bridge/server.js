@@ -1628,18 +1628,24 @@ async function neteaseCall(tool, args = {}) {
   return out?.result?.content?.[0]?.text || "";
 }
 
+// 网易云图床偶尔回 http://，https 页面加载就是 mixed content 直接被拦。
+// 出口统一升 https（p*.music.126.net 支持 https，实测无差异）
+const httpsCover = (u) => (u || "").replace(/^http:\/\//, "https://");
+
 app.get("/api/music/netease/playlists", async (req, res) => {
   try {
     const text = await neteaseCall("list_my_playlists");
     // ⚠️ MCP 返回的是**纯文本**不是 JSON，得自己解析：
     // ID:705727340 | 茶茶茶茶叶蛋喜欢的音乐 | 337 songs (mine)
+    // 2026-08-27 起尾部可能带封面段：… (mine) | https://p1.music.126.net/...
     const playlists = [];
     for (const line of String(text).split("\n")) {
-      const m = line.match(/^ID:(\d+)\s*\|\s*(.+?)\s*\|\s*(\d+)\s*songs(?:\s*\((\w+)\))?/);
+      const m = line.match(/^ID:(\d+)\s*\|\s*(.+?)\s*\|\s*(\d+)\s*songs(?:\s*\((\w+)\))?(?:\s*\|\s*(\S+))?/);
       if (!m) continue;
       playlists.push({
         id: m[1], name: m[2].trim(),
         count: Number(m[3]), owned: m[4] === "mine",
+        cover: httpsCover(m[5]),
       });
     }
     res.json({ ok: true, playlists });
@@ -1656,15 +1662,42 @@ app.get("/api/music/netease/playlist", async (req, res) => {
   try {
     const text = await neteaseCall("get_playlist_songs", { playlist_id: Number(id) });
     // 1. 不过失去了一点点 - 曾沛慈 (ID:29812781)
+    // 2026-08-27 起尾部可能带封面段：… (ID:29812781) | https://p2.music.126.net/...
     const songs = [];
     for (const line of String(text).split("\n")) {
-      const m = line.match(/^\s*\d+\.\s*(.+?)\s*-\s*(.*?)\s*\(ID:(\d+)\)/);
+      // 同 history：贪婪吃到最后一个 " - "，防歌名连字符劈裂
+      const m = line.match(/^\s*\d+\.\s*(.+)\s*-\s*(.*?)\s*\(ID:(\d+)\)(?:\s*\|\s*(\S+))?/);
       if (!m) continue;
-      songs.push({ songId: m[3], name: m[1].trim(), artist: m[2].trim(), cover: "" });
+      songs.push({ songId: m[3], name: m[1].trim(), artist: m[2].trim(), cover: httpsCover(m[4]) });
     }
     res.json({ ok: true, songs });
   } catch (e) {
     console.error("[Bridge] 取歌单歌曲失败", e.message);
+    res.status(502).json({ error: String(e) });
+  }
+});
+
+// 本周最听（网易云播放纪录，plays 是次数）。OS Music 右列的「本周最听」用。
+// 尾部封面段 2026-08-27 起才有，老部署解析不出就空着
+app.get("/api/music/netease/history", async (req, res) => {
+  try {
+    const limit = Math.min(Math.max(parseInt(req.query.limit) || 10, 1), 30);
+    const text = await neteaseCall("get_play_history", { limit, all_time: false });
+    // 1. 歌名 - 歌手 (plays:23, ID:456)[ | https://封面]
+    const songs = [];
+    for (const line of String(text).split("\n")) {
+      // ⚠️ 名字段用贪婪匹配吃到**最后一个** " - " —— 歌名里带连字符的
+      // （Merry-Go-Round）用懒惰匹配会被从中间劈开
+      const m = line.match(/^\s*\d+\.\s*(.+)\s*-\s*(.*?)\s*\(plays:([^,)]*),\s*ID:(\d+)\)(?:\s*\|\s*(\S+))?/);
+      if (!m) continue;
+      songs.push({
+        name: m[1].trim(), artist: m[2].trim(),
+        plays: parseInt(m[3]) || 0, songId: m[4], cover: httpsCover(m[5]),
+      });
+    }
+    res.json({ ok: true, songs });
+  } catch (e) {
+    console.error("[Bridge] 取本周最听失败", e.message);
     res.status(502).json({ error: String(e) });
   }
 });

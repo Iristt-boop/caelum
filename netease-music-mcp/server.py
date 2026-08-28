@@ -143,7 +143,10 @@ def list_my_playlists():
     lines = []
     for pl in playlists:
         own = '(mine)' if pl.get('creator', {}).get('userId') == uid else '(collected)'
-        lines.append("ID:" + str(pl['id']) + " | " + pl['name'] + " | " + str(pl.get('trackCount', 0)) + " songs " + own)
+        # 2026-08-27 加封面段：App 歌单网格要真图。老的正则不认尾段，向后兼容
+        cover = pl.get('coverImgUrl') or ''
+        lines.append("ID:" + str(pl['id']) + " | " + pl['name'] + " | " + str(pl.get('trackCount', 0))
+                     + " songs " + own + (" | " + cover if cover else ""))
     return "\n".join(lines)
 
 def get_playlist_songs(playlist_id):
@@ -184,7 +187,10 @@ def get_playlist_songs(playlist_id):
     lines = [head]
     for i, t in enumerate(tracks[:50], 1):
         artist = artist_names(t)
-        lines.append(str(i) + ". " + (t.get('name') or '') + " - " + artist + " (ID:" + str(t.get('id', '')) + ")")
+        # 2026-08-27 加封面段：v6 detail 在 al.picUrl，批量补齐的 song/detail 在 album.picUrl
+        cover = (t.get('al') or t.get('album') or {}).get('picUrl') or ''
+        suffix = " | " + cover if cover else ""
+        lines.append(str(i) + ". " + (t.get('name') or '') + " - " + artist + " (ID:" + str(t.get('id', '')) + ")" + suffix)
     return "\n".join(lines)
 
 def get_play_history(limit=30, all_time=False):
@@ -203,7 +209,10 @@ def get_play_history(limit=30, all_time=False):
         name = song.get('name') or ''
         artist = artist_names(song)
         pc = r.get('playCount', r.get('score', ''))
-        lines.append(str(i) + ". " + name + " - " + artist + " (plays:" + str(pc) + ", ID:" + str(song.get('id', '')) + ")")
+        # 2026-08-27 尾部加封面段，同歌单歌曲的约定
+        cover = (song.get('al') or song.get('album') or {}).get('picUrl') or ''
+        suffix = " | " + cover if cover else ""
+        lines.append(str(i) + ". " + name + " - " + artist + " (plays:" + str(pc) + ", ID:" + str(song.get('id', '')) + ")" + suffix)
     return "\n".join(lines)
 
 def like_song(song_id, like=True):
