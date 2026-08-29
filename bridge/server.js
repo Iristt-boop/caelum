@@ -2936,4 +2936,89 @@ app.delete("/api/conv-sessions/:id", (req, res) => {
 // 混进侧边栏。本机 agent 下线后永远返回空数组，2026-08-05 删。
 // 侧边栏现在只列 /api/conv-sessions（她和小克的真实对话）。
 
+// ==============================================================
+// 藏书库（Caelum Library）—— 实体书元数据 + 电子书指针。
+// 糖糖 2026-08-29：500+ 本实体书要进库；电子书正文在 co-reading，
+// 这里只存「书架」需要的东西。需求文档 Caelum-Books-Requirements.md 第七节。
+// 批量录入走 POST books 数组；(title, author) 完全相同的行自动跳过 ——
+// 500 本手贴最怕手抖双击提交。
+// ==============================================================
+db.run(`CREATE TABLE IF NOT EXISTS library_books (
+  id TEXT PRIMARY KEY,
+  title TEXT NOT NULL,
+  author TEXT DEFAULT '',
+  isbn TEXT DEFAULT '',
+  category TEXT DEFAULT '',
+  source TEXT DEFAULT 'physical',
+  format TEXT DEFAULT '',
+  co_book_id TEXT DEFAULT '',
+  status TEXT DEFAULT 'unread',
+  added_at TEXT DEFAULT ''
+)`);
+
+app.get("/api/library/books", (req, res) => {
+  const items = dbAll("SELECT * FROM library_books ORDER BY added_at ASC, id ASC");
+  res.json({ ok: true, items });
+});
+
+app.post("/api/library/books", (req, res) => {
+  const incoming = Array.isArray(req.body?.books) ? req.body.books : [];
+  const rows = incoming
+    .map(b => ({
+      title: String(b?.title || "").trim(),
+      author: String(b?.author || "").trim(),
+      isbn: String(b?.isbn || "").trim(),
+      category: String(b?.category || "").trim(),
+      source: b?.source === "digital" ? "digital" : "physical",
+      format: String(b?.format || "").trim(),
+    }))
+    .filter(b => b.title);
+
+  if (!rows.length) return res.status(400).json({ error: "没有可入库的书（每行至少要有书名）" });
+
+  const existing = new Set(
+    dbAll("SELECT title, author FROM library_books")
+      .map(r => `${r.title}\u0000${r.author}`)
+  );
+  const added = [];
+  for (const b of rows) {
+    const key = `${b.title}\u0000${b.author}`;
+    if (existing.has(key)) continue;
+    existing.add(key);
+    const id = randomUUID();
+    dbRun(
+      "INSERT INTO library_books (id, title, author, isbn, category, source, format, status, added_at) VALUES (?,?,?,?,?,?,?,?,?)",
+      [id, b.title, b.author, b.isbn, b.category, b.source, b.format, "unread", new Date().toISOString()]
+    );
+    added.push(id);
+  }
+  res.json({ ok: true, received: rows.length, added: added.length, skipped: rows.length - added.length });
+});
+
+app.patch("/api/library/books/:id", (req, res) => {
+  const id = req.params.id;
+  const row = dbAll("SELECT * FROM library_books WHERE id=?", [id])[0];
+  if (!row) return res.status(404).json({ error: "书架上没有这本" });
+  const b = req.body || {};
+  const next = {
+    title: String(b.title ?? row.title).trim() || row.title,
+    author: String(b.author ?? row.author).trim(),
+    isbn: String(b.isbn ?? row.isbn).trim(),
+    category: String(b.category ?? row.category).trim(),
+    status: ["unread", "reading", "finished"].includes(b.status) ? b.status : row.status,
+  };
+  dbRun(
+    "UPDATE library_books SET title=?, author=?, isbn=?, category=?, status=? WHERE id=?",
+    [next.title, next.author, next.isbn, next.category, next.status, id]
+  );
+  res.json({ ok: true, item: dbAll("SELECT * FROM library_books WHERE id=?", [id])[0] });
+});
+
+app.delete("/api/library/books/:id", (req, res) => {
+  const row = dbAll("SELECT title FROM library_books WHERE id=?", [req.params.id])[0];
+  if (!row) return res.status(404).json({ error: "书架上没有这本" });
+  dbRun("DELETE FROM library_books WHERE id=?", [req.params.id]);
+  res.json({ ok: true, deleted: row.title });
+});
+
 server.listen(PORT, () => console.log(`Bridge → http://0.0.0.0:${PORT}`));
