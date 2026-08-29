@@ -2986,9 +2986,10 @@ app.post("/api/library/books", (req, res) => {
     if (existing.has(key)) continue;
     existing.add(key);
     const id = randomUUID();
+    const status = ["unread", "reading", "finished"].includes(b.status) ? b.status : "unread";
     dbRun(
       "INSERT INTO library_books (id, title, author, isbn, category, source, format, status, added_at) VALUES (?,?,?,?,?,?,?,?,?)",
-      [id, b.title, b.author, b.isbn, b.category, b.source, b.format, "unread", new Date().toISOString()]
+      [id, b.title, b.author, b.isbn, b.category, b.source, b.format, status, new Date().toISOString()]
     );
     added.push(id);
   }
