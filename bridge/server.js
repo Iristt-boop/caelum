@@ -108,6 +108,8 @@ function ensureApiAuth(req, res, next) {
   if (TOY_TOKEN && req.path.startsWith("/toy/") && readAuthToken(req) === TOY_TOKEN) {
     return next();
   }
+  // 书封公开直出：文件名是不可猜的 UUID，图也不敏感 —— img 标签带不了 token
+  if (req.path.startsWith("/library/covers/")) return next();
   if (!AUTH_TOKEN) return next();
   if (readAuthToken(req) === AUTH_TOKEN) return next();
   res.status(403).json({ error: "forbidden" });
@@ -2955,6 +2957,12 @@ db.run(`CREATE TABLE IF NOT EXISTS library_books (
   status TEXT DEFAULT 'unread',
   added_at TEXT DEFAULT ''
 )`);
+
+// 真封面静态目录：一本一个 <bookId>.jpg。文件在 = 有真封面，
+// 不在 = 前端回退 canvas 生成装帧（查不到的中文书不装假）
+const coversDir = path.join(DATA_DIR, "library-covers");
+if (!fs.existsSync(coversDir)) fs.mkdirSync(coversDir, { recursive: true });
+app.use("/api/library/covers", express.static(coversDir, { maxAge: "7d" }));
 
 app.get("/api/library/books", (req, res) => {
   const items = dbAll("SELECT * FROM library_books ORDER BY added_at ASC, id ASC");
