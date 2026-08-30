@@ -834,8 +834,26 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
             attn = {
                 "enabled": True,
                 "dry_run": snap.get("dry_run"),
-                # 正在关心的话题（subject）
+                # 正在关心的话题（subject）。
+                #
+                # ⚠️ **保持字符串数组不要动。** 手机端
+                # `nox-app/frontend/src/components/NoxStatus.jsx:38` 直接读它，
+                # 改成对象会让她手机上那一栏当场空掉。
+                # 要强度的走下面那个 `attentions`
                 "cares": [a["subject"] for a in snap.get("attentions", [])],
+                # 🔴 带强度的完整形态（2026-08-29）。
+                #
+                # 在这之前这里只吐 subject，`strength` 和 `since` 在出门那一刻
+                # 就被扔了 —— 于是前端手上只有一串名字，画不出任何高低，
+                # 只能把等级写死成「中」（noxState.js 里那五个常量）。
+                # 糖糖要做心跳线，第一件缺的东西就是这个。
+                #
+                # ⚠️ `strength` 是**读时按经过时间指数衰减**算出来的，
+                # 半衰期 6 小时 / 2 天 / 7 天（registry.py `_HALF_LIFE`）——
+                # 也就是说它**变化的尺度是「天」，不是「秒」**。
+                # 直接把它当心电图的纵轴画会得到一条几乎水平的线。
+                # 它适合当「基线」，尖峰得靠事件，那个还没有出口
+                "attentions": snap.get("attentions", []),
                 # 想说还没说的（待办）
                 "pending": snap.get("pending_intents", []),
                 # 今天惦记过她几次、其中几次说出了口（2026-08-18）。
@@ -852,6 +870,63 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
             "now": now_cst().isoformat(),
             "attention": attn,
             "wakeups": wakeups,
+        }
+
+    @app.get("/api/nox/resonance")
+    def nox_resonance() -> dict:
+        """他此刻的内心驱动力（Drive）—— **心跳线要画的就是这个**。
+
+        架构见 `CAELUM-RESONANCE-ARCHITECTURE.md`。Resonance 从 2026-08-24
+        就在跑了，但**一直没有任何 HTTP 出口** —— 整个路由表里搜不到它。
+        糖糖 2026-08-29 要做 Attention 心跳线时才发现这个缺口。
+
+        ## 🔴 画图要用 `load`，不要用 `intensity`
+
+        ```text
+        一件 0.98            intensity 0.98   load 0.98
+        0.98 + 0.71 + 0.40   intensity 0.997  load 2.09
+        ```
+
+        `intensity` 表达「至少有一件事没解决」，真实数据里几乎永远贴着 1，
+        **一件事和三件事在图上看不出差别**。要表达"压着多重"用 `load`，
+        它不饱和，留得住区分度（`resonance.py::Drive` 里写着这条）。
+
+        ## ⚠️ 不存在的 Drive 不会出现在这里
+
+        「他现在不低落」表现成**没有 dejection 这一项**，
+        而不是 `dejection: 0.00`。画线的时候缺项要按 0 处理，
+        但文案上别说成「低落 0.00」—— 那读起来像他有一点点低落。
+
+        ## ⚠️ 这是快照，不是流
+
+        每次调用按 `now` 重算一遍（强度是读时衰减的）。
+        但慢变量的半衰期是小时/天级，**轮询它只能得到基线，得不到脉搏**。
+        尖峰要等事件流，那个还没做。
+        """
+        if attention is None or attention.resonance is None:
+            #: 和 `/api/nox/state` 一个态度：没启用就如实说没启用，
+            #: 不返回空数组假装「他此刻很平静」
+            return {"ok": True, "enabled": False, "now": now_cst().isoformat(),
+                    "drives": {}}
+
+        now = datetime.now(timezone.utc)
+        drives = attention.resonance.snapshot(now)
+        return {
+            "ok": True,
+            "enabled": True,
+            "now": now_cst().isoformat(),
+            "drives": {
+                name: {
+                    "name": d.name,
+                    "intensity": round(d.intensity, 3),
+                    #: 🔴 画图用这个
+                    "load": round(d.load, 3),
+                    "because": d.because,
+                    "evidence": d.evidence,
+                    "source_count": d.source_count,
+                }
+                for name, d in drives.items()
+            },
         }
 
     @app.get("/api/nox/day")

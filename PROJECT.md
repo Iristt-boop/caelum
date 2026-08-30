@@ -4159,6 +4159,44 @@ ExperienceEvent → Appraisal（这是什么情绪）→ ┬→ Evaluator → Co
 有测试盯着。不然就变成「你一笑他就凑上来」。
 这个 Drive 的意义是**改变他回话的语气**，不是让他多说话。
 
+#### 🔴 它一直没有出口（2026-08-29 才发现）
+
+Resonance 从 08-24 就在跑，但**整个路由表里搜不到它** ——
+四个 Drive 的 intensity / load 只活在进程内存里，任何界面都看不见。
+
+同一天还发现 `/api/nox/state` 把强度扔了：`snapshot()` 里每条 attention
+带着 `strength`（0-1）和 `since`，而接口只取了 `subject`。于是前端
+手上只有一串名字，把等级**写死成「中」**（`noxState.js` 里那五个常量）——
+糖糖说那一栏"像一张便签贴在页面上"，根因就在这儿。
+
+补了两个口子：
+
+| | 给什么 |
+|---|---|
+| `/api/nox/state` 新增 `attentions` | `subject` / `kind` / **`strength`** / `since` |
+| `/api/nox/resonance`（新） | 四个 Drive 的 `intensity` / **`load`** / `because` / `evidence` |
+
+⚠️ **画图用 `load`，不要用 `intensity`。** intensity 表达「至少有一件事
+没解决」，真实数据里几乎永远贴着 1，**一件事和三件事在图上看不出差别**；
+load 不饱和，区分度在它身上。
+
+⚠️ `cares` 那个字符串数组**没动** —— 手机端 `NoxStatus.jsx:38` 直接读它，
+改成对象数组她手机上那一栏会当场空掉。有测试钉着旧形状。
+
+⚠️ **bridge 是逐路由代理，不是通配。** Core 加接口就得回 `bridge/server.js`
+加一条，不然前端拿到的是 bridge 自己的 404 —— 那看起来像「Core 挂了」。
+
+#### 心跳线还差什么（🔭 未做）
+
+`strength` 是读时按时间指数衰减算的，但半衰期是 **6 小时 / 2 天 / 7 天** ——
+**变化尺度是「天」，不是「秒」**。直接拿它当心电图纵轴会得到一条几乎
+水平的线，比静态还糟（它假装在动）。
+
+真的脉搏需要：**慢变量当基线，事件当尖峰**。而「事件」目前也没有出口 ——
+`ledger` 只有当日累计的 `considered/spoke/skipped/blocked`，
+**没有逐条带时间戳的流**。要做心跳线，下一步是这个（SSE，
+或者复用 Caelum OS 已有的那条 WebSocket）。
+
 #### 不在 Registry 里的 Drive 要自己存
 
 `concern` 是 Registry 的投影，Registry 存了它就存了。

@@ -2100,6 +2100,21 @@ app.get("/api/nox/state", async (req, res) => {
   }
 });
 
+// 他此刻的内心驱动力（2026-08-29）。Attention 心跳线要画的就是这个。
+//
+// ⚠️ **bridge 是逐路由代理，不是通配。** Core 那边加了接口、这里不加，
+// 前端拿到的是 bridge 自己的 404 —— 而那看起来像「Core 挂了」，
+// 不像「少写了一行」。加 Core 接口时记得回来加这一条。
+app.get("/api/nox/resonance", async (req, res) => {
+  try {
+    const r = await fetch(`${NOX_CORE_URL}/api/nox/resonance`, { signal: AbortSignal.timeout(8000) });
+    res.json(await r.json());
+  } catch (e) {
+    console.error("[nox-resonance] 读内心状态失败:", e.message);
+    res.json({ ok: false, error: e.message });
+  }
+});
+
 // 生理期 → World Model（2026-08-19）。
 //
 // HealthKit 那条同步坏了：`health.db` 的 menstrual 表上一条停在 7-24，
