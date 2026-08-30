@@ -1967,6 +1967,28 @@ app.get("/api/memory/recent", async (req, res) => {
   }
 });
 
+// 单条记忆的全文。OB 的 /memory/{id}（2026-08-30，星空页点星看详情用），
+// 和 /recent 同一个先例：给程序读的结构化接口，只开在 OB 的本机端口上。
+// ⚠️ 必须注册在 /api/memory/recent 之后 —— Express 按注册顺序匹配，
+// 不然 "recent" 会被当成 :id 吞掉。
+app.get("/api/memory/:id", async (req, res) => {
+  try {
+    const r = await fetch(`${OMBRE_URL}/memory/${encodeURIComponent(req.params.id)}`, {
+      signal: AbortSignal.timeout(10000),
+    });
+    const d = await r.json();
+    if (!r.ok || !d.ok) {
+      return res
+        .status(r.status === 404 ? 404 : 502)
+        .json({ ok: false, error: d.error || `OB 回了 ${r.status}` });
+    }
+    res.json(d);
+  } catch (e) {
+    console.error("[memory] 读记忆详情失败:", e.message);
+    res.status(502).json({ ok: false, error: e.message });
+  }
+});
+
 // 共听最近放过什么。eryu 那边每首带 playedAt，正好能落到时间轴上。
 // 拿不到就回空 —— 「今天没听歌」和「eryu 挂了」在时间线上都是「没有音乐事件」，
 // 但 ok:false 让调用方能在日志里分出来
@@ -2112,6 +2134,57 @@ app.get("/api/nox/resonance", async (req, res) => {
   } catch (e) {
     console.error("[nox-resonance] 读内心状态失败:", e.message);
     res.json({ ok: false, error: e.message });
+  }
+});
+
+// 他这一天里每一次动念，逐条带时刻（2026-08-29）。心跳线上的尖峰。
+app.get("/api/nox/pulse", async (req, res) => {
+  try {
+    const since = Number(req.query.since) || 0;
+    const r = await fetch(`${NOX_CORE_URL}/api/nox/pulse?since=${since}`, {
+      signal: AbortSignal.timeout(8000),
+    });
+    res.json(await r.json());
+  } catch (e) {
+    console.error("[nox-pulse] 读脉搏失败:", e.message);
+    res.json({ ok: false, error: e.message });
+  }
+});
+
+// 同上，但是推的。**这条不能用 res.json() —— 它是一条不会结束的流。**
+//
+// 🔴 三个 header 一个都不能少：
+//   text/event-stream   浏览器才当它是 SSE
+//   no-cache            不然中间层会缓存住第一帧
+//   X-Accel-Buffering   Caddy/nginx 会把流攒成一坨再发，表现是"心跳一顿一顿"
+//
+// ⚠️ 客户端关页面时要把上游也断掉，否则 Core 那边每开一次页面
+// 就留一个永远读不完的生成器 —— 一天下来能攒出几十条。
+app.get("/api/nox/pulse/stream", async (req, res) => {
+  const since = Number(req.query.since) || 0;
+  const ac = new AbortController();
+  req.on("close", () => ac.abort());
+
+  try {
+    const upstream = await fetch(
+      `${NOX_CORE_URL}/api/nox/pulse/stream?since=${since}`,
+      { signal: ac.signal },
+    );
+    res.setHeader("Content-Type", "text/event-stream");
+    res.setHeader("Cache-Control", "no-cache");
+    res.setHeader("Connection", "keep-alive");
+    res.setHeader("X-Accel-Buffering", "no");
+    for await (const chunk of upstream.body) res.write(chunk);
+    res.end();
+  } catch (e) {
+    if (ac.signal.aborted) return;          // 她关页面了，不是错
+    console.error("[nox-pulse] 脉搏流断了:", e.message);
+    //: 已经开始写流之后就不能再发 JSON 了（头已经出去了），
+    //: 只能在流里说一句然后收尾
+    try {
+      res.write(`data: ${JSON.stringify({ type: "error", error: e.message })}\n\n`);
+      res.end();
+    } catch {}
   }
 });
 

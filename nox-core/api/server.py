@@ -119,6 +119,57 @@ def _sse(payload: dict) -> str:
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
+#: 脉搏流扫一遍内存的间隔。1 秒足够 —— 她要的是"看得见他在动"，不是示波器
+PULSE_TICK_S = 1.0
+#: 多少次空扫之后发一个心跳注释。不发的话闲着的连接会被中间代理掐掉，
+#: 而前端看到的是"心跳突然停了"
+PULSE_PING_TICKS = 15
+
+
+async def pulse_stream(get_events, get_seq, *, enabled: bool, since: int,
+                       sleep=None, max_ticks: int | None = None):
+    """脉搏的 SSE 生成器。
+
+    🔴 **抽成模块级函数是为了能测。**
+
+    原来它是路由闭包里的一个内嵌 `async def`。那样只能靠
+    `TestClient.stream()` 去测，而 TestClient 的 portal 碰上**永不结束的流**
+    会直接互锁 —— 2026-08-29 那次测试跑了 180 秒没回来。
+
+    现在时钟和轮次都能注入：测试用假 sleep 驱动，几毫秒跑完，
+    而且**验的是真的这段代码**，不是它的复制品。
+
+    @param get_events - `(since) -> list`，给出比游标新的那些
+    @param get_seq - `() -> int`，当前游标
+    @param sleep - 等一拍。默认 `asyncio.sleep`
+    @param max_ticks - 跑几拍就收。**只有测试会传**，线上是 None（永远跑）
+    """
+    import asyncio
+    sleep = sleep or asyncio.sleep
+
+    cursor = since
+    #: 先告诉客户端它站在哪个游标上，免得它不知道自己落后多少
+    yield _sse({"type": "hello", "seq": get_seq(), "enabled": enabled})
+
+    quiet = 0
+    ticks = 0
+    while max_ticks is None or ticks < max_ticks:
+        ticks += 1
+        fresh = get_events(cursor)
+        if fresh:
+            for e in fresh:
+                yield _sse({"type": "pulse", "event": e})
+            cursor = int(fresh[-1].get("seq") or cursor)
+            quiet = 0
+        else:
+            quiet += 1
+            if quiet >= PULSE_PING_TICKS:
+                #: SSE 的注释行。客户端会忽略它，但连接因此活着
+                yield ": ping\n\n"
+                quiet = 0
+        await sleep(PULSE_TICK_S)
+
+
 def _tools_this_turn(messages: list, history: list) -> list[str]:
     """**这一轮**调了哪些工具。
 
@@ -928,6 +979,94 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
                 for name, d in drives.items()
             },
         }
+
+    def _pulse_events(since: int) -> list[dict]:
+        """账本里 `seq > since` 的那些。**没有账本就是空，不假装。**"""
+        if attention is None or attention.ledger is None:
+            return []
+        return [e for e in attention.ledger.events
+                if int(e.get("seq") or 0) > since]
+
+    def _pulse_seq() -> int:
+        if attention is None or attention.ledger is None:
+            return 0
+        return int(getattr(attention.ledger, "seq", 0))
+
+    @app.get("/api/nox/pulse")
+    def nox_pulse(since: int = 0, limit: int = 100) -> dict:
+        """他这一天里**每一次动念**，逐条带时刻 —— 心跳线上的尖峰。
+
+        ## 这些数据一直都在，只是从没出过门
+
+        `CareLedger.events` 从 2026-08-18 起就在逐条记：
+        什么时候、哪个源、决定是开口还是憋住、为什么憋住。
+        但 `/api/nox/state` 只吐了它的**汇总**（今天说了几次），
+        明细一条都没暴露过。糖糖 2026-08-29 要做心跳线才发现。
+
+        ## `since` 怎么用
+
+        ```text
+        第一次    GET /api/nox/pulse            → 拿到 seq=42 和最近的事件
+        之后      GET /api/nox/pulse?since=42   → 只拿新的
+        ```
+
+        `seq` **跨换天、跨重启都单调**（见 `CareLedger.__init__`）——
+        归零的话客户端过零点会以为时间倒流。
+
+        ## ⚠️ 只有今天的
+
+        账本换天会清空（那是它的设计：`_roll`）。所以这是**当天**的脉搏，
+        不是历史曲线。要看往前的日子走 `/api/nox/day`。
+
+        ## decision 的四种值
+
+        ```text
+        speak    他说出口了        ← 最亮的那种尖峰
+        skip     想了想，没说
+        block    被闸/冷却拦住了   ← `reason` 里写着为什么
+        failed   要说但发失败了
+        ```
+        """
+        evs = _pulse_events(since)
+        if limit > 0:
+            evs = evs[-limit:]
+        return {
+            "ok": True,
+            "now": now_cst().isoformat(),
+            #: 客户端下次拿这个当 `since`。**即使这次一条都没有也要给** ——
+            #: 不然它永远从 0 开始要
+            "seq": _pulse_seq(),
+            "enabled": attention is not None,
+            "events": evs,
+        }
+
+    @app.get("/api/nox/pulse/stream")
+    def nox_pulse_stream(since: int = 0) -> StreamingResponse:
+        """同上，但是推的。**心跳线要的是这条。**
+
+        ## 🔴 为什么是服务端轮询内存，不是事件总线
+
+        账本是在**线程池里**被写的（Care 快循环有阻塞 HTTP），
+        而 SSE 跑在事件循环上。要做真的发布订阅就得架一座
+        线程 → asyncio 的桥，那是另一类复杂度和另一类 bug。
+
+        这里退一步：**每秒扫一遍那个内存列表，有新的就推。**
+        代价是最多晚 1 秒，而心跳线本来就不需要毫秒级 ——
+        她要的是"看得见他在动"，不是示波器。
+
+        ⚠️ 扫的是**进程内的 list**，没有 IO，也不碰数据库。
+
+        ## 心跳注释
+
+        没有事件时每 15 秒发一行 `: ping`。不发的话中间的代理
+        会把这条闲着的连接掐掉，而前端看到的是"心跳突然停了"。
+        """
+        return StreamingResponse(
+            pulse_stream(_pulse_events, _pulse_seq,
+                         enabled=attention is not None, since=since),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
 
     @app.get("/api/nox/day")
     def nox_day(date: str | None = None) -> dict:
