@@ -771,8 +771,14 @@ class AttentionService:
                 }
                 for a in self.engine.registry.list(now=now)
             ],
+            # 🔴 `subject` 是必须的，不是锦上添花。
+            # 少了它，前端拿到的只有 title 这句话（「关心糖糖的睡眠」），
+            # 于是既认不出它跟 attentions 里的「糖糖的睡眠」是同一件事
+            # （界面上出现两个睡眠），也只能对一句中文硬做替换
+            # （显示成「关心your的睡眠」）。两个毛病同一个根。
             "pending_intents": [
-                {"id": i.id, "title": i.title, "priority": round(i.base_priority, 3)}
+                {"id": i.id, "subject": i.subject, "title": i.title,
+                 "priority": round(i.base_priority, 3)}
                 for i in self.intents.list_pending(now)
             ],
             "scheduler": self.scheduler.dump_state(),

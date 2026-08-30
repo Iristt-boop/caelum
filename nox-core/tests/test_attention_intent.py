@@ -326,3 +326,32 @@ def test_snapshot_shows_state(store):
     snap = svc.snapshot()
     assert snap["dry_run"] is True
     assert snap["attentions"][0]["subject"] == SUBJECT
+
+
+def test_憋着的话要带上话题(store):
+    """🔴 `pending_intents` 少了 `subject`，界面会重复显示同一件事。
+
+    `title` 是一句话（「关心糖糖的睡眠」），`attentions` 里是话题
+    （「糖糖的睡眠」）。没有 subject 就对不上，于是同一件事在
+    「Attention 聚焦」里出现两次 —— 一条「他有话想说」、一条「他在留意着」。
+    糖糖 2026-08-30 截图问的就是这个。
+
+    ⚠️ 这不是显示层能补的：光有那句话，前端只能去猜它在说哪个话题。
+    """
+    svc = AttentionService(store, _sleep_provider(4.5), RelationshipState())
+    svc.tick(EVENING)                      # 让 attentions 里有「糖糖的睡眠」
+    #: 直接放一条进去，不走生成路径 —— 这里验的是**序列化**，
+    #  而 tick 是 dry_run，说完就把它清了
+    i = _intent()
+    assert i.title == f"关心{SUBJECT}", "这就是界面上显示成「关心your的睡眠」的那句"
+    #: ⚠️ `list_pending()` 按**真实当下**算过期，而 EVENING 是个固定的过去时刻 ——
+    #  不往后推的话它一进来就是过期的，snapshot 里永远是空的
+    i.expires_at = datetime.now(timezone.utc) + timedelta(hours=24)
+    svc.intents._intents[i.id] = i
+    snap = svc.snapshot()
+
+    pend = snap["pending_intents"]
+    assert pend, "这一 tick 本该憋出一条话来"
+    assert pend[0]["subject"] == SUBJECT
+    #: 且它必须跟 attentions 里的那个**是同一个字符串** —— 能对上才谈得上去重
+    assert pend[0]["subject"] in {a["subject"] for a in snap["attentions"]}
