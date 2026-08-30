@@ -21,6 +21,32 @@ def init_db():
         conn.commit()
 
 
+#: 多久没数据就算「管道断了」。
+#:
+#: 🔴 手机 App 记录是**每天都该有**的东西 —— 24 小时一条都没有，
+#: 那不是"她没玩手机"，那是写入方停了。
+STALE_HOURS = 24
+
+
+def last_record_at():
+    """整个库里最后一条的时刻。**判断数据源还活着的唯一依据。**"""
+    with sqlite3.connect(DB) as conn:
+        row = conn.execute("SELECT created_at FROM tracks ORDER BY id DESC LIMIT 1").fetchone()
+    return row[0] if row else None
+
+
+def staleness():
+    """(最后一条时刻, 距今多少小时, 是不是已经断了)。"""
+    last = last_record_at()
+    if not last:
+        return None, None, True
+    try:
+        age = (datetime.now(TZ) - datetime.fromisoformat(last)).total_seconds() / 3600
+    except ValueError:
+        return last, None, True
+    return last, round(age, 1), age > STALE_HOURS
+
+
 def today_tracks():
     today = datetime.now(TZ).strftime("%Y-%m-%d")
     with sqlite3.connect(DB) as conn:
@@ -36,7 +62,21 @@ def today_tracks():
 def get_today_apps() -> str:
     """查询今天使用过的所有 App 和时长"""
     rows = today_tracks()
-    if not rows: return "今天还没有记录"
+    if not rows:
+        # 🔴 **「今天没记录」和「管道断了」不是一件事。**
+        #
+        # 这两个长得一模一样，正是它 2026-08-02 停掉之后没人发现的原因 ——
+        # 08-02 给 Caddy 路径加了随机前缀防裸奔，手机上的快捷指令还在
+        # 往旧地址发，收到的是 404。而这边照常回「今天还没有记录」，
+        # 看起来就像她那天没玩手机。**28 天，每天都这么说一遍。**
+        last, age, stale = staleness()
+        if stale and last:
+            return (f"⚠️ 这个数据源可能断了：最后一条是 {last[:16]}，"
+                    f"已经 {age:.0f} 小时没有新记录。"
+                    f"不要当成「她没用手机」——先去看写入方还活着吗。")
+        if stale:
+            return "⚠️ 这个数据源一条记录都没有过，写入方可能从没接上。"
+        return "今天还没有记录"
     lines = []
     for r in rows:
         dur = f" · {r['duration']}" if r["duration"] else ""
@@ -86,8 +126,21 @@ async def get_today(send):
 
 
 async def get_health(send):
+    """🔴 **别再回硬编码的 ok。**
+
+    原来这里永远是 `{"status":"ok"}` —— 于是 systemd 说 active、
+    /health 说 ok，而数据源已经死了 28 天。
+    进程活着不等于管道活着，健康检查要检查的是后者。
+    """
+    last, age, stale = staleness()
+    body = json.dumps({
+        "status": "stale" if stale else "ok",
+        "last_record_at": last,
+        "age_hours": age,
+        "stale_after_hours": STALE_HOURS,
+    }, ensure_ascii=False).encode()
     await send({"type":"http.response.start","status":200,"headers":[(b"content-type",b"application/json")]})
-    await send({"type":"http.response.body","body":b'{"status":"ok"}'})
+    await send({"type":"http.response.body","body":body})
 
 
 # === ASGI 合并 ===
