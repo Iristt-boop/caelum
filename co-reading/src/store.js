@@ -802,6 +802,60 @@ export async function listChunks(bookId, { includePrivate = false } = {}) {
   }));
 }
 
+/**
+ * 每一块正文开头那几行重复的标题，剥掉。
+ *
+ * ## 🔴 它长什么样
+ *
+ * ```text
+ * # 开篇问题 Part 1/2      ← 导入器加的（import_text.py:117）
+ * 大问题-简明哲学导论       ← EPUB 页眉里的书名，被当成正文抽出来了
+ * 开篇问题                  ← <h1> 章节名，同上
+ *
+ * 1.有没有某种你愿意为之付出生命的东西？…   ← 真正的正文从这儿开始
+ * ```
+ *
+ * 三本书、每一章都是这个样子。糖糖 2026-08-30 在 Caelum OS 的阅读器里
+ * 看到的就是连着三行一样的标题。
+ *
+ * ## 为什么在读的时候剥，不重新导入
+ *
+ * 重新导入会**丢掉进度和批注** —— 那三本书上有 12 条她写的批注、
+ * 30 章的阅读进度。为了几行标题把那些冲掉，代价完全不成比例。
+ *
+ * 而且剥在这里，**Nox 也一起受益**：他每读一块正文都在重复吃同一个
+ * 标题三遍，那是白花的 token。
+ *
+ * ## ⚠️ 只剥开头，只剥认识的
+ *
+ * 从第一行往下看，**遇到第一行不认识的就停**。
+ * 认识的定义是：markdown 标题行、或者和书名/章节名（去掉标点空白后）
+ * 一模一样的行。
+ *
+ * 绝不做模糊匹配 —— 正文里真的以标题开头的句子不该被吃掉。
+ *
+ * @param text - 原始正文
+ * @param titles - 认得出的那些标题（书名 / 章节名 / 显示名）
+ */
+export function stripRepeatedHeadings(text, titles) {
+  const norm = (v) => String(v || "").replace(/[\s\u3000·・.。，,、_\-—:：]/g, "").toLowerCase();
+  const known = new Set(titles.map(norm).filter((v) => v.length > 0));
+
+  const lines = String(text || "").split("\n");
+  let i = 0;
+  while (i < lines.length) {
+    const bare = lines[i].trim();
+    if (bare === "") { i += 1; continue; }
+    //: markdown 标题行 —— 导入器加的那一行就是它
+    if (/^#{1,6}\s/.test(bare)) { i += 1; continue; }
+    //: 和已知标题一模一样的裸行
+    if (known.has(norm(bare))) { i += 1; continue; }
+    break;
+  }
+  //: 一行都没剥就原样返回（省一次 join）
+  return i === 0 ? String(text || "") : lines.slice(i).join("\n").replace(/^\n+/, "");
+}
+
 export async function readChunk(bookId, chunkId) {
   const manifest = await loadManifest(bookId);
   const chunk = manifest.chunks.find((item) => item.id === chunkId);
@@ -822,7 +876,10 @@ export async function readChunk(bookId, chunkId) {
     chunk,
     prevId: chunk.prevId ?? null,
     nextId: chunk.nextId ?? null,
-    text,
+    //: 剥掉开头那几行重复的标题。见 stripRepeatedHeadings 的注释
+    text: stripRepeatedHeadings(text, [
+      manifest.title, manifest.bookId, chunk.title, chunk.sectionTitle,
+    ]),
   };
 }
 
