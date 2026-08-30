@@ -564,6 +564,11 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
         core.loop, local_hand, getattr(core.cfg, "vision", None))
 
     attention = _build_attention(core, sessions, db)
+    #: 🔴 感知层那条线交给 attention —— 躁动要知道"她此刻在用什么"。
+    #: ⚠️ 只在这儿接一次。`_build_attention` 里拿不到 `local_hand`
+    #: （那是 create_app 的局部变量），硬塞进去会变成第二条依赖路径
+    if attention is not None:
+        attention.link = local_hand
 
     def _world():
         """World Model 的唯一取法。
@@ -961,7 +966,10 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
                     "drives": {}}
 
         now = datetime.now(timezone.utc)
-        drives = attention.resonance.snapshot(now)
+        #: 🔴 走 `attention.drives()`，**别直接调 `resonance.snapshot()`** ——
+        #: 躁动的两个信号（他有多想说 / 她在忙什么）是那一层现算并传进去的，
+        #: 绕过去的话躁动永远是 0，而且不报错
+        drives = attention.drives(now)
         return {
             "ok": True,
             "enabled": True,

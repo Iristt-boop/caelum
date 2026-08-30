@@ -51,6 +51,7 @@ from datetime import datetime, timezone
 from attention.longing import LongingState
 from attention.dejection import DejectionState
 from attention.playfulness import PlayfulnessState
+from attention.restlessness import RestlessnessState
 from attention.registry import FLOOR, Attention, AttentionRegistry
 
 logger = logging.getLogger(__name__)
@@ -147,6 +148,7 @@ class ResonanceState:
         longing: "LongingState | None" = None,
         dejection: "DejectionState | None" = None,
         playfulness: "PlayfulnessState | None" = None,
+        restlessness: "RestlessnessState | None" = None,
     ) -> None:
         self._registry = registry
         #: 低落（2026-08-27）。和 longing 一样是自维护的 ——
@@ -155,13 +157,32 @@ class ResonanceState:
         #: 促狭（2026-08-27）。形状又不一样 —— 它是**最近几轮的气氛**，
         #: 不累加不衰减，她说句正经的就立刻散（见 playfulness.py）
         self._playfulness = playfulness
+        #: 躁动：他有话想说而她正忙。**没有自己的存量**，
+        #: 每次由 want × busy 现算（见 restlessness.py）
+        self._restlessness = restlessness
         #: 想念（V3.5）。**它不在 Registry 里** —— 形状和 Concern 是反的
         #: （一直都在、时间让它涨、见到她才落），塞进去会被 prune 删掉，
         #: 表现成「她太久没说话，于是他不想她了」。见 longing.py
         self._longing = longing
 
-    def snapshot(self, now: datetime | None = None) -> dict[str, Drive]:
-        """此刻所有 Drive。什么都没有时返回空字典。"""
+    def snapshot(self, now: datetime | None = None, *,
+                 want: float = 0.0, busy_app: str | None = None,
+                 busy_seconds: int = 0) -> dict[str, Drive]:
+        """此刻所有 Drive。什么都没有时返回空字典。
+
+        🔴 **躁动的两个信号是参数，不是字段。**
+
+        它们本来是我加的 `feed_restlessness()` —— 但
+        `test_resonance_has_no_write_methods` 当场拦下了：
+        这个类只许有 `snapshot` 和 `get`，**结构上保证它不长出写方法**。
+
+        那条守卫是对的。躁动没有自己的存量（憋着的话在 IntentBook 里、
+        她在忙什么在感知层里），**在这个类上存一份就是第二个真源**，
+        而两个真源迟早会对不上。所以调用方每次把当下的值传进来。
+
+        @param want - 他有多想说，[0,1]
+        @param busy_app - 她此刻在用什么。**`None` = 不知道 = 不忙**
+        """
         now = now or _now()
 
         #: `list()` 已经按当前强度倒序，分组时顺序天然是对的
@@ -234,6 +255,21 @@ class ResonanceState:
                     because=because,
                     evidence=[],
                     source_count=len(because),
+                    computed_at=now,
+                )
+        # 躁动：他有话想说，而她正忙。同样不参与 kind 分组
+        if self._restlessness is not None:
+            value = self._restlessness.value(want, busy_app, busy_seconds, now)
+            because = self._restlessness.because()
+            #: 同低落/促狭 —— 值为 0 时这个 Drive 根本不该存在
+            if value > 0 and because:
+                drives["restlessness"] = Drive(
+                    name="restlessness",
+                    intensity=value,
+                    load=value,
+                    because=because,
+                    evidence=[],
+                    source_count=1,
                     computed_at=now,
                 )
         return drives

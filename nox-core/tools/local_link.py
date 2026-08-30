@@ -133,6 +133,9 @@ class LocalLink:
         self._loop: asyncio.AbstractEventLoop | None = None
         #: 最后一次收到活动段的时刻。感知层存活性靠它（见 `sense_state`）
         self._last_activity_at: datetime | None = None
+        #: 她此刻在用什么。**躁动要靠它判断"你正忙"**（2026-08-30）。
+        #: `(应用名, 进这个窗口多久了)`
+        self._current: tuple[str, int] | None = None
 
     # ------------------------------------------------------------ 状态
 
@@ -322,10 +325,28 @@ class LocalLink:
 
         ⚠️ 整个函数不抛 —— 感知记不下来不该影响那只手。
         """
-        if self.world is None:
-            return
         try:
             app = str(seg.get("app") or "").strip()
+            #: 🔴 心跳帧：**「她还在同一个窗口里」也是信息。**
+            #:
+            #: 段只在切窗口时才发，所以最专注的状态（一小时不切窗口）
+            #: 一条都不发 —— 心这边会判成 unknown，读起来像"不知道她在干嘛"，
+            #: 而真相恰恰相反。Gateway 因此每分钟报一次当前窗口。
+            #:
+            #: ⚠️ **心跳不写 World Model** —— 每分钟记一条观察会把她的世界刷满。
+            #: 它只更新"此刻在用什么"和存活性。
+            if seg.get("ongoing"):
+                if app and app != "idle":
+                    self._current = (app, int(seg.get("seconds") or 0))
+                    self._last_activity_at = datetime.now(timezone.utc)
+                else:
+                    #: 挂机了 —— 明确记成"没在用"，不是"不知道"
+                    self._current = None
+                    self._last_activity_at = datetime.now(timezone.utc)
+                return
+
+            if self.world is None:
+                return
             if not app or app == "idle":
                 #: 挂机不记。她去做饭了不是一种"活动"，
                 #: 记下来只会让 Resonance 以为她在专注做什么

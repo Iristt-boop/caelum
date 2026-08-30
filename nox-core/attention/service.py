@@ -59,6 +59,7 @@ from attention.intent import GENERATE_THRESHOLD, Intent, IntentEngine
 from attention.longing import LongingState
 from attention.dejection import DejectionState
 from attention.playfulness import PlayfulnessState
+from attention.restlessness import RestlessnessState
 from attention.regret import RegretWatch
 from attention.resonance import ResonanceState
 from attention.relationship import RelationshipState
@@ -100,6 +101,8 @@ REGRET_KEY = "resonance.regret"
 DEJECTION_KEY = "resonance.dejection"
 #: 促狭（2026-08-27）。20 分钟就过期，存着只是为了重启时别突然一本正经
 PLAYFUL_KEY = "resonance.playfulness"
+#: 躁动只存"从什么时候开始憋的"，别的都是当下算的
+RESTLESS_KEY = "resonance.restlessness"
 
 #: 追待办的节奏。糖糖 2026-08-17 定的「默认 1 小时一次，可调」
 TODO_CHASE_GAP_MIN = 60
@@ -151,8 +154,10 @@ class AttentionService:
         self.dejection = DejectionState.from_dict(store.get_source_state(DEJECTION_KEY))
         #: 促狭（2026-08-27）：她在闹，他可以接
         self.playfulness = PlayfulnessState.from_dict(store.get_source_state(PLAYFUL_KEY))
+        self.restlessness = RestlessnessState.from_dict(store.get_source_state(RESTLESS_KEY))
         self.resonance = ResonanceState(
             self.engine.registry, self.longing, self.dejection, self.playfulness,
+            self.restlessness,
         )
         self.intents = store.load_intents()
         #: 他给自己留的纸条（唤醒链）。糖糖 2026-08-11 定的那条线。
@@ -718,6 +723,31 @@ class AttentionService:
         return t.id
 
     # ------------------------------------------------------------ 观察
+
+    def drives(self, now: datetime | None = None) -> dict:
+        """他此刻的内心状态。**读 Drive 一律走这儿，别直接调 resonance.snapshot。**
+
+        🔴 绕过这儿直接调 `resonance.snapshot()` 的话，
+        躁动**永远是 0，而且不报错** —— 接口照常返回、
+        别的 Drive 照常有值，只是少了一个。那正是这个项目反复栽的那种
+        「配上了 ≠ 用上了」（PROJECT.md `verify-from-the-consumer-side`）。
+        所以有测试专门验"真跑一轮之后躁动不是 0"。
+
+        两个信号：
+        - **他有多想说** = pending intents 的 priority 之和，夹在 [0,1]
+        - **她在忙什么** = 感知层报的当前窗口。拿不到就是 None（不忙）
+        """
+        now = now or datetime.now(timezone.utc)
+        want = min(1.0, sum(i.base_priority for i in self.intents.list_pending(now)))
+
+        app, seconds = None, 0
+        link = getattr(self, "link", None)
+        cur = getattr(link, "_current", None) if link is not None else None
+        if cur:
+            app, seconds = cur[0], cur[1]
+
+        return self.resonance.snapshot(
+            now, want=want, busy_app=app, busy_seconds=seconds)
 
     def snapshot(self) -> dict[str, Any]:
         """给 `/health` 看的现状。dry-run 期间主要靠它和日志。"""
