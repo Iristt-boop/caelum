@@ -841,6 +841,38 @@ netease-mcp.noxtang.com {
 别的会话的消息就被灌进这个刚建好的空窗口，看起来像「New Chat 没生效」。
 现在 `if (!sid) return;`。
 
+### 10.2 反过来的那一面：OS 钉死在一个月前的会话上（2026-08-31 修）
+
+10 修的是「id 传不回来，每句话一个新会话」。这条是它的**镜像**：
+id 传回来了、也存住了，然后**再也不动**。
+
+糖糖：「OS chat 页是断的，消息没同步。还是昨天的。」
+她截图里的会话是 `2e7311d6…`（**8 月 14 号**那条），
+而当天真正在聊的是 `1809ea16…`（962 条消息，19:44 还在更新）。
+
+🔴 **消息是真的、时间是真的，只是不是这一条的** —— 所以长得就像「同步断了」。
+我第一轮查数据全对（会话列表通、历史 962 条、内容都在），
+差点判成"没问题"，是她那张截图里的 id 露的馅。
+
+根因在 `ensureSessionId()`：
+
+```js
+const saved = storedSessionId();
+if (saved) { resolving = Promise.resolve(saved); return resolving; }
+```
+
+「接最近那条对话」的兜底**只在 localStorage 为空时才走**。
+那个 id 一旦写进去就永远不动 —— 她在手机上说的话落在别的会话里，OS 毫不知情。
+
+现在：**存过也问一次服务端，最新那条不是本地这条就跟过去**。
+她和他只有一个对话，哪台设备说的都是同一件事。
+
+两条边界（都写了断言，`lib/__tests__/session-resolve.test.js`）：
+- 从「最近对话」点进某条走 `setSessionId()`，会把 `resolving` 定死，
+  **不会把她从当前对话里拽走**；而且她在旧会话里说一句话，那条就变成最新的
+- **读不到就留在原地，不新建** —— 读不到 ≠ 没有，
+  网断时给她开一个空白对话等于把上下文弄丢了
+
 ### 10.1 测试数据不许落进糖糖的正式库（2026-08-02 立规矩）
 
 糖糖打开侧边栏，Recents 一整屏，绝大多数是历代 CC 窗口的测试会话。她的原话：
@@ -1104,6 +1136,27 @@ tar -czf "$env:TEMP\dist.tgz" dist
 scp -i $k "$env:TEMP\dist.tgz" root@43.133.211.140:/root/frontend/dist.tgz
 ssh -i $k root@43.133.211.140 "cd /root/frontend && rm -rf dist-new && mkdir dist-new && tar xzf dist.tgz -C dist-new --strip-components=1 && rm -rf dist-old && mv dist dist-old && mv dist-new dist && rm dist.tgz"
 ```
+
+### Nox Core 部署（**逐文件传，线上不是 git 仓库**）
+
+⚠️ `/root/nox-core` 是手动 rsync/scp 上去的，**没有 `.git`**。
+所以「本地提交了」和「线上跑着」是两回事，看 git log 判断不了线上有什么。
+
+```powershell
+$k = "C:\Users\14372\.ssh\id_ed25519"
+scp -i $k "D:\claude-code\nox-core\attention\service.py" root@43.133.211.140:/root/nox-core/attention/service.py
+ssh -i $k root@43.133.211.140 "systemctl restart nox-core"
+```
+
+线上到底有没有某次改动，**去线上 grep，别靠记忆**：
+
+```bash
+ssh root@43.133.211.140 'grep -c "那句新写的话" /root/nox-core/tools/computer.py'
+ls -la --time-style=+%m-%d\ %H:%M /root/nox-core/tools/computer.py   # 文件时间也能对
+```
+
+2026-08-31 就撞上过：同一天改的两个文件，`service.py` 传上去了、
+`computer.py` 没有 —— 只看本地 git 完全看不出这个差别。
 
 ### Nox Core（本地开发）
 ```powershell
@@ -5567,6 +5620,32 @@ Music 页底下的播放条和右栏常驻的那张小卡片看的是**同一个
 （模块级单例，同 `feed.js` 的理由）。各 new 一个的话切页歌就断，
 更糟的是两个一起响、在一边按不停另一边。
 
+*2026-08-31 起**聊天里那张音乐卡是第三个订阅者**（原来只是封面 + 歌名，
+写着「播放器还没接」）。没加任何后端字段 —— 聊天卡本来就带 `songId`，
+而 `playList()` 认的就是它。⚠️ 判断「是不是正在放这一首」要比 `songId`，
+不能比对象引用：每次 `loadHistory` 都是新对象，比引用永远不相等。*
+
+### 书架：藏书库 + 共读，**同一本书只占一个位置**（2026-08-31）
+
+`library_books`（实体书元数据，bridge）和 co-reading（能翻开读的电子书）
+是两份独立数据。同一本书两边都有时原来会在书架上排成两本。
+
+现在按**书名归一**（抹掉标点空格和大小写）合并，**留共读那条** ——
+它能翻开读；把实体那条的 `id` / 状态 / 简介带过来，所以拨状态、写简介、
+从书架拿走都还认得它。🔴 反过来留实体的话，这本书就打不开了。
+纯函数 `mergeShelf()` + 12 个断言 —— 合并多一本少一本、留错了哪一条，
+在界面上都只是「书架看着没毛病」。
+
+录入面板分两档：**实体书**（粘书名，只存元数据）/ **电子书**
+（传 EPUB/TXT → `POST /api/reading/import`，上限 25MB，base64 会把体积撑到 4/3）。
+选好文件先拿文件名去库里查，有实体版就先说清「会合成一本」，并沿用它的书名作者。
+
+**`library_books` 新增 `description` 列**（2026-08-31 上线）：
+豆瓣只给正面封面，拿不到简介，所以详情页给了支笔让她自己写。
+PATCH 认 `title/author/isbn/category/status/description`。
+⚠️ 共读书**不在这张表里**（它们只有 `bookId`，值是书名，`co_book_id` 481 本全是空），
+所以详情页对共读书**不显示那支笔** —— 点下去必然 404 的按钮比没有按钮更糟。
+
 ⚠️ 换票是异步的，而她可能在票回来之前又点了下一首 —— 所以有个 `token` 计数器，
 回来的票对不上号就丢掉。不管的话会出现「点了 B，响的是 A」。
 
@@ -5616,6 +5695,40 @@ Nox 的人格、记忆、判断永远在 Core 那边，绝不下沉到手里。
 ⚠️ **看图这条 base64 绝不能进他的上下文**（一张图约 27 万字符，
 而且会存进会话历史，之后每轮都带着）。闸在 `computer.py::_split_image`，
 细节见架构文档八之九。
+
+### 🔴 手是**单独一个进程**，跟 DSH 没关系（2026-08-31 血的教训）
+
+`D:\deepseek-harness` 下有**两个完全不同的启动器**，长得很像，作用无关：
+
+| 启动器 | 起的是什么 | 谁在守 |
+|---|---|---|
+| `D:\claude-code\scripts\dsh-boot.cjs` | **dsh 自己那个 agent** 的 web（:3080） | 计划任务 `dsh-boot` / `dsh-restart-boot` / `dsh-web-background` |
+| `D:\deepseek-harness\caelum-os\start-gateway.mjs` | **Caelum Gateway**，外连 VPS | 计划任务 `caelum-gateway`（2026-08-31 才补上） |
+
+**只有后者会读 `~/.caelum/env`**（它把键塞进 `process.env` 之后才 import
+Gateway —— 晚了 Gateway 会以为没配然后拒绝启动）。
+`dsh-boot.cjs` 传的是原样 `process.env`，而 `CAELUM_LINK_SECRET`
+**不在系统环境变量里**（用户级、机器级都没有），所以那条路密钥永远到不了手。
+
+⚠️ 后果是**静默的**：dsh 三个任务跑得好好的、糖糖电脑开着、Caelum OS 也连着
+VPS 的 HTTPS（界面一切正常），只有那条 wss 从来没建立过。
+2026-08-31 之前它就没自启过，nox-core 那头
+`local_hand = {ready:false, device:""}` 等了 26 小时没人理。
+
+怎么确认这只手在不在（**从心那头问，别信本地日志**）：
+
+```bash
+curl -s http://127.0.0.1:8100/health | python3 -c \
+  'import json,sys; print(json.load(sys.stdin)["local_hand"])'
+# {"ready": true, "device": "糖糖的电脑"}  ← 这才算连上
+```
+
+自启脚本是 `scripts/caelum-gateway-start.ps1`，里面三个坑都写着注释：
+BOM（同上面探针那条）、`netstat` 要写**绝对路径**（任务上下文 PATH 是精简的，
+直接写命令找不到 → 判断为空 → 每次都重复启动）、
+**日志不能和子进程共用一个文件**（`-RedirectStandardOutput` 会截断重写）。
+防重复用**端口**（Gateway 自己绑 `127.0.0.1:39100`），不匹配命令行 ——
+`npx tsx` 会派生一串 node，命令行匹配既容易漏、又会匹配到执行这条检查的进程自己。
 
 ### 反向连接：是她的电脑去连 VPS
 
