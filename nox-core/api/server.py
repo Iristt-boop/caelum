@@ -60,6 +60,8 @@ from attention.sources.todo_due import TodoDueSource
 from tools import record as record_tools
 from tools import remind as remind_tools
 from world_model import WorldModel
+from topic_pool import TopicPool, run_topic_loop
+from topic_pool.pool import DEFAULT_SCOUT_INTERVAL_S
 from attention.store import AttentionStore
 from day import build_day
 from context.compactor import maybe_compact
@@ -616,6 +618,23 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
     # 测试全绿、service 里也 new 出来了，但没人把失败交给它。
     local_hand.dejection = attention.dejection if attention is not None else None
 
+    # 话题池（Topic_Pool 文档，2026-08-31）。world / adapter 缺哪个降哪个：
+    # world 没了没有 shared 投影，adapter 没了 Filter 出空 —— 池子照建，
+    # Scout 的候选缓存照攒，等哪天配上了就能重筛（§3.3）
+    _topic_pool = None
+    try:
+        _utility_cfg = getattr(core.cfg, "utility", None)
+        _pool_adapter = None
+        if _utility_cfg is not None and getattr(_utility_cfg, "usable", False):
+            from agent.adapters import make_adapter as _make_adapter
+            _pool_adapter = _make_adapter(_utility_cfg)
+        _topic_pool = TopicPool(
+            Path(core.cfg.db_path).parent / "topics.db",
+            world=_world(), adapter=_pool_adapter,
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception("话题池装配失败，这条线不跑")
+
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         """Attention 的后台心跳。**这是全 Core 唯一允许 async 的那层。**
@@ -632,6 +651,12 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
             if attention.fast_sources:
                 care_s = int(os.getenv("NOX_CARE_INTERVAL_S", CARE_INTERVAL_S))
                 tasks.append(asyncio.create_task(run_care_loop(attention, care_s)))
+        # 话题池：6 小时一轮 Scout → Filter（Topic_Pool 文档）。独立于
+        # Attention —— attention 没开它也照跑，挂了也不带塌心跳
+        if _topic_pool is not None and os.getenv("NOX_TOPICS_DISABLED", "") not in ("1", "true"):
+            scout_s = int(os.getenv("NOX_TOPIC_SCOUT_INTERVAL_S",
+                                    str(DEFAULT_SCOUT_INTERVAL_S)))
+            tasks.append(asyncio.create_task(run_topic_loop(_topic_pool, scout_s)))
         try:
             yield
         finally:
@@ -1172,6 +1197,32 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
                 for e in rows
             ],
         }
+
+    @app.get("/api/nox/topics")
+    def nox_topics() -> dict:
+        """池子里的活话题（未过期、没人理过的）。文档 §4.2 的入口 B。"""
+        if _topic_pool is None:
+            raise HTTPException(status_code=503, detail="话题池没启用")
+        return {"ok": True, "items": _topic_pool.topics_for_ui()}
+
+    @app.post("/api/nox/topics/{topic_id}/status")
+    def nox_topic_status(topic_id: str, body: dict) -> dict:
+        """人工决策：followed / dismissed。
+
+        ⚠️ follow 的边界（文档 §4.3，写死）：这只是个**记号**——
+        「我们感兴趣」。它不触发任何自动研究、不派任务；
+        要去查、要聊，是 Nox 和糖糖自己的下一步。
+        """
+        if _topic_pool is None:
+            raise HTTPException(status_code=503, detail="话题池没启用")
+        status = str((body or {}).get("status") or "")
+        if status not in ("followed", "dismissed"):
+            raise HTTPException(status_code=422,
+                                detail="status 只能是 followed / dismissed")
+        if not _topic_pool.store.mark(topic_id, status):
+            raise HTTPException(status_code=404,
+                                detail="话题不存在，或已经被人理过了")
+        return {"ok": True, "id": topic_id, "status": status}
 
     @app.post("/attention/tick")
     def attention_tick() -> dict:
