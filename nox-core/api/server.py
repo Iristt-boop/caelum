@@ -53,6 +53,7 @@ from attention.speaker import build_speaker
 from attention.waker import build_waker
 from attention.gate import DailyGate
 from attention.sources.presence import PresenceSource
+from attention.sources.shared_activities import SharedActivitiesSource
 from attention.sources.thinking import ThinkingSource
 from attention.sources.times import TimeWakeSource
 from attention.sources.todo_due import TodoDueSource
@@ -492,10 +493,33 @@ def _build_attention(core: Nox, sessions: "Sessions", db: Store) -> AttentionSer
         # 那样行为和接共影之前一样，他照常开口
         watching = WatchingCheck(core.bridge) if core.bridge is not None else None
 
+        # 共读 / 共听 / 共影 → World Model（Topic_Pool §3.1.2，2026-08-31）。
+        # 只记账不开口。客户端没法复用 nox.py 里那两个 —— 是局部变量，
+        # 这里按同一份 cfg 重造（RestClient 无状态，重造没有副作用）。
+        # 三块服务哪个没配就传 None，对应那块静默跳过
+        from tools.eryu import make_client as _make_eryu_client
+        from tools.reading import make_client as _make_reading_client
+        # ⚠️ 用 getattr：cfg 是各处自带的，老的假配置可能没有这几个字段，
+        # 缺了就当没配 —— 不能让记账的事把 Attention 装配整个带崩
+        _reading_url = getattr(core.cfg, "reading_url", "")
+        _eryu_url = getattr(core.cfg, "eryu_url", "")
+        shared_source = SharedActivitiesSource(
+            reading=(_make_reading_client(
+                _reading_url, getattr(core.cfg, "reading_token", ""),
+                getattr(core.cfg, "reading_timeout", 12.0))
+                if _reading_url else None),
+            eryu=(_make_eryu_client(
+                _eryu_url, getattr(core.cfg, "eryu_token", ""),
+                getattr(core.cfg, "eryu_timeout", 12.0))
+                if _eryu_url else None),
+            bridge=core.bridge,
+            world=world,
+        )
+
         svc = AttentionService(astore, provider, speaker=speaker, waker=waker,
                                todo_source=todo_source, fast_sources=fast_sources,
                                gate=gate, time_source=time_source, world=world,
-                               watching=watching)
+                               watching=watching, shared_sources=[shared_source])
 
         # 体重 / 生理期：HealthKit 那条同步坏了（体重 14 天一条没有，
         # 经期表被快捷指令写坏），改成他在对话里主动记进 World Model

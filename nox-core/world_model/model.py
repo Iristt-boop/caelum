@@ -39,6 +39,14 @@ logger = logging.getLogger(__name__)
 DEFAULT_TTL = timedelta(hours=36)
 TTL: dict[str, timedelta] = {
     "sleep_duration": timedelta(hours=36),
+    # ---- 三块共活动（Topic_Pool §3.1.2，2026-08-31）----
+    # 她不是天天读书：几天没动才算「停了」，36 小时太紧。
+    # 过期只是状态变 stale（「最后一次记录是 X 月 X 日」），事实永远在
+    "reading_progress": timedelta(days=4),
+    # 「正在看」是个很短的状态 —— 关掉播放器俩小时就不该再算
+    "watching_session": timedelta(hours=2),
+    # 「昨晚一起听的那首」过一天就成回忆了
+    "listening_together": timedelta(hours=36),
 }
 
 

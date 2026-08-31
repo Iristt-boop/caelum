@@ -134,6 +134,7 @@ class AttentionService:
         time_source: TimeWakeSource | None = None,
         world: object | None = None,
         watching: Any = None,
+        shared_sources: list[Any] | None = None,
     ) -> None:
         self.store = store
         #: World Model —— 事实的收口。Source 往里写、Evaluator 从里反查趋势。
@@ -169,6 +170,11 @@ class AttentionService:
         #: 日度指标（步数 / HRV）。和睡眠同一条慢线，同样进 Registry 衰减，
         #: 同样往 World Model 里写事实 —— 2026-08-19 加的第二、三个感知源
         self.metric_sources = build_metric_sources(provider, store, world)
+        #: 共读 / 共听 / 共影（Topic_Pool §3.1.2，2026-08-31）。
+        #: 和上面两类都不同 —— 它**只往 World Model 记账，永远不产事件**，
+        #: 「这值不值得开口」不归它管。列表可为空：三块服务一个都没配
+        #: 就是空列表，行为和没接之前一样
+        self.shared_sources = list(shared_sources or [])
         #: 固定时间醒来（M5′ a 重构，2026-08-14）：午饭/晚饭/睡前到点主动开口。
         #: 和 SleepSource 不同 —— 它是「时刻驱动」，不经过 Evaluator/Registry。
         self.time_source = time_source
@@ -276,8 +282,10 @@ class AttentionService:
         # 1. 有没有新变化。
         #    睡眠 + 日度指标（步数 / HRV）—— 都是「感知型」源：
         #    只在**状态变化**时产事件，进 Registry 吃衰减模型。
+        #    共读 / 共听 / 共影夹在同一个循环里，但它们 poll() 恒返回 None
+        #    （只往 World Model 记账），所以天然不会产生事件。
         #    ⚠️ 一个源坏了不许带塌别人（2026-08-19 加第二、三个源时定的）
-        for src in [self.source, *self.metric_sources]:
+        for src in [self.source, *self.metric_sources, *self.shared_sources]:
             try:
                 event = src.poll(now)
             except Exception:  # noqa: BLE001
