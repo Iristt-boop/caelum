@@ -71,7 +71,11 @@ class TopicPool:
         fresh = [c for c in candidates if self.store.add_candidate(c)]
         self.store.prune_candidates(CANDIDATE_CACHE_AGE)
 
-        # 4. Filter → 池子。origin=external，title/url 用我们抓的那份
+        # 4. Filter → 池子。origin=external，title/url 用我们抓的那份。
+        # ⚠️ observed_at 记的是**进池子的时刻**，不是文章发布时间——
+        # TTL 算的是「在池子里放多久」。拿 pubDate 当起点的话，
+        # Google News 三天窗口里两天前的旧文，一轮还没跑完就过期了
+        #（2026-08-31 上线头一轮三条全灭，就是这么死的）
         added = 0
         for t in run_filter(self.adapter, candidates, now):
             cand = next(c for c in candidates if c.source_id == t["source_id"])
@@ -84,7 +88,7 @@ class TopicPool:
                     origin="external",
                     why_this=t["why_this"],
                     relevance=t["relevance"],
-                    observed_at=cand.published_at or now,
+                    observed_at=now,
                 ),
                 dedup_key=_url_dedup(cand.url),
             ):

@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+import threading
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -146,12 +147,23 @@ CREATE TABLE IF NOT EXISTS candidates (
 
 
 class TopicStore:
-    """topics.db 的读写。错误一律抛给上层 —— 池子坏了不该静默。"""
+    """topics.db 的读写。错误一律抛给上层 —— 池子坏了不该静默。
+
+    ⚠️ 连接跨线程用（Scout 循环在 `to_thread` 的工人线程里跑，API 路由
+    在 FastAPI 的线程池里跑，同一个库）：照 `world_model/store.py` 的方子
+    —— `check_same_thread=False` + 每个操作持锁 + WAL。少哪一样，
+    要么直接 ProgrammingError（2026-08-31 上线头一轮就栽在这），
+    要么两边同时写时静默坏账。
+    """
 
     def __init__(self, path: str | Path) -> None:
-        self.conn = sqlite3.connect(str(path))
+        self._lock = threading.Lock()
+        self.conn = sqlite3.connect(str(path), check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
-        self.conn.executescript(_SCHEMA)
+        with self._lock:
+            self.conn.executescript(_SCHEMA)
+            self.conn.execute("PRAGMA journal_mode=WAL")
+            self.conn.commit()
 
     def close(self) -> None:
         self.conn.close()
@@ -160,30 +172,33 @@ class TopicStore:
 
     def add_candidate(self, c: Candidate) -> bool:
         """source_id 撞了就是抓过 —— 返回 False，不是错误。"""
-        cur = self.conn.execute(
-            "INSERT OR IGNORE INTO candidates"
-            " (source_id, title, url, source, category, summary, published_at, fetched_at)"
-            " VALUES (?,?,?,?,?,?,?,?)",
-            (c.source_id, c.title, c.url, c.source, c.category, c.summary,
-             _iso(c.published_at) if c.published_at else None, _iso(c.fetched_at)),
-        )
-        self.conn.commit()
+        with self._lock:
+            cur = self.conn.execute(
+                "INSERT OR IGNORE INTO candidates"
+                " (source_id, title, url, source, category, summary, published_at, fetched_at)"
+                " VALUES (?,?,?,?,?,?,?,?)",
+                (c.source_id, c.title, c.url, c.source, c.category, c.summary,
+                 _iso(c.published_at) if c.published_at else None, _iso(c.fetched_at)),
+            )
+            self.conn.commit()
         return cur.rowcount > 0
 
     def recent_candidates(self, max_age: timedelta, limit: int = 200) -> list[Candidate]:
         since = _iso(datetime.now(timezone.utc) - max_age)
-        rows = self.conn.execute(
-            "SELECT * FROM candidates WHERE fetched_at >= ?"
-            " ORDER BY id DESC LIMIT ?", (since, limit),
-        ).fetchall()
+        with self._lock:
+            rows = self.conn.execute(
+                "SELECT * FROM candidates WHERE fetched_at >= ?"
+                " ORDER BY id DESC LIMIT ?", (since, limit),
+            ).fetchall()
         return [self._candidate(r) for r in rows]
 
     def prune_candidates(self, max_age: timedelta) -> int:
         """候选缓存天生短命（文档 §3.3：只是重筛的保险，不是档案）。"""
         since = _iso(datetime.now(timezone.utc) - max_age)
-        cur = self.conn.execute(
-            "DELETE FROM candidates WHERE fetched_at < ?", (since,))
-        self.conn.commit()
+        with self._lock:
+            cur = self.conn.execute(
+                "DELETE FROM candidates WHERE fetched_at < ?", (since,))
+            self.conn.commit()
         return cur.rowcount
 
     @staticmethod
@@ -201,38 +216,41 @@ class TopicStore:
         """同一来源 / 同一场经历只进池子一次。撞了返回 False。"""
         expires = topic.expires_at or (
             topic.observed_at + ttl_for(topic.category))
-        cur = self.conn.execute(
-            "INSERT OR IGNORE INTO topics"
-            " (id, hook, source_title, source_url, category, origin, why_this,"
-            "  relevance, observed_at, expires_at, status, dedup_key)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-            (topic.id, topic.hook, topic.source_title, topic.source_url,
-             topic.category, topic.origin, json.dumps(topic.why_this, ensure_ascii=False),
-             topic.relevance, _iso(topic.observed_at), _iso(expires),
-             topic.status, dedup_key),
-        )
-        self.conn.commit()
+        with self._lock:
+            cur = self.conn.execute(
+                "INSERT OR IGNORE INTO topics"
+                " (id, hook, source_title, source_url, category, origin, why_this,"
+                "  relevance, observed_at, expires_at, status, dedup_key)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                (topic.id, topic.hook, topic.source_title, topic.source_url,
+                 topic.category, topic.origin, json.dumps(topic.why_this, ensure_ascii=False),
+                 topic.relevance, _iso(topic.observed_at), _iso(expires),
+                 topic.status, dedup_key),
+            )
+            self.conn.commit()
         return cur.rowcount > 0
 
     def open_topics(self, now: datetime, *, include_surfaced: bool = True,
                     limit: int = 50) -> list[Topic]:
         """池子里的活话题：没过期、没人理过。新的、相关的在前。"""
         statuses = "('open','surfaced')" if include_surfaced else "('open')"
-        rows = self.conn.execute(
-            f"SELECT * FROM topics WHERE status IN {statuses}"
-            " AND expires_at > ? ORDER BY relevance DESC, observed_at DESC"
-            " LIMIT ?", (_iso(now), limit),
-        ).fetchall()
+        with self._lock:
+            rows = self.conn.execute(
+                f"SELECT * FROM topics WHERE status IN {statuses}"
+                " AND expires_at > ? ORDER BY relevance DESC, observed_at DESC"
+                " LIMIT ?", (_iso(now), limit),
+            ).fetchall()
         return [self._topic(r) for r in rows]
 
     def mark(self, topic_id: str, status: str) -> bool:
         """人工决策：followed / dismissed。不存在或已是终态返回 False。"""
         if status not in HUMAN_STATUSES:
             raise ValueError(f"只能人工设 {HUMAN_STATUSES}，不是 {status!r}")
-        cur = self.conn.execute(
-            "UPDATE topics SET status=? WHERE id=? AND status IN ('open','surfaced')",
-            (status, topic_id))
-        self.conn.commit()
+        with self._lock:
+            cur = self.conn.execute(
+                "UPDATE topics SET status=? WHERE id=? AND status IN ('open','surfaced')",
+                (status, topic_id))
+            self.conn.commit()
         return cur.rowcount > 0
 
     def mark_surfaced(self, topic_ids: list[str]) -> None:
@@ -240,22 +258,25 @@ class TopicStore:
         if not topic_ids:
             return
         marks = ",".join("?" * len(topic_ids))
-        self.conn.execute(
-            f"UPDATE topics SET status='surfaced'"
-            f" WHERE id IN ({marks}) AND status='open'", topic_ids)
-        self.conn.commit()
+        with self._lock:
+            self.conn.execute(
+                f"UPDATE topics SET status='surfaced'"
+                f" WHERE id IN ({marks}) AND status='open'", topic_ids)
+            self.conn.commit()
 
     def expire(self, now: datetime) -> int:
         """到点的 open/surfaced 转 expired。followed/dismissed 是人的决定，不动。"""
-        cur = self.conn.execute(
-            "UPDATE topics SET status='expired'"
-            " WHERE status IN ('open','surfaced') AND expires_at <= ?", (_iso(now),))
-        self.conn.commit()
+        with self._lock:
+            cur = self.conn.execute(
+                "UPDATE topics SET status='expired'"
+                " WHERE status IN ('open','surfaced') AND expires_at <= ?", (_iso(now),))
+            self.conn.commit()
         return cur.rowcount
 
     def stats(self) -> dict:
-        rows = self.conn.execute(
-            "SELECT status, COUNT(*) AS n FROM topics GROUP BY status").fetchall()
+        with self._lock:
+            rows = self.conn.execute(
+                "SELECT status, COUNT(*) AS n FROM topics GROUP BY status").fetchall()
         return {r["status"]: r["n"] for r in rows}
 
     @staticmethod

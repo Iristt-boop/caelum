@@ -124,6 +124,31 @@ def test_ttl_by_category():
     assert SHARED_TTL_HOURS == 48
 
 
+def test_store_used_from_another_thread(tmp_path):
+    """线上头一轮就栽在这：连接主线程建、Scout 在 to_thread 里用。
+
+    世界模型的方子（check_same_thread=False + 锁）必须原样带着，
+    少一样就是 sqlite3.ProgrammingError。
+    """
+    import threading
+    s = TopicStore(tmp_path / "topics.db")
+    results: list[str] = []
+
+    def work():
+        try:
+            s.add_topic(_topic(hook="工人线程写的"), dedup_key="t-thread")
+            found = len(s.open_topics(NOW))
+            results.append("ok" if found == 1 else f"bad:{found}")
+        except Exception as exc:  # noqa: BLE001
+            results.append(f"raise:{type(exc).__name__}")
+
+    t = threading.Thread(target=work)
+    t.start()
+    t.join()
+    s.close()
+    assert results == ["ok"]
+
+
 # ---------------------------------------------------------------- scout 解析
 
 
@@ -341,6 +366,26 @@ def test_run_cycle_end_to_end(monkeypatch, world, tmp_path):
     stats2 = pool.run_cycle(NOW + timedelta(hours=6))
     assert stats2["external_topics"] == 0
     assert len(pool.topics_for_ui(NOW + timedelta(hours=6))) == 1
+
+
+def test_old_article_still_born_fresh(monkeypatch, world, tmp_path):
+    """发布两天前的旧文进池子，寿命从**进池子**算——不能生下来就过期。
+
+    2026-08-31 线上头一轮三条全灭的复现：observed_at 拿了 pubDate，
+    Google News 三天窗口里的旧文 + 48h TTL，本轮 expire 直接收走。
+    """
+    pool = TopicPool(tmp_path / "topics.db", world=world,
+                     adapter=FakeAdapter([{
+                         "source_id": "fake:old", "hook": "旧文但值得聊",
+                         "category": "books", "why_this": [], "relevance": 0.8}]))
+    old = _cand("fake:old", "https://x/old", category="books")
+    old.published_at = NOW - timedelta(days=2)
+    monkeypatch.setattr(scout, "fetch_direction", lambda cat: [old])
+    monkeypatch.setattr(scout, "fetch_world_hooks", lambda w, now: ([], 0))
+
+    pool.run_cycle(NOW)
+    items = pool.topics_for_ui(NOW)
+    assert len(items) == 1 and items[0]["fresh"] is True
 
 
 def test_run_cycle_without_adapter_still_scouts(monkeypatch, world, tmp_path):
