@@ -24,6 +24,19 @@ from tools.http import RestResult  # noqa: E402
 
 _TODAY = now_cst().date()
 _TOMORROW = _TODAY + timedelta(days=1)
+#: 一个「既不是今天、也不是明天」的日子。
+#
+#  🔴 **不能写死日期，也不能简单地 +N 天。**
+#  原来这里是硬编码的「9月1日」，于是每年 8/30~9/1 那几天它真的变成
+#  "快到期"，`test_far_future_is_not_urgent` 无故变红 —— 2026-08-31
+#  就红了一次，而那天的改动跟待办毫无关系。测试挂在日历上，
+#  是一颗迟早会响的定时炸弹。
+#
+#  ⚠️ 改成 `_TODAY + 90 天` 也不行：provider 是按**当年**解析「M月D日」的
+#  （`_match_date(item, today.year)`），跨年之后「2月13日」会被算成今年的
+#  2 月 13 日 —— 那是过去，测的就不是"远期"了。
+#  所以取一个**保证落在今年之内**、且离今天足够远的日子。
+_OTHER = date(_TODAY.year, 12, 15) if _TODAY.month < 7 else date(_TODAY.year, 1, 15)
 
 
 def _md(today_item: str = "", tomorrow_item: str = "") -> str:
@@ -48,7 +61,7 @@ def _md(today_item: str = "", tomorrow_item: str = "") -> str:
     if tomorrow_item:
         lines.append(f"- [ ] {_TOMORROW.month}月{_TOMORROW.day}日：{tomorrow_item}")
     lines += [
-        "- [ ] 9月1日：iPhone 18发布会跟进",
+        f"- [ ] {_OTHER.month}月{_OTHER.day}日：iPhone 18发布会跟进",
         "",
         "## 已完成", "",
         "- [x] VPS迁移 — 8月1日完成",
@@ -106,10 +119,17 @@ def test_due_tomorrow_is_labeled():
     assert any("明天：" in x for x in s["due_soon"])
 
 
-def test_far_future_is_not_urgent():
-    """9月1日那条不该被当成快到期的。"""
+def test_只有今天和明天才算快到期():
+    """不是今天也不是明天的，一律不进 due_soon。
+
+    这才是 provider 真正的规则（`(when - today).days in (0, 1)`）——
+    原来那条测试叫「远期不算紧急」，但远近不是判据，**是不是今明两天**才是。
+    照真规则写，测试就不会再被日历绊倒。
+    """
     s = _p().get_state(Turn())
     assert not any("iPhone 18" in x for x in s["due_soon"])
+    #: 它没消失，只是归到别处去了 —— 不进 due_soon 不等于被吞掉
+    assert any("iPhone 18" in x for x in s["upcoming"] + s["ongoing"])
 
 
 def test_ongoing_is_capped():
