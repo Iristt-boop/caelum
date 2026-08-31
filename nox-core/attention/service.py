@@ -135,6 +135,7 @@ class AttentionService:
         world: object | None = None,
         watching: Any = None,
         shared_sources: list[Any] | None = None,
+        topics: Any = None,
     ) -> None:
         self.store = store
         #: World Model —— 事实的收口。Source 往里写、Evaluator 从里反查趋势。
@@ -175,6 +176,9 @@ class AttentionService:
         #: 「这值不值得开口」不归它管。列表可为空：三块服务一个都没配
         #: 就是空列表，行为和没接之前一样
         self.shared_sources = list(shared_sources or [])
+        #: 话题池（Topic_Pool §4.1）。**只喂料，不决定开口** ——
+        #: 开口决策全部还是 Care 的。surfaced 在真拿料开了口之后记
+        self.topics = topics
         #: 固定时间醒来（M5′ a 重构，2026-08-14）：午饭/晚饭/睡前到点主动开口。
         #: 和 SleepSource 不同 —— 它是「时刻驱动」，不经过 Evaluator/Registry。
         self.time_source = time_source
@@ -244,6 +248,11 @@ class AttentionService:
                     max_steps=3, min_step_gap_min=OUTING_STEP_GAP_MIN,
                     thread_kind=FOLLOWUP,
                 ),
+                # 话题池线头（Topic_Pool §4.1，2026-08-31 定稿：决策丢给 Care）。
+                # **吃闸也吃额度** —— 它不比惦记更急，和所有线抢同一份
+                # 「一小时一条新链」；一步就收（说完就走，不追问）。
+                # surfaced 的记录在 _speak_topic 里，真开了口才记
+                "topic": SourcePolicy(takes_quota=True, takes_gate=True, max_steps=1),
             },
             gate_check=self._gate_check,
             # 她在看片就全线闭嘴（2026-08-22，共影 P1）。
@@ -487,6 +496,8 @@ class AttentionService:
             return self._chase_todo(signal, thread, now)
         if signal.source in ("random", "location"):
             return self._think_of_her(signal, thread, now)
+        if signal.source == "topic":
+            return self._speak_topic(signal, thread, now)
         logger.warning("Care 收到不认识的来源：%s", signal.source)
         return False
 
@@ -551,6 +562,67 @@ class AttentionService:
             return False
         if said:
             self.scheduler.note_spoke(intent, now)
+        return bool(said)
+
+    #: 拿池子里的料开口。同 _THINK：只给事实和一条硬规则，[SKIP] 是出路。
+    #: 「像顺手聊起，不是播报新闻」—— 她能听出来谁是转述机器
+    _TOPIC = (
+        "（系统提示：不是她在跟你说话。{why}\n"
+        "\n"
+        "话题池里有一条一直没人聊过的东西：\n"
+        "{hook}\n"
+        "来源：{source} · {url}\n"
+        "\n"
+        "要是你觉得它有意思、值得跟她分享，就直接开口——像顺手聊起，"
+        "不是播报新闻：最多两句、别超过 60 个字，带上你自己的看法或问题。\n"
+        "不感兴趣就只回 `[SKIP]`，池子不会勉强你。）"
+    )
+
+    def _speak_topic(self, signal: CareSignal, thread: Any, now: datetime) -> bool:
+        """拿话题池的料开口。**surfaced 在这里记** —— 真说出口才算「被选用」。
+
+        他回 [SKIP]（said=None）→ 返回 False，orchestrator 记成
+        「没什么具体的可说」：那条 topic 还是 open，以后还有机会。
+        """
+        p = signal.payload or {}
+        intent = Intent(
+            subject=signal.subject,
+            title=signal.subject,
+            reason="话题池里有一条一直没人动过的料，你觉着有意思就可以拿它开个话头。",
+            attention_strength=signal.urgency,
+            kind=f"care_{signal.source}",
+            created_at=now,
+            expires_at=now + timedelta(hours=2),
+        )
+        decision = SchedulerDecision(
+            intent=intent, reason=signal.subject,
+            effective_score=signal.urgency, context_fit=1.0,
+        )
+
+        if self.dry_run:
+            logger.info("【DRY-RUN】本来会拿池子里的料开口：%s", signal.subject)
+            return True
+
+        try:
+            said = self.speaker(intent, decision, prompt=self._TOPIC.format(
+                why="话题池定期从外面捞点值得看的东西，这条一直没人动过。",
+                hook=p.get("hook") or "",
+                source=p.get("source_title") or "",
+                url=p.get("source_url") or "",
+            ))  # type: ignore[misc]
+        except Exception:  # noqa: BLE001
+            logger.exception("池子的料没发出去：%s", signal.subject)
+            return False
+
+        if said:
+            self.scheduler.note_spoke(intent, now)
+            # surfaced 只在此处记 —— 推过/聊过，不循环出现（§4.1 规矩）
+            tid = p.get("topic_id")
+            if tid and self.topics is not None:
+                try:
+                    self.topics.store.mark_surfaced([str(tid)])
+                except Exception:  # noqa: BLE001
+                    logger.exception("surfaced 没记上：%s", tid)
         return bool(said)
 
     def _chase_todo(self, signal: CareSignal, thread: Any, now: datetime) -> bool:

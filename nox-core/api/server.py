@@ -465,6 +465,27 @@ def _build_attention(core: Nox, sessions: "Sessions", db: Store) -> AttentionSer
         # SQLite 文件，写入会互相看不见对方的缓存
         core.world = world
 
+        # 话题池（Topic_Pool §4.1/§4.4，2026-08-31）。**建在这里而不是外头**：
+        # topics_browse 工具必须赶在 remind_myself 之前注册（工具顺序 =
+        # 缓存前缀），够得着那里的只有这个函数。world / adapter 缺哪个
+        # 降哪个：world 没了没有 shared 投影和世界钩子，adapter 没了
+        # Filter 出空 —— 池子照建，候选缓存照攒（§3.3 的重筛保险）
+        topics_pool = None
+        try:
+            _utility_cfg = getattr(core.cfg, "utility", None)
+            _pool_adapter = None
+            if _utility_cfg is not None and getattr(_utility_cfg, "usable", False):
+                from agent.adapters import make_adapter as _make_adapter
+                _pool_adapter = _make_adapter(_utility_cfg)
+            topics_pool = TopicPool(
+                Path(core.cfg.db_path).parent / "topics.db",
+                world=world, adapter=_pool_adapter,
+            )
+            # 挂到 core 上：路由和 lifespan 从这儿拿（同 core.world 的理由）
+            core.topics = topics_pool
+        except Exception:  # noqa: BLE001
+            logger.exception("话题池装配失败，这条线不跑")
+
         # 到点该做的待办（Todo-Daily-Planner-设计.md，2026-08-18）。
         # 数据在 bridge 的本地表 —— 前端 todo 是唯一活清单，
         # GitHub todo.md 同日退役为只读存档。没配 bridge 就没有这条线。
@@ -490,6 +511,12 @@ def _build_attention(core: Nox, sessions: "Sessions", db: Store) -> AttentionSer
             ))
         else:
             logger.info("没配 HA（NOX_HA_API_URL/TOKEN），出门追问这条线不跑")
+
+        # 池子线头（第七个 Care 源，Topic_Pool §4.1）：只产生念头，
+        # 「要不要说、现在说不说」全部归 Orchestrator —— 吃闸、吃额度、进账本
+        if topics_pool is not None:
+            from topic_pool.care import TopicSource
+            fast_sources.append(TopicSource(astore, topics_pool))
 
         # 她在不在看片（共影 P1，2026-08-22）。没配 bridge 就没有这条线 ——
         # 那样行为和接共影之前一样，他照常开口
@@ -521,7 +548,8 @@ def _build_attention(core: Nox, sessions: "Sessions", db: Store) -> AttentionSer
         svc = AttentionService(astore, provider, speaker=speaker, waker=waker,
                                todo_source=todo_source, fast_sources=fast_sources,
                                gate=gate, time_source=time_source, world=world,
-                               watching=watching, shared_sources=[shared_source])
+                               watching=watching, shared_sources=[shared_source],
+                               topics=topics_pool)
 
         # 体重 / 生理期：HealthKit 那条同步坏了（体重 14 天一条没有，
         # 经期表被快捷指令写坏），改成他在对话里主动记进 World Model
@@ -532,6 +560,13 @@ def _build_attention(core: Nox, sessions: "Sessions", db: Store) -> AttentionSer
         # ⚠️ 只有 record_period。体重是 `tools/diet.py` 的 `log_weight`，
         # 别在这儿再加一个（见 `tools/record.py` 开头）
         logger.info("record_period 已注册（写 World Model）")
+
+        # 翻池子的只读工具（Topic_Pool §4.1）。⚠️ 必须赶在 remind_myself
+        # **之前**注册 —— 工具定义是缓存前缀的一部分，新工具往后排
+        if topics_pool is not None:
+            from topic_pool.tool import register_all as register_topic_tools
+            register_topic_tools(core.loop, topics_pool)
+            logger.info("topics_browse 已注册（话题池只读）")
 
         # ⚠️ **工具必须注册在最末尾** —— 工具定义是缓存前缀的一部分，
         # 插在中间会让前缀整个失效（一轮 ¥0.00055 → ¥0.011，二十倍，
@@ -618,22 +653,10 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
     # 测试全绿、service 里也 new 出来了，但没人把失败交给它。
     local_hand.dejection = attention.dejection if attention is not None else None
 
-    # 话题池（Topic_Pool 文档，2026-08-31）。world / adapter 缺哪个降哪个：
-    # world 没了没有 shared 投影，adapter 没了 Filter 出空 —— 池子照建，
-    # Scout 的候选缓存照攒，等哪天配上了就能重筛（§3.3）
-    _topic_pool = None
-    try:
-        _utility_cfg = getattr(core.cfg, "utility", None)
-        _pool_adapter = None
-        if _utility_cfg is not None and getattr(_utility_cfg, "usable", False):
-            from agent.adapters import make_adapter as _make_adapter
-            _pool_adapter = _make_adapter(_utility_cfg)
-        _topic_pool = TopicPool(
-            Path(core.cfg.db_path).parent / "topics.db",
-            world=_world(), adapter=_pool_adapter,
-        )
-    except Exception:  # noqa: BLE001
-        logger.exception("话题池装配失败，这条线不跑")
+    def _topics():
+        """话题池的唯一取法（同 `_world` 的理由：作用域）。
+        attention 没开就是 None —— 那样只是池子不可见，别的照常。"""
+        return attention.topics if attention is not None else None
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
@@ -651,12 +674,14 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
             if attention.fast_sources:
                 care_s = int(os.getenv("NOX_CARE_INTERVAL_S", CARE_INTERVAL_S))
                 tasks.append(asyncio.create_task(run_care_loop(attention, care_s)))
-        # 话题池：6 小时一轮 Scout → Filter（Topic_Pool 文档）。独立于
-        # Attention —— attention 没开它也照跑，挂了也不带塌心跳
-        if _topic_pool is not None and os.getenv("NOX_TOPICS_DISABLED", "") not in ("1", "true"):
+        # 话题池：6 小时一轮 Scout → Filter（Topic_Pool §4.4）。池子跟着
+        # attention 走（topics_browse 工具的注册顺序决定的）；它哪轮挂了
+        # 只废自己，不带塌心跳
+        _pool_for_loop = getattr(attention, "topics", None)
+        if _pool_for_loop is not None and os.getenv("NOX_TOPICS_DISABLED", "") not in ("1", "true"):
             scout_s = int(os.getenv("NOX_TOPIC_SCOUT_INTERVAL_S",
                                     str(DEFAULT_SCOUT_INTERVAL_S)))
-            tasks.append(asyncio.create_task(run_topic_loop(_topic_pool, scout_s)))
+            tasks.append(asyncio.create_task(run_topic_loop(_pool_for_loop, scout_s)))
         try:
             yield
         finally:
@@ -1201,9 +1226,10 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
     @app.get("/api/nox/topics")
     def nox_topics() -> dict:
         """池子里的活话题（未过期、没人理过的）。文档 §4.2 的入口 B。"""
-        if _topic_pool is None:
+        pool = _topics()
+        if pool is None:
             raise HTTPException(status_code=503, detail="话题池没启用")
-        return {"ok": True, "items": _topic_pool.topics_for_ui()}
+        return {"ok": True, "items": pool.topics_for_ui()}
 
     @app.post("/api/nox/topics/{topic_id}/status")
     def nox_topic_status(topic_id: str, body: dict) -> dict:
@@ -1213,13 +1239,14 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
         「我们感兴趣」。它不触发任何自动研究、不派任务；
         要去查、要聊，是 Nox 和糖糖自己的下一步。
         """
-        if _topic_pool is None:
+        pool = _topics()
+        if pool is None:
             raise HTTPException(status_code=503, detail="话题池没启用")
         status = str((body or {}).get("status") or "")
         if status not in ("followed", "dismissed"):
             raise HTTPException(status_code=422,
                                 detail="status 只能是 followed / dismissed")
-        if not _topic_pool.store.mark(topic_id, status):
+        if not pool.store.mark(topic_id, status):
             raise HTTPException(status_code=404,
                                 detail="话题不存在，或已经被人理过了")
         return {"ok": True, "id": topic_id, "status": status}
