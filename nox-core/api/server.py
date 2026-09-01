@@ -60,6 +60,7 @@ from attention.sources.todo_due import TodoDueSource
 from tools import record as record_tools
 from tools import remind as remind_tools
 from world_model import WorldModel
+from config import BACKENDS
 from topic_pool import TopicPool, run_topic_loop
 from topic_pool.pool import DEFAULT_SCOUT_INTERVAL_S
 from attention.store import AttentionStore
@@ -1221,6 +1222,57 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
                 }
                 for e in rows
             ],
+        }
+
+    def _backend_of(llm: Any) -> str:
+        """从 LLMConfig 反推是哪家。
+
+        ⚠️ backend 名只在构建时存在 —— LLMConfig 里只剩 provider 和
+        base_url，而 provider 是协议（openai_compat 两家共用），
+        按地址认人才分得清 DeepSeek 和 OpenRouter。
+        """
+        base = (getattr(llm, "base_url", "") or "").rstrip("/")
+        for name, b in BACKENDS.items():
+            if base and b.base_url.rstrip("/") == base:
+                return name
+        return ""
+
+    @app.get("/api/nox/models")
+    def nox_models() -> dict:
+        """可切换的模型清单 + 当前系统默认。Models 设置页的数据源。
+
+        切换本身不走这里 —— Chat 请求带上 `model` 短名就行（config.models
+        + `adapter_for` 那条老路）。这页只负责把「有哪些、现在默认是谁、
+        哪家配了 key」摆到台面上。
+
+        ⚠️ key 一个字节都不出这里 —— providers 只回答「配没配」。
+        """
+        cfg = getattr(core, "cfg", None)
+        primary = getattr(cfg, "primary", None)
+        if cfg is None or primary is None:
+            raise HTTPException(status_code=503, detail="Core 没起来")
+
+        choices = [
+            {"key": k, "model": c.model, "backend": c.backend,
+             "label": c.label or c.model}
+            for k, c in (getattr(cfg, "models", {}) or {}).items()
+        ]
+        providers = {}
+        for name, label in (("deepseek", "DeepSeek"), ("openrouter", "OpenRouter")):
+            b = BACKENDS.get(name)
+            providers[name] = {"label": label, "configured": bool(b and b.api_key)}
+
+        utility = getattr(cfg, "utility", None)
+        return {
+            "ok": True,
+            "current": {
+                "backend": _backend_of(primary),
+                "model": primary.model,
+            },
+            "utility": ({"backend": _backend_of(utility),
+                         "model": utility.model} if utility is not None else None),
+            "choices": choices,
+            "providers": providers,
         }
 
     @app.get("/api/nox/topics")

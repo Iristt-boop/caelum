@@ -2122,6 +2122,18 @@ app.get("/api/nox/state", async (req, res) => {
   }
 });
 
+// 可切换的模型清单 + 当前系统默认（Models 设置页）。
+// 切换不走这里 —— 聊天请求带 model 短名，coreMode 本来就透传
+app.get("/api/nox/models", async (req, res) => {
+  try {
+    const r = await fetch(`${NOX_CORE_URL}/api/nox/models`, { signal: AbortSignal.timeout(8000) });
+    res.json(await r.json());
+  } catch (e) {
+    console.error("[nox-models] 读模型清单失败:", e.message);
+    res.json({ ok: false, error: e.message });
+  }
+});
+
 // 他此刻的内心驱动力（2026-08-29）。Attention 心跳线要画的就是这个。
 //
 // ⚠️ **bridge 是逐路由代理，不是通配。** Core 那边加了接口、这里不加，
@@ -2970,7 +2982,21 @@ app.get("/api/usage-stats", (req, res) => {
     savedCny += ((x.cache_read || 0) / 1e6) * (p.miss - p.hit);
   }
 
-  res.json({ today, total, hitRate, savedCny, models, currency: "CNY" });
+  // 近 14 天的日粒度（Models 设置页的细条形图）。没记录的日子补零 ——
+  // 图要连续，断一天看起来就像坏了
+  const byDay = {};
+  for (const x of allRows) {
+    const d = (x.ts || "").slice(0, 10);
+    (byDay[d] = byDay[d] || []).push(x);
+  }
+  const daily = [];
+  for (let i = 13; i >= 0; i--) {
+    const dt = new Date(Date.now() - i * 86400000).toISOString().slice(0, 10);
+    const s = sum(byDay[dt] || []);
+    daily.push({ date: dt, turns: s.turns, in: s.i, out: s.o, cache: s.r, cost: +s.cost.toFixed(4) });
+  }
+
+  res.json({ today, total, hitRate, savedCny, models, daily, currency: "CNY" });
 });
 
 // 历史会话列表（从落库消息聚合，重启/重部署不丢）
