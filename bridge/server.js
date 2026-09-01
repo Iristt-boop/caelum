@@ -262,6 +262,20 @@ try { db.run(`ALTER TABLE usage_log ADD COLUMN model TEXT`); } catch { /* 已经
 // Web Push 订阅（iOS PWA 锁屏推送）
 db.run(`CREATE TABLE IF NOT EXISTS push_subs (endpoint TEXT PRIMARY KEY, sub TEXT, created_at TEXT)`);
 
+// 订阅清单（Settings → Notifications 页）：endpoint 掩码，别把整条
+// 订阅地址甩到前端 —— 它等同一把推送凭证
+app.get("/api/push/subscriptions", (req, res) => {
+  const rows = dbAll("SELECT endpoint, created_at FROM push_subs ORDER BY created_at DESC");
+  res.json({
+    ok: true,
+    count: rows.length,
+    items: rows.map((r) => ({
+      endpoint: (r.endpoint || "").slice(0, 44) + "…",
+      created_at: r.created_at,
+    })),
+  });
+});
+
 // ==============================================================
 // 厂商账本快照（2026-09-01，Models 页的「真实口径」）
 //

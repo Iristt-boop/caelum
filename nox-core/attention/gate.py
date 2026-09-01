@@ -134,7 +134,14 @@ class DailyGate:
     # ------------------------------------------------------------ 状态
 
     def dump_state(self) -> dict[str, Any]:
-        return {"spoken": dict(self._spoken), "quota": self.daily_quota}
+        # 安静时段也带上 —— Settings → Notifications 页要把它摆到台面上，
+        # 别让前端抄一份常量（抄了早晚会和这里漂移）
+        return {
+            "spoken": dict(self._spoken),
+            "quota": self.daily_quota,
+            "quiet_start": self.quiet_start.isoformat(),
+            "quiet_end": self.quiet_end.isoformat(),
+        }
 
     def load_state(self, state: dict[str, Any] | None) -> None:
         if not state:
