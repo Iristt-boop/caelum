@@ -246,6 +246,27 @@ def test_speak_topic_dry_run_marks_nothing(tmp_path):
     assert len(pool.store.open_topics(NOW)) == 1
 
 
+def test_topic_prompt_leads_with_his_own_reaction(tmp_path):
+    """糖糖 2026-09-01 收到第一条真实话题推送，反馈「像老师问学生」。
+
+    病根是旧提示词的「带上你自己的看法或问题」——「或问题」三个字
+    给了它出题的许可。新词必须：情绪开场、禁作业式提问、味型锚在。
+    """
+    pool = _pool_with_topics(tmp_path)
+    tid = pool.store.open_topics(NOW)[0].id
+    speaker = FakeSpeaker("聊了")
+    svc = next(_service(tmp_path, speaker, pool))
+    thread = svc.threads.open("company", "s", now=NOW)
+
+    svc._speak_topic(_topic_signal(tid), thread, NOW)
+
+    p = speaker.prompts[0]
+    assert "先是你自己的反应" in p
+    assert "作业式" in p                              # 明令禁止出题
+    assert "一般人不敢这么写" in p                     # 她写的味型锚在
+    assert "看法或问题" not in p                       # 旧词已死
+
+
 def test_service_registers_topic_policy(tmp_path):
     svc = next(_service(tmp_path, FakeSpeaker(), None))
     policy = svc.care.policies["topic"]
