@@ -2211,6 +2211,29 @@ app.get("/api/nox/models", async (req, res) => {
   }
 });
 
+// 他手上全部注册的工具（Studio → Tools 工具墙）与插口探活（Studio → MCP）。
+// ⚠️ Core 那边加了接口这里就得加一条 —— 逐路由代理，通配会让「Core 挂了」
+// 看起来像 404
+app.get("/api/nox/tools", async (req, res) => {
+  try {
+    const r = await fetch(`${NOX_CORE_URL}/api/nox/tools`, { signal: AbortSignal.timeout(8000) });
+    res.json(await r.json());
+  } catch (e) {
+    console.error("[nox-tools] 读工具清单失败:", e.message);
+    res.json({ ok: false, error: e.message });
+  }
+});
+
+app.get("/api/nox/integrations", async (req, res) => {
+  try {
+    const r = await fetch(`${NOX_CORE_URL}/api/nox/integrations`, { signal: AbortSignal.timeout(15000) });
+    res.json(await r.json());
+  } catch (e) {
+    console.error("[nox-integrations] 读插口状态失败:", e.message);
+    res.json({ ok: false, error: e.message });
+  }
+});
+
 // 他此刻的内心驱动力（2026-08-29）。Attention 心跳线要画的就是这个。
 //
 // ⚠️ **bridge 是逐路由代理，不是通配。** Core 那边加了接口、这里不加，

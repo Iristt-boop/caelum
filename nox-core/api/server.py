@@ -659,6 +659,10 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
         attention 没开就是 None —— 那样只是池子不可见，别的照常。"""
         return attention.topics if attention is not None else None
 
+    #: 插口探活的结果缓存（Studio → MCP）。探一轮要几秒，60 秒内的
+    #: 重复进页直接吃缓存 —— 每个 app 实例一份，测试互不串
+    _integration_cache: dict = {"at": 0.0, "items": []}
+
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         """Attention 的后台心跳。**这是全 Core 唯一允许 async 的那层。**
@@ -1274,6 +1278,98 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
             "choices": choices,
             "providers": providers,
         }
+
+    @app.get("/api/nox/tools")
+    def nox_tools() -> dict:
+        """他手上全部注册的工具。Studio → Tools 工具墙的数据源。
+
+        只读 loop 里现成的 ToolSpec（名字 + 给模型看的那句描述）——
+        分组是前端按名字前缀认的，后端不维护第二份分组表。
+        """
+        loop = getattr(core, "loop", None)
+        tools = getattr(loop, "tools", None) if loop is not None else None
+        if tools is None:
+            raise HTTPException(status_code=503, detail="Core 的工具组没起来")
+        items = [
+            {"name": t.spec.name, "description": t.spec.description}
+            for t in tools.values()
+            if t is not None and getattr(t, "spec", None) is not None
+        ]
+        return {"ok": True, "count": len(items), "items": items}
+
+    @app.get("/api/nox/integrations")
+    def nox_integrations() -> dict:
+        """他和外面世界的插口：配了什么、通不通。Studio → MCP 面板的数据源。
+
+        探活语义：**只要对方应答就算活着**（401/404 也是"在"），
+        连不上/超时才算断。结果缓存 60 秒 —— 探一轮要几秒，
+        不能每次进页面都全量打一遍。
+        """
+        import time
+
+        cfg = getattr(core, "cfg", None)
+        if cfg is None:
+            raise HTTPException(status_code=503, detail="Core 没起来")
+
+        now = time.time()
+        if now - _integration_cache["at"] < 60 and _integration_cache["items"]:
+            return {"ok": True, "items": _integration_cache["items"], "cached": True}
+
+        def env_of(field: str) -> str:
+            return field.replace("_url", "").upper()
+
+        targets = [
+            ("bridge", "相册 / 日记 / 待办 / 饮食的中转", getattr(cfg, "bridge_url", "")),
+            ("ombre-brain", "记忆 · Ombre Brain", getattr(cfg, "ob_url", "")),
+            ("co-reading", "共读的页边笔记", getattr(cfg, "reading_url", "")),
+            ("eryu", "共听的播放层", getattr(cfg, "eryu_url", "")),
+            ("netease-mcp", "网易云账号：歌单 / 红心 / 推荐", getattr(cfg, "netease_url", "")),
+            ("ha-mcp", "家里的设备：灯 / 空调 / 开关", getattr(cfg, "ha_url", "")),
+            ("ha-api", "出门在家 · 位置感知", getattr(cfg, "ha_api_url", "")),
+            ("tracker", "她在电脑上用了什么 App", getattr(cfg, "tracker_url", "")),
+            ("health", "健康数据同步", getattr(cfg, "health_url", "")),
+            ("notion", "信箱 · Notion",
+             "https://api.notion.com" if getattr(cfg, "notion_token", "") else ""),
+            ("qweather", "天气", (getattr(cfg, "qweather_host", "") or "")),
+        ]
+        items = []
+        alive = [t for t in targets if t[2]]
+
+        def probe(url: str) -> bool:
+            # ⚠️ 404/405 也是「活着」—— MCP 端点对 GET 回 405 是正经行为。
+            # urllib 把 4xx/5xx 抛成 HTTPError，必须单独接住算通；
+            # 真正的断 = 连不上 / 超时
+            from urllib.error import HTTPError
+            try:
+                req = urllib.request.Request(url, headers={"User-Agent": "nox-integrations"})
+                with urllib.request.urlopen(req, timeout=4):
+                    return True
+            except HTTPError:
+                return True
+            except Exception:
+                return False
+
+        if alive:
+            from concurrent.futures import ThreadPoolExecutor
+            with ThreadPoolExecutor(max_workers=8) as pool:
+                ups = list(pool.map(probe, [t[2] for t in alive]))
+        else:
+            ups = []
+
+        by_url = {t[2]: up for t, up in zip(alive, ups)}
+        for name, what, url in targets:
+            from urllib.parse import urlsplit
+            host = urlsplit(url).netloc if url else ""
+            items.append({
+                "name": name,
+                "what": what,
+                "host": host,
+                "status": ("up" if by_url.get(url) else "down") if url else "not_configured",
+            })
+
+        _integration_cache["at"] = now
+        _integration_cache["items"] = items
+        return {"ok": True, "items": items, "cached": False}
 
     @app.get("/api/nox/topics")
     def nox_topics() -> dict:
