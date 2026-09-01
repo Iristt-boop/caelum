@@ -263,6 +263,83 @@ try { db.run(`ALTER TABLE usage_log ADD COLUMN model TEXT`); } catch { /* 已经
 db.run(`CREATE TABLE IF NOT EXISTS push_subs (endpoint TEXT PRIMARY KEY, sub TEXT, created_at TEXT)`);
 
 // ==============================================================
+// 厂商账本快照（2026-09-01，Models 页的「真实口径」）
+//
+// DeepSeek 没有明细账单 API，只有余额接口；OpenRouter 的 credits 接口
+// 给累计真实消耗。定时拉一笔存一行，「真实消耗」= 相邻两行差值——
+// 这是页面上唯一能称为「真」的钱，token×单价 那套是估算。
+//
+// 新服务商 = PROVIDER_LEDGERS 加一个 fetcher，账本自己长出来。
+// 没配 key 的账本安静地空着，不报错不刷屏。
+// ==============================================================
+db.run(`CREATE TABLE IF NOT EXISTS ledger_balance (
+  provider TEXT NOT NULL, ts TEXT NOT NULL,
+  balance REAL, usage_total REAL, topped_up REAL,
+  currency TEXT DEFAULT '', is_available INTEGER DEFAULT 1,
+  PRIMARY KEY (provider, ts)
+)`);
+
+const PROVIDER_LEDGERS = {
+  deepseek: {
+    label: "DeepSeek",
+    // 余额接口和聊天共用同一把 key。充值用 topped_up 的增量剔除
+    fetch: async () => {
+      const key = process.env.DEEPSEEK_API_KEY || "";
+      if (!key) return null;
+      const r = await fetch("https://api.deepseek.com/user/balance", {
+        headers: { Authorization: `Bearer ${key}` },
+        signal: AbortSignal.timeout(10000),
+      });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const d = await r.json();
+      const info = (d.balance_infos || [])[0] || {};
+      return {
+        balance: parseFloat(info.total_balance) || 0,
+        usage_total: null,
+        topped_up: parseFloat(info.topped_up_balance) || 0,
+        currency: info.currency || "CNY",
+        is_available: d.is_available ? 1 : 0,
+      };
+    },
+  },
+  openrouter: {
+    label: "OpenRouter",
+    // credits 接口：total_usage 是累计真实消耗，只涨不跌，比余额差省心
+    fetch: async () => {
+      const key = process.env.OPENROUTER_API_KEY || process.env.API_KEY || "";
+      if (!key) return null;
+      const r = await fetch("https://openrouter.ai/api/v1/credits", {
+        headers: { Authorization: `Bearer ${key}` },
+        signal: AbortSignal.timeout(10000),
+      });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const data = (await r.json()).data || {};
+      return {
+        balance: (data.total_credits || 0) - (data.total_usage || 0),
+        usage_total: data.total_usage || 0,
+        topped_up: data.total_credits || 0,
+        currency: "USD",
+        is_available: 1,
+      };
+    },
+  },
+};
+
+async function snapshotLedgers() {
+  for (const [provider, ledger] of Object.entries(PROVIDER_LEDGERS)) {
+    try {
+      const s = await ledger.fetch();
+      if (!s) continue;
+      dbRun(`INSERT OR REPLACE INTO ledger_balance VALUES (?,?,?,?,?,?,?)`,
+            [provider, new Date().toISOString(), s.balance, s.usage_total,
+             s.topped_up, s.currency, s.is_available]);
+    } catch (e) {
+      console.log(`[Bridge] ${provider} 账本快照失败:`, e.message);
+    }
+  }
+}
+
+// ==============================================================
 // 🥗 健身饮食记录（M2 表结构，2026-08-05）
 // 糖糖的饮食/运动/体重，与 OB 情感记忆分离的第二套结构化存储。
 // PRD：D:\WorkBuddy\健身饮食记录系统PRD.md
@@ -2996,7 +3073,67 @@ app.get("/api/usage-stats", (req, res) => {
     daily.push({ date: dt, turns: s.turns, in: s.i, out: s.o, cache: s.r, cost: +s.cost.toFixed(4) });
   }
 
-  res.json({ today, total, hitRate, savedCny, models, daily, currency: "CNY" });
+  // ---- 厂商账本（真实口径）。快照太旧就顺手补一笔，不阻塞响应 ----
+  const freshest = dbAll("SELECT MAX(ts) AS t FROM ledger_balance")[0];
+  if (!freshest?.t || Date.now() - new Date(freshest.t).getTime() > 3600 * 1000) {
+    snapshotLedgers();
+  }
+  const providers = {};
+  for (const [provider, meta] of Object.entries(PROVIDER_LEDGERS)) {
+    const rows = dbAll(
+      "SELECT ts, balance, usage_total, topped_up, currency, is_available FROM ledger_balance" +
+      " WHERE provider=? AND ts >= ? ORDER BY ts",
+      [provider, new Date(Date.now() - 15 * 86400000).toISOString()]);
+    if (!rows.length) continue;
+    const last = rows[rows.length - 1];
+    // 相邻快照差值 = 这段的真实消耗。usage_total 只涨不跌（OpenRouter）；
+    // 余额差要加上期间的充值增量（DeepSeek），不然充值那天会显示成「倒赚」
+    const merged = {};
+    for (let i = 1; i < rows.length; i++) {
+      const a = rows[i - 1], b = rows[i];
+      let used = null;
+      if (b.usage_total != null && a.usage_total != null) {
+        used = Math.max(0, b.usage_total - a.usage_total);
+      } else if (a.balance != null && b.balance != null) {
+        used = a.balance - b.balance;
+        if (b.topped_up != null && a.topped_up != null) {
+          used += Math.max(0, b.topped_up - a.topped_up);
+        }
+      }
+      if (used == null) continue;
+      const day = b.ts.slice(0, 10);
+      merged[day] = +(((merged[day] || 0) + used)).toFixed(4);
+    }
+    providers[provider] = {
+      label: meta.label,
+      currency: last.currency || "",
+      balance: last.balance,
+      usage_total: last.usage_total,
+      is_available: !!last.is_available,
+      last_snapshot_at: last.ts,
+      real_daily: Object.entries(merged)
+        .map(([date, cost]) => ({ date, cost }))
+        .sort((a, b) => (a.date < b.date ? -1 : 1)),
+    };
+  }
+  // 没有快照但流水里有它家模型的：也开一页账本，真实口径先空着
+  const providerOfModel = (m) =>
+    (m || "").startsWith("deepseek") ? "deepseek"
+      : (m || "").includes("/") ? "openrouter" : "";
+  const estimateByProvider = {};
+  for (const [model, rows] of Object.entries(byModel)) {
+    const p = providerOfModel(model);
+    if (!p) continue;
+    estimateByProvider[p] = (estimateByProvider[p] || 0) + sum(rows).cost;
+  }
+  for (const [p, est] of Object.entries(estimateByProvider)) {
+    if (!providers[p]) {
+      providers[p] = { label: PROVIDER_LEDGERS[p]?.label || p, real_daily: [] };
+    }
+    providers[p].estimate_total = +est.toFixed(2);
+  }
+
+  res.json({ today, total, hitRate, savedCny, models, daily, providers, currency: "CNY" });
 });
 
 // 历史会话列表（从落库消息聚合，重启/重部署不丢）
@@ -3143,5 +3280,9 @@ app.delete("/api/library/books/:id", (req, res) => {
   dbRun("DELETE FROM library_books WHERE id=?", [req.params.id]);
   res.json({ ok: true, deleted: row.title });
 });
+
+// 账本快照：起来记一笔，之后每 6 小时记一笔（Models 页的真实口径靠它）
+snapshotLedgers();
+setInterval(snapshotLedgers, 6 * 3600 * 1000).unref();
 
 server.listen(PORT, () => console.log(`Bridge → http://0.0.0.0:${PORT}`));
