@@ -1371,6 +1371,82 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
         _integration_cache["items"] = items
         return {"ok": True, "items": items, "cached": False}
 
+    #: 天空整段缓存 10 分钟。和风的 TTL 是 30 分钟（WeatherProvider），
+    #: 这里取它的三分之一 —— 天气不会分钟级变化，但界面轮询很勤，
+    #: 不缓存等于每次进页面打两次外部 API。
+    #: ⚠️ **只缓存天空**：设备状态慢一拍就是谎，那个每次现取。
+    _sky_cache: dict = {"at": 0.0, "data": None}
+
+    @app.get("/api/nox/world")
+    def nox_world() -> dict:
+        """他此刻感知到的世界 —— World 页（户型图）的数据源。
+
+        四段：天 / 家里的设备 / 她在不在家 / 她在忙什么。
+        **每段各报各的 ok**，一段挂了不拖累其他三段 —— 细节和理由见
+        `api/world.py` 的模块注释。
+        """
+        import time
+
+        from api import world as W
+        from tools.http import RestClient
+        from tools.mcp_client import McpClient
+
+        cfg = getattr(core, "cfg", None)
+        if cfg is None:
+            raise HTTPException(status_code=503, detail="Core 没起来")
+
+        # ---- 天 ----
+        if not (cfg.qweather_host and cfg.qweather_key):
+            sky = {"ok": False, "error": "没配和风的 key"}
+        elif time.time() - _sky_cache["at"] < 600 and _sky_cache["data"]:
+            sky = {**_sky_cache["data"], "cached": True}
+        else:
+            wc = RestClient(base=f"https://{cfg.qweather_host.strip().rstrip('/')}",
+                            timeout=8.0)
+
+            def get_json(path: str) -> dict:
+                r = wc.get(path, {"location": cfg.weather_location, "key": cfg.qweather_key})
+                if not r.ok:
+                    raise RuntimeError(r.error or "和风没回")
+                return r.data or {}
+
+            sky = W.collect_sky(get_json)
+            if sky.get("ok"):
+                _sky_cache["at"] = time.time()
+                _sky_cache["data"] = sky
+
+        # ---- 家 + 她在不在家 ----
+        # 清单问 ha-mcp（唯一真源），状态打 HA 的 REST（结构化）。
+        # 两把钥匙缺哪把就哪段不可用，不要假装另一段也没了
+        if cfg.ha_api_url and cfg.ha_api_token:
+            state_of = W.ha_state_getter(cfg.ha_api_url, cfg.ha_api_token)
+            presence = W.collect_presence(state_of)
+        else:
+            state_of, presence = None, {"ok": False, "error": "没配 HA 的 API token"}
+
+        if cfg.ha_url and state_of is not None:
+            mcp = McpClient(cfg.ha_url, name="ha")
+
+            def list_devices() -> str:
+                r = mcp.call("hass_list_devices")
+                if not r.ok:
+                    raise RuntimeError(r.error or "ha-mcp 没回")
+                return r.text
+
+            home = W.collect_home(list_devices, state_of)
+        else:
+            home = {"ok": False, "error": "没配 ha-mcp 或 HA API", "devices": []}
+
+        # ---- 她在忙什么 ----
+        link = getattr(attention, "link", None) if attention is not None else None
+        activity = W.collect_activity(
+            getattr(link, "_current", None) if link is not None else None,
+            bool(getattr(link, "is_ready", False)) if link is not None else False,
+        )
+
+        return {"ok": True, "now": W.now_iso(),
+                "sky": sky, "home": home, "presence": presence, "activity": activity}
+
     @app.get("/api/nox/topics")
     def nox_topics() -> dict:
         """池子里的活话题（未过期、没人理过的）。文档 §4.2 的入口 B。"""

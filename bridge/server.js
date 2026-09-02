@@ -2225,6 +2225,19 @@ app.get("/api/nox/models", async (req, res) => {
   }
 });
 
+// World 页（户型图）：天 / 家里的设备 / 她在不在家 / 她在忙什么，一次取齐。
+// ⚠️ 超时给到 12 秒 —— 这条要串 ha-mcp 拿清单 + 并发查 HA 状态，
+// 比别的接口慢，8 秒会在设备多的时候偶发超时（那会让整张图无谓地黑掉）。
+app.get("/api/nox/world", async (req, res) => {
+  try {
+    const r = await fetch(`${NOX_CORE_URL}/api/nox/world`, { signal: AbortSignal.timeout(12000) });
+    res.json(await r.json());
+  } catch (e) {
+    console.error("[nox-world] 读世界状态失败:", e.message);
+    res.json({ ok: false, error: e.message });
+  }
+});
+
 // 他手上全部注册的工具（Studio → Tools 工具墙）与插口探活（Studio → MCP）。
 // ⚠️ Core 那边加了接口这里就得加一条 —— 逐路由代理，通配会让「Core 挂了」
 // 看起来像 404
