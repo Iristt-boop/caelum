@@ -213,6 +213,15 @@ class Config:
     ha_url: str = field(default_factory=lambda: _env("NOX_HA_URL", ""))
     ha_timeout: float = 20.0
 
+    #: 我们家那间像素房间的 MCP（caelum-room）。他在房间里的身体走这条。
+    #:
+    #: ⚠️ 房间的 MCP **只允许绑回环**（上游源码写死：
+    #: `Room MCP must remain loopback-only`）。也就是说这个地址只有
+    #: 和房间同机的进程填得上 —— Core 跑在 VPS 上时够不到糖糖电脑上的房间，
+    #: 那需要另做决定（把房间搬上 VPS，或给网关加一条转发），别在这儿硬填。
+    #: 没配就跳过：他控不了房间，照样能聊天。
+    room_url: str = field(default_factory=lambda: _env("NOX_ROOM_URL", ""))
+
     # ---- health-mcp（睡眠 / 步数 / 心率）----
     # 只听本机，不出公网。留空则不注册 HealthProvider。
     # ⚠️ 必须是 streamable-http 的地址（/mcp），不是 sse ——

@@ -42,6 +42,7 @@ from tools import netease as netease_tools
 from tools import notion as notion_tools
 from tools import planner as planner_tools
 from tools import reading as reading_tools
+from tools import room as room_tools
 from tools import tracker as tracker_tools
 from tools import watching as watching_tools
 from tools.bridge_client import BridgeClient
@@ -108,6 +109,16 @@ class Nox:
             logger.info("家居工具已注册（%s）", _mask_url(self.cfg.ha_url))
         else:
             logger.info("未配置 NOX_HA_URL，跳过家居工具")
+
+        # 我们家那间像素房间。没配 NOX_ROOM_URL 就跳过 ——
+        # 他进不去房间，但照样能聊天（同家居那条的处理）。
+        if self.cfg.room_url:
+            room_tools.register_all(
+                self.loop, McpClient(self.cfg.room_url, name="room", timeout=15.0)
+            )
+            logger.info("房间工具已注册（%s）", _mask_url(self.cfg.room_url))
+        else:
+            logger.info("未配置 NOX_ROOM_URL，跳过房间工具")
 
         # 相册 / 待办 / 日记。数据在 bridge 的 SQLite 里，走它的 REST 接口。
         # 存成属性是给 Daily Planner 的推送用的 —— 推送通道（订阅表 + VAPID
