@@ -1,7 +1,15 @@
 ﻿# 我们的小家（caelum-room）开机自启。
 #
-# 起的是 D:\claude-code\caelum-room 里的房间服务：
-# 静态 Phaser 前端 + 状态服务 + MCP，跑在 127.0.0.1:8877。
+# 起**两个**进程，缺一个都不完整：
+#
+#   :8877   房间本体（静态 Phaser 前端 + REST/SSE 状态服务）
+#           —— Caelum OS 的 World 页用 iframe 指着它，糖糖看的是这个
+#   :18452  房间的 MCP（独立进程！dev runner 不会起它）
+#           —— Nox 在房间里的身体走这条：Core(VPS) → 反向链路 →
+#              网关 room-tools.ts → 这个端口
+#
+# 🔴 **只起 8877 的话，她看得见房间，而他进不去** —— 那种半死不活
+# 最难查：页面一切正常，只有他动不了，看起来像「他不想动」。
 # Caelum OS 的 World 页用 iframe 指着它 —— **它没起，那一页就是「够不到房间」**。
 #
 # ## 为什么需要自启
@@ -68,3 +76,24 @@ Start-Process -FilePath $Python `
   -WindowStyle Hidden `
   -RedirectStandardOutput $Log `
   -RedirectStandardError (Join-Path $LogDir 'caelum-room.err.log')
+
+# ---- 房间的 MCP（他的那条路）----
+#
+# ⚠️ **必须用 `-m room_service.mcp_server`**，不能直接跑那个 .py ——
+# 它是包内模块（`from .config import ROOT`），直接跑会
+# `attempted relative import with no known parent package`。
+#
+# ⚠️ 上游写死了只允许绑回环（`Room MCP must remain loopback-only`），
+# 所以这里也只能是 127.0.0.1 —— 网关那边同样只认回环地址。
+$McpHeld = (& $Netstat -ano | Select-String ':18452\s' | Select-String 'LISTENING')
+if ($McpHeld) {
+  Add-Content -Encoding UTF8 -Path $Boot -Value ("[{0}] MCP 已在跑（18452 占着），跳过" -f (Get-Date -Format s))
+} else {
+  Add-Content -Encoding UTF8 -Path $Boot -Value ("[{0}] 18452 空着，启动房间 MCP" -f (Get-Date -Format s))
+  Start-Process -FilePath $Python `
+    -ArgumentList '-m', 'room_service.mcp_server', '--http', '--port', '18452' `
+    -WorkingDirectory $RoomDir `
+    -WindowStyle Hidden `
+    -RedirectStandardOutput (Join-Path $LogDir 'caelum-room-mcp.log') `
+    -RedirectStandardError (Join-Path $LogDir 'caelum-room-mcp.err.log')
+}

@@ -78,6 +78,41 @@ class TestHandlers:
         assert "没开机" not in msg
 
 
+class TestWiring:
+    """两条路两套名字。
+
+    🔴 生产走链路（Core 在 VPS，房间只允许绑回环），本地开发才直连。
+    名字写错的表现是「工具不存在」——**而那看起来像房间挂了**，
+    会把排查引到房间那边去。
+    """
+
+    def test_直连用房间自己的名字(self):
+        c = FakeClient(FakeResult(text="{}"))
+        R.make_handlers(c)["room_stop"]()
+        assert c.calls[0][0] == "room_stop"
+
+    def test_走链路用网关的名字(self):
+        c = FakeClient(FakeResult(text="{}"))
+        R.make_handlers(c, R.VIA_LINK)["room_stop"]()
+        assert c.calls[0][0] == "room.stop"
+
+    def test_两套名字都盖全了四件(self):
+        assert set(R.VIA_MCP) == set(R.VIA_LINK) == {s.name for s in R.SPECS}
+        assert set(R.VIA_LINK.values()) == {
+            "room.get_state", "room.move", "room.use_furniture", "room.stop",
+        }
+
+    def test_走链路时挑字段照样有效(self):
+        """⚠️ 挑字段要按**工具语义**判，不是按线上那个名字 ——
+        按 wire 后的名字判会漏掉一整条路（走链路时永远走兜底分支）。"""
+        raw = json.dumps({"characters": [
+            {"id": "companion", "activity": "sit", "furniture": "sofa"},
+        ]}, ensure_ascii=False)
+        c = FakeClient(FakeResult(text=raw))
+        out = R.make_handlers(c, R.VIA_LINK)["room_get_state"]()
+        assert "我：sit·sofa" in out
+
+
 class TestHumanize:
     def test_挑出两个人在做什么_原文照样附上(self):
         """⚠️ 这份数据是 2026-09-02 从真房间拷回来的形状，不是编的。

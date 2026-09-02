@@ -115,7 +115,26 @@ def make_client(url: str) -> McpClient:
     return McpClient(url, name="room")
 
 
-def make_handlers(client: McpClient) -> dict[str, Any]:
+#: 两条路，两套名字。
+#:
+#: 🔴 **生产走链路，不走直连。** 房间的 MCP 只允许绑回环（上游写死的），
+#: 而 Core 跑在 VPS 上 —— 直连那条只有「Core 和房间同机」时成立，
+#: 也就是本地开发。糖糖 2026-09-02 定的「跑在本地，私密一点」，
+#: 所以线上这条是：Core → wss 反向链路 → 她电脑上的手 → 回环的房间。
+#:
+#: ⚠️ 名字必须跟着路走：直连时是房间 MCP 的原名，走链路时是网关
+#: catalog 里的 Caelum 名（`room.*`）。写错的表现是「工具不存在」，
+#: 而那看起来像房间挂了。
+VIA_MCP = {s.name: s.name for s in SPECS}
+VIA_LINK = {
+    STATE_SPEC.name: "room.get_state",
+    MOVE_SPEC.name: "room.move",
+    USE_SPEC.name: "room.use_furniture",
+    STOP_SPEC.name: "room.stop",
+}
+
+
+def make_handlers(client: Any, names: dict[str, str] | None = None) -> dict[str, Any]:
     """生成处理函数。
 
     🔴 **失败一律 raise**，不要在这里转成一句「没做成」的正常返回 ——
@@ -126,30 +145,34 @@ def make_handlers(client: McpClient) -> dict[str, Any]:
     是房间没启动还是网不通，这边分不出来（同 tools/computer.py，2026-08-31）。
     """
 
-    def _call(tool: str, args: dict[str, Any] | None = None) -> str:
-        r = client.call(tool, args or {})
+    wire = names or VIA_MCP
+
+    def _call(spec_name: str, args: dict[str, Any] | None = None) -> str:
+        r = client.call(wire[spec_name], args or {})
         if not r.ok:
             raise RuntimeError(
                 f"够不到房间（{r.error or '没有回应'}）——"
                 "分不出是房间服务没起、端口不对，还是网不通。"
             )
-        return _humanize(tool, r.text or "")
+        #: ⚠️ 挑字段按**工具语义**，不按线上那个名字 ——
+        #: 两条路的名字不一样，用 wire 后的名字去判会漏掉一整条路
+        return _humanize(spec_name, r.text or "")
 
     return {
-        STATE_SPEC.name: lambda **kw: _call("room_get_state", kw),
-        MOVE_SPEC.name: lambda **kw: _call("room_move", kw),
-        USE_SPEC.name: lambda **kw: _call("room_use_furniture", kw),
-        STOP_SPEC.name: lambda **kw: _call("room_stop", kw),
+        STATE_SPEC.name: lambda **kw: _call(STATE_SPEC.name, kw),
+        MOVE_SPEC.name: lambda **kw: _call(MOVE_SPEC.name, kw),
+        USE_SPEC.name: lambda **kw: _call(USE_SPEC.name, kw),
+        STOP_SPEC.name: lambda **kw: _call(STOP_SPEC.name, kw),
     }
 
 
-def register_all(loop, client: McpClient) -> None:
+def register_all(loop, client: Any, names: dict[str, str] | None = None) -> None:
     """注册四个房间工具。
 
     ⚠️ 顺序固定 —— 工具定义是缓存前缀的一部分，顺序变了缓存当场失效
     （同 ha.py 那条注释；话题池那次也为此专门挑了注册位置）。
     """
-    handlers = make_handlers(client)
+    handlers = make_handlers(client, names)
     for spec in SPECS:
         loop.register(spec, handlers[spec.name])  # type: ignore[arg-type]
 

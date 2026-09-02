@@ -49,6 +49,7 @@ from attention.dejection import looks_like_giving_up
 from attention.appraisal import RuleAppraiser
 from tools.local_link import LocalLink, read_secret
 from tools import computer as computer_tools
+from tools import room as room_tools
 from attention.speaker import build_speaker
 from attention.waker import build_waker
 from attention.gate import DailyGate
@@ -624,6 +625,25 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
     #: ⚠️ 没配 key 也照常注册，只是那一件会如实说"看不了"
     computer_tools.register_all(
         core.loop, local_hand, getattr(core.cfg, "vision", None))
+
+    #: 房间 —— 他在我们家那间像素房里的身体。**走的是同一只手。**
+    #:
+    #: 🔴 为什么不直连：房间的 MCP 只允许绑回环（上游源码写死
+    #: `Room MCP must remain loopback-only`），而 Core 在 VPS 上。
+    #: 糖糖 2026-09-02 定的「跑在本地，私密一点」—— 所以借这条已有的
+    #: 反向链路捎一段，房间数据一步都不离开她的电脑。
+    #:
+    #: ⚠️ 名字用 `VIA_LINK`（`room.*`，网关 catalog 里的名字），
+    #: 不是房间 MCP 的原名 —— 写错的表现是「工具不存在」，
+    #: 而那看起来像房间挂了。
+    #:
+    #: ⚠️ 没配 NOX_ROOM_URL 时也注册：手连不上就如实说够不到，
+    #: 和 computer_* 那几件同一个处理（`nox.py` 里那条直连的分支
+    #: 只给「Core 和房间同机」的本地开发用）。
+    #: ⚠️ 用 getattr 兜底 —— 测试里的假 cfg 没有这个字段，
+    #: 直接点属性会让 46 个和房间毫无关系的测试一起炸（同旁边 vision 那行）
+    if not getattr(core.cfg, "room_url", ""):
+        room_tools.register_all(core.loop, local_hand, room_tools.VIA_LINK)
 
     attention = _build_attention(core, sessions, db)
     #: 🔴 感知层那条线交给 attention —— 躁动要知道"她此刻在用什么"。
