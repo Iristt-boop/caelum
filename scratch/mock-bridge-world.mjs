@@ -12,6 +12,12 @@ import http from "node:http";
 const PORT = 3999;
 const now = () => new Date().toISOString();
 
+/** 几分钟前的 HH:MM。夜晚场景靠它把日落挪到「此刻之前」。 */
+const hhmmAgo = (mins) => {
+  const d = new Date(Date.now() - mins * 60000);
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+};
+
 const dev = (name, entity_id, state, attrs = {}) => {
   const [room, ...rest] = name.includes(" ") ? name.split(" ") : [null, name];
   return {
@@ -51,8 +57,11 @@ const SCENES = {
     ],
   },
   night: {
+    // ⚠️ 日出日落要相对**此刻**算，不能写死。页面判白天/黑夜用的是真实时间，
+    // 写死 18:50 的话下午看这个场景只会看到白天的天色 —— 场景等于没生效。
     sky: { ok: true, text: "多云", icon: "101", temp: 24,
-           temp_max: 29, temp_min: 21, sunrise: "06:05", sunset: "18:50", has_forecast: true },
+           temp_max: 29, temp_min: 21,
+           sunrise: hhmmAgo(11 * 60), sunset: hhmmAgo(70), has_forecast: true },
     presence: { ok: true, home: true, state: "home", since: now() },
     activity: { ok: true, app: "Delta Force", seconds: 3600 },
     devices: [

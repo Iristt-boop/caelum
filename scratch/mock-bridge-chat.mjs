@@ -1,11 +1,10 @@
-// 假 bridge。原本为复现「发出去的字会消失」（已修），现在改成量
-// 「流式渲染出来的那一份」和「服务端存的那一份」到底差在哪。
-// ⚠️ 存在的理由不变：dev 的 /api 直连线上 bridge，不许拿糖糖的正式库做实验
+// 假 bridge。验聊天渲染用：流式那份和服务端读回来那份到底一不一样。
+// ⚠️ 存在的理由：dev 的 /api 直连线上 bridge，不许拿糖糖的正式库做实验
 // （never-test-in-tangtang-prod）。
 //
-// 这里照抄 bridge/server.js 的真实行为：
-//   · 流式：按 split 事件把回复拆成几段，段与段之间的换行**原样**发出去
-//   · 落库：fullReply 存全文，metadata.segments 存**trim() 过**的每一段
+// 照抄 bridge/server.js 的真实行为：
+//   · 流式：按 split 事件把回复拆成几段，段与段之间的换行原样发出去
+//   · 落库：fullReply 存全文，metadata.segments 存 trim() 过的每一段
 // 前端重载时走 mapServerMsg（读 segments），和流式那条路是两份代码。
 import http from "node:http";
 
@@ -14,11 +13,40 @@ const store = [];
 const now = () => new Date().toISOString();
 const seedSid = "seedsession0000000000000000000a";
 
-// 一段带 markdown 的回复，故意包含 §30.9 记过的几种形状：
-// 列表、列表后接正文、加粗、代码围栏。段前后都留了换行。
+// 一段回复，把几种最容易掉链子的语法全用上：
+// 标题（Tailwind preflight 会把它压成正文）、列表、列表后接正文、
+// 表格 + 删除线（要 remark-gfm，且 normalizeMarkdown 不能把表格拆开）、代码围栏。
 const SEGMENTS = [
-  "在的。**说谎者悖论**是这么回事：\n\n- 如果这句话是真的，那它就是假的\n- 如果它是假的，那它就是真的\n\n往哪个方向推都是死循环。\n",
-  "\n想看代码的话：\n\n```python\nwhile True:\n    truth = not truth\n```\n\n就这么个意思。\n",
+  [
+    "## 说谎者悖论",
+    "",
+    "在的。**说谎者悖论**是这么回事：",
+    "",
+    "- 如果这句话是真的，那它就是假的",
+    "- 如果它是假的，那它就是真的",
+    "",
+    "往哪个方向推都是死循环。",
+    "",
+  ].join("\n"),
+  [
+    "",
+    "### 几种解法",
+    "",
+    "| 解法 | 谁提的 | 好不好使 |",
+    "|---|---|---|",
+    "| 类型论 | 罗素 | 能挡住，但代价大 |",
+    "| 真值间隙 | 克里普克 | ~~完美~~ 也有漏洞 |",
+    "",
+    "想看代码的话：",
+    "",
+    "```python",
+    "while True:",
+    "    truth = not truth",
+    "```",
+    "",
+    "就这么个意思。",
+    "",
+  ].join("\n"),
 ];
 const FULL = SEGMENTS.join("");
 
