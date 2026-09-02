@@ -6075,7 +6075,15 @@ warn 比 info 更容易被吞。排查前先确认日志打得出来 ——
 两次都用 `scratch/mock-bridge-chat.mjs` 起假 bridge 验的 —— dev 的 `/api` 直连线上，
 不许拿糖糖的正式库做实验。顺手记下：桌面端首页小屋的打光改成「鼠标即光源」（糖糖定的）。
 **格式渲染补齐**：两端的标题 / 表格 / 删除线都渲染了（手机端加 remark-gfm，
-桌面端那套零依赖渲染器补了标题与表格 + 11 条测试）。*
+桌面端那套零依赖渲染器补了标题与表格 + 11 条测试）。
+**World 页**：先做了户型图（`GET /api/nox/world` 一个接口四段各报各的 ok，
+天/设备/她在不在家/她在忙什么），糖糖看完说一张图太死板，改用像素房间 ——
+**`caelum-room`（`Iristt-boop/caelum-room` 私有，基于 CairoIan/room-mcp-kit MIT）**，
+Phaser + Python 状态服务，跑在本机 `127.0.0.1:8877`，Caelum OS 用 iframe 嵌。
+自启计划任务 **`caelum-room`**（AtLogOn，脚本 `scripts/caelum-room-start.ps1`），
+坑同 `caelum-gateway`，另加一条：判断日志要 `-Encoding UTF8` 写，否则 GBK 落盘、
+排查时读不出来。⚠️ 顺带查出**本地 `ha-mcp` 比线上少两个设备**（蒸蛋器和它的
+自动断电只在线上有），拿本地那份部署会把它们从线上抹掉。*
 
 *2026-09-01：**补齐 08-29 → 09-01 的文档漂移**。新增第四十一节（话题池：Scout 四抓取器 +
 utility 模型的闸 + 入口 A 走 Care 一个脑子 + 第一条真实推送的味道修正）和第四十二节
