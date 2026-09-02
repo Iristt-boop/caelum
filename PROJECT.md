@@ -6080,7 +6080,15 @@ warn 比 info 更容易被吞。排查前先确认日志打得出来 ——
 天/设备/她在不在家/她在忙什么），糖糖看完说一张图太死板，改用像素房间 ——
 **`caelum-room`（`Iristt-boop/caelum-room` 私有，基于 CairoIan/room-mcp-kit MIT）**，
 Phaser + Python 状态服务，跑在本机 `127.0.0.1:8877`，Caelum OS 用 iframe 嵌。
-自启计划任务 **`caelum-room`**（AtLogOn，脚本 `scripts/caelum-room-start.ps1`），
+**他住进去了**：房间的四个 MCP 工具（`room_get_state` / `move` /
+`use_furniture` / `stop`）接进 Core。⚠️ 房间 MCP **只允许绑回环**（上游写死），
+Core 在 VPS 上够不到，糖糖定「跑在本地，私密一点」——所以走已有的反向链路：
+`Core → wss → 网关 room-tools.ts → 127.0.0.1:18452 → 房间`，
+房间数据不出她的电脑。网关那组能力命名空间是 **`room.*` 不是 `computer.*`**，
+policy 里单开 `ROOM` 集合自动放行（**是写操作，故意不塞进 `READ_ONLY`**）。
+🔴 他只能动他自己——房间焊死了 MCP 只写 companion、网页只写 owner。
+自启计划任务 **`caelum-room`**（AtLogOn，脚本 `scripts/caelum-room-start.ps1`，
+**起两个进程**：8877 房间本体 + 18452 MCP），
 坑同 `caelum-gateway`，另加一条：判断日志要 `-Encoding UTF8` 写，否则 GBK 落盘、
 排查时读不出来。⚠️ 顺带查出**本地 `ha-mcp` 比线上少两个设备**（蒸蛋器和它的
 自动断电只在线上有），拿本地那份部署会把它们从线上抹掉。*
