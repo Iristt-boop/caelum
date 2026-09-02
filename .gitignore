@@ -61,6 +61,7 @@ backups/
 # 尤其 `nox-app/` —— caelum-os-ui 和 desktop 都在里面，
 # 也就是说**前端的撤销要去 nox-app 那个 repo 做**，不在这儿。
 nox-app/
+caelum-room/
 Ombre-Brain/
 ai-fishing-game/
 dsh-vscode-layout/
