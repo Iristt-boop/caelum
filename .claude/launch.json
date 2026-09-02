@@ -6,6 +6,12 @@
       "runtimeExecutable": "npm",
       "runtimeArgs": ["run", "dev", "--prefix", "nox-app/caelum-os-ui"],
       "port": 5273
+    },
+    {
+      "name": "caelum-app",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev", "--prefix", "nox-app/frontend"],
+      "port": 5173
     }
   ]
 }
