@@ -97,3 +97,28 @@ if ($McpHeld) {
     -RedirectStandardOutput (Join-Path $LogDir 'caelum-room-mcp.log') `
     -RedirectStandardError (Join-Path $LogDir 'caelum-room-mcp.err.log')
 }
+
+# ---- 第二间（room2，2026-09-03）----
+#
+# 同一份代码的第二个实例：自己的端口、自己的内部端口、自己的库、自己的场景数据。
+# 🔴 **--room-port 必须给**，默认值 18451 是第一间在用的 ——
+# 不给的话第二个实例绑不上，日志里一句 "address in use"，
+# 而它的网关照样起得来，表现是「页面开得出来但一直连不上」。
+#
+# ⚠️ 三样东西必须一起换：db / initial-state / map。
+# 只换前两个而沿用第一间的碰撞图，人会走进墙里。
+$Room2Held = (& $Netstat -ano | Select-String ':8878\s' | Select-String 'LISTENING')
+if ($Room2Held) {
+  Add-Content -Encoding UTF8 -Path $Boot -Value ("[{0}] 第二间已在跑（8878 占着），跳过" -f (Get-Date -Format s))
+} else {
+  Add-Content -Encoding UTF8 -Path $Boot -Value ("[{0}] 8878 空着，启动第二间" -f (Get-Date -Format s))
+  Start-Process -FilePath $Python `
+    -ArgumentList 'tools/run_room_shared_dev.py', '--port', '8878', '--room-port', '18453',
+                  '--db', 'room_service/data/room2.db',
+                  '--initial-state', 'web/room/data/scenes/room2/initial-state.json',
+                  '--map', 'web/room/data/scenes/room2/room-map.json' `
+    -WorkingDirectory $RoomDir `
+    -WindowStyle Hidden `
+    -RedirectStandardOutput (Join-Path $LogDir 'caelum-room2.log') `
+    -RedirectStandardError (Join-Path $LogDir 'caelum-room2.err.log')
+}
