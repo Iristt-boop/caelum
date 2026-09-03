@@ -689,15 +689,21 @@ def _dump(obj: dict[str, Any]) -> str:
     return json.dumps(obj, ensure_ascii=False, sort_keys=True)
 
 
-# DeepSeek 的 API 连 image_url 这个类型都不认识，实测原话：
+# DeepSeek 的常规对话模型连 image_url 这个类型都不认识，实测原话：
 #   invalid_request_error | unknown variant `image_url`, expected `text`
 # v4-flash 和 v4-pro 都一样（2026-08-02 直接打 api.deepseek.com 验的）。
 # Claude / GPT 系都支持，所以这里列「已知不支持」的黑名单，其余默认支持。
+#
+# ⚠️ 例外：**vision 系**的吃图。deepseek-v4-flash-vision-exp 从
+# 2026-08-21 起就在生产里直接收 image_url（`vision.describe` 就是这么
+# 喂它的，共影读字幕一直靠它）——所以名字里带 vision 的一律放行。
 _NO_VISION = ("deepseek",)
 
 
 def supports_vision(model: str) -> bool:
     m = (model or "").lower()
+    if "vision" in m:
+        return True
     return not any(h in m for h in _NO_VISION)
 
 

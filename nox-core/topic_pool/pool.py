@@ -122,8 +122,11 @@ class TopicPool:
         now = now or datetime.now(timezone.utc)
         added = 0
 
+        # ⚠️ 把 now 传进 query —— 不传的话窗口锚在真实时钟上，
+        # 测试和补录的旧事实会随日期滚动凭空消失（2026-09-03 踩的：
+        # NOW 冻在 8/31 的测试跑过 9/1 就开始红，同 test_far_future 的病）
         try:
-            sessions = self.world.query("watching_session", days=3)
+            sessions = self.world.query("watching_session", days=3, now=now)
         except Exception:  # noqa: BLE001
             logger.exception("读观影事实失败，这轮不投影 shared")
             sessions = []

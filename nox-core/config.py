@@ -321,6 +321,11 @@ class Config:
         # DeepSeek 直连（2026-07-31 上线的 V4）
         "v4-flash": ModelChoice("deepseek-v4-flash", "deepseek", "DeepSeek V4 Flash"),
         "v4-pro": ModelChoice("deepseek-v4-pro", "deepseek", "DeepSeek V4 Pro"),
+        # 视觉版（2026-09-01 应糖糖加的，DeepSeek 官方第三个）。切到它
+        # 当主线 = **原生看图**（supports_vision 对带 vision 的名字放行），
+        # 发图不再绕「先转文字」那一跳；纯文本对话它和 v4-flash 同源
+        "v4-flash-vision": ModelChoice(
+            "deepseek-v4-flash-vision-exp", "deepseek", "DeepSeek V4 Flash 视觉版"),
         # OpenRouter 转发的 Claude
         "sonnet-4-6": ModelChoice("anthropic/claude-sonnet-4-6", "openrouter", "Sonnet 4.6"),
         "sonnet-5": ModelChoice("anthropic/claude-sonnet-5", "openrouter", "Sonnet 5"),

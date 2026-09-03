@@ -89,9 +89,11 @@ def test_no_images_stays_plain():
 # --------------------------------------------- 模型读不了图时要降级，不能整段炸掉
 
 def test_deepseek_has_no_vision():
-    """实测原话：unknown variant `image_url`, expected `text`。两个型号都一样。"""
+    """实测原话：unknown variant `image_url`, expected `text`。两个常规型号都一样。"""
     assert not supports_vision("deepseek-v4-flash")
     assert not supports_vision("deepseek-v4-pro")
+    # 视觉版例外：describe 从 2026-08-21 起就在生产里给它发 image_url
+    assert supports_vision("deepseek-v4-flash-vision-exp")
     assert supports_vision("anthropic/claude-sonnet-5")
     assert supports_vision("gpt-4o")
 
