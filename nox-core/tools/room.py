@@ -158,11 +158,19 @@ def make_handlers(client: Any, names: dict[str, str] | None = None) -> dict[str,
         #: 两条路的名字不一样，用 wire 后的名字去判会漏掉一整条路
         return _humanize(spec_name, r.text or "")
 
+    # 🔴 处理函数收**一个位置参数 dict**，不是 `**kwargs`。
+    #
+    # `agent/loop.py:362` 是 `raw = tool.handler(call.arguments)` —— 整包传进来。
+    # 2026-09-03 第一版写成 `lambda **kw`，线上第一次调用就
+    # `takes 0 positional arguments but 1 was given`，
+    # 而 17 个单测**全绿** —— 因为测试是按我想象的方式调的（`h["room_stop"]()`）。
+    # 又一次 `verify-from-the-consumer-side`：要按**调用方**的方式调，
+    # 不是按自己写起来顺手的方式。现在测试照着 loop.py 调，有一条钉着这个约定。
     return {
-        STATE_SPEC.name: lambda **kw: _call(STATE_SPEC.name, kw),
-        MOVE_SPEC.name: lambda **kw: _call(MOVE_SPEC.name, kw),
-        USE_SPEC.name: lambda **kw: _call(USE_SPEC.name, kw),
-        STOP_SPEC.name: lambda **kw: _call(STOP_SPEC.name, kw),
+        STATE_SPEC.name: lambda args: _call(STATE_SPEC.name, args),
+        MOVE_SPEC.name: lambda args: _call(MOVE_SPEC.name, args),
+        USE_SPEC.name: lambda args: _call(USE_SPEC.name, args),
+        STOP_SPEC.name: lambda args: _call(STOP_SPEC.name, args),
     }
 
 

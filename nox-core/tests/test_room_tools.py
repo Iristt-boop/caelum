@@ -51,12 +51,12 @@ class TestHandlers:
     def test_参数原样传给房间(self):
         c = FakeClient(FakeResult(text='{"ok":true}'))
         h = R.make_handlers(c)
-        h["room_move"](target={"kind": "character", "character_id": "owner"})
+        h["room_move"]({"target": {"kind": "character", "character_id": "owner"}})
         assert c.calls == [("room_move", {"target": {"kind": "character", "character_id": "owner"}})]
 
     def test_停下来不带参数也能调(self):
         c = FakeClient(FakeResult(text="{}"))
-        R.make_handlers(c)["room_stop"]()
+        R.make_handlers(c)["room_stop"]({})
         assert c.calls[0][0] == "room_stop"
 
     def test_够不到房间要炸_不许当成正常返回(self):
@@ -64,14 +64,14 @@ class TestHandlers:
         （ha.py 那条：他会说「灯已经开了」而灯根本没开）。"""
         c = FakeClient(FakeResult(ok=False, error="Connection refused"))
         with pytest.raises(RuntimeError) as e:
-            R.make_handlers(c)["room_get_state"]()
+            R.make_handlers(c)["room_get_state"]({})
         assert "够不到房间" in str(e.value)
 
     def test_够不到的时候不断言原因(self):
         """🔴 2026-08-31 的教训：说错原因比说不知道更糟。"""
         c = FakeClient(FakeResult(ok=False, error="timeout"))
         with pytest.raises(RuntimeError) as e:
-            R.make_handlers(c)["room_stop"]()
+            R.make_handlers(c)["room_stop"]({})
         msg = str(e.value)
         assert "分不出" in msg
         # 不许指挥她去开机 / 断言是哪一种故障
@@ -88,12 +88,12 @@ class TestWiring:
 
     def test_直连用房间自己的名字(self):
         c = FakeClient(FakeResult(text="{}"))
-        R.make_handlers(c)["room_stop"]()
+        R.make_handlers(c)["room_stop"]({})
         assert c.calls[0][0] == "room_stop"
 
     def test_走链路用网关的名字(self):
         c = FakeClient(FakeResult(text="{}"))
-        R.make_handlers(c, R.VIA_LINK)["room_stop"]()
+        R.make_handlers(c, R.VIA_LINK)["room_stop"]({})
         assert c.calls[0][0] == "room.stop"
 
     def test_两套名字都盖全了四件(self):
@@ -109,8 +109,24 @@ class TestWiring:
             {"id": "companion", "activity": "sit", "furniture": "sofa"},
         ]}, ensure_ascii=False)
         c = FakeClient(FakeResult(text=raw))
-        out = R.make_handlers(c, R.VIA_LINK)["room_get_state"]()
+        out = R.make_handlers(c, R.VIA_LINK)["room_get_state"]({})
         assert "我：sit·sofa" in out
+
+
+    def test_处理函数必须收一个位置参数dict(self):
+        """🔴 这条钉的是 `agent/loop.py:362`：`tool.handler(call.arguments)`。
+
+        2026-09-03 第一版写成 `lambda **kw`，线上第一次调用就
+        `takes 0 positional arguments but 1 was given`，而当时 17 个单测全绿 ——
+        因为测试是按我想象的方式调的。**要按调用方的方式调。**
+        """
+        import inspect
+        for name, fn in R.make_handlers(FakeClient()).items():
+            sig = inspect.signature(fn)
+            kinds = [p.kind for p in sig.parameters.values()]
+            assert kinds == [inspect.Parameter.POSITIONAL_OR_KEYWORD], f"{name} 的签名不对：{sig}"
+            # 真的照 loop.py 那样调一次，不许抛
+            fn({})
 
 
 class TestHumanize:
