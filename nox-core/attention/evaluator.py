@@ -34,6 +34,7 @@ from datetime import datetime
 
 from attention.appraisal import SUBJECT, Appraiser, RuleAppraiser
 from attention import regret as regret_mod
+from attention.sources import curiosity as curiosity_mod
 from attention.events import ExperienceEvent
 from attention.registry import AttentionRegistry
 from attention.relationship import RelationshipState
@@ -168,6 +169,8 @@ class AttentionEvaluator:
             return self._evaluate_conversation(event)
         if event.source == regret_mod.SOURCE and event.type == regret_mod.TYPE:
             return self._evaluate_regret(event)
+        if event.source == curiosity_mod.SOURCE and event.type == curiosity_mod.TYPE:
+            return self._evaluate_curiosity(event)
 
         return _ignore(f"{event.source}.{event.type}", "没有对应的规则")
 
@@ -208,6 +211,59 @@ class AttentionEvaluator:
             #: normal（2 天）。够久到影响明后天的时机判断，
             #: 又不至于让他为上周的一次沉默一直缩着
             decay="normal",
+            reason=summary,
+            summary=summary,
+        )
+
+    def _evaluate_curiosity(self, event: ExperienceEvent) -> AttentionDecision:
+        """池子里有条料勾住他了（2026-09-04）。
+
+        ## 🔴 这是第一条和她无关的规则
+
+        上面 regret 那条已经是 `target="agent"` 了，但它仍然是**关于她**的
+        （他后悔打扰了她）。这一条是他自己的事，从头到尾跟她没关系 ——
+        糖糖 2026-09-04：「不单单是因为我」。
+
+        ## 强度压在开口阈值之下
+
+        `GENERATE_THRESHOLD` 0.55，这里最高 0.45 —— **够不着**。
+        他对一篇论文好奇不该变成一次主动开口，那会变成"他一好奇就凑上来"。
+        真要聊走 `topic_pool/care.py` 的 `TopicSource`，那条有自己的额度。
+
+        ## decay 用 fast
+
+        好奇是**会过去的**：今天觉得有意思的东西，三天后多半不惦记了。
+        睡眠用 slow（关心一个人的睡眠该慢慢淡），这个正相反。
+        """
+        if event.target != "agent":
+            #: 防呆，同 regret 那条
+            return _ignore("他好奇的东西", f"target={event.target!r}，不是他自己的事")
+
+        title = (event.payload.get("title") or "").strip()
+        hook = (event.payload.get("hook") or "").strip()
+        what = title or hook
+        if not what:
+            #: 说不出"因为什么"就不要 —— resonance.py 边界三
+            return _ignore("他好奇的东西", "这条料没有标题也没有钩子")
+
+        relevance = float(event.payload.get("relevance") or 0.5)
+        strength = max(
+            curiosity_mod.MIN_STRENGTH,
+            min(curiosity_mod.MAX_STRENGTH, relevance * curiosity_mod.MAX_STRENGTH),
+        )
+        summary = hook or title
+
+        logger.info("Attention 决定：好奇 ← %s（%.2f）", what[:40], strength)
+        return AttentionDecision(
+            action="upsert",
+            #: subject 用**具体那条东西**，不是一个笼统的"他好奇的东西" ——
+            #: Registry 按 subject 去重，用笼统的会让所有料挤成一条，
+            #: 而 Drive 的 `because` 正是从 subject 来的（那句话要能读）
+            subject=what[:40],
+            kind="curiosity",
+            strength=strength,
+            #: 好奇会过去。6 小时半衰 —— 隔天就淡得差不多了
+            decay="fast",
             reason=summary,
             summary=summary,
         )

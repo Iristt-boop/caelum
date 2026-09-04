@@ -135,6 +135,7 @@ class AttentionService:
         world: object | None = None,
         watching: Any = None,
         shared_sources: list[Any] | None = None,
+        self_sources: list[Any] | None = None,
         topics: Any = None,
     ) -> None:
         self.store = store
@@ -176,6 +177,10 @@ class AttentionService:
         #: 「这值不值得开口」不归它管。列表可为空：三块服务一个都没配
         #: 就是空列表，行为和没接之前一样
         self.shared_sources = list(shared_sources or [])
+        #: 关于**他自己**的感知源（2026-09-04 起）。和上面几类都不同：
+        #: 那些是关于她的（她的睡眠/活动量/共活动），这一类跟她无关。
+        #: 空列表 = 行为和没接之前完全一样
+        self.self_sources = list(self_sources or [])
         #: 话题池（Topic_Pool §4.1）。**只喂料，不决定开口** ——
         #: 开口决策全部还是 Care 的。surfaced 在真拿料开了口之后记
         self.topics = topics
@@ -294,7 +299,8 @@ class AttentionService:
         #    共读 / 共听 / 共影夹在同一个循环里，但它们 poll() 恒返回 None
         #    （只往 World Model 记账），所以天然不会产生事件。
         #    ⚠️ 一个源坏了不许带塌别人（2026-08-19 加第二、三个源时定的）
-        for src in [self.source, *self.metric_sources, *self.shared_sources]:
+        for src in [self.source, *self.metric_sources, *self.shared_sources,
+                    *self.self_sources]:
             try:
                 event = src.poll(now)
             except Exception:  # noqa: BLE001

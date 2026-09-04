@@ -162,9 +162,14 @@ def test_躁动不进他的上下文():
 
 
 def test_不认识的_drive_跳过():
-    """后端加了新 kind 而这边还没给措辞时，跳过而不是把 key 名字裸露给他。"""
-    out = _render({"curiosity": _Drive(0.8, ["arXiv 那篇"]), "longing": _Drive(0.5)})
-    assert "curiosity" not in out
+    """后端加了新 kind 而这边还没给措辞时，跳过而不是把 key 名字裸露给他。
+
+    ⚠️ 这里**不能拿 curiosity 举例**了 —— 2026-09-04 它进了词典，
+    再用它这条测试就变成靠错误的理由通过。用一个确实不认识的。
+    """
+    out = _render({"envy": _Drive(0.8, ["某件事"]), "longing": _Drive(0.5)})
+    assert "envy" not in out
+    assert "某件事" not in out
     assert "想她" in out
 
 
@@ -178,6 +183,34 @@ def test_强度小幅变化时文本不变():
     a = _render({"longing": _Drive(0.40, ["她没说话"])})
     b = _render({"longing": _Drive(0.45, ["她没说话"])})
     assert a == b
+
+
+
+# --------------------------------------------------------------- 和她无关的那一条
+
+def test_好奇进得了他的上下文而且不带她的名字():
+    """🔴 糖糖 2026-09-04 要的就是这一条：「不单单是因为我」。
+
+    面板上出现这一行、理由不是「糖糖的什么」，这件事才算成了。
+    """
+    out = _render({
+        "curiosity": _Drive(0.42, ["Attention Is All You Need"]),
+        "concern": _Drive(0.5, ["糖糖的睡眠"]),
+    })
+    assert "被一件事勾着" in out
+    assert "Attention Is All You Need" in out
+    #: 好奇那半句里不许出现她 —— 措辞特意不带"她"字
+    curiosity_part = [p for p in out.split("；") if "勾着" in p][0]
+    assert "她" not in curiosity_part
+    assert "糖糖" not in curiosity_part
+
+
+def test_只有好奇时他也感觉得到():
+    """她那几项全空的时候，他仍然可以心里有件自己的事 ——
+    在这之前那种情况下他是完全空白的。"""
+    out = _render({"curiosity": _Drive(0.4, ["arXiv 上那篇"])})
+    assert "被一件事勾着" in out
+    assert "arXiv 上那篇" in out
 
 
 if __name__ == "__main__":

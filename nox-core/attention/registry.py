@@ -59,7 +59,10 @@ _HALF_LIFE = {
 
 #: `upsert` 认哪些 kind。**加新的之前先问：谁处理它？**
 #: 没人处理的类型进了 Registry，就是一条永远不会被读的数据
-KINDS = frozenset({"concern", "regret"})
+#: 2026-09-04 加 curiosity：第一个**和她无关**的 kind。
+#: 产生者 attention/sources/curiosity.py，规则 evaluator._evaluate_curiosity，
+#: 读它的是 resonance.snapshot()（按 kind 分组，自动多一个 Drive）
+KINDS = frozenset({"concern", "regret", "curiosity"})
 
 #: 低于这个强度就当没有了。不清掉的话 Registry 会慢慢堆满
 #: 一堆 0.001 的陈年 Concern，`list()` 每次都要跳过它们。

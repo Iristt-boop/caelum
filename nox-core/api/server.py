@@ -547,10 +547,20 @@ def _build_attention(core: Nox, sessions: "Sessions", db: Store) -> AttentionSer
             world=world,
         )
 
+        # 好奇（2026-09-04）：池子里的料变成**他自己的感受**。
+        # 和上面那个 TopicSource 用同一批料，但是两层 ——
+        # 那个是"找她聊的理由"（Care），这个是"他心里有件事"（Drive）。
+        # 池子没启用就是空列表，行为和没接之前一样
+        self_sources = []
+        if topics_pool is not None:
+            from attention.sources.curiosity import CuriositySource
+            self_sources.append(CuriositySource(astore, topics_pool))
+
         svc = AttentionService(astore, provider, speaker=speaker, waker=waker,
                                todo_source=todo_source, fast_sources=fast_sources,
                                gate=gate, time_source=time_source, world=world,
                                watching=watching, shared_sources=[shared_source],
+                               self_sources=self_sources,
                                topics=topics_pool)
 
         # 体重 / 生理期：HealthKit 那条同步坏了（体重 14 天一条没有，
