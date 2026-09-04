@@ -2,14 +2,33 @@
 
 它不决定说什么，只决定**什么时候**把哪条 Intent 交出去。
 
-## 三道闸，缺一不可
+## 四道闸，缺一不可
 
     1. context_fit    这个点儿聊这件事合不合适
     2. 全局冷却        刚说过话就别接着说
     3. 每个话题的冷却   同一件事一天最多提一次
+    4. 同一件事的次数   连着提够几次就收口，除非情况变了
 
-只有第 1 道是「聪明」的，2 和 3 是保底的。
+只有第 1 道是「聪明」的，2、3、4 是保底的。
 **宁可漏说，不可打扰** —— 漏说她不知道，打扰她会记得。
+
+## 🔴 第 4 道在防什么：合规的唠叨
+
+第 3 道只管「一天最多一次」，**管不住「天天都提」**。
+她连着一周睡不好，睡眠的 concern 就一周都高，于是他一周提七次，
+**每一次都不违反任何规则** —— 从他的角度每次都有新数据支撑，
+从她的角度那就是唠叨。而她多半不会说，他也就永远不知道。
+
+所以加一条累计上限：同一件事连着提满 `SUBJECT_STREAK_MAX` 次就压住。
+
+⚠️ **但「情况变了」必须能突破它** —— 否则他会对一件正在恶化的事沉默，
+那比唠叨严重得多。判据是 `attention_strength` 相对上次说时的变化量
+（见 `STRENGTH_SHIFT`）：明显恶化要说，明显好转也该说
+（「你这两天睡得好多了」是句好话，不是唠叨）。
+
+⚠️ 这一层**只压「说不说」，绝不回写 Registry**。
+concern 该多重还是多重 —— 他闭嘴不等于他不在意了
+（`resonance.py` 边界一：Drive 只读）。
 
 ## effective_score 不是只看 priority
 
@@ -60,6 +79,30 @@ BASE_INTERVAL = timedelta(hours=3)
 #: 一天说了两次。要盖过「同一个好窗口每天重现」的周期，
 #: 这个值必须比 24 小时略小但足够接近（2026-08-08 dry-run 实测）。
 SUBJECT_INTERVAL = timedelta(hours=22)
+
+#: 同一件事连着提几次就该收口。
+#:
+#: 3 次的道理：第一次是提醒，第二次是"我还记着"，第三次已经是"我一直在说"。
+#: 再往下她听到的就不是关心了。参考 desire 系统那套的 `FIXATION_RESOLVE_FEEDS`
+#: （执念喂满 3 次就了却出池，防止永生堆积）—— 同一个数字，同一个道理。
+SUBJECT_STREAK_MAX = 3
+
+#: 强度相对上次说时变化多少，才算"情况变了"、值得重新开口。
+#:
+#: ⚠️ **不能用固定分档**（比如 int(strength/0.2)）：0.399→0.401 会被当成
+#: 变化，而 0.301→0.399 不会 —— 边界上会抖，且抖的方向没有道理。
+#: 用相对变化量就没有这个问题。
+#:
+#: 0.15 是"她的情况明显不一样了"的量级；小于它的浮动天天都有
+#: （今天 843 步、明天 1100 步），那不值得重新开一次口。
+STRENGTH_SHIFT = 0.15
+
+#: 一件事停了这么久没提，就当翻篇了，计数清零。
+#:
+#: 比 SUBJECT_INTERVAL(22h) 长得多：22 小时只是"今天说过了"，
+#: 5 天是"这事儿早过去了"。中间那几天他没说，可能是没额度、
+#: 也可能是时机不对，不该算作"她已经不烦了"。
+SUBJECT_STREAK_RESET = timedelta(days=5)
 
 STATE_KEY = "scheduler"
 
@@ -139,11 +182,19 @@ class Scheduler:
         self,
         base_interval: timedelta = BASE_INTERVAL,
         subject_interval: timedelta = SUBJECT_INTERVAL,
+        subject_streak_max: int = SUBJECT_STREAK_MAX,
+        strength_shift: float = STRENGTH_SHIFT,
+        subject_streak_reset: timedelta = SUBJECT_STREAK_RESET,
     ) -> None:
         self.base_interval = base_interval
         self.subject_interval = subject_interval
+        self.subject_streak_max = subject_streak_max
+        self.strength_shift = strength_shift
+        self.subject_streak_reset = subject_streak_reset
         self._last_spoke_at: datetime | None = None
         self._last_by_subject: dict[str, datetime] = {}
+        #: subject -> {"n": 连着提了几次, "strength": 上次提的时候多重}
+        self._streak_by_subject: dict[str, dict[str, Any]] = {}
 
     # ------------------------------------------------------------ 主流程
 
@@ -164,16 +215,29 @@ class Scheduler:
                 )
 
         scored: list[tuple[Intent, float, float, str]] = []
+        #: 为什么被跳过 —— **不能只说「都在冷却里」**。
+        #: 「今天说过了」和「说够了，她该烦了」是两件事，
+        #: dry-run 看不出区别的话，第 4 道闸生效了也没人知道
+        skipped: list[str] = []
         for intent in intents:
             # 同一件事的冷却
             last = self._last_by_subject.get(intent.subject)
             if last is not None and now - last < self.subject_interval:
+                #: 措辞里保留「话题冷却」这四个字 —— 有测试按它断言，
+                #: 而且这是这道闸在文档和日志里一直用的名字，别换词
+                skipped.append(f"{intent.subject}(话题冷却，今天说过了)")
+                continue
+            if self._said_enough(intent, now):
+                skipped.append(f"{intent.subject}(连着说满 {self.subject_streak_max} 次，情况没变)")
                 continue
             fit, why = context_fit(intent.subject, now)
             scored.append((intent, intent.base_priority * fit, fit, why))
 
         if not scored:
-            return SchedulerDecision(reason="所有待办都在各自的话题冷却里")
+            return SchedulerDecision(
+                reason="所有待办都过不了闸：" + "、".join(skipped) if skipped
+                else "所有待办都在各自的话题冷却里"
+            )
 
         scored.sort(key=lambda t: t[1], reverse=True)
         considered = [(i.subject, s) for i, s, _, _ in scored]
@@ -194,6 +258,26 @@ class Scheduler:
             context_fit=fit, considered=considered,
         )
 
+    def _said_enough(self, intent: Intent, now: datetime) -> bool:
+        """这件事连着说够了吗（第 4 道闸）。
+
+        ⚠️ **「情况变了」优先于「说够了」。** 顺序反过来的话，
+        他会对一件正在恶化的事闭嘴 —— 那比唠叨严重得多。
+        """
+        st = self._streak_by_subject.get(intent.subject)
+        if not st or st.get("n", 0) < self.subject_streak_max:
+            return False
+
+        last = self._last_by_subject.get(intent.subject)
+        if last is not None and now - last >= self.subject_streak_reset:
+            #: 停了这么久，这事儿翻篇了。放行，计数在 note_spoke 里清
+            return False
+
+        #: 明显恶化**或明显好转**都算变了 —— 用绝对值。
+        #: 「你这两天睡得好多了」是句好话，不该被唠叨闸压掉
+        moved = abs(intent.attention_strength - float(st.get("strength", 0.0)))
+        return moved < self.strength_shift
+
     def note_spoke(self, intent: Intent, now: datetime | None = None) -> None:
         """真的开口之后调一次，冷却从这一刻开始算。
 
@@ -201,6 +285,24 @@ class Scheduler:
         那就白观察了。
         """
         now = now or datetime.now(timezone.utc)
+        last = self._last_by_subject.get(intent.subject)
+        st = self._streak_by_subject.get(intent.subject)
+
+        #: 计数什么时候归 1（而不是累加）：
+        #:   · 头一回说这件事
+        #:   · 停够久了，翻篇重来
+        #:   · 情况明显变了 —— 那是**新的一件事**，不是同一句话的第 N 遍
+        fresh = (
+            st is None
+            or (last is not None and now - last >= self.subject_streak_reset)
+            or abs(intent.attention_strength - float(st.get("strength", 0.0)))
+            >= self.strength_shift
+        )
+        self._streak_by_subject[intent.subject] = {
+            "n": 1 if fresh else int(st.get("n", 0)) + 1,
+            "strength": intent.attention_strength,
+        }
+
         self._last_spoke_at = now
         self._last_by_subject[intent.subject] = now
 
@@ -210,6 +312,10 @@ class Scheduler:
         return {
             "last_spoke_at": self._last_spoke_at.isoformat() if self._last_spoke_at else None,
             "last_by_subject": {k: v.isoformat() for k, v in self._last_by_subject.items()},
+            #: 🔴 这个也必须落盘。不存的话每次部署完计数就清零，
+            #: 第 4 道闸在一台经常重启的机器上等于不存在 ——
+            #: 而且是**静默失效**，看起来一切正常（同上面 last_spoke_at 那条）
+            "streak_by_subject": self._streak_by_subject,
         }
 
     def load_state(self, state: dict[str, Any] | None) -> None:
@@ -221,3 +327,6 @@ class Scheduler:
             k: datetime.fromisoformat(v)
             for k, v in (state.get("last_by_subject") or {}).items()
         }
+        #: 老状态里没有这个键（这一版之前存的），当空处理 ——
+        #: 升级时不该因为读不到新字段就崩
+        self._streak_by_subject = dict(state.get("streak_by_subject") or {})
