@@ -2600,6 +2600,15 @@ app.post("/api/diet/meals", (req, res) => {
   const mt = normalizeMealType(meal_type || "");
   if (!date || !mt || !items?.length) return res.status(400).json({ error: "date/meal_type/items 必填" });
 
+  // 先把所有 items 的 food_id 校验完再开插 —— 边插边查的话，
+  // food 匹配不上就静默跳过，会落下一餐「只有头没有 items」的
+  // 空壳餐：total 全 0、前端显示 0 大卡（2026-09-04 午餐就这么坏的）。
+  for (const item of items) {
+    if (!dbAll("SELECT id FROM foods WHERE id=?", [item.food_id || 0])[0]) {
+      return res.status(400).json({ error: `food_id=${item.food_id || "?"} 不在食物库里，先把菜建档再记餐` });
+    }
+  }
+
   // 开一餐（meal_type 归一为中文）
   const now = new Date().toISOString();
   dbRun(`INSERT INTO meals (meal_date, meal_type, note, created_at) VALUES (?,?,?,?)`,
@@ -2613,7 +2622,6 @@ app.post("/api/diet/meals", (req, res) => {
 
   for (const item of items) {
     const food = dbAll("SELECT * FROM foods WHERE id=?", [item.food_id || 0])[0];
-    if (!food) continue;
     const n = calcNutrition(food, item.amount || 100, item.unit_type || "gram", item.unit_name || "");
     dbRun(
       `INSERT INTO meal_items (meal_id, food_id, food_name, amount, unit_type, unit_name, est_grams, cal, protein, carbs, fat, is_estimate)

@@ -312,6 +312,17 @@ noxtang.com 的前端、TTS/STT、共读代理；Nox Core 只负责"想清楚该
 | `homeassistant` | 8123 | 家居。经 `ha.noxtang.com` 反代，公网不直接暴露 |
 | （HA 附属）`go2rtc` | 18554 / 18555 | 摄像头流，只听本机 |
 
+### 生产数据库（2026-09-04 实测，全在 VPS，本地没有副本）
+| 库 | 路径 | 说明 |
+|---|---|---|
+| `nox-bridge.db` | `/root/data/nox-bridge.db` | bridge 的库（foods/meals/对话等）。用的是 **sql.js：全量进内存，`saveDb()` 整文件写回** —— 服务跑着时直接改文件会被内存态覆盖，**改数据走 API，或先 `systemctl stop bridge` 再改** |
+| `attention.db` / `health.db` | `/root/data/` 同目录 | 其余服务各自的库 |
+
+⚠️ 本地 `D:\claude-code` **没有 `data/` 目录**。在本地找 `.db`、或对本地路径开 sqlite
+报 `unable to open database file` 是必然的（目录都不存在），不是权限问题。
+2026-09-04 nox 在她电脑上找食物库删「减脂烤箱板」就卡死在这一步——生产库只在 VPS。
+nox-core 人设里已加「你的数据环境」一条（要重启 `nox-core` 生效）。
+
 ### systemd 关键环境变量（2026-08-02 实测，只记录变量名）
 #### `bridge`
 `PORT` `API_KEY` `API_BASE` `API_MODEL` `NOX_TOKEN` `NOX_LOGIN_PASSWORD`
