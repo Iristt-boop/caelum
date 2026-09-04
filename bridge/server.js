@@ -1588,7 +1588,13 @@ app.delete("/api/gallery/:id", (req, res) => {
 // 静态文件服务（上传的图片）— 文件名随机且不复用，可长缓存（修相册反复重载慢）
 app.use("/uploads", express.static(uploadDir, { maxAge: "30d", immutable: true }));
 // 也 serve 前端构建产物
-const frontendDist = path.join(__dirname, "..", "frontend", "dist");
+// 默认是 `../frontend/dist`（线上 /root/frontend/dist）。
+// ⚠️ 允许环境变量覆盖**只是为了能测** —— 这条兜底路由出过一次
+// 「静态资源找不到回了 index.html」的事故（见下面那段），
+// 而在测试环境里这个目录根本不存在、整块都不注册，等于测不到。
+// 线上不要设这个变量。
+const frontendDist = process.env.FRONTEND_DIST
+  || path.join(__dirname, "..", "frontend", "dist");
 if (fs.existsSync(frontendDist)) {
   // ⚠️ 缓存策略必须分两层，否则「改了没生效」会反复咬人。
   //
@@ -1610,8 +1616,33 @@ if (fs.existsSync(frontendDist)) {
       }
     },
   }));
+  // 🔴 **静态资源找不到就老实 404，绝不回 index.html。**
+  //
+  // 2026-09-04 糖糖的 app「发出去的消息和他回复我的都不显示了」，
+  // 根因就在这条兜底路由：
+  //
+  //   她开着 app（已加载 index-旧.js）→ 点进 Chat
+  //   → 浏览器取 Chat-旧哈希.js → 那个文件在部署时被换掉了
+  //   → 这条兜底把 index.html 当结果返回，**状态码 200**
+  //   → 浏览器以为拿到了 JS，解析 `<!doctype html>` → 语法错误
+  //   → Chat 那个模块加载失败 → **整页不渲染**
+  //
+  // 最坑的是它**不报「文件没了」**，报的是一个指不到真因的语法错误。
+  // 回 404 的话浏览器会说「chunk 加载失败」，那个错至少能指到地方。
+  //
+  // ⚠️ 这是**每次部署前端都会踩**的雷，只要她当时开着 app ——
+  // 不是那天才有的偶发问题。
+  //
+  // 判据用后缀不用路径前缀：`/assets/` 之外还有 `/icons/*.png`、
+  // `/manifest.webmanifest` 这些，它们同样不该被兜底成 HTML。
+  // 而真正的页面路由（`/chat`、`/diary`）是没有后缀的。
+  const STATIC_EXT = /\.(js|mjs|css|map|png|jpe?g|gif|svg|webp|ico|woff2?|ttf|otf|webmanifest|json|mp3|mp4|wasm)$/i;
   app.get("*", (req, res, next) => {
     if (req.path.startsWith("/api") || req.path.startsWith("/uploads") || req.path === "/ws" || req.path === "/health") return next();
+    if (STATIC_EXT.test(req.path)) {
+      // 走到这儿说明 express.static 没找到它 —— 那就是真没有
+      return res.status(404).type("text/plain").send("Not Found");
+    }
     // 这条兜底路由也要显式设 —— sendFile 不走上面的 setHeaders
     res.setHeader("Cache-Control", "no-cache, must-revalidate");
     res.sendFile(path.join(frontendDist, "index.html"));

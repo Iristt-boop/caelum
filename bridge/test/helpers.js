@@ -32,6 +32,16 @@ export async function startBridge() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-test-"));
   const port = pickPort();
 
+  //: 造一份最小的前端产物。不造的话 `../frontend/dist` 不存在，
+  //: **整个静态托管块连同 SPA 兜底路由都不会注册** —— 那几条测试
+  //: 测到的就只是 Express 的默认 404，看着过了其实什么都没验
+  //: （2026-09-04 第一版就是这么假过的）。
+  const distDir = path.join(dir, "dist");
+  fs.mkdirSync(path.join(distDir, "assets"), { recursive: true });
+  fs.writeFileSync(path.join(distDir, "index.html"),
+    "<!doctype html><html><head></head><body>caelum-test</body></html>");
+  fs.writeFileSync(path.join(distDir, "assets", "real-abc123.js"), "export default 1;");
+
   const child = spawn(process.execPath, [SERVER], {
     env: {
       ...process.env,
@@ -44,6 +54,7 @@ export async function startBridge() {
       // 共影心跳的过期窗口压到 1 秒，好让测试验得动"她走开了"那条分支。
       // 线上是 90 秒（server.js 的 WATCH_STALE_MS）
       WATCH_STALE_MS: "1000",
+      FRONTEND_DIST: distDir,
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
