@@ -942,7 +942,9 @@ async function coreMode(req, res, requestId) {
 }
 
 app.post("/api/chat", async (req, res) => {
-  const { message, images, sessionId, mode, voice } = req.body;
+  // merged：合并发图（微信 1:1）——前端勾了「发送后合并展示」，存进
+  // metadata，重载时聊天页还原成折叠卡而不是一张张缩略图
+  const { message, images, sessionId, mode, voice, merged } = req.body;
   if (!message && !images?.length) return res.status(400).json({ error: "empty" });
 
   res.setHeader("Content-Type", "text/event-stream");
@@ -976,6 +978,7 @@ app.post("/api/chat", async (req, res) => {
   // 落库只存用户原话（语音指令不入库，否则前端会把整条隐藏掉）。
   // 只发图不带字的情况也落库（meta.images 非空，saveMessage 不会跳过）。
   const userMeta = imgUrls.length ? { images: imgUrls } : {};
+  if (merged && imgUrls.length) userMeta.merged = true;
   if (message || imgUrls.length) {
     saveMessage(sessionId, "user", message || "", Object.keys(userMeta).length ? userMeta : "");
   }
