@@ -105,6 +105,21 @@ class CuriositySource:
             if not tid or tid in seen:
                 continue
 
+            # 🔴 **只要他自己在外面刷到的**（origin=external）。
+            #
+            # 池子里还有 `origin=shared` 的枝条 —— 那是**你们一起**看的片、
+            # 读的书，从 World Model 投影来的（pool.py `_project_shared`）。
+            # 那条链路是糖糖特意设计的：让他记得一起看过什么，
+            # 之后能说「今天这部有点像我们之前看的 XXX」。
+            #
+            # 2026-09-04 我接好奇时漏了这个判断，于是
+            # 《The.Sheep.Detectives…》被算成了"他自己好奇的东西" ——
+            # **语义整个反了。那不是他好奇，那是你们的共同经历。**
+            #
+            # shared 那条一行不动，照常喂 topic_pool/care.py 的 TopicSource。
+            if (getattr(t, "origin", "external") or "external") != "external":
+                continue
+
             title = (getattr(t, "source_title", "") or "").strip()
             hook = (getattr(t, "hook", "") or "").strip()
             if not (title or hook):

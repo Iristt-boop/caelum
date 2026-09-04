@@ -29,6 +29,7 @@ from datetime import datetime
 from typing import Any
 
 from agent.llm import ToolSpec
+from context.media_title import clean as clean_title
 
 logger = logging.getLogger(__name__)
 
@@ -69,7 +70,8 @@ def _minutes(row: dict) -> str:
 
 
 def _name(row: dict) -> str:
-    title = str(row.get("title") or "").strip() or "没记住片名"
+    #: 同 topic_pool/pool.py：本地文件记的是文件名，而这是他说出口的片名
+    title = clean_title(str(row.get("title") or "").strip()) or "没记住片名"
     ep = str(row.get("episode") or "").strip()
     return f"《{title}》{ep}".strip()
 

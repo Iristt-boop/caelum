@@ -45,6 +45,7 @@ class _Topic:
     hook: str = ""
     relevance: float = 0.5
     category: str = "ai"
+    origin: str = "external"
 
 
 class _Store:
@@ -147,6 +148,51 @@ def test_没标题也没钩子的料不要():
 
 def test_没有料就没有好奇():
     assert _src([]).poll(NOW) is None
+
+
+# --------------------------------------------------------------- 🔴 只要他自己刷到的
+
+def test_你们一起看的片不算他好奇():
+    """🔴 2026-09-04 的回归测试。
+
+    池子里除了他自己抓的（origin=external），还有 `origin=shared` ——
+    那是**你们一起**看的片、读的书，从 World Model 投影来的。
+    那条链路是糖糖特意设计的：让他记得一起看过什么，
+    之后能说「今天这部有点像我们之前看的 XXX」。
+
+    我接好奇时漏了这个判断，于是《The.Sheep.Detectives…》被算成了
+    "他自己好奇的东西" —— **那不是他好奇，那是你们的共同经历。**
+    """
+    shared = _Topic("t1", "《The.Sheep.Detectives》", "一起看完了，还没聊过",
+                    origin="shared")
+    assert _src([shared]).poll(NOW) is None
+
+
+def test_shared_不挡住后面的_external():
+    """跳过 shared 是 `continue` 不是 `return` —— 后面还有他自己的料要收。"""
+    e = _src([
+        _Topic("t1", "一起看的片", "h", origin="shared"),
+        _Topic("t2", "arXiv 那篇", "h2", origin="external"),
+    ]).poll(NOW)
+    assert e is not None
+    assert e.payload["title"] == "arXiv 那篇"
+
+
+@pytest.mark.parametrize("origin", ["conversation", "world", "memory-triggered"])
+def test_别的来源也不算好奇(origin):
+    """判据是「是不是 external」，不是「是不是 shared」——
+    以后多几种来源，默认都不该算成他自己刷到的。"""
+    assert _src([_Topic("t1", "x", "y", origin=origin)]).poll(NOW) is None
+
+
+def test_缺_origin_的当成_external():
+    """老数据没有这个字段。默认按他自己抓的算，行为和加这条之前一样。"""
+    class _Old:
+        id = "t1"
+        source_title = "某篇"
+        hook = "h"
+        relevance = 0.5
+    assert _src([_Old()]).poll(NOW) is not None
 
 
 # --------------------------------------------------------------- Evaluator

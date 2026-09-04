@@ -24,6 +24,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from context.media_title import clean as clean_title
 from topic_pool import scout
 from topic_pool.filter import run_filter
 from topic_pool.store import SHARED_TTL_HOURS, Candidate, Topic, TopicStore, ttl_for
@@ -136,6 +137,11 @@ class TopicPool:
             session_id = raw.get("session_id")
             if not title or not session_id:
                 continue
+            #: 本地文件记下来的是文件名（`The.Sheep.Detectives.2026.1080p…mp4`），
+            #: 而这个 hook 是他**会说出口**的话。不清洗的话，
+            #: 糖糖要的那句「像我们之前看的 XXX」会念出一串扩展名。
+            #: ⚠️ 不像文件名的（B站标题）原样返回，见 media_title.py
+            title = clean_title(title)
             ep = str(raw.get("episode") or "").strip()
             minutes = raw.get("minutes")
             span = f"（{minutes} 分钟）" if minutes else ""
