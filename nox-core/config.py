@@ -288,6 +288,13 @@ class Config:
     notion_token: str = field(default_factory=lambda: _env("NOTION_TOKEN", ""))
     notion_timeout: float = 15.0
 
+    # ---- Tavily（联网搜索）----
+    # 免费档 1000 credits/月、不要信用卡（2026-09-04 查证）。
+    # 留空则不注册 web_search —— 宁可他没有这个工具，也不要给他一个
+    # 每次都报错的工具：模型看见工具就会试，试一次错一次，比没有更糟。
+    tavily_key: str = field(default_factory=lambda: _env("TAVILY_API_KEY", ""))
+    tavily_timeout: float = 20.0
+
     # ---- eryu（自部署网易云播放器，共听系统的播放层）----
     # 留空则不注册 eryu 工具 —— 搜歌/放歌/歌词
     eryu_url: str = field(default_factory=lambda: _env("NOX_ERYU_URL", ""))

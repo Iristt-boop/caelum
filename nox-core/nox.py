@@ -43,6 +43,7 @@ from tools import notion as notion_tools
 from tools import planner as planner_tools
 from tools import reading as reading_tools
 from tools import room as room_tools
+from tools import search as search_tools
 from tools import tracker as tracker_tools
 from tools import watching as watching_tools
 from tools.bridge_client import BridgeClient
@@ -161,6 +162,18 @@ class Nox:
             logger.info("Notion 工具已注册")
         else:
             logger.info("未配置 NOTION_TOKEN，跳过 Notion 工具")
+
+        # 联网搜索。他没有实时的世界知识，这是唯一的补法。
+        # 没 key 就不注册 —— 给模型一个每次都报错的工具比没有更糟，
+        # 它会一遍遍地试，然后每次都要跟她解释一次为什么没查成
+        if self.cfg.tavily_key:
+            search_tools.register_all(
+                self.loop,
+                search_tools.make_client(self.cfg.tavily_key, self.cfg.tavily_timeout),
+            )
+            logger.info("联网搜索已注册（Tavily）")
+        else:
+            logger.info("未配置 TAVILY_API_KEY，跳过联网搜索")
 
         # 共读的页边笔记
         if self.cfg.reading_url:
