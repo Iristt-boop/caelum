@@ -24,6 +24,7 @@ import { fileURLToPath } from "node:url";
 import { WebSocketServer, WebSocket } from "ws";
 import initSqlJs from "sql.js";
 import multer from "multer";
+import { lookupMovie, longEnough } from "./lib/movie-meta.js";
 import webpush from "web-push";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -207,6 +208,23 @@ db.run(`CREATE TABLE IF NOT EXISTS watch_sessions (
   position_ms INTEGER DEFAULT 0,
   play_state TEXT DEFAULT 'playing',
   started_at TEXT, last_seen_at TEXT, ended_at TEXT
+)`);
+// 🎟️ 电影票根（2026-09-04）。糖糖：看完电影生成一张票根。
+//
+// ⚠️ **一场只能有一张**（session_id 主键）。她可能点两次「生成」，
+// 或者网络重试 —— 不设主键的话同一场会出现两张一模一样的票。
+//
+// meta_json 存维基拉到的元信息原文（片名/年份/导演/类型/海报…）。
+// 存原文不存拆开的列：以后想多印一栏不用改表，而且拉到过什么
+// 事后能追溯（万一哪天维基改了条目）。
+db.run(`CREATE TABLE IF NOT EXISTS movie_tickets (
+  session_id TEXT PRIMARY KEY,
+  kind TEXT,
+  title TEXT,
+  review TEXT,
+  meta_json TEXT,
+  watched_from TEXT, watched_to TEXT, watched_minutes INTEGER DEFAULT 0,
+  created_at TEXT
 )`);
 db.run(`CREATE TABLE IF NOT EXISTS todos (
   id TEXT PRIMARY KEY, text TEXT, time TEXT, done INTEGER DEFAULT 0, created_at TEXT
@@ -2225,6 +2243,110 @@ app.get("/api/watch/history", (req, res) => {
   );
   res.json({ ok: true, items: rows });
 });
+
+// ══════════════════════════════════════════════════════════════
+// 🎟️ 电影票根（2026-09-04）
+//
+// 糖糖：「看完电影后共同看过的电影会生成一张票根」。
+//
+// 流程：一场看完（play_state=ended）→ 前端弹窗问她这是什么类型 →
+// 选「电影」就填片名和影评 → 这儿去维基拉元信息 → 存一张票根。
+//
+// ⚠️ **只有电影出票**（她定的）。其余类型只记 kind，不生成票根，
+// 但也要记下来 —— 记了才知道「这场问过了」，不会每次打开都再弹一次。
+// ══════════════════════════════════════════════════════════════
+
+const TICKET_KINDS = ["movie", "tv", "anime", "variety"];
+
+//: 看够这么久才问她「这是什么」。点开两分钟就关的不算一场。
+//: ⚠️ 允许环境变量覆盖**只是为了能测** —— 测试造的场次
+//: 开始和结束只差几毫秒，不调低就永远测不到那条流程。线上不要设。
+const TICKET_MIN_MINUTES = Number(process.env.TICKET_MIN_MINUTES ?? 10);
+
+/** 还没问过「这是什么」的、已经看完的场次。前端据此决定弹不弹。 */
+app.get("/api/tickets/pending", (req, res) => {
+  //: 只看**真看完**的（ended），而且至少看了 10 分钟 ——
+  //: 点开两分钟就关的不算一场，弹窗问她纯属打扰
+  //: （同 shared_activities.py 里共影那条 ≥10 分钟的线）
+  const rows = dbAll(
+    `SELECT w.id, w.title, w.mode, w.started_at, w.ended_at
+     FROM watch_sessions w
+     LEFT JOIN movie_tickets t ON t.session_id = w.id
+     WHERE w.play_state = 'ended' AND w.ended_at IS NOT NULL
+       AND t.session_id IS NULL
+     ORDER BY w.ended_at DESC LIMIT 5`
+  ).filter(r => longEnough(r.started_at, r.ended_at, TICKET_MIN_MINUTES));
+  res.json({ ok: true, items: rows });
+});
+
+/** 生成一张票根（或只登记类型）。 */
+app.post("/api/tickets", async (req, res) => {
+  const b = req.body || {};
+  const sid = String(b.session_id || "").trim();
+  const kind = TICKET_KINDS.includes(b.kind) ? b.kind : "";
+  if (!sid) return res.status(400).json({ error: "session_id required" });
+  if (!kind) return res.status(400).json({ error: `kind must be one of ${TICKET_KINDS}` });
+
+  const sess = dbAll("SELECT * FROM watch_sessions WHERE id=?", [sid])[0];
+  if (!sess) return res.status(404).json({ error: "没有这场" });
+
+  //: 她填的片名优先；没填就用共影记的（本地文件是文件名，丑但总比空好）
+  const title = String(b.title || sess.title || "").trim().slice(0, 200);
+  const review = String(b.review || "").trim().slice(0, 2000);
+
+  //: 🔴 **只有电影去拉元信息。** 电视剧/番剧/综艺现在只登记类型，
+  //: 拉了也没地方印，白等一次网络往返
+  let meta = null;
+  if (kind === "movie" && title) {
+    //: 拉不到不是错误 —— lookupMovie 永远 resolve，票根照样出
+    meta = await lookupMovie(title);
+  }
+
+  const from = sess.started_at || null;
+  const to = sess.ended_at || null;
+  const mins = from && to
+    ? Math.max(0, Math.round((new Date(to) - new Date(from)) / 60000)) : 0;
+
+  dbRun(
+    `INSERT OR REPLACE INTO movie_tickets
+     (session_id, kind, title, review, meta_json,
+      watched_from, watched_to, watched_minutes, created_at)
+     VALUES (?,?,?,?,?,?,?,?,?)`,
+    [sid, kind, title, review, meta ? JSON.stringify(meta) : null,
+     from, to, mins, new Date().toISOString()]
+  );
+
+  res.json({ ok: true, ticket: readTicket(sid) });
+});
+
+/** 票根列表。**只回电影** —— 其余类型没有票根可看。 */
+app.get("/api/tickets", (req, res) => {
+  const limit = Math.min(parseInt(req.query.limit) || 50, 200);
+  const rows = dbAll(
+    `SELECT session_id FROM movie_tickets WHERE kind='movie'
+     ORDER BY watched_to DESC LIMIT ?`, [limit]
+  );
+  res.json({ ok: true, items: rows.map(r => readTicket(r.session_id)) });
+});
+
+/** 一张票根的完整形态（meta_json 解开）。 */
+function readTicket(sid) {
+  const t = dbAll("SELECT * FROM movie_tickets WHERE session_id=?", [sid])[0];
+  if (!t) return null;
+  let meta = null;
+  try { meta = t.meta_json ? JSON.parse(t.meta_json) : null; } catch { /* 存坏了就当没有 */ }
+  return {
+    session_id: t.session_id,
+    kind: t.kind,
+    title: t.title,
+    review: t.review,
+    meta,
+    watched_from: t.watched_from,
+    watched_to: t.watched_to,
+    watched_minutes: t.watched_minutes,
+    created_at: t.created_at,
+  };
+}
 
 // 追过了，标记一下（今天不再重复追）。Core 追完调它。
 app.post("/api/todo/fired", (req, res) => {

@@ -55,6 +55,9 @@ export async function startBridge() {
       // 线上是 90 秒（server.js 的 WATCH_STALE_MS）
       WATCH_STALE_MS: "1000",
       FRONTEND_DIST: distDir,
+      //: 票根门槛压到 0 —— 测试造的场次开始和结束只差几毫秒。
+      //: 门槛本身由 `longEnough()` 的单测守着（lib/movie-meta.js）
+      TICKET_MIN_MINUTES: "0",
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
