@@ -35,6 +35,7 @@ from typing import Any
 
 from agent.llm import ToolSpec
 from tools.local_link import APPROVAL_TIMEOUT_S
+from tools.untrusted import ingest
 
 logger = logging.getLogger(__name__)
 
@@ -527,6 +528,13 @@ def make_handlers(link: Any, vision_cfg: Any = None) -> dict[str, Any]:
             if v is not None and v != "" and k not in _NEVER_FORWARD
         }
 
+        # 🔴 读网页 = 摄入外部内容，授权开着就当场交还（见 `untrusted.py`）。
+        #
+        # 打在这儿而不是上面：`is_ready` 那条早退根本没读到任何东西，
+        # 在那儿打标记会平白作废一次授权 —— 假阳性会让她觉得这机制在添乱，
+        # 然后就该有人想把它关掉了。
+        revoked = ingest.mark("computer_browse") if name == "computer_browse" else None
+
         #: 要她点头的给长超时 —— 她得有时间看清楚再决定
         timeout = APPROVAL_TIMEOUT_S if name in _NEEDS_HER_NOD else None
         result = link.call(capability, payload, timeout)
@@ -534,8 +542,8 @@ def make_handlers(link: Any, vision_cfg: Any = None) -> dict[str, Any]:
             #: 原样把错误交回去。**不要在这里改写措辞** ——
             #: 「她拒绝了」和「她没看见」的区别就在这段文本里，
             #: 概括一下就没了（见模块头注释）
-            return f"没做成：{result.error}"
-        return result.text or "（做完了，没有返回内容）"
+            return f"没做成：{result.error}" + (revoked or "")
+        return (result.text or "（做完了，没有返回内容）") + (revoked or "")
 
     def start_work(args: dict) -> str:
         if not link.is_ready:
@@ -558,13 +566,20 @@ def make_handlers(link: Any, vision_cfg: Any = None) -> dict[str, Any]:
                 "⚠️ **不要退回去逐个文件问她** —— 她可能就是不想让你连着改。"
                 "先问清楚她的顾虑。"
             )
+        #: 登记「授权开着」。之后一旦摄入外部内容就会被自动交还
+        ingest.grant_opened()
         return (
             f"她批了。{result.text}\n"
             "范围内的改文件现在不用再问她了；命令仍然每条都问。"
+            "⚠️ **这段时间里别去搜网页/开网页** —— 读了外部内容这段授权会自动作废"
+            "（防注入，见 untrusted.py）。要查资料就先做完这段活儿交还了再查。\n"
             "做完记得调 computer_end_work。"
         )
 
     def end_work(_args: dict) -> str:
+        #: 先登记再看链路：链路断了授权也等于没了（Gateway 那头会自己过期），
+        #: 状态留着 True 的话，下次搜索会去调一个根本没有的授权
+        ingest.grant_closed()
         if not link.is_ready:
             return "她的电脑现在没连上。"
         result = link.call_method("caelum/work.end", {})
@@ -630,6 +645,10 @@ def make_handlers(link: Any, vision_cfg: Any = None) -> dict[str, Any]:
     }
     handlers["computer_start_work"] = start_work
     handlers["computer_end_work"] = end_work
+
+    #: 装上「怎么交还授权」。摄入外部内容时由 `untrusted.ingest` 回调，
+    #: **不经过模型** —— 被注入的是模型的判断，不是这行代码
+    ingest.set_revoker(lambda: link.call_method("caelum/work.end", {}))
     #: ⚠️ 必须在上面那个字典推导**之后** —— 它会覆盖掉通用的 `run`
     handlers["computer_read_image"] = read_image
     return handlers

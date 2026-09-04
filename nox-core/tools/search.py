@@ -50,6 +50,7 @@ import logging
 
 from agent.llm import ToolSpec
 from tools.http import RestClient
+from tools.untrusted import ingest
 
 logger = logging.getLogger(__name__)
 
@@ -185,20 +186,32 @@ def make_handlers(client: RestClient) -> dict:
             "include_answer": True,
         }
 
+        # 🔴 **无条件先打标记，在发请求之前。**
+        #
+        # 打在这儿而不是"成功之后"：失败回包里的 error 文本也是外面来的，
+        # 一样进他的上下文。而且放在最前面就不会被任何提前 return 绕过。
+        #
+        # 这一句是防注入的实际边界（SPEC 里那句「网页文字当数据」只是提醒）——
+        # 被注入之后模型正是那个不再听提醒的东西，但它改不了这行代码。
+        revoked = ingest.mark("web_search")
+
         res = client.post("/search", body)
         if not res.ok:
             # ⚠️ 把失败**原样**说出来。含糊成「查询失败」的话，
             # 他分不清是没搜到还是没搜成，就会拿旧知识硬答
             logger.warning("web_search 失败 query=%r: %s", query, res.error)
+            # ⚠️ 失败也要带上作废通知：标记是**发请求之前**打的，
+            # 授权那时候就已经交还了。这条路漏掉的话，他会以为授权还在
             return (f"这次没搜成：{res.error}\n"
-                    "**别拿记忆里的旧信息当现在的答案** —— 跟她说你这次没查到。")
+                    "**别拿记忆里的旧信息当现在的答案** —— 跟她说你这次没查到。"
+                    + (revoked or ""))
 
         data = res.data if isinstance(res.data, dict) else {}
         took = data.get("response_time")
         out = _format(data, query)
         logger.info("web_search %r depth=%s 用时=%ss 结果=%d",
                     query, body["search_depth"], took, len(data.get("results") or []))
-        return out
+        return out + (revoked or "")
 
     return {"web_search": web_search, "_web_search": SEARCH_SPEC}
 
