@@ -53,6 +53,13 @@ from tools import room as room_tools
 from attention.speaker import build_speaker
 from attention.waker import build_waker
 from attention.gate import DailyGate
+#: 哪些 kind 是**关于他自己**的，不该混进「他在惦记你什么」那句话。
+#:
+#: ⚠️ 加新的自指情绪时记得往这儿加一条 —— 漏了的表现是它会跑进
+#: 手机端那行 `Thinking about ...`，和"你的睡眠"拼在一起，
+#: 语气对不上（2026-09-04 加 curiosity 时就是这么发现的）。
+_SELF_KINDS = frozenset({"curiosity"})
+
 from attention.sources.presence import PresenceSource
 from attention.sources.shared_activities import SharedActivitiesSource
 from attention.sources.thinking import ThinkingSource
@@ -1005,7 +1012,22 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
                 # `nox-app/frontend/src/components/NoxStatus.jsx:38` 直接读它，
                 # 改成对象会让她手机上那一栏当场空掉。
                 # 要强度的走下面那个 `attentions`
-                "cares": [a["subject"] for a in snap.get("attentions", [])],
+                #
+                # 🔴 **只放关于她的**（2026-09-04）。
+                #
+                # 加 curiosity 那天出的事：话题池抓来的新闻标题（每条 40 字）
+                # 也进了这个列表，手机端那行 `Thinking about ${cares.join(" & ")}`
+                # 当场炸成一大坨，而且读起来是
+                # 「Thinking about your sleep & 前端圈沸腾！Claude造出15KB引擎」——
+                # **前半句是惦记她，后半句是他刷到的新闻，两种语气焊在一句里。**
+                #
+                # 分流按 `kind`，不靠前端猜字符串。他自己的那些走下面 `curious`
+                "cares": [a["subject"] for a in snap.get("attentions", [])
+                          if a.get("kind") not in _SELF_KINDS],
+                # 他自己好奇的东西（2026-09-04）。**和 cares 是两种语气**，
+                # 前端该分开摆：cares 进那句一眼可见的话，这个进展开面板
+                "curious": [a["subject"] for a in snap.get("attentions", [])
+                            if a.get("kind") in _SELF_KINDS],
                 # 🔴 带强度的完整形态（2026-08-29）。
                 #
                 # 在这之前这里只吐 subject，`strength` 和 `since` 在出门那一刻
