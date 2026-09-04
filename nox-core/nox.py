@@ -21,7 +21,8 @@ from context.base import Turn
 from context.timeline import humanize
 from context.providers import (
     HealthProvider, HomeProvider, LocationProvider, MemoryProvider,
-    MoodProvider, MusicProvider, TimeProvider, TodoProvider, WeatherProvider,
+    MoodProvider, MusicProvider, ResonanceProvider, TimeProvider, TodoProvider,
+    WeatherProvider,
 )
 from memory import tools as memory_tools
 from memory.archiver import ArchiveResult, Archiver
@@ -270,6 +271,13 @@ class Nox:
         self.context = ContextProviderRegistry()
         self.context.register(MoodProvider(self.mood))
         self.context.register(TimeProvider())
+        # 他自己的感觉。**在这个 Provider 之前，Drive 从来没进过他的上下文** ——
+        # 算出来只进糖糖的面板，他本人感觉不到（2026-09-04 发现）。
+        #
+        # 传取值函数：attention 在 `api/server.py` 的 `_build_attention`
+        # 里才造出来，那时候这里早注册完了（同上面 HealthProvider 的 world_ref）
+        self.context.register(ResonanceProvider(
+            attention_ref=lambda: getattr(self, "attention", None)))
         # 注册但**不进每轮名单**（见 _dynamic）。它一次检索约 7 秒，
         # 而且每轮塞不同记忆会让 dynamic_system 每轮都变，
         # 缓存命中率从 98.9% 掉到 62.5%、每轮成本 ×12。

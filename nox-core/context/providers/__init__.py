@@ -7,6 +7,8 @@
   Phase 4  weather（复用 xiaozhi 那把和风 key）
   Phase 5  activity  ← music 在这（2026-08-11 接的，「她现在在听什么」）
   Phase 6  location（**先定数据来源再动手**，现在全服务器没有任何位置数据源）
+  ——        resonance（2026-09-04 补，让他感觉得到自己的情绪。
+            在这之前 Drive 只进她的面板，从不进他的上下文）
 """
 
 from context.providers.health import HealthProvider
@@ -15,10 +17,11 @@ from context.providers.location import LocationProvider
 from context.providers.memory import MemoryProvider
 from context.providers.mood import MoodProvider
 from context.providers.music import MusicProvider
+from context.providers.resonance import ResonanceProvider
 from context.providers.time import TimeProvider
 from context.providers.todo import TodoProvider
 from context.providers.weather import WeatherProvider
 
 __all__ = ["HealthProvider", "HomeProvider", "LocationProvider", "MemoryProvider",
-           "MoodProvider", "MusicProvider", "TimeProvider", "TodoProvider",
+           "MoodProvider", "MusicProvider", "ResonanceProvider", "TimeProvider", "TodoProvider",
            "WeatherProvider"]

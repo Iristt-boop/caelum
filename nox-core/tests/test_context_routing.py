@@ -4,6 +4,13 @@
   多加载一个 = 几百毫秒 + 几十 token；少加载一个 = 他答不上来。
   所以宁可偶尔多拉，但**最小集必须真的小** ——
   闲聊每轮多打一次 ha-mcp 和 health-mcp 是纯浪费。
+
+⚠️ 判据是「**要不要打外部调用**」，不是「名单有几个」。
+2026-09-04 加 `resonance` 进最小集时对过这条：它和 time / mood 一样是
+纯内存计算、零外部调用，所以进得来。名单会长，那条线不动。
+
+所以下面几条不再钉死列表，改成断言 `MINIMAL` 这个常量 ——
+以后再加本地 Provider 只改一处，而"最小集里不许有打网络的"另有测试守。
 """
 
 from __future__ import annotations
@@ -17,10 +24,20 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from router.intent import classify, classify_context  # noqa: E402
 
+#: 最小集：全是本地计算，零外部调用。
+#:   time       算时间
+#:   mood       她的情绪（本轮文本 + 内存状态）
+#:   resonance  他自己的情绪（2026-09-04 加，纯内存读 Registry）
+MINIMAL = ["time", "mood", "resonance"]
+
+#: 这几个要打外部（MCP / HTTP），**永远不许进最小集**
+EXTERNAL = {"home", "health", "weather", "todo", "location", "music", "memory"}
+
+
 
 def test_default_is_the_minimal_set():
     """普通聊天只有 time + mood，两个都是本地计算，零外部调用。"""
-    assert classify_context("今天做了个梦挺奇怪的") == ["time", "mood"]
+    assert classify_context("今天做了个梦挺奇怪的") == MINIMAL
 
 
 def test_light_path_forces_minimal():
@@ -29,8 +46,8 @@ def test_light_path_forces_minimal():
     注意「早上好」本身命中了健康触发词（问候常带着问身体），
     但它走轻量路径，必须被强制压回最小集。
     """
-    assert classify_context("早上好", light=True) == ["time", "mood"]
-    assert classify_context("开空调", light=True) == ["time", "mood"]
+    assert classify_context("早上好", light=True) == MINIMAL
+    assert classify_context("开空调", light=True) == MINIMAL
 
 
 @pytest.mark.parametrize("text", [
@@ -76,7 +93,7 @@ def test_unrelated_talk_pulls_nothing_extra():
     """闲聊不该把三个外部数据源都惊动一遍。"""
     for text in ["《底特律》那个结局你怎么看", "帮我改一下这段代码", "想你了"]:
         names = classify_context(text)
-        assert names == ["time", "mood"], text
+        assert names == MINIMAL, text
 
 
 def test_can_pull_several():
@@ -109,18 +126,18 @@ def test_order_is_stable():
     """输出顺序稳定 —— 顺序变了 dynamic_system 就变，白掉一次缓存。"""
     a = classify_context("把灯关了，我昨晚没睡好")
     b = classify_context("把灯关了，我昨晚没睡好")
-    assert a == b == ["time", "mood", "home", "health"]
+    assert a == b == MINIMAL + ["home", "health"]
 
     # 全命中时的顺序
     assert classify_context("外面冷吗，我没睡好，把电热毯开上，今天还有什么安排") == \
-        ["time", "mood", "home", "health", "weather", "todo"]
+        MINIMAL + ["home", "health", "weather", "todo"]
 
 
 def test_greeting_is_light_so_stays_minimal():
     """端到端串一遍：问候 → 轻量路径 → 最小集。"""
     d = classify("早安")
     assert d.light
-    assert classify_context("早安", light=d.light) == ["time", "mood"]
+    assert classify_context("早安", light=d.light) == MINIMAL
 
 
 def test_real_home_request_is_full_path_and_pulls_home():
@@ -132,3 +149,14 @@ def test_real_home_request_is_full_path_and_pulls_home():
 
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))
+
+
+def test_最小集里不许有打网络的():
+    """🔴 这条才是真正的那条线。
+
+    上面几条钉的是"名单长什么样"，会随着加本地 Provider 而变；
+    **这条钉的是判据本身** —— 轻量路径的意义就是快，
+    混进一个要打 MCP 的，那条路就白设了。
+    """
+    for text in ["早上好", "开空调", "我没睡好", "外面冷吗"]:
+        assert not (set(classify_context(text, light=True)) & EXTERNAL), text
