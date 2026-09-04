@@ -31,6 +31,7 @@ import httpx
 
 import director
 import observer
+import vision
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, FileResponse
@@ -303,6 +304,42 @@ FRAME_DIR = "/tmp/watching-frames"
 VISION_MODEL = "deepseek-v4-flash-vision-exp"
 VISION_BASE = "https://api.deepseek.com/v1"
 
+#: 眼睛用谁。`gemini`（默认）= 看**一段**，见 vision.py；`deepseek` = 看**一帧**，
+#: 就是下面那套老的。
+#:
+#: ⚠️ **Gemini 出错时不偷偷退回 DeepSeek。** 2026-09-04 起在跑「一个月按量付费
+#: 到底花多少」的实测，静默兜底会让账本少记而她以为那就是全部开销。
+#: 要换回老路子就把这个环境变量显式改掉。
+VISION_BACKEND = os.environ.get("WATCH_VISION_BACKEND", "gemini")
+
+_warned_no_gemini = False
+
+
+def _backend() -> str:
+    """这一刻实际用哪个后端。
+
+    ⚠️ **配了 gemini 但没有 key 时留在 deepseek，不要让他变瞎。**
+    代码先上线、key 后补是常态（2026-09-04 就是这个顺序）——
+    这中间的窗口里共影得照常能看，key 一落地下次调用自动切过去，
+    不用改代码也不用重启。
+
+    ⚠️ 这**只在「压根没配 key」时兜底**。key 配了之后 Gemini 报错就是报错，
+    不偷偷退回 DeepSeek —— 那会让账本少记，而她正拿这本账估一个月的开销。
+    """
+    global _warned_no_gemini
+    if VISION_BACKEND != "gemini":
+        return VISION_BACKEND
+    if vision.key():
+        return "gemini"
+    if not _warned_no_gemini:
+        need = ("OPENROUTER_API_KEY" if vision.PROVIDER == "openrouter"
+                else "GEMINI_API_KEY")
+        logger.warning("WATCH_VISION_BACKEND=gemini（provider=%s）但没有 %s，"
+                       "先留在 deepseek。往 /root/nox-core/.env 里加 %s= "
+                       "就会自动切过去", vision.PROVIDER, need, need)
+        _warned_no_gemini = True
+    return "deepseek"
+
 _VISION_PROMPT = (
     "你是另一个 AI 的眼睛。把这张电影画面如实、具体地讲清楚，让一个看不见它的人"
     "能凭你的描述接着聊下去。\n"
@@ -416,6 +453,33 @@ def _describe_frame(frame_path: str) -> tuple[str | None, str]:
         return None, f"看图失败：{type(exc).__name__}"
 
 
+def _look_at(sid: str, t: float) -> tuple[str | None, str, bool]:
+    """让他看 T 时刻。返回 `(描述, 说不出来的原因, 有没有配图)`。
+
+    「问这一幕」和「主动点评」共用这条 —— 两边都要花钱，
+    走同一条才保证记在同一本账上（`/api/vision/usage`）。
+    """
+    url = _fresh_direct_url(sid)
+    if _backend() != "gemini":
+        path = _extract_frame(url, t, sid)
+        if not path:
+            return None, "这一帧没抽出来", False
+        desc, note = _describe_frame(path)
+        return desc, note, True
+
+    # 看一段。截出来的 mp4 顺手抠一张图给前端显示 ——
+    # 不为了那张图再去网上拉一次，直链多拉一次就多一次过期的机会
+    src = sessions[sid].get("source_url") or ""
+    clip = vision.cut_clip(url, t, sid, _referer(src))
+    if not clip:
+        return None, "这一段没截出来", False
+    os.makedirs(FRAME_DIR, exist_ok=True)
+    still = os.path.join(FRAME_DIR, f"{sid}_{int(t)}.jpg")
+    has_still = vision.still_from_clip(clip, still)
+    desc, note = vision.describe_clip_file(clip)
+    return desc, note, has_still
+
+
 @app.get("/api/frame/{sid}")
 def frame(sid: str, t: float = 0):
     """问这一幕的视觉证据：抽 T 时刻的帧 + vision 描述。
@@ -429,12 +493,8 @@ def frame(sid: str, t: float = 0):
     """
     if sid not in sessions:
         raise HTTPException(404, "session 不存在")
-    url = _fresh_direct_url(sid)
-    path = _extract_frame(url, t, sid)
-    if not path:
-        return {"frame_url": None, "description": None, "note": "这一帧没抽出来"}
-    desc, note = _describe_frame(path)
-    return {"frame_url": f"/api/framefile/{sid}/{int(t)}",
+    desc, note, has_still = _look_at(sid, t)
+    return {"frame_url": (f"/api/framefile/{sid}/{int(t)}" if has_still else None),
             "description": desc, "note": note}
 
 
@@ -466,7 +526,13 @@ def vision_frame(body: dict):
         raise HTTPException(400, f"这不是一张能解的图：{exc}") from exc
 
     try:
-        desc, note = _describe_frame(path)
+        # 本地片子这条路画面是她浏览器 canvas 抓的**一帧**，没有片段可看 ——
+        # 要看一段得前端先录一小截再传，那是另一件事。这儿只换后端，
+        # 让两条路的花销记在同一本账上
+        if _backend() == "gemini":
+            desc, note = vision.describe_image(path)
+        else:
+            desc, note = _describe_frame(path)
         return {"description": desc, "note": note}
     finally:
         # 本地视频的帧**不留** —— 它是她硬盘里的片子，没有理由在服务器上过夜
@@ -474,6 +540,17 @@ def vision_frame(body: dict):
             os.remove(path)
         except OSError:
             pass
+
+
+@app.get("/api/vision/usage")
+def vision_usage(since: str = ""):
+    """这段时间看电影花了多少。`?since=2026-09` 按月，留空是全部。
+
+    2026-09-04 起跑按量付费实测用的。`unpriced` 不是 0 就说明有几次
+    **没算出钱**（不是没花钱）—— 总额是偏低的，去账本看 `cost_note`。
+    """
+    return {"backend": _backend(), "model": vision.GEMINI_MODEL,
+            **vision.summary(since)}
 
 
 @app.get("/api/framefile/{sid}/{ts}")
@@ -867,13 +944,9 @@ def director_tick(sid: str, body: dict):
     # 便宜的那层说了「何时」，现在轮到贵的那层说「什么」
     frame_desc, frame_note = None, ""
     try:
-        path = _extract_frame(_fresh_direct_url(sid), d.at_ms / 1000.0, sid)
-        if path:
-            frame_desc, frame_note = _describe_frame(path)
-        else:
-            frame_note = "这一帧没抽出来"
+        frame_desc, frame_note, _ = _look_at(sid, d.at_ms / 1000.0)
     except Exception as exc:  # noqa: BLE001
-        logger.warning("主动点评取帧失败 %s: %s", sid, exc)
+        logger.warning("主动点评取画面失败 %s: %s", sid, exc)
         frame_note = f"取画面失败：{type(exc).__name__}"
 
     out["evidence"] = {
