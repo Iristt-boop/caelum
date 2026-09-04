@@ -3,14 +3,20 @@
   "configurations": [
     {
       "name": "caelum-os-ui",
-      "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev", "--prefix", "nox-app/caelum-os-ui"],
+      "runtimeExecutable": "C:\\Users\\14372\\.workbuddy\\binaries\\node\\versions\\22.22.2-2\\node.exe",
+      "runtimeArgs": [
+        "nox-app/caelum-os-ui/node_modules/vite/bin/vite.js",
+        "nox-app/caelum-os-ui"
+      ],
       "port": 5273
     },
     {
       "name": "caelum-app",
-      "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev", "--prefix", "nox-app/frontend"],
+      "runtimeExecutable": "C:\\Users\\14372\\.workbuddy\\binaries\\node\\versions\\22.22.2-2\\node.exe",
+      "runtimeArgs": [
+        "nox-app/frontend/node_modules/vite/bin/vite.js",
+        "nox-app/frontend"
+      ],
       "port": 5173
     }
   ]
