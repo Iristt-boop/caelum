@@ -6488,8 +6488,12 @@ Care 的 Dream 源只停在 `care/signal.py:69` 的注释里，无 cron/timer，
 
 - VPS `/root/ombre-brain` = 正典（有完整部署历史）；本地 OB 仓已重置到 `vps/master` 镜像线
   （旧本地线是浅克隆、根属已被强推的历史，已弃）；流程 = VPS 提交 → 本地 `git fetch vps` → 推 GitHub
-- **⚠️ 数据出库**：buckets/（记忆数据）从代码仓移出（5ff4193），走每晚加密备份。**历史提交里
-  仍含 8-09 基线快照起的记忆旧版**——推 GitHub 前必须决定：A 全量推（隐私边界=私有仓）/
-  B filter-branch 洗掉历史里的 buckets 再推（推荐）/ C 只留 VPS+本地镜像不推 GitHub
-- GitHub `Iristt-boop/Claude`：main=「done: 工作日志」线（114+ commits）尚未处置；
-  `deployed` 分支=09-05 代码快照（干净无数据，可删）
+- **数据出库 + B 方案已执行**（糖糖拍板）：buckets/（记忆数据）从代码仓移出（96bd22f），
+  走每晚加密备份。**全历史 filter-repo 重写**：buckets/、含真 key 的 config.yaml 与
+  ombre-brain.service（key 全部 REDACTED）从每一个历史提交剥除，重写前后 bundle 备份
+  （/root/backups/ob-pre-rewrite-20260905.bundle，留在 VPS）。重写在克隆里做、
+  `git reset`（mixed）拉回正典仓——工作区记忆文件全程未碰（246 条 .md 前后相等），
+  旧对象已 gc 清除。全历史密钥复扫为空
+- GitHub `Iristt-boop/Claude` 收束：`main` = 正典代码线（96bd22f，干净）；
+  `worklog` 分支 = 原「done: 工作日志」线（114+ commits，完整保留）；`deployed` 临时快照已删。
+  此后流向：VPS 提交 → 本地 `git fetch vps` → 推 GitHub main
