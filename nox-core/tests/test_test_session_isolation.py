@@ -170,6 +170,124 @@ def test_real_session_still_produces_event(captured):
     assert chat_events[0].payload["session_id"] == "s-real"
 
 
+# ------------------------------------------------------------ 理解层也在闸门内
+#
+# 🔴 理解层（2026-09-05）会写 Registry，所以它必须在同一道闸门之内（R6）。
+# 它比 ConversationEvent 更容易漏：那条是同步的、就在闸门下面几行；
+# 这条在**后台线程**里，看代码时很容易以为"反正是异步的，不算副作用"。
+
+
+class _FakeAdapter:
+    """假的便宜模型：永远判出一条「毕设」。"""
+
+    def __init__(self):
+        self.calls = 0
+
+    def complete(self, messages, tools, **kw):
+        import json
+        from agent.llm import Turn, Usage
+        self.calls += 1
+        return Turn(stop_reason="end_turn", usage=Usage(), text=json.dumps({
+            "valence": "distress", "anchor": "毕设", "topic": "工作",
+            "literal": "她说不想做了", "meaning": "觉得继续投入没有意义",
+            "intensity": 0.6, "confidence": 0.9,
+        }, ensure_ascii=False))
+
+
+class _Inline:
+    """把后台线程改成当场跑完，让断言不依赖时序。
+
+    ⚠️ 只替换 `api.server` 模块里的 `threading` —— `_maybe_compact_async`
+    是函数内 `import threading`，拿到的还是真的那个，不受影响。
+    """
+
+    class Thread:
+        def __init__(self, target=None, daemon=False, **kw):
+            self.target = target
+
+        def start(self):
+            self.target()
+
+
+@pytest.fixture
+def appraising(monkeypatch, tmp_path):
+    """理解层开到 on + 配好便宜模型，剩下的只看闸门拦不拦。"""
+    from fastapi.testclient import TestClient
+    from attention.engine import AttentionEngine
+    from api import server as server_mod
+    from api.server import create_app
+    from data.store import Store
+
+    monkeypatch.setenv("NOX_ATTENTION", "1")
+    monkeypatch.setenv("NOX_LLM_APPRAISAL", "on")
+    monkeypatch.delenv("NOX_ATTENTION_LIVE", raising=False)
+    monkeypatch.setattr(server_mod, "threading", _Inline)
+
+    events: list = []
+    real = AttentionEngine.handle
+
+    def spy(self, event, now=None):
+        events.append(event)
+        return real(self, event, now)
+
+    monkeypatch.setattr(AttentionEngine, "handle", spy)
+
+    adapter = _FakeAdapter()
+    nox = ChatNox(tmp_path / "sessions.db")
+    nox.router = type("R", (), {"light_adapter": adapter})()
+
+    store = Store(tmp_path / "sessions.db")
+    client = TestClient(create_app(nox, store))
+    yield client, events, adapter
+    store.close()
+
+
+def test_test_session_never_reaches_the_appraiser(appraising):
+    """🔴 闸门要拦在**调模型之前**，不是拦在写库之前。
+
+    拦在写库之前的话，跑一遍测试会话就白花一次 LLM 的钱，
+    而且日志里会出现一条根本不该存在的理解。
+    """
+    client, events, adapter = appraising
+    r = client.post("/chat", json={"text": "我不想干了", "session_id": "test-1"})
+    assert r.status_code == 200
+    assert adapter.calls == 0, "测试会话不该走到便宜模型"
+    assert [e for e in events if e.type == "appraisal"] == []
+
+
+def test_real_session_does_reach_the_appraiser(appraising):
+    """对照：正常会话该判还是判——闸门不许误伤。"""
+    client, events, adapter = appraising
+    r = client.post("/chat", json={"text": "我不想干了", "session_id": "s-real"})
+    assert r.status_code == 200
+    assert adapter.calls == 1
+    ap = [e for e in events if e.type == "appraisal"]
+    assert len(ap) == 1
+    assert ap[0].payload["appraisal"]["anchor"] == "毕设"
+
+
+def test_shadow_mode_writes_nothing(appraising, monkeypatch):
+    """影子模式：判得出来，但**一个字都不进 Registry**。
+
+    这是转正之前唯一的观察手段——它要是偷偷写了库，
+    "先看一周日志再决定"就成了空话。
+    """
+    client, events, adapter = appraising
+    monkeypatch.setenv("NOX_LLM_APPRAISAL", "shadow")
+    r = client.post("/chat", json={"text": "我不想干了", "session_id": "s-real"})
+    assert r.status_code == 200
+    assert adapter.calls == 1, "影子模式要真的跑，否则观察不到东西"
+    assert [e for e in events if e.type == "appraisal"] == []
+
+
+def test_off_means_the_model_is_never_called(appraising, monkeypatch):
+    """默认关的时候不该有任何额外开销。"""
+    client, events, adapter = appraising
+    monkeypatch.setenv("NOX_LLM_APPRAISAL", "off")
+    client.post("/chat", json={"text": "我不想干了", "session_id": "s-real"})
+    assert adapter.calls == 0
+
+
 # ------------------------------------------------------------ remind_myself 拒纸条
 
 

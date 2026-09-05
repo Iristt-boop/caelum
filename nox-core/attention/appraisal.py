@@ -44,7 +44,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Any, Protocol
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +58,29 @@ SUBJECT = "糖糖说的心情"
 
 #: 用于 avoid_topics / care_topics 检查的话题词。
 TOPIC = "心情"
+
+#: 🔴 **理解层新建锚点的命名空间前缀（2026-09-05）。**
+#:
+#: 上面 `SUBJECT` 那段注释讲了撞名的后果：两条来源写进同一条 Concern，
+#: strength 互相覆盖、evidence 混成一串，事后分不清他在为哪件事担心。
+#:
+#: 规则版只有一个写死的 subject，撞名靠人盯着就够了。
+#: 理解层会**自己造 subject** —— 靠人盯着立刻不成立：
+#: 它哪天推断出一个叫「糖糖的状态」的锚点，就会和 HRV 那条静默合并。
+#:
+#: 所以加一道**物理隔离**：理解层造的 subject 一律带这个前缀，
+#: 和所有感知源（睡眠 / HRV / 位置 / 后悔）的命名空间不可能相交。
+ANCHOR_PREFIX = "她说的："
+
+
+def anchored(anchor: str) -> str:
+    """把一个锚点包成合法的 subject。
+
+    空锚点回退到 `SUBJECT` —— 认不出具体是什么事，那就还是记在
+    「她说的心情」这条大账上，而不是造一个叫「她说的：」的空锚点。
+    """
+    anchor = (anchor or "").strip()
+    return f"{ANCHOR_PREFIX}{anchor}" if anchor else SUBJECT
 
 
 @dataclass(frozen=True)
@@ -80,6 +103,69 @@ class Appraisal:
     #: 她的原话（截断）。summary 要用它 —— Intent 的 reason 直接取 evidence，
     #: 他开口时说的就是基于这句
     quote: str
+
+    # ---------------------------------------------------------- 理解层（2026-09-05）
+    #
+    # 🔴 以下四个字段**全部带默认值**，`RuleAppraiser` 一行都不用改。
+    # 这正是原则 4 那句「以后换 LLM 实现时下游一行都不用动」要兑现的地方 ——
+    # 换实现的成本必须留在实现里，不许外溢成一次契约大改。
+
+    #: 字面说了什么。规则版留空 —— 它本来就只做字面匹配，
+    #: 填一个等于把 cue 抄一遍，没有信息量
+    literal: str = ""
+    #: **可能意味着什么。这就是「主动思考」缺的那一层。**
+    #:
+    #: 「我不想干了」的 literal 是"她说不想干了"，
+    #: meaning 才是"不是字面上不想做，是觉得继续投入没有意义了"。
+    #:
+    #: ⚠️ 它会进 evidence 被 Care Speaker 读到 —— 意味着**他开口时会基于这句**。
+    #: 所以它必须是推断，不能是编造：写不出来就留空，别凑一句像样的
+    meaning: str = ""
+    #: 有多确定。规则版恒为 1.0（关键词命中就是命中，没有"可能命中"）；
+    #: LLM 版低于门槛的一律丢弃 —— 见 `appraisal_llm.MIN_CONFIDENCE`
+    confidence: float = 1.0
+    #: 事件锚点：这件事是**关于什么**的（毕设 / 工作 / 我们 / 身体…）。
+    #:
+    #: 🔴 这是 `subject` 从一个写死的常量变成一件具体的事的关键。
+    #: 规则版留空 —— 它认不出锚点，硬凑只会造出一堆似是而非的 concern
+    #: （模块头「宁可漏，不可错」）
+    anchor: str = ""
+
+    # ------------------------------------------------------------ 跨线程搬运
+    #
+    # ⚠️ LLM Appraisal 在**后台线程**里算完，要经 `ExperienceEvent.payload`
+    # 才能进 Attention。而 payload 按 `events.py` 的约定必须是可序列化的 dict
+    # （它要进日志、要能 to_dict），所以不能把 Appraisal 对象直接塞进去。
+
+    def to_payload(self) -> dict[str, Any]:
+        """摊平成 payload 里的一个 dict。"""
+        return {
+            "subject": self.subject, "topic": self.topic,
+            "valence": self.valence, "intensity": self.intensity,
+            "cue": self.cue, "quote": self.quote,
+            "literal": self.literal, "meaning": self.meaning,
+            "confidence": self.confidence, "anchor": self.anchor,
+        }
+
+    @classmethod
+    def from_payload(cls, d: dict[str, Any]) -> Appraisal:
+        """从 payload 还原。
+
+        缺字段就用默认值 —— 这条路径的输入来自**上一个版本写下的事件**
+        也可能来自别的进程，宁可少几个字段也不要在这里抛。
+        """
+        return cls(
+            subject=str(d.get("subject") or SUBJECT),
+            topic=str(d.get("topic") or TOPIC),
+            valence=str(d.get("valence") or "distress"),
+            intensity=float(d.get("intensity") or 0.0),
+            cue=str(d.get("cue") or ""),
+            quote=str(d.get("quote") or ""),
+            literal=str(d.get("literal") or ""),
+            meaning=str(d.get("meaning") or ""),
+            confidence=float(d.get("confidence") if d.get("confidence") is not None else 1.0),
+            anchor=str(d.get("anchor") or ""),
+        )
 
 
 class Appraiser(Protocol):

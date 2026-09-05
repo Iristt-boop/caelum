@@ -25,10 +25,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from router.intent import classify, classify_context  # noqa: E402
 
 #: 最小集：全是本地计算，零外部调用。
-#:   time       算时间
-#:   mood       她的情绪（本轮文本 + 内存状态）
-#:   resonance  他自己的情绪（2026-09-04 加，纯内存读 Registry）
-MINIMAL = ["time", "mood", "resonance"]
+#:   time           算时间
+#:   mood           她的情绪（本轮文本 + 内存状态）
+#:   resonance      他自己的情绪（2026-09-04 加，纯内存读 Registry）
+#:   understanding  他理解着她的哪几件事（2026-09-05 加，同样纯内存读 Registry）
+MINIMAL = ["time", "mood", "resonance", "understanding"]
 
 #: 这几个要打外部（MCP / HTTP），**永远不许进最小集**
 EXTERNAL = {"home", "health", "weather", "todo", "location", "music", "memory"}
@@ -104,15 +105,59 @@ def test_can_pull_several():
     assert "weather" in names and "home" in names
 
 
-def test_memory_is_never_auto_loaded():
-    """**这条守着决策 7**：记忆是工具不是每轮强塞。
+#: 🔴 memory 2026-09-05 解禁。**这一组替换了原来那条
+#: `test_memory_is_never_auto_loaded`**（它守的是「永远不自动加载」）。
+#:
+#: 改这条测试是有意的：封它的两条理由都失效了 ——
+#: 7 秒 → 650ms（VPS 实测），砸缓存那条被「动态块挪到尾部」修掉了。
+#: 但决策 7 那句「最好轻量、响应快」没过期，所以边界从「永不加载」
+#: 变成「两条件命中其一才加载」，下面几条守的是新边界。
 
-    一次检索约 7 秒，且每轮塞不同记忆会让 dynamic_system 每轮都变、
-    缓存命中率从 98.9% 掉到 62.5%。日常对话走 recall_memory 工具。
+
+@pytest.mark.parametrize("text", [
+    "你还记得我们第一天吗", "上次说的那个", "以前你说过",
+    "那时候你还不会做饭", "我们第一次见面", "去年这时候",
+])
+def test_past_pointing_talk_pulls_memory(text):
+    """她这句话本身就在指向过去 —— 那就该去翻。"""
+    assert "memory" in classify_context(text), text
+
+
+@pytest.mark.parametrize("text", [
+    "开灯", "今天几号", "放首歌", "外面下雨了吗", "随便聊聊", "在吗",
+])
+def test_ordinary_talk_still_never_touches_ob(text):
+    """🔴 memory 是唯一会打外部服务的按需 Provider（约 650ms）。
+
+    「今天几号」为此多等半秒是纯浪费 —— 决策 7 守的就是这个。
     """
-    for text in ["你还记得我们第一天吗", "上次说的那个", "以前你说过",
-                 "开灯", "昨晚睡得怎么样", "随便聊聊"]:
+    assert "memory" not in classify_context(text), text
+
+
+def test_understanding_alone_pulls_memory():
+    """🔴 **主路**：他心里正搁着一件事，就该带着记忆去接她的话。
+
+    这是理解层驱动的那条 —— 同样一句「好累」，他心里有事的时候
+    和没事的时候，值不值得翻记忆是不一样的。
+    """
+    assert "memory" not in classify_context("好累")
+    assert "memory" in classify_context("好累", has_understanding=True)
+
+
+def test_emotion_words_alone_do_not_pull_memory():
+    """⚠️ 情绪词**不该**进 `_NEED_MEMORY`。
+
+    「累」要不要联系过去，取决于他是不是正为她那件事惦记着，
+    不取决于这两个字 —— 那是理解层的判断，不是正则的。
+    """
+    for text in ["好累", "好烦", "心情不好", "难受"]:
         assert "memory" not in classify_context(text), text
+
+
+def test_light_path_never_pulls_memory_even_with_understanding():
+    """轻量路径存在的意义就是快。他心里有事也不能在这条路上花 650ms。"""
+    assert "memory" not in classify_context("早上好", light=True,
+                                            has_understanding=True)
 
 
 def test_always_includes_the_two_locals():

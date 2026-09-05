@@ -32,7 +32,8 @@ import os
 from dataclasses import dataclass
 from datetime import datetime
 
-from attention.appraisal import SUBJECT, Appraiser, RuleAppraiser
+from attention import appraisal_llm
+from attention.appraisal import SUBJECT, Appraisal, Appraiser, RuleAppraiser
 from attention import regret as regret_mod
 from attention.sources import curiosity as curiosity_mod
 from attention.events import ExperienceEvent
@@ -167,6 +168,8 @@ class AttentionEvaluator:
             return self._evaluate_metric(event, now)
         if event.source == "chat" and event.type == "message":
             return self._evaluate_conversation(event)
+        if event.source == appraisal_llm.SOURCE and event.type == appraisal_llm.TYPE:
+            return self._evaluate_appraisal(event)
         if event.source == regret_mod.SOURCE and event.type == regret_mod.TYPE:
             return self._evaluate_regret(event)
         if event.source == curiosity_mod.SOURCE and event.type == curiosity_mod.TYPE:
@@ -294,6 +297,43 @@ class AttentionEvaluator:
         if appraisal is None:
             return _ignore(SUBJECT, "这句话没有需要记挂的信号")
 
+        return self._decide_from_appraisal(appraisal)
+
+    def _evaluate_appraisal(self, event: ExperienceEvent) -> AttentionDecision:
+        """理解层在后台线程里算好的 Appraisal（2026-09-05）。
+
+        ## 为什么要单独一条路
+
+        上面那条是「事件进来 → 我自己 appraise」。理解层做不到那样：
+        它要调 LLM，而 Evaluator 全链路是同步的（`events.py` 那条硬约束），
+        在这里调网络会把 `_turn_ends` 连着 SSE 的收尾一起拖住。
+
+        所以理解层在后台线程里算完，把结果**摊平进 payload** 送回来
+        （`Appraisal.to_payload`）。这条路只负责还原它、然后走**完全同一段**
+        下游逻辑 —— `_decide_from_appraisal` 是共用的。
+
+        原则 4 那句「以后换 LLM 实现时下游一行都不用动」，兑现的就是这一点：
+        规则版和 LLM 版走到同一个函数里，Registry 那边分不出是谁产的。
+        """
+        if not _chat_concern_on():
+            return _ignore(SUBJECT, "对话产生关心这条线关着（NOX_CHAT_CONCERN=0）")
+
+        raw = event.payload.get("appraisal")
+        if not isinstance(raw, dict):
+            #: 防呆：这个事件类型的全部意义就是携带 appraisal。
+            #: 没带就是接线错了，要吵出来
+            return _ignore(SUBJECT, "理解层事件没带 appraisal，接线有问题")
+
+        return self._decide_from_appraisal(Appraisal.from_payload(raw))
+
+    def _decide_from_appraisal(self, appraisal: Appraisal) -> AttentionDecision:
+        """一个 Appraisal（不管谁产的）该变成什么决定。
+
+        ⚠️ 规则版和 LLM 版**共用这一段**。改这里等于同时改两条线 ——
+        这正是想要的：关系加成、avoid 检查、relief 的 weaken、
+        playful/warm 不进 Registry，这些是「怎么对待一个判断」的规矩，
+        和判断是怎么来的无关。
+        """
         if self.relationship.is_avoided(appraisal.topic):
             return _ignore(
                 appraisal.subject,
@@ -332,11 +372,22 @@ class AttentionEvaluator:
 
         # ⚠️ summary 用**她的原话**。Intent 的 reason 直接取最新 evidence，
         # 他开口时说的就是基于这句 —— 写成「她说她累」不如原样留着
+        #
+        # 🔴 理解层给了 meaning 就把它**接在原话后面**，不是替换掉（2026-09-05）。
+        # 替换掉的话，他开口时说的就是一句推断而不是她说过的话 ——
+        # 推断错了她连对照的余地都没有。原话在前、理解在后，
+        # 顺序即可信度：先是她确实说过的，再是他以为的意思。
         summary = f"她说：{appraisal.quote}"
+        if appraisal.meaning:
+            summary = f"{summary}（他理解成：{appraisal.meaning}）"
         reason = (
             f"命中「{appraisal.cue}」，基础强度 {appraisal.intensity:.2f} "
             f"→ {strength:.2f}（{appraisal.topic} 权重 {weight:.1f}）"
         )
+        if appraisal.confidence < 1.0:
+            #: 规则版恒为 1.0，所以这一段只会出现在理解层产的那些上。
+            #: 事后翻账本时要能一眼看出这条是推断来的，而不是词表命中的
+            reason = f"{reason}｜理解层，确信 {appraisal.confidence:.2f}"
 
         logger.info("Attention 决定：%s ← %s", appraisal.subject, reason)
         return AttentionDecision(

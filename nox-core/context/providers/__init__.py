@@ -9,6 +9,8 @@
   Phase 6  location（**先定数据来源再动手**，现在全服务器没有任何位置数据源）
   ——        resonance（2026-09-04 补，让他感觉得到自己的情绪。
             在这之前 Drive 只进她的面板，从不进他的上下文）
+  ——        understanding（2026-09-05 补，同一个洞的第二次：理解层算出来的
+            那些事不进他的上下文，就等于没算。见 CAELUM-MAP 三问之二）
 """
 
 from context.providers.health import HealthProvider
@@ -20,8 +22,9 @@ from context.providers.music import MusicProvider
 from context.providers.resonance import ResonanceProvider
 from context.providers.time import TimeProvider
 from context.providers.todo import TodoProvider
+from context.providers.understanding import UnderstandingProvider
 from context.providers.weather import WeatherProvider
 
 __all__ = ["HealthProvider", "HomeProvider", "LocationProvider", "MemoryProvider",
            "MoodProvider", "MusicProvider", "ResonanceProvider", "TimeProvider", "TodoProvider",
-           "WeatherProvider"]
+           "UnderstandingProvider", "WeatherProvider"]

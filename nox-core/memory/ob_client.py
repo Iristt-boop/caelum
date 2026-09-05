@@ -103,11 +103,28 @@ class OmbreBrain:
         max_tokens: int = 4000,
         domain: str = "",
         importance_min: int = -1,
+        touch: bool = True,
+        drift: bool = True,
     ) -> MemoryResult:
         """浮现记忆。不传 query = 自动浮现，传了 = 关键词检索。
 
         默认 max_results 压到 8（OB 默认 20）—— 每轮对话都要注入 prompt，
         20 条会把上下文撑得很大，而且大部分跟当下这句话无关。
+
+        ## touch / drift：谁在回忆，决定要不要留下痕迹（2026-09-05）
+
+            recall_memory 工具   他主动想起来的  → touch=True   该加强
+            MemoryProvider      被动带出来的    → touch=False  不算
+
+        `touch=True` 会推高 activation_count 并重置衰减，而 OB 的打分里
+        有 `activation^0.3` —— 每轮自动检索都 touch 的话，等于持续给一批
+        记忆续命，旧的永远归不了档，权重模型会被慢慢刷歪。
+
+        `drift` 是 OB 那个「忽然想起来」（命中 <3 条时 40% 概率漂旧桶）。
+        他主动回忆时那是浪漫；每轮自动注入时那是噪声 —— 同一句话问两次
+        会拿到不同的旧记忆，而且它进的是每轮都要付钱的 dynamic 块。
+
+        ⚠️ 两个默认值都是 True，**保持原行为** —— 现有调用方一个都不用改。
         """
         return self._call(
             "breath",
@@ -117,6 +134,8 @@ class OmbreBrain:
                 "max_tokens": max_tokens,
                 "domain": domain,
                 "importance_min": importance_min,
+                "touch": touch,
+                "drift": drift,
             },
         )
 

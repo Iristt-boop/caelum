@@ -20,6 +20,11 @@
   Router 意图分流 → Context 拉模式感知（800 字符预算）→ AgentLoop（80+ 工具）
   Attention 引擎（感知源→Registry→Intent→Scheduler→DailyGate）
   Resonance 六个 Drive（想念/后悔/低落/促狭/躁动/好奇，只读聚合）
+  理解层（她这句话意味着什么）：LLM Appraisal（后台线程，回应后抽取）
+    → 事件锚点「她说的：毕设」进 Registry → UnderstandingProvider 回他的上下文
+    ⚠️ `NOX_LLM_APPRAISAL` 默认 off，shadow 只记日志不写库
+  MemoryProvider（2026-09-05 解禁）：由理解层驱动，两条件命中其一才翻记忆
+    ① 有活跃理解锚点 ② 她这句话在指向过去。走 OB 的 touch=False 只读检索
                                       │ 唯一开口出口
 行动（说话和做事）
   Care Orchestrator → Speaker → bridge /api/push/send（+ CareLedger 记账）
@@ -56,5 +61,9 @@
 - OS UI：Tasks/Skills/Agents/Workflows 及多数 Settings 子页是占位壳（RoomPlaceholder）；caelum-room（像素房间 MCP）未接入 Room 页
 - 手机端 ToolDrawer 三 tab 纯样子；Home widget 墙部分静态
 - Resonance 不参与开口决策（V5）；话题池前端页未接（API 已有）
+- 理解层（2026-09-05 起）P1+P3 已上线：LLM Appraisal + UnderstandingProvider +
+  MemoryProvider 解禁（OB 只读检索）。**理解层默认影子模式**，转正等一周真实日志 ——
+  在那之前记忆的加载条件①（活跃锚点）恒为 False，只有条件②（指向过去的说法）在跑。
+  待做：关系状态可写可落盘 + 她点头的确认界面（P4）
 - 废弃物已归档：root `archive/`（memory/、haven-ombre/）、nox-app `archive/`（一代 backend、render/Dockerfile）
 - 独立小项目（2026-09-05 确认保留，不归档）：`dsh-vscode-layout`（DSH 的 IDE 改造）、`fsr402-*`（传感器硬件实验）、`pixel-beads-generator`（拼豆工具）

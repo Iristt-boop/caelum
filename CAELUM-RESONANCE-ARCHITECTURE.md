@@ -80,13 +80,22 @@ Resonance 层产生的动机**永远不能自己开口**——开口的唯一出
              ┌───────────┴───────────┐
              ↓                       ↓
        Rule Appraisal          LLM Appraisal
-       （现在）                 （以后）
+       （V2 起）                （V4，2026-09-05）
              └───────────┬───────────┘
                          ↓
                     Resonance Core
 ```
 
 以后换 LLM Appraisal 时，**下游架构完全不用动**。
+
+> ✅ **2026-09-05 这条兑现了，代价记在这儿供以后参考。**
+> 加 LLM Appraisal 实际改动：`Appraisal` 加 4 个**带默认值**的字段、
+> Evaluator 把决策段拆成共用的 `_decide_from_appraisal`、加一条事件路由。
+> `RuleAppraiser` 一行没动，它的测试（`test_resonance_v2.py`）一行没改还全过。
+>
+> 唯一一处**没预料到**的：Appraisal 要跨线程搬运（LLM 在后台线程里跑），
+> 而 `events.py` 要求 payload 可序列化 —— 所以补了 `to_payload/from_payload`。
+> 接口先行省掉的是下游，省不掉「新实现自己带来的新约束」。
 
 ---
 
@@ -553,19 +562,66 @@ engine.appraiser    AttributeError  （它挂在 evaluator 上）
 
 ---
 
-### V4：加入真正的事件锚定
+### V4：LLM Appraisal + 事件锚定（🟡 P1 已实现 2026-09-05，影子模式）
+
+原则 4 里那个「以后」到了。糖糖 2026-09-05 的诊断：
+
+> 现在的 Nox 有主动行为（proactive behavior），但缺少主动思考（proactive cognition）。
+> 它能做到「我注意到你今天睡少了」，但做不到「我说『不想干了』，这句话可能不是
+> 字面上的不想做，而是累了、失望了，或者觉得继续投入没有意义」。
 
 ```text
-Drive
+她说的话 + 他的回复
+    ↓  后台线程，utility 模型（attention/appraisal_llm.py）
+Appraisal{anchor:"毕设", meaning:"觉得继续投入没有意义", confidence:0.85}
+    ↓  摊平进 payload，走**和规则版完全同一条**下游
+Evaluator._decide_from_appraisal（规则版和 LLM 版共用）
     ↓
-Concern Entity
+Registry：「她说的：毕设」
     ↓
-Evidence / EventRef
-    ↓
-Resolution
+UnderstandingProvider → 他每轮的 dynamic 块
 ```
 
-（补 `resolution` 字段 + `weaken` 的语义化触发）
+#### 🔴 缺的不是「当轮的理解力」，是「理解留不下来」
+
+想清楚这一点才知道为什么这一层是**后置**的。主模型当轮读得懂那不是字面意思，
+回话也接得住 —— 问题是回完这一句那份理解就蒸发了。第二天她再提，
+他不知道她为什么想放弃；一周后 Care 开口，他只说得出「你最近心情不好」。
+
+所以这一层不是"替他理解"，是**把已经发生的理解抽出来、锚定、存住**。
+后置还白赚一件事：能看到他回了什么、工具查到了什么。
+
+#### 四道闸（一道比一道硬）
+
+| 闸 | 值 | 为什么 |
+|---|---|---|
+| 模式 | 默认 `off`，`shadow` 只记日志 | 判错的代价是他念叨一件她根本没说的事，而她无从知道他为什么这么想 |
+| confidence | ≥ 0.6 | 够不着的**不留痕** —— 留下来就会有人去实现「攒够几次就算数」 |
+| intensity | ≤ 0.62 | 和规则重档持平。不给最可能判错的这一层单独顶到开口阈值的权力 |
+| 锚点归一 | 已有 subject 喂回 prompt | 「毕设」和「毕业设计」分成两条，他就会以为是两件事 |
+
+#### 🔴 subject 撞名这次是**结构性**挡住的
+
+V2 那条注释（subject 不能叫「糖糖的状态」，那个被 HRV 占了）靠人盯着就够，
+因为规则版只有一个写死的 subject。理解层会**自己造 subject** —— 靠人盯着立刻不成立。
+
+所以 `appraisal.anchored()` 给所有新锚点加 `她说的：` 前缀，
+和感知源的命名空间不可能相交。`test_appraisal_llm.py` 里那条
+`test_anchor_can_never_collide_with_a_sensor_subject` 直接喂「糖糖的状态」验它。
+
+#### 消费方（三问之二：谁消费它）
+
+`context/providers/understanding.py`。这是 ResonanceProvider 那个洞的第二次 ——
+只写 Registry 不给他读，就是又一个「算出来了没人看」。
+三条纪律照抄：给档位不给数字 / 只给状态不写台词 / 没有就什么都不说。
+外加它独有的第四条：**告诉他这可能是错的、不要念给她听**。
+
+#### 还没做（P2-P4）
+
+- 转正（等一周影子日志）
+- `resolution` 字段 + `weaken` 的语义化触发
+- 关系状态可写可落盘 + 她点头的确认界面
+- MemoryProvider 由理解层驱动解禁
 
 ### V5：主动内心活动
 

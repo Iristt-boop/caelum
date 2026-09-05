@@ -7,7 +7,11 @@
 > 最新交接：**`HANDOFF-2026-08-28.md`**（往前：`08-08` → `08-06` → `08-02` → `07-25`）  
 > ⚠️ **HANDOFF 只记那个窗口做了什么，会过期**；本文档才是现状。  
 > 两者冲突时以本文档为准 —— 08-08 校准就是因为它俩差了 23 个工具。  
-> 最后更新：2026-09-05（**稳定工程 Week1-4 一日连做：系统全景调研 → 备份链+异地演练 →
+> 最后更新：2026-09-05（**Nox 理解层 P1+P3 上线，见第四十四节** ——
+> 意义推断（LLM Appraisal，影子模式）+ 事件锚点 + UnderstandingProvider +
+> MemoryProvider 解禁（OB 加只读检索）。同日修正一处会害人的文档错误：
+> **线上 nox-core 是 Python 3.10.12 不是 3.12**，部署重启前必须先在线上编译；
+> 往前：**稳定工程 Week1-4 一日连做：系统全景调研 → 备份链+异地演练 →
 > /api/health+doctor.sh → 测试会话隔离闸门 → 清扫归档 → CAELUM-MAP+边界哨兵 →
 > OB 检索矩阵化 440 倍 → bridge 换 better-sqlite3 → LOGGING 规范 → Care 周报仪表，
 > 全部见第四十三节**；同日产出 `CAELUM-系统全景调研-2026-09-05.md`（六 agent 实读代码的全景，现状以此为准）；
@@ -268,7 +272,7 @@ noxtang.com 的前端、TTS/STT、共读代理；Nox Core 只负责"想清楚该
 | 数据库 | SQL.js / SQLite | `/data/nox-bridge.db` |
 | 反代 | Caddy v2 | TLS + 多服务路径代理 |
 | 共读 PC 端 | `co-reading-mcp` | 独立子域名 `reading.noxtang.com` |
-| **Nox Core** | Python 3.12 + FastAPI | 独立进程，与 bridge 并存，见第十九节 |
+| **Nox Core** | 本地 Python 3.12 / **线上 3.10.12** + FastAPI | 独立进程，与 bridge 并存，见第十九节。⚠️ 两边版本不同，见下 |
 | Nox Core 依赖 | `anthropic` / `openai` / `mcp` | adapter 延迟导入，只配一家时另一个不加载 |
 | Nox Core 包管理 | `uv` | `uv venv` + `uv pip install -r requirements.txt` |
 | Stack-chan 固件 | ESP-IDF v5.5 | Docker `espressif/idf:release-v5.5` 编译 |
@@ -1500,7 +1504,17 @@ CONFIG_SEND_WAKE_WORD_DATA=y
 一句"操作失败"），模型看到的是一句模糊的自然语言，于是按"对话应该继续"的
 惯性把结果补圆。**Nox Core 的核心目标就是让失败可见。**
 
-代码在 `D:\claude-code\nox-core\`，Python 3.12 + FastAPI，独立于 bridge 运行。
+代码在 `D:\claude-code\nox-core\`，FastAPI，独立于 bridge 运行。
+
+> 🔴 **本地 Python 3.12，线上 `/root/nox-core/.venv` 是 3.10.12**（2026-09-05 实测，
+> 此前本文档两处都写着「3.12」）。本地 1399 个测试全绿**不代表线上起得来** ——
+> 用了 3.11/3.12 才有的语法，表现是重启后服务直接挂掉。
+> 所以 nox-core 部署的规矩多一步，**重启之前先在线上编译一遍**：
+> ```bash
+> ssh root@43.133.211.140 "cd /root/nox-core && .venv/bin/python -m py_compile <刚传的那些文件>"
+> ```
+> 同一个坑 co-watching 那边早就记着了（第十四节：本地 3.12、服务器 3.10.12），
+> 只是没人想到 nox-core 也是。
 
 ### 分层与职责
 
@@ -6497,3 +6511,107 @@ Care 的 Dream 源只停在 `care/signal.py:69` 的注释里，无 cron/timer，
 - GitHub `Iristt-boop/Claude` 收束：`main` = 正典代码线（96bd22f，干净）；
   `worklog` 分支 = 原「done: 工作日志」线（114+ commits，完整保留）；`deployed` 临时快照已删。
   此后流向：VPS 提交 → 本地 `git fetch vps` → 推 GitHub main
+
+## 四十四、Nox 理解层：从「主动行为」到「主动思考」（2026-09-05）
+
+> 糖糖定的题：**现在的 Nox 有主动行为（proactive behavior），缺主动思考（proactive cognition）。**
+> 他能做到「我注意到你今天睡少了」，做不到「她说『不想干了』可能不是字面上不想做，
+> 是累了、失望了、或者觉得继续投入没有意义」。
+> 她画的链路缺中间两层：`话语 → 字面理解 → [意义推断] → [关系状态更新] → 回应`。
+>
+> 分四期。**本次落地 P1（意义推断，影子模式）+ P3（记忆解禁）**，
+> P2（转正）等一周影子日志，P4（关系状态可写 + 确认界面）待做。
+> 详见 `CAELUM-RESONANCE-ARCHITECTURE.md` 的 V4 一节。
+
+### 44.1 缺的不是「当轮的理解力」，是「理解留不下来」
+
+这一点想清楚了才知道为什么这层是**后置**的（回应之后才抽取）。
+
+主模型是前沿模型，她说「我不想干了」，他当轮读得懂那不是字面意思，回话也接得住。
+真正的问题是**回完这一句那份理解就蒸发了**：第二天她再提，他不知道她为什么想放弃；
+一周后 Care 开口，他只说得出「你最近心情不好」，说不出「毕设那事」。
+
+所以这层干的不是"替他理解"，是**把已经发生的理解抽出来、锚定、存住**。
+后置还白赚一件事：能看到他回了什么、工具查到了什么 —— 那往往比她那一句更能说明事情是什么。
+
+### 44.2 P1：LLM Appraisal（`attention/appraisal_llm.py`）
+
+架构早就留好了口子：`appraisal.py` 模块头画着「Rule Appraisal（现在）/ LLM Appraisal（以后）」，
+写着「以后换 LLM 实现时下游一行都不用动」。这次兑现了 —— `RuleAppraiser` 一行没动，
+它的测试（`test_resonance_v2.py`）一行没改还全过。
+
+实际改动只有：`Appraisal` 加 4 个**带默认值**的字段（literal/meaning/confidence/anchor）、
+Evaluator 把决策段拆成规则版和 LLM 版共用的 `_decide_from_appraisal`、加一条事件路由。
+
+**唯一没预料到的**：Appraisal 要跨线程搬运（LLM 在后台线程跑），
+而 `events.py` 要求 payload 可序列化 → 补了 `to_payload/from_payload`。
+接口先行省掉的是下游，省不掉「新实现自己带来的新约束」。
+
+四道闸，一道比一道硬：
+
+| 闸 | 值 | 为什么 |
+|---|---|---|
+| 模式 | `NOX_LLM_APPRAISAL` 默认 off，shadow 只记日志 | 判错 = 他念叨一件她根本没说的事，而她无从知道他为什么这么想 |
+| confidence | ≥ 0.6 | 够不着的**不留痕** —— 留下就会有人去实现「攒够几次就算数」 |
+| intensity | ≤ 0.62 | 和规则重档持平，不给最可能判错的这层顶到开口阈值的权力 |
+| 锚点归一 | 已有 subject 喂回 prompt | 「毕设」和「毕业设计」分两条，他就以为是两件事 |
+
+🔴 **subject 撞名这次是结构性挡住的**。V2 那条注释（不能叫「糖糖的状态」，那个被 HRV 占了）
+靠人盯着就够，因为规则版只有一个写死的 subject。理解层会**自己造 subject**，靠人盯着立刻不成立 ——
+所以 `appraisal.anchored()` 给新锚点一律加 `她说的：` 前缀，和感知源的命名空间不可能相交。
+
+⚠️ **必须开后台线程**：`_turn_ends` 跑在 SSE `done` 帧之前，
+在里面同步调 LLM 会把整条流的收尾拖住（正文早流完了、进度条还在转，而 bridge 靠 done 记账）。
+抄的是同文件 `_maybe_compact_async` 的形状。R6 测试会话闸门要拦在**调模型之前**，不是写库之前。
+
+消费方是 `context/providers/understanding.py`（进 `_ALWAYS`）——
+只写 Registry 不给他读，就是 ResonanceProvider 那个洞的第二次。
+
+### 44.3 P3：MemoryProvider 解禁 —— 封它的两条理由都失效了
+
+| 当初（2026-08 初定） | 现在 |
+|---|---|
+| OB 检索一次约 **7 秒** | **约 650ms**（VPS 241 桶实测热态）|
+| 每轮塞不同记忆 → 缓存 98.9%→62.5%、成本 ×12 | **不成立了** —— 8-26 把动态块挪到尾部，命中 0%→99% |
+
+⚠️ **别照抄「440 倍」那个数**。9-05 矩阵化只优化了向量相似度那一步，而瓶颈早就换人了：
+
+```
+关键词通道（rapidfuzz 四维评分）   340-400 ms   ← 现在的瓶颈
+向量通道（embedding 往返 + 矩阵）  270-310 ms
+脱水（content-hash 缓存命中）      ~1 ms/条
+端到端                             约 650 ms（冷启动首次 1.2-2.4s）
+```
+
+**但仍然不是「每轮都带」**。加载条件由理解层驱动（`classify_context`），二选一命中：
+① 有活跃理解锚点（他心里正搁着事）② `_NEED_MEMORY` 正则（她这句话在指向过去）。
+①是主路：**「要不要翻记忆」该由「他心里有没有事」决定，不由关键词决定** ——
+同样一句「好累」，他心里有事和没事的时候，值不值得翻是不一样的。
+⚠️ 影子模式下①恒为 False，所以转正之前只有②在跑。
+
+**OB 侧加了只读检索**（`breath(touch=False, drift=False)`，OB 仓 66f13fa）：
+`touch()` 会推高 activation_count 并重置衰减，而打分里有 `activation^0.3` ——
+每轮自动检索都 touch 等于持续给一批记忆续命，旧的永远归不了档，**而且不报错**。
+`drift`（命中<3条时 40% 概率漂旧桶）他主动回忆时是「忽然想起来」，
+每轮自动注入时是噪声。分工：`recall_memory` 工具照旧 touch，Provider 不 touch。
+
+### 44.4 解禁才现形的两个 latent bug（雪藏期间不发作）
+
+1. **OB 检索不到时返回的是一句中文**（「未找到相关记忆。」）而不是空串，
+   `split_breath` 没 header 就把整段归到 dynamic → 渲染成「【记起来的】未找到相关记忆。」。
+   修法要分两类：**「没找到」→ 空结果，「挂了」→ 抛出去**让基类退回旧记忆并标 stale
+   （混一起的话，OB 宕机会表现成「他忽然什么都不记得了」，而且悄无声息）。
+2. **OB 的脱水结果是格式化 JSON**，6 条 = **1866 字符**，而动态块总预算 800 ——
+   `registry.render()` 会整段丢掉它、只留一条 warning，表现成「解禁了但他还是想不起来」。
+   Provider 现在只取每条的 `summary` 字段，1866 → **307 字符**。
+   （工具那条路无所谓，模型当工具结果读 JSON 没问题；Provider 是每轮要付钱的上下文。）
+
+两个都是**写好一个月、从来没真跑过**的代码里的洞。教训对齐 CAELUM-MAP 三问之三：
+「配上了 ≠ 用上了」，而没被用上的代码里的 bug，要到用上那天才算数。
+
+### 44.5 线上状态与回滚
+
+- `NOX_LLM_APPRAISAL=shadow` 写在 `/root/nox-core/.env`（第 80 行）
+- 回滚点：`/root/nox-core/*.bak-0905`、`.env.bak-0905`、`/root/ombre-brain/server.py.bak-0905`
+- 三个开关互相独立：理解层关掉不影响记忆解禁，反之亦然
+- 一周后看影子日志：`journalctl -u nox-core | grep '\[理解层·影子\]'`

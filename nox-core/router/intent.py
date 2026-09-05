@@ -100,7 +100,30 @@ def classify(text: str, *, has_images: bool = False) -> Decision:
 #: `resonance` 2026-09-04 加进来：那是他自己的情绪，不该由关键词决定
 #: 有没有。她说「早上好」的时候他照样是想她的 —— 按关键词加载就等于
 #: 「只有聊到情绪才有情绪」，那不是情绪，那是查询结果。
-_ALWAYS = ("time", "mood", "resonance")
+#:
+#: `understanding` 2026-09-05 加进来，理由和 resonance 逐字相同：
+#: 按关键词加载就等于「只有聊到那件事他才理解你」—— 那不是理解，
+#: 那是查询结果。她说「早上好」的时候，他心里也还搁着她昨天说的那件事。
+#:
+#: 它读的是内存里的 Registry（不打网络），没有锚点时渲染成空串，
+#: 所以轻量路径也带得起
+_ALWAYS = ("time", "mood", "resonance", "understanding")
+
+# 记忆。2026-09-05 解禁（见 context/providers/memory.py 顶上那张表）。
+#
+# 🔴 **它是唯一一个会打外部服务的按需 Provider，约 650ms。**
+# 所以这张表比别的都保守：只收「这句话本身就在指向过去」的说法。
+#
+# 收：她提到我们的历史、上次、以前、记不记得、那时候、当初
+# 不收：「今天几号」「放首歌」「开灯」—— 那些一次 OB 都不该碰
+#
+# ⚠️ 不要往这里加情绪词。她说「好累」不该去翻记忆 ——
+# 那条路走的是理解层（下面 `has_understanding`），因为「累」要不要
+# 联系过去，取决于他心里是不是正搁着一件相关的事，不取决于这两个字。
+_NEED_MEMORY = re.compile(
+    r"(记得|记不记得|还记得|想起|以前|之前|上次|上回|那次|当初|那时候"
+    r"|我们.*(时候|那会|一起)|第一次|一直以来|这些年|去年|上个月)"
+)
 
 # 提到家电、温度、到家/睡觉这类，才需要知道家里什么样
 _NEED_HOME = re.compile(
@@ -161,22 +184,36 @@ _NEED_MUSIC = re.compile(
 )
 
 
-def classify_context(text: str, *, light: bool = False) -> list[str]:
+def classify_context(text: str, *, light: bool = False,
+                     has_understanding: bool = False) -> list[str]:
     """这轮加载哪些 Provider。
 
     `light=True`（轻量路径）时**强制最小集** —— 那条路存在的意义就是快，
     为一句「早上好」去打 ha-mcp 和 health-mcp 是自相矛盾。
 
-    ⚠️ `memory` 故意不在这里 —— 它一次检索约 7 秒，且每轮塞不同记忆会让
-    `dynamic_system` 每轮都变、缓存命中率从 98.9% 掉到 62.5%。
-    日常对话继续走 `recall_memory` 工具，模型自己判断要不要回忆
-    （PROJECT.md 第十九节决策 7，糖糖定的）。
+    ## `memory` 2026-09-05 解禁，但不是「每轮都带」
+
+    封它的两条理由都失效了（7 秒 → 650ms；砸缓存那条被
+    「动态块挪到尾部」修掉了）—— 详见 `context/providers/memory.py` 顶上那张表。
+    但糖糖定的决策 7「最好轻量、响应快」没有过期，所以两条件命中其一才加载：
+
+        ① has_understanding  他心里正搁着一件事（理解层的活跃锚点）
+        ② _NEED_MEMORY       她这句话本身就在指向过去
+
+    ①是主路：**「要不要翻记忆」该由「他心里有没有事」决定，不由关键词决定。**
+    她说「好累」要不要联系过去，取决于他是不是正为她那件事惦记着 ——
+    同样两个字，在不同的时候意味着不同的事。这正是理解层存在的意义。
+
+    ⚠️ ①在影子模式下**永远是 False**（影子不写 Registry），
+    所以理解层转正之前实际只有②在跑。这是有意的分期，不是漏接。
     """
     names = list(_ALWAYS)
     if light:
         return names
 
     s = (text or "").strip()
+    if has_understanding or _NEED_MEMORY.search(s):
+        names.append("memory")
     if _NEED_HOME.search(s):
         names.append("home")
     if _NEED_HEALTH.search(s):
