@@ -1,10 +1,9 @@
 """麦当劳官方 MCP（https://mcp.mcd.cn/mcp-servers/mcd-mcp）—— 麦麦的点餐周边。
 
-🔴 **边界（与滴滴同一条）：不接任何下单/写入工具。**
-create-order / party-order-create / mall-create-order / draw-lottery /
-auto-bind-coupons / delivery-create-address 全部**故意不注册** ——
-他可以查门店、翻菜单、算价格、看你的券和订单，但「下单买汉堡」
-必须你自己来。想放开的话改 SERVER_TOOLS 白名单前先跟糖糖说。
+🟡 **边界（2026-09-05 晚糖糖拍板放开动作类）**：下单/抽奖/领券/写地址
+四个动作工具已注册（ACTION_TOOLS），但**全部确认制**——描述里写死了
+「先报价复述、得到她明确的确认才能调」。她明确放开的，但闸门文字不能拆。
+仍不接：party-order-create（团餐下单）、mall-create-order（商城下单）。
 
 鉴权：Bearer Token（open.mcd.cn/mcp 申请，绑定她的账号），
 经 McpClient 的 headers 传入。查询她的券/订单 = 她自己的数据，只读不写。
@@ -29,7 +28,15 @@ SERVER_TOOLS = {
     "mcd_my_coupons": "query-my-coupons",
     "mcd_available_coupons": "available-coupons",
     "mcd_campaign": "campaign-calendar",
+    # ---- 动作类（2026-09-05 晚糖糖放开，全部确认制）----
+    "mcd_create_order": "create-order",
+    "mcd_draw_lottery": "draw-lottery",
+    "mcd_bind_coupons": "auto-bind-coupons",
+    "mcd_create_address": "delivery-create-address",
 }
+
+#: 动作工具清单 —— 描述里必须带「确认」字样，测试盯着
+ACTION_TOOLS = ("mcd_create_order", "mcd_draw_lottery", "mcd_bind_coupons", "mcd_create_address")
 
 
 def _spec(name: str, description: str, params: dict) -> ToolSpec:
@@ -143,7 +150,73 @@ CAMPAIGN = _spec(
     {"type": "object", "properties": {}},
 )
 
-_SPECS = (NEARBY, MENU, MEAL_DETAIL, PRICE, ORDER, ORDERS, MY_COUPONS, AVAILABLE_COUPONS, CAMPAIGN)
+CREATE_ORDER = _spec(
+    "mcd_create_order",
+    "创建麦当劳订单。🔴 **确认制**：调用前必须先用 mcd_price 算出总价，把"
+    "门店、餐品明细、总价完整复述给她，得到她明确的「确认/下单」答复后才能调；"
+    "她没确认就不许调。外送(orderType=2)还需 addressId（mcd 查她的地址拿）。"
+    "创建成功后把订单号和取餐/配送信息告诉她。",
+    {
+        "type": "object",
+        "properties": {
+            "storeCode": {"type": "string", "description": "门店编码"},
+            "orderType": {"type": "integer", "description": "1-到店（含得来速取餐） 2-外送"},
+            "beType": {"type": "integer", "description": "1-到店 2-麦乐送 5-得来速"},
+            "beCode": {"type": "string", "description": "业务编码（外送/得来速必传，门店查询里拿）"},
+            "addressId": {"type": "string", "description": "外送地址 id（orderType=2 必传）"},
+            "items": {
+                "type": "array",
+                "description": "商品列表",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "productCode": {"type": "string", "description": "餐品编码"},
+                        "quantity": {"type": "integer", "description": "数量"},
+                        "couponId": {"type": "string", "description": "优惠券 id，可选"},
+                    },
+                    "required": ["productCode", "quantity"],
+                },
+            },
+        },
+        "required": ["storeCode", "orderType", "beType", "items"],
+    },
+)
+
+DRAW_LOTTERY = _spec(
+    "mcd_draw_lottery",
+    "用积分抽一次麦当劳的奖。🔴 **确认制**：先调 query-lottery-info 把消耗规则"
+    "（扣多少积分/次数、能抽什么）念给她听，她说「抽」才能调。服务端也会校验。",
+    {"type": "object", "properties": {}},
+)
+
+BIND_COUPONS = _spec(
+    "mcd_bind_coupons",
+    "一键领取麦麦省当前所有可领的优惠券。她说「帮我领券」「把券都领了」时用。"
+    "只领券不花钱，领完把券列表简短报给她。",
+    {"type": "object", "properties": {}},
+)
+
+CREATE_ADDRESS = _spec(
+    "mcd_create_address",
+    "新增麦当劳配送地址。🔴 **确认制**：城市/联系人/性别/手机号/地址五项全部"
+    "来自她的原话，调用前把完整信息复述一遍得到确认；她没给齐就先问，不许编。",
+    {
+        "type": "object",
+        "properties": {
+            "city": {"type": "string", "description": "城市名，如「南京市」"},
+            "contactName": {"type": "string", "description": "联系人姓名"},
+            "gender": {"type": "string", "description": "「先生」或「女士」"},
+            "phone": {"type": "string", "description": "11 位手机号"},
+            "address": {"type": "string", "description": "配送地址"},
+            "addressDetail": {"type": "string", "description": "门牌号详情"},
+        },
+        "required": ["address", "addressDetail", "city", "contactName", "phone"],
+    },
+)
+
+SPECS = (NEARBY, MENU, MEAL_DETAIL, PRICE, ORDER, ORDERS, MY_COUPONS, AVAILABLE_COUPONS, CAMPAIGN)
+ACTION_SPECS = (CREATE_ORDER, DRAW_LOTTERY, BIND_COUPONS, CREATE_ADDRESS)
+_SPECS = SPECS + ACTION_SPECS
 
 
 def make_handlers(client: McpClient) -> dict[str, object]:

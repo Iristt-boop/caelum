@@ -187,11 +187,17 @@ def test_trends_wired_into_existing_directions():
 # ------------------------------------------------------------ 麦当劳边界
 
 
-def test_mcd_has_no_ordering_tools():
-    """🔴 他不点餐：create/party/draw/bind 类动作工具不许注册。"""
-    for s in mcd_tools._SPECS:
-        server_tool = mcd_tools.SERVER_TOOLS[s.name]
-        assert "create" not in server_tool, server_tool
-        assert "draw" not in server_tool, server_tool
-        assert "bind" not in server_tool, server_tool
-        assert "party-order" not in server_tool, server_tool
+def test_mcd_action_tools_require_confirmation():
+    """🟡 动作工具已放开（糖糖 2026-09-05 晚拍板），但必须确认制：
+    四个动作工具的描述里必须写明「确认」流程；白名单外的动作类仍不许注册。"""
+    action = {s.name: s for s in mcd_tools.ACTION_SPECS}
+    assert set(action) == {"mcd_create_order", "mcd_draw_lottery",
+                           "mcd_bind_coupons", "mcd_create_address"}
+    for name, s in action.items():
+        if name == "mcd_bind_coupons":
+            continue  # 领券不花钱，她说领就领
+        assert "确认" in s.description, f"{name} 的描述缺确认制"
+    # 仍未放行的动作类：团餐下单 / 商城下单
+    registered = set(mcd_tools.SERVER_TOOLS.values())
+    assert "party-order-create" not in registered
+    assert "mall-create-order" not in registered
