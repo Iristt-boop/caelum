@@ -1,10 +1,17 @@
 # Caelum 项目知识库
-> 每次新开 CC 窗口，先读这个文件，再读最新的 `HANDOFF-*.md`。  
+> 每次新开 CC 窗口，先读这个文件，再读最新的 `HANDOFF-*.md`。
+> **必读三件（2026-09-05 起）**：`CAELUM-MAP.md`（一页活地图：五层结构+七条边界法则，动架构/加能力前必读，
+> 哨兵 `scripts/check-boundaries.sh` 改完必跑）、`docs/LOGGING.md`（写代码前读：每个 catch 必须留痕）、
+> `CAELUM-系统全景调研-2026-09-05.md`（系统现状全景，带文件:行号）。
 > 本文记「现在长什么样」，HANDOFF 记「为什么这么改 / 哪些坑别再踩」。  
 > 最新交接：**`HANDOFF-2026-08-28.md`**（往前：`08-08` → `08-06` → `08-02` → `07-25`）  
 > ⚠️ **HANDOFF 只记那个窗口做了什么，会过期**；本文档才是现状。  
 > 两者冲突时以本文档为准 —— 08-08 校准就是因为它俩差了 23 个工具。  
-> 最后更新：2026-09-02（**手机端聊天两处渲染 bug 已修并上线**：乐观气泡被后台重拉盖掉
+> 最后更新：2026-09-05（**稳定工程 Week1-4 一日连做：系统全景调研 → 备份链+异地演练 →
+> /api/health+doctor.sh → 测试会话隔离闸门 → 清扫归档 → CAELUM-MAP+边界哨兵 →
+> OB 检索矩阵化 440 倍 → bridge 换 better-sqlite3 → LOGGING 规范 → Care 周报仪表，
+> 全部见第四十三节**；同日产出 `CAELUM-系统全景调研-2026-09-05.md`（六 agent 实读代码的全景，现状以此为准）；
+> 新增两份必读：`CAELUM-MAP.md` 与 `docs/LOGGING.md`；往前：2026-09-02（**手机端聊天两处渲染 bug 已修并上线**：乐观气泡被后台重拉盖掉
 > 见第十一节第 13 条；markdown 排版散架的真凶是 `stripVoiceTags` 见 30.9 结案那一小节
 > —— 它同时把 08-11 那个「查不出原因」的代码块疑案结了；往前：
 > **话题池 + 入口 A 见第四十一节**；**Caelum OS 四页的后端
@@ -6414,3 +6421,75 @@ PROVIDER_LEDGERS  一个服务商一个 fetcher
   **安静时段是这页的主角**，前端抄一份常量早晚要和这里漂移。
 - `GET /api/push/subscriptions`（bridge）：🔴 **endpoint 只给前 44 位加省略号** ——
   **整条订阅地址等同一把推送凭证**，不能整个甩到前端。
+
+## 四十三、稳定工程 Week1-4：从实验系统到敢依赖的系统（2026-09-05 一日落地）
+
+> 背景：糖糖定调 P0-P4 分层——「不是修几个 bug，是把不断生长的实验系统变成敢长期依赖的系统」。
+> 三周计划一日完成，全部已上线并验收。每步都在 VPS 生产上做过真实验证。
+
+### 43.1 系统全景调研（当日产出，现状唯一真源）
+
+六 agent 并行实读代码（约 13M tokens），覆盖 nox-core/记忆/情感层/世界模型/话题池/三共活动/前端 bridge。
+产出 `CAELUM-系统全景调研-2026-09-05.md`。**纠正了两个旧认知**：
+- OB 的 embedding 实际是**阿里云 dashscope text-embedding-v4（1024 维）**，不是 gemini（本地 config 是旧信息）
+- 「密钥进 git」是误报：本地/VPS 的 git 从未提交过 config.yaml，远端私有——secrets 从 P0 降级为卫生项
+
+### 43.2 Week1：不会突然死
+
+- **备份链**：`/root/caelum-backup.sh`（cron 04:17）→ SQLite 全 `.backup` 热备+逐库 integrity_check
+  （全是 WAL 库，直接 cp 会 torn）→ 含 buckets/照片/共读批注/eryu 记忆 JSON/Caddyfile/32 个 systemd unit/
+  全部 .env → openssl 加密 → `/root/backups/auto/` 留 14 份。**eryu music_cache(260M) 不进备份**。
+  异地 = Windows 计划任务「Caelum VPS backup pull」每天 12:30 scp 拉回 `backups/vps/` 留 7 份
+  （VPS 上无 GitHub 凭证，不种 token）。密码两处：`/root/.backup-pass` + `backups/BACKUP-PASS.txt`。
+  **恢复演练通过**：拉取 10s + 解密解包 2s，6 库全对。坑：Windows openssl 要 `-pass stdin`；
+  .cmd 不能写 UTF-8 中文；cmd 的 for/f 里 ssh `-o a=b` 的 = 会被吃
+- **探活**：bridge `/api/health`（无鉴权豁免——只回状态字/延迟；任何 HTTP 响应=活），
+  VPS `/root/doctor.sh` 一键体检（服务/心跳/凭据过期双预警/备份新鲜度/磁盘/仓库卫生）
+- **代码异地**：root 仓库推 GitHub 私有仓 `Iristt-boop/caelum`；co-reading 真源（VPS，连 git 都不是）回拉本地
+
+### 43.3 Week2：好维护
+
+- **测试会话隔离闸门**（7307c9d）：根治 8-24 Registry 污染事故。`config.is_test_session`
+  （test-/sandbox- 前缀）→ `_turn_ends` 跳过全部 Attention 副作用、`remind_myself` 拒留纸条。
+  1327 测试全过，生产真 fire 验证
+- **清扫日**：root/archive（memory/、haven-ombre/）、nox-app/archive（一代 backend、render/Dockerfile）；
+  两份过时文档顶部加横幅；卸载零引用 react-router-dom。VPS 的 .bak 回滚点是部署机制，不动
+- **CAELUM-MAP.md**：五层结构+七条边界法则+新能力三问。哨兵 `scripts/check-boundaries.sh`
+  （R1-R5 grep 规则；要排除 .venv 和纯注释行，否则全是假警报；合法例外=attention 出口+早报 `_push_to_bridge`）
+- 独立小项目三个确认保留：dsh-vscode-layout / fsr402-* / pixel-beads-generator
+
+### 43.4 Week3：性能与存储
+
+- **OB 检索矩阵化**（OB 仓 29c616c）：全向量归一化 numpy 矩阵，查询=一次乘法。
+  真实库 223 条 **132ms→0.3ms（440 倍）**，5000 条基准 375 倍；语义逐位对齐旧算法
+  （JSON 坏行不参战/维度不齐 0.0/零向量 0.0/同分稳定序），无 numpy 回退。
+  「记忆不敢进每轮 prompt」的最大理由消失——MemoryProvider 解禁评估待议
+- **bridge 换 better-sqlite3**（root 42dae5b）：薄壳保持 sql.js 的 db.run/exec 形状（30+ DDL 零改动），
+  WAL+NORMAL，`saveDb()` 全量导出退役；老库直接打开零迁移。71 测试全过
+- **LOGGING 规范**（`docs/LOGGING.md`）：反例墙（七条真实事故）+ 六条规则。
+  bridge 三层崩溃兜底（unhandledRejection/uncaughtException/Express 错误中间件）、
+  `dbTry()` 迁移助手（只放行 duplicate column）、17 处静默 catch 改留痕
+
+### 43.5 Week4 仪表：主动行为成色
+
+`/root/care-weekly.sh [天数]`（cron 周一 09:07，日志 `/root/care-weekly.log`）——只读
+care.ledger+topics+conversations：开口命中率、BLOCK 原因分布、主动发起回复率+中位响应、Drive/闸快照。
+**方法论**：回复率只算「发起接触」（开口前她沉默>60min）——全量算是假的（活跃会话 24h 窗口永远 100%）。
+Day1 真信号：location 出门追问 0/2；整体 95%/中位 43min；ledger 09-05 轮换过，满周数据从当晚起攒。
+
+### 43.6 做梦机制调查（糖糖问的）：没在运行，从未运行过
+
+OB 的 `dream` MCP 工具造好了（读最近 10 个表层桶供自省），nox-core 的 `review_memory`
+内部调的就是它（聊天里说「回顾记忆」= 做梦内容）。但**夜间自动做梦的触发器从未接线**：
+Care 的 Dream 源只停在 `care/signal.py:69` 的注释里，无 cron/timer，两侧生产日志全历史 **0 次调用**。
+半成品，待设计：触发器（夜间静默时段？）+ 梦的产出形式（早报带一句？独立梦境页？）。
+
+### 43.7 OB 仓库正典化（进行中）：以 VPS 仓为准
+
+- VPS `/root/ombre-brain` = 正典（有完整部署历史）；本地 OB 仓已重置到 `vps/master` 镜像线
+  （旧本地线是浅克隆、根属已被强推的历史，已弃）；流程 = VPS 提交 → 本地 `git fetch vps` → 推 GitHub
+- **⚠️ 数据出库**：buckets/（记忆数据）从代码仓移出（5ff4193），走每晚加密备份。**历史提交里
+  仍含 8-09 基线快照起的记忆旧版**——推 GitHub 前必须决定：A 全量推（隐私边界=私有仓）/
+  B filter-branch 洗掉历史里的 buckets 再推（推荐）/ C 只留 VPS+本地镜像不推 GitHub
+- GitHub `Iristt-boop/Claude`：main=「done: 工作日志」线（114+ commits）尚未处置；
+  `deployed` 分支=09-05 代码快照（干净无数据，可删）
