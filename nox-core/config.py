@@ -342,6 +342,11 @@ class Config:
     mcd_token: str = field(default_factory=lambda: _env("NOX_MCD_TOKEN", ""))
     mcd_timeout: float = 20.0
 
+    # ---- 瑞幸官方 MCP（Bearer Token = open.lkcoffee.com 登录后获取）----
+    luckin_url: str = field(default_factory=lambda: _env("NOX_LUCKIN_MCP_URL", ""))
+    luckin_token: str = field(default_factory=lambda: _env("NOX_LUCKIN_TOKEN", ""))
+    luckin_timeout: float = 20.0
+
     # ---- 可切换的模型 ----
     # 前端下拉里的选项。每个选项**自带后端**（见 BACKENDS）——
     # 不能只存型号名：主模型一旦切到 DeepSeek，拿 DeepSeek 的 base_url 去请求

@@ -47,6 +47,7 @@ from tools import misc as misc_tools
 from tools import netease as netease_tools
 from tools import notion as notion_tools
 from tools import planner as planner_tools
+from tools import luckin as luckin_tools
 from tools import reading as reading_tools
 from tools import room as room_tools
 from tools import search as search_tools
@@ -297,6 +298,17 @@ class Nox:
             logger.info("mcd 麦当劳工具已注册")
         else:
             logger.info("未配置 NOX_MCD_MCP_URL/NOX_MCD_TOKEN，跳过 mcd 麦当劳工具")
+
+        # 瑞幸：下单/取消确认制（tools/luckin.py 头部红线）
+        if self.cfg.luckin_url and self.cfg.luckin_token:
+            luckin_tools.register_all(
+                self.loop,
+                McpClient(self.cfg.luckin_url, name="luckin", timeout=self.cfg.luckin_timeout,
+                          headers={"Authorization": f"Bearer {self.cfg.luckin_token}"}),
+            )
+            logger.info("luckin 瑞幸工具已注册")
+        else:
+            logger.info("未配置 NOX_LUCKIN_MCP_URL/NOX_LUCKIN_TOKEN，跳过 luckin 瑞幸工具")
 
         # 启动时取一次核心准则，之后**永不重取**。
         # 不做定时刷新：糖糖明确说了不需要，需要新记忆时他会自己调
