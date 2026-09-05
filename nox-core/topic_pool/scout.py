@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import gzip
 import hashlib
+import html
 import json
 import logging
 import re
@@ -108,8 +109,12 @@ def set_trends_client(client: Any) -> None:
 
 
 def cn_trending(tool: str, args: dict | None = None) -> list[Candidate]:
-    """经 trends 桥抓一个中文热榜。解析故意宽容：剥数字编号、剥尾部热度数，
-    一行一条；太短的不算正经条目。桥挂了只跳过自己，不连累别的抓取器。"""
+    """经 trends 桥抓一个中文热榜。
+
+    服务端返回的是 XML 标签块（各源字段不一：微博有 popularity、豆瓣有
+    rating_value、B站有 author/view），按 <title> 切条目，能捞到什么拼什么。
+    桥挂了只跳过自己，不连累别的抓取器。
+    """
     client = _TRENDS["client"]
     if client is None:
         return []
@@ -117,25 +122,44 @@ def cn_trending(tool: str, args: dict | None = None) -> list[Candidate]:
     if not r.ok:
         logger.warning("热榜 %s 抓取失败: %s", tool, r.error)
         return []
+    text = r.text or ""
     out: list[Candidate] = []
-    for line in (r.text or "").splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or line.startswith("=="):
+    for block in re.split(r"(?=<title>)", text):
+        m = re.search(r"<title>(.*?)</title>", block, re.S)
+        if not m:
             continue
-        title = re.sub(r"^\d+\s*[.、)）]\s*", "", line)
-        title = re.sub(r"\s*\d+(\.\d+)?\s*$", "", title).strip()
-        if len(title) < 4 or len(title) > 80:
+        title = html.unescape(m.group(1)).strip()
+        if len(title) < 4 or len(title) > 150:
             continue
+        link = re.search(r"<link>(.*?)</link>", block, re.S)
+        bits = []
+        pop = re.search(r"<popularity>(.*?)</popularity>", block, re.S)
+        if pop:
+            bits.append(f"热度 {pop.group(1).strip()}")
+        rating = re.search(r"<rating_value>(.*?)</rating_value>", block, re.S)
+        if rating:
+            count = re.search(r"<rating_count>(.*?)</rating_count>", block, re.S)
+            bits.append(f"豆瓣 {rating.group(1).strip()} 分"
+                        + (f"（{count.group(1).strip()} 人评）" if count else ""))
+        author = re.search(r"<author>(.*?)</author>", block, re.S)
+        if author:
+            bits.append(f"UP：{author.group(1).strip()}")
+        if not bits:
+            desc = re.search(r"<description>(.*?)</description>", block, re.S)
+            if desc and desc.group(1).strip():
+                bits.append(desc.group(1).strip()[:100])
         out.append(Candidate(
             source_id=f"trend:{hashlib.sha1(f'{tool}:{title}'.encode()).hexdigest()[:12]}",
             title=title,
-            url="",
+            url=(link.group(1).strip() if link else ""),
             source="trendshub",
             category="",                      # 方向由 DIRECTIONS 的调用方盖
-            summary="中文热榜在榜",
+            summary="｜".join(bits)[:160],
             published_at=None,
         ))
-    return out[:12]
+        if len(out) >= 12:
+            break
+    return out
 
 
 # ------------------------------------------------------------ 四个抓取器

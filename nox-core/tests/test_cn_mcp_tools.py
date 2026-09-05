@@ -99,27 +99,65 @@ class _TrendsClient:
         return FakeResult(text=self.text)
 
 
-def test_cn_trending_parses_numbered_lines(monkeypatch):
-    """编号、尾部热度数都剥掉；太短的不算正经条目。"""
-    client = _TrendsClient(text=(
-        "1. 某某明星官宣结婚\n"
-        "2、某地突发大雨\n"
-        "3) 某某事件热度 456.7万\n"
-        "\n"
-        "热\n"
-        "4. 这是一条很长很长的正经条目标题不要被截掉\n"
-    ))
+WEIBO_SAMPLE = (
+    "<title>避孕药 血栓</title>\n"
+    "<description>避孕药 血栓</description>\n"
+    "<popularity>1183226</popularity>\n"
+    "<link>https://s.weibo.com/weibo?q=x</link>\n"
+    "<title>如何看待某长问题标题特别长的知乎风条目需要被完整保留下来呢</title>\n"
+    "<description>近日，江苏徐州一家饭店停业后……</description>\n"
+)
+
+
+def test_cn_trending_parses_xml_blocks(monkeypatch):
+    """服务端实测返回 XML 标签块：title/link/popularity 各取所长。"""
+    client = _TrendsClient(text=WEIBO_SAMPLE)
     monkeypatch.setattr(scout, "_TRENDS", {"client": client})
     out = scout.cn_trending("get_weibo_trending")
     titles = [c.title for c in out]
-    assert "某某明星官宣结婚" in titles
-    assert "某地突发大雨" in titles
-    assert "这是一条很长很长的正经条目标题不要被截掉" in titles
-    assert "热" not in titles
+    assert "避孕药 血栓" in titles
+    assert "如何看待某长问题标题特别长的知乎风条目需要被完整保留下来呢" in titles
+    first = out[0]
+    assert first.url == "https://s.weibo.com/weibo?q=x"
+    assert "热度 1183226" in first.summary
     assert all(c.source == "trendshub" for c in out)
     assert all(c.source_id.startswith("trend:") for c in out)
     assert all(c.category == "" for c in out)  # 方向由 DIRECTIONS 盖
     assert client.calls == [("get_weibo_trending", {})]
+
+
+def test_cn_trending_douban_rating(monkeypatch):
+    """豆瓣源把评分拼进 summary。"""
+    client = _TrendsClient(text=(
+        "<type_name>电影</type_name>\n"
+        "<title>杀死比尔：血色全传</title>\n"
+        "<info>美国 / 动作 犯罪</info>\n"
+        "<link>https://m.douban.com/movie/subject/10756537/</link>\n"
+        "<popularity>1193000</popularity>\n"
+        "<rating_count>77873</rating_count>\n"
+        "<rating_value>8.7</rating_value>\n"
+    ))
+    monkeypatch.setattr(scout, "_TRENDS", {"client": client})
+    out = scout.cn_trending("get_douban_rank", {"type": "movie"})
+    assert out[0].title == "杀死比尔：血色全传"
+    assert "豆瓣 8.7 分（77873 人评）" in out[0].summary
+    assert client.calls == [("get_douban_rank", {"type": "movie"})]
+
+
+def test_cn_trending_bilibili_author(monkeypatch):
+    """B站源把 UP 主拼进 summary；超长 description 截断。"""
+    client = _TrendsClient(text=(
+        "<title>万人追更的终南山怪虫，只有我们拍到了真相！</title>\n"
+        "<description>" + "很" * 300 + "</description>\n"
+        "<author>中国国家地理</author>\n"
+        "<view>3228934</view>\n"
+        "<link>https://b23.tv/BV1yuto66E8J</link>\n"
+    ))
+    monkeypatch.setattr(scout, "_TRENDS", {"client": client})
+    out = scout.cn_trending("get_bilibili_rank")
+    assert out[0].title == "万人追更的终南山怪虫，只有我们拍到了真相！"
+    assert "UP：中国国家地理" in out[0].summary
+    assert len(out[0].summary) <= 160
 
 
 def test_cn_trending_inactive_without_client(monkeypatch):
@@ -139,5 +177,7 @@ def test_trends_wired_into_existing_directions():
     def consts(f):
         return str(getattr(f, "__code__", f).co_consts) if hasattr(f, "__code__") else str(f)
     assert any("get_weibo_trending" in consts(f) for f in scout.DIRECTIONS["weird"])
+    assert any("get_zhihu_trending" in consts(f) for f in scout.DIRECTIONS["weird"])
+    assert any("get_bilibili_rank" in consts(f) for f in scout.DIRECTIONS["weird"])
     assert any("get_douban_rank" in consts(f) for f in scout.DIRECTIONS["film"])
     assert any("get_weread_rank" in consts(f) for f in scout.DIRECTIONS["books"])
