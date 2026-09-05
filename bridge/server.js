@@ -102,6 +102,9 @@ const TOY_TOKEN = process.env.NOX_TOY_TOKEN || "";
 
 function ensureApiAuth(req, res, next) {
   if (req.path === "/auth/login") return next();
+  // 探活豁免：/api/health 只回各服务状态字和延迟，不含用户数据——
+  // doctor.sh、cron、OS 状态页都吃它，不值得为它发 token
+  if (req.path === "/health") return next();
   // 音乐流带有效签名就放行。签名只对这一首歌有效，过期即失效
   if (req.path === "/music/stream" && verifyMusicSig(req.query)) return next();
   // 🔴 玩具钥匙**只开玩具**。`startsWith("/toy/")` 而不是 includes ——
@@ -3493,6 +3496,51 @@ app.delete("/api/library/books/:id", (req, res) => {
   if (!row) return res.status(404).json({ error: "书架上没有这本" });
   dbRun("DELETE FROM library_books WHERE id=?", [req.params.id]);
   res.json({ ok: true, deleted: row.title });
+});
+
+// ==============================================================
+// 🩺 /api/health —— 全家桶探活：7 个服务并行探一遍，2.5s 超时
+// 无鉴权：只回状态字和延迟，不含用户数据；doctor.sh 和 OS 状态页都吃这个。
+// 判活口径：任何 HTTP 响应都算活（404/405 也是进程在答），
+// 只有连不上/超时才算 down。core 和 OB 有真 /health，顺带透传关键信息。
+// ==============================================================
+app.get("/api/health", async (req, res) => {
+  const probe = async (url, opts = {}) => {
+    const t0 = Date.now();
+    try {
+      const r = await fetch(url, { ...opts, signal: AbortSignal.timeout(2500) });
+      let body = null;
+      try { body = await r.json(); } catch {}
+      return { ok: true, ms: Date.now() - t0, http: r.status, body };
+    } catch (e) {
+      return {
+        ok: false,
+        ms: Date.now() - t0,
+        error: e.name === "TimeoutError" ? "timeout" : e.message,
+      };
+    }
+  };
+
+  const [core, ombre, eryu, reading, watching, netease] = await Promise.all([
+    probe(`${NOX_CORE_URL}/health`),
+    probe(`${OMBRE_URL}/health`),
+    probe(`${ERYU_URL}/`),
+    probe(`${READING_URL}/health`),
+    probe(process.env.WATCH_URL || "http://127.0.0.1:3200/"),
+    probe(NETEASE_MCP, { method: "POST", headers: { "Content-Type": "application/json" } }),
+  ]);
+
+  const checks = {
+    bridge: { ok: true },
+    nox_core: { ok: core.ok, ms: core.ms, http: core.http, error: core.error, model: core.body?.model },
+    ombre: { ok: ombre.ok, ms: ombre.ms, http: ombre.http, error: ombre.error, buckets: ombre.body?.buckets, decay: ombre.body?.decay_engine },
+    eryu: { ok: eryu.ok, ms: eryu.ms, http: eryu.http, error: eryu.error },
+    co_reading: { ok: reading.ok, ms: reading.ms, http: reading.http, error: reading.error },
+    co_watching: { ok: watching.ok, ms: watching.ms, http: watching.http, error: watching.error },
+    netease_mcp: { ok: netease.ok, ms: netease.ms, http: netease.http, error: netease.error },
+  };
+  const allOk = Object.values(checks).every((c) => c.ok);
+  res.json({ status: allOk ? "ok" : "degraded", ts: new Date().toISOString(), checks });
 });
 
 // 账本快照：起来记一笔，之后每 6 小时记一笔（Models 页的真实口径靠它）
