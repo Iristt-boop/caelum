@@ -68,7 +68,7 @@ from attention.sources.todo_due import TodoDueSource
 from tools import record as record_tools
 from tools import remind as remind_tools
 from world_model import WorldModel
-from config import BACKENDS
+from config import BACKENDS, is_test_session
 from topic_pool import TopicPool, run_topic_loop
 from topic_pool.pool import DEFAULT_SCOUT_INTERVAL_S
 from attention.store import AttentionStore
@@ -815,6 +815,12 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
             logger.warning("压缩触发失败（不影响对话）: %s", exc)
 
         if attention is None:
+            return
+        if is_test_session(sid):
+            # 2026-08-24 事故的闸门：测试会话不许碰任何全局注意力状态
+            # （纸条基准线 / Drive 回落 / Registry / 促狭）。
+            # 压缩在上面已经跑过——那是会话自己的数据，压了不碍事。
+            logger.info("测试会话 sid=%.20s：跳过 Attention 副作用", sid)
             return
         try:
             attention.wakeups.rebase(sid)

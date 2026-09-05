@@ -390,3 +390,31 @@ class Config:
 
 
 config = Config()
+
+
+# ---------------------------------------------------------------
+# 测试/沙箱会话判定（2026-09-05，Registry 隔离）
+#
+# 2026-08-24 事故：测试用 `test-` 会话聊了一句，她"说"的心情进了生产
+# Registry——他可能据此主动问她根本没说过的事。纸条基准线、Drive 回落、
+# Registry、促狭、WakeBook 全是全局状态，测试聊天一律不许碰。
+# 会话自身的压缩不受影响（那是会话自己的数据）。
+# ---------------------------------------------------------------
+
+_TEST_SID_PREFIXES_DEFAULT = ("test-", "sandbox-")
+
+
+def test_sid_prefixes() -> tuple[str, ...]:
+    """测试会话的 sid 前缀表；`NOX_TEST_SID_PREFIXES`（逗号分隔）可覆盖。"""
+    raw = (os.environ.get("NOX_TEST_SID_PREFIXES") or "").strip()
+    if not raw:
+        return _TEST_SID_PREFIXES_DEFAULT
+    parts = tuple(p.strip() for p in raw.split(",") if p.strip())
+    return parts or _TEST_SID_PREFIXES_DEFAULT
+
+
+def is_test_session(sid: str | None) -> bool:
+    """这个会话是不是测试/沙箱流量（不该碰任何全局注意力状态）。"""
+    if not sid:
+        return False
+    return sid.startswith(test_sid_prefixes())

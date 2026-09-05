@@ -27,6 +27,7 @@ import logging
 from agent.llm import ToolSpec
 from attention.care.signal import FOLLOWUP, TASK
 from attention.wakeup import MAX_AFTER_MIN, MIN_AFTER_MIN
+from config import is_test_session
 
 logger = logging.getLogger(__name__)
 
@@ -133,6 +134,9 @@ def register_all(loop, book_ref, save, session_id_ref) -> None:
         sid = session_id_ref()
         if not sid:
             return "这轮拿不到会话 id，没留成。"
+        if is_test_session(sid):
+            # 纸条是全局的，到点会真的醒来推她——测试聊天不许留
+            return "测试会话不留纸条。"
 
         w = book.add(sid, why, after, kind=kind)
         try:
