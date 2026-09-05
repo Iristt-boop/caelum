@@ -28,12 +28,12 @@ SERVER_TOOLS = {
 }
 
 
-def _spec(name: str, description: str, properties: dict) -> ToolSpec:
-    return ToolSpec(
-        name=name,
-        description=description,
-        parameters={"type": "object", "properties": properties},
-    )
+def _spec(name: str, description: str, params: dict) -> ToolSpec:
+    # ⚠️ params 是**完整 parameters schema**（含 type/properties/required）。
+    # 第一版在这里又包了一层 properties，把整个 schema 塞进了 properties.type
+    # —— DeepSeek 的 strict 校验直接 400 拒绝整个请求，**所有对话全灭**
+    #（2026-09-05 20:19-23:29，"object" is not of types "boolean", "object"）。
+    return ToolSpec(name=name, description=description, parameters=params)
 
 
 SEARCH_POI = _spec(

@@ -265,3 +265,23 @@ def test_taobao_handler_passthrough_and_failure():
     bad = taobao_tools.make_handlers(FakeLink(ok=False))
     with pytest.raises(RuntimeError):
         bad["taobao_search"]({"keyword": "键盘"})
+
+
+# ------------------------------------------------------------ schema 结构守卫
+
+
+def test_all_cn_mcp_schemas_wellformed():
+    """🔴 2026-09-05 事故守卫：amap 的 _spec 曾把整个 schema 塞进 properties
+    （properties.type 变成字符串 "object"），DeepSeek strict 校验 400
+    拒绝**整个请求**——所有对话全灭三个小时，而 handler 直调测试全绿。
+    规则：顶层 type=object；properties 的每个值必须是 dict。"""
+    for module in (amap_tools, didi_tools, kd100_tools, luckin_tools,
+                   mcd_tools, taobao_tools, train_tools):
+        for spec in module._SPECS:
+            p = spec.parameters
+            assert p.get("type") == "object", f"{spec.name} 顶层不是 object"
+            for k, v in p.get("properties", {}).items():
+                assert isinstance(v, dict), (
+                    f"{spec.name}.properties.{k} = {v!r} —— "
+                    "properties 的值必须是字段 schema（dict），不是字符串"
+                )
