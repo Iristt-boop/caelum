@@ -6628,7 +6628,7 @@ Evaluator 把决策段拆成规则版和 LLM 版共用的 `_decide_from_appraisa
 | 滴滴官方 | `https://mcp.didichuxing.com/mcp-servers?key=`（App 扫码 Key） | didi_estimate / ride_link / order_status（**create/cancel 不接**） | ✅ 上线 |
 | 麦当劳官方 | `https://mcp.mcd.cn/mcp-servers/mcd-mcp` + Bearer（NOX_MCD_TOKEN） | mcd_nearby_stores / menu / meal_detail / price / order / orders / my_coupons / available_coupons / campaign（9）+ **动作四件（确认制）**：mcd_create_order / draw_lottery / bind_coupons / create_address——下单前必须报价复述、她明确确认；抽奖先展示消耗规则；地址五项她原话给齐。领券免确认（不花钱）。团餐/商城下单仍未接（工具 70→86） | ✅ 上线，券/日历真数据验证 |
 | Trends Hub | supergateway 桥 `http://127.0.0.1:9092/mcp`（systemd **mcp-trends.service**） | **不进工具列表**——scout 中文源：微博/知乎/B站→weird、豆瓣电影→film、微信读书→books | ✅ 上线 |
-| 12306（Joooook/12306-mcp 桥 :9093，systemd **mcp-train.service**） | get-tickets / get-interline-tickets / get-station-code-by-names | ⚠️ 境外冒烟已过（cookie 预热+Referer+UA），**待配 NOX_TRAIN_MCP_URL 激活** | 待激活 |
+| 12306（Joooook/12306-mcp 桥 :9093，systemd **mcp-train.service**） | get-tickets / get-interline-tickets / get-station-code-by-names | 🔴 **暂缓**：包的内部 web 请求被 12306 反爬无声丢弃（查票必挂起，60s 也不返回）；已从 .env 摘除。裸 curl 带 cookie+UA 能通——替代方案是自写 REST 工具（~80 行，流程已验证） | 暂缓 |
 | 快递100 | `https://api.kuaidi100.com/mcp/streamable?key=…` | kd100_track / timeliness（个人可注册，按单扣费 40 天同单号不重复扣） | ⏸️ 等糖糖注册 |
 | 瑞幸 | 端点在登录会话/WAF 后（CSRF+SPA 兜底），需从 open.lkcoffee.com/docs 复制 MCP 配置 JSON 给接线 | — | ⏸️ 等配置 |
 
