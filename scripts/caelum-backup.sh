@@ -92,7 +92,10 @@ fi
 echo "$LOG_TAG 完成：$OUT ($SIZE)"
 
 # ---------- 恢复方法 ----------
-# openssl enc -d -aes-256-cbc -pbkdf2 -pass file:/root/.backup-pass \
-#   -in caelum-XXXX.tar.gz.enc | tar xzf - -C /tmp/restore
+# Linux:  openssl enc -d -aes-256-cbc -pbkdf2 -pass file:/root/.backup-pass \
+#           -in caelum-XXXX.tar.gz.enc | tar xzf - -C /tmp/restore
+# Windows openssl 不认 -pass file:/d/... 路径，改走 stdin：
+#   cat BACKUP-PASS.txt | openssl enc -d -aes-256-cbc -pbkdf2 -pass stdin \
+#     -in caelum-XXXX.tar.gz.enc | tar xzf - -C /tmp/restore
 # sqlite: 直接放回原路径；文件：放回对应目录；config：对照 config/ 里的清单归位。
 # 密码另有一份在糖糖的 Windows（D:\claude-code\backups\BACKUP-PASS.txt），VPS 被删时用它。
