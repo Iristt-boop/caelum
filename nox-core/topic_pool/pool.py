@@ -47,10 +47,12 @@ class TopicPool:
     """池子本体。store 是必需的，world / adapter 缺了各自降级。"""
 
     def __init__(self, db_path: str | Path, world: Any = None,
-                 adapter: Any = None) -> None:
+                 adapter: Any = None, trends_client: Any = None) -> None:
         self.store = TopicStore(db_path)
         self.world = world
         self.adapter = adapter
+        if trends_client is not None:
+            scout.set_trends_client(trends_client)
 
     # ------------------------------------------------------------ 一轮
 

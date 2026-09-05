@@ -11,8 +11,13 @@ from __future__ import annotations
 
 from collections import Counter
 
+from tools import amap as amap_tools
 from tools import daily as daily_tools
+from tools import didi as didi_tools
 from tools import intimate as intimate_tools
+from tools import kd100 as kd100_tools
+from tools import train as train_tools
+from tools import kd100 as kd100_tools
 from tools import todo as todo_tools
 
 
@@ -27,7 +32,8 @@ def _spec_names(module) -> list[str]:
 
 def test_no_duplicate_tool_names_across_modules():
     names: list[str] = []
-    for mod in (daily_tools, intimate_tools, todo_tools):
+    for mod in (amap_tools, daily_tools, didi_tools, intimate_tools,
+                kd100_tools, todo_tools, train_tools):
         names += _spec_names(mod)
 
     dupes = [n for n, c in Counter(names).items() if c > 1]

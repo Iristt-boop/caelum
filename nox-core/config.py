@@ -317,6 +317,26 @@ class Config:
     tracker_url: str = field(default_factory=lambda: _env("NOX_TRACKER_URL", ""))
     tracker_timeout: float = 15.0
 
+    # ---- 国内 MCP 五件套（2026-09-05）：高德/滴滴/快递100/12306 ----
+    # 全部留空则不注册对应工具（宁可他没有，也不要每次都报错的工具）
+    amap_url: str = field(default_factory=lambda: _env("NOX_AMAP_MCP_URL", ""))
+    amap_timeout: float = 15.0
+
+    # 滴滴：只接预估/链接/查单，不下单（tools/didi.py 头部红线）
+    didi_url: str = field(default_factory=lambda: _env("NOX_DIDI_MCP_URL", ""))
+    didi_timeout: float = 20.0
+
+    kd100_url: str = field(default_factory=lambda: _env("NOX_KD100_MCP_URL", ""))
+    kd100_timeout: float = 15.0
+
+    # 12306：境外 IP 冒烟过了才配（PROJECT.md 44 节）
+    train_url: str = field(default_factory=lambda: _env("NOX_TRAIN_MCP_URL", ""))
+    train_timeout: float = 20.0
+
+    # ---- trends-mcp（中文热榜聚合桥）：不进工具列表，喂话题池 Scout ----
+    trends_url: str = field(default_factory=lambda: _env("NOX_TRENDS_MCP_URL", ""))
+    trends_timeout: float = 15.0
+
     # ---- 可切换的模型 ----
     # 前端下拉里的选项。每个选项**自带后端**（见 BACKENDS）——
     # 不能只存型号名：主模型一旦切到 DeepSeek，拿 DeepSeek 的 base_url 去请求

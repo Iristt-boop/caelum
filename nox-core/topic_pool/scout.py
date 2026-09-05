@@ -26,6 +26,7 @@ import gzip
 import hashlib
 import json
 import logging
+import re
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -93,6 +94,48 @@ def _ts(value: str | None) -> datetime | None:
         except ValueError:
             continue
     return None
+
+
+# ------------------------------------------------------------ 中文热榜（trends 桥）
+
+#: trends 桥（mcp-trends-hub 的 supergateway）的客户端，由 TopicPool 装配时注入。
+#: 没注入 = 本地开发没配 NOX_TRENDS_MCP_URL，中文热榜抓取器全部静默跳过。
+_TRENDS: dict[str, Any] = {"client": None}
+
+
+def set_trends_client(client: Any) -> None:
+    _TRENDS["client"] = client
+
+
+def cn_trending(tool: str, args: dict | None = None) -> list[Candidate]:
+    """经 trends 桥抓一个中文热榜。解析故意宽容：剥数字编号、剥尾部热度数，
+    一行一条；太短的不算正经条目。桥挂了只跳过自己，不连累别的抓取器。"""
+    client = _TRENDS["client"]
+    if client is None:
+        return []
+    r = client.call(tool, args or {})
+    if not r.ok:
+        logger.warning("热榜 %s 抓取失败: %s", tool, r.error)
+        return []
+    out: list[Candidate] = []
+    for line in (r.text or "").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or line.startswith("=="):
+            continue
+        title = re.sub(r"^\d+\s*[.、)）]\s*", "", line)
+        title = re.sub(r"\s*\d+(\.\d+)?\s*$", "", title).strip()
+        if len(title) < 4 or len(title) > 80:
+            continue
+        out.append(Candidate(
+            source_id=f"trend:{hashlib.sha1(f'{tool}:{title}'.encode()).hexdigest()[:12]}",
+            title=title,
+            url="",
+            source="trendshub",
+            category="",                      # 方向由 DIRECTIONS 的调用方盖
+            summary="中文热榜在榜",
+            published_at=None,
+        ))
+    return out[:12]
 
 
 # ------------------------------------------------------------ 四个抓取器
@@ -221,10 +264,17 @@ DIRECTIONS: dict[str, list[_Fetcher]] = {
     ],
     "art": [lambda: gnews("艺术 展览 美术馆")],
     "design": [lambda: gnews("UI 设计 字体 排版")],
-    "film": [lambda: gnews("电影 导演 影评")],
-    "books": [lambda: gnews("新书 书评 作家")],
+    "film": [lambda: gnews("电影 导演 影评"),
+             lambda: cn_trending("get-douban-rank", {"type": "movie"})],
+    "books": [lambda: gnews("新书 书评 作家"),
+              lambda: cn_trending("get-weread-rank")],
     "music": [lambda: gnews("专辑 乐评 新歌")],
-    "weird": [lambda: hn("", 100)],
+    "weird": [
+        lambda: hn("", 100),
+        lambda: cn_trending("get-weibo-trending"),
+        lambda: cn_trending("get-zhihu-trending"),
+        lambda: cn_trending("get-bilibili-rank"),
+    ],
 }
 
 
