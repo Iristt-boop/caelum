@@ -1491,6 +1491,14 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
             ("notion", "信箱 · Notion",
              "https://api.notion.com" if getattr(cfg, "notion_token", "") else ""),
             ("qweather", "天气", (getattr(cfg, "qweather_host", "") or "")),
+            # ---- 国内 MCP（2026-09-05）----
+            ("amap", "地点 · 搜索 / 路线 / 天气", getattr(cfg, "amap_url", "")),
+            ("didi", "打车 · 报价 / 链接 / 订单", getattr(cfg, "didi_url", "")),
+            ("kd100", "快递 · 轨迹 / 时效 / 运费", getattr(cfg, "kd100_url", "")),
+            ("mcd", "麦当劳 · 门店 / 菜单 / 券 / 下单（确认制）", getattr(cfg, "mcd_url", "")),
+            ("luckin", "瑞幸 · 门店 / 点单（确认制）", getattr(cfg, "luckin_url", "")),
+            ("trends", "中文热榜 · 喂话题池", getattr(cfg, "trends_url", "")),
+            ("train", "火车票查询（12306，暂缓）", getattr(cfg, "train_url", "")),
         ]
         items = []
         alive = [t for t in targets if t[2]]
@@ -1526,6 +1534,15 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
                 "host": host,
                 "status": ("up" if by_url.get(url) else "down") if url else "not_configured",
             })
+
+        # 淘宝走 LocalLink 反向链路（桌面版内置 MCP，只在她电脑上）——
+        # 探它的回环地址等于探 VPS 自己，永远 404。真实判据是网关链路通不通。
+        items.append({
+            "name": "taobao",
+            "what": "淘宝 · 搜索 / 加购（她电脑开着桌面版才通）",
+            "host": "local-link",
+            "status": "up" if local_hand.is_ready else "down",
+        })
 
         _integration_cache["at"] = now
         _integration_cache["items"] = items

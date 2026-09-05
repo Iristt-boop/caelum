@@ -70,8 +70,12 @@ def test_integrations_bare_config_all_not_configured(monkeypatch, tmp_path):
     c = _client(monkeypatch, tmp_path)
     d = c.get("/api/nox/integrations").json()
     assert d["ok"] is True and d["cached"] is False
-    assert len(d["items"]) == 11
-    assert all(x["status"] == "not_configured" for x in d["items"])
+    assert len(d["items"]) == 19
+    # taobao 是特例：不靠 URL 配置（走 LocalLink 反向链路，工具恒注册），
+    # 状态 = 她电脑的网关链路通不通——测试环境没有网关，如实是 down
+    assert all(x["status"] == "not_configured" for x in d["items"] if x["name"] != "taobao")
+    taobao = next(x for x in d["items"] if x["name"] == "taobao")
+    assert taobao["status"] == "down"
     # 第二次吃缓存
     d2 = c.get("/api/nox/integrations").json()
     assert d2["cached"] is True
