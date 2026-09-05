@@ -69,7 +69,7 @@ class McpClient:
         from mcp.client.streamable_http import streamablehttp_client
 
         async def run() -> CallResult:
-            async with streamablehttp_client(self.url) as (read, write, _):
+            async with streamablehttp_client(self.url, headers=self.headers) as (read, write, _):
                 async with ClientSession(read, write) as session:
                     await session.initialize()
                     resp = await session.call_tool(tool, args or {})
@@ -95,7 +95,7 @@ class McpClient:
         from mcp.client.streamable_http import streamablehttp_client
 
         async def run() -> CallResult:
-            async with streamablehttp_client(self.url) as (read, write, _):
+            async with streamablehttp_client(self.url, headers=self.headers) as (read, write, _):
                 async with ClientSession(read, write) as session:
                     await session.initialize()
                     resp = await session.list_tools()
