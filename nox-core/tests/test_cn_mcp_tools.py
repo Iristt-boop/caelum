@@ -21,6 +21,7 @@ from tools import kd100 as kd100_tools
 from tools import luckin as luckin_tools
 from tools import mcd as mcd_tools  # noqa: E402
 from tools import train as train_tools  # noqa: E402
+from tools import taobao as taobao_tools  # noqa: E402
 from topic_pool import scout  # noqa: E402
 
 
@@ -214,3 +215,53 @@ def test_luckin_order_and_cancel_are_confirmation_gated():
     assert "确认" in names["luckin_cancel"].description
     registered = set(luckin_tools.SERVER_TOOLS.values())
     assert "switchProduct" not in registered
+
+# ------------------------------------------------------------ 淘宝（LocalLink）
+
+
+class FakeLink:
+    """鸭子接口对齐 LocalLink.call。"""
+
+    def __init__(self, ok=True, text="ok"):
+        self.ok, self.text = ok, text
+        self.error = "没有回应"
+        self.calls = []
+
+    def call(self, tool, args=None, timeout=None):
+        self.calls.append((tool, args))
+        if not self.ok:
+            return FakeResult(ok=False, error=self.error)
+        return FakeResult(text=self.text)
+
+
+def test_taobao_via_link_names():
+    """走链路必须用网关 catalog 名（taobao.*），不是淘宝 MCP 原名。"""
+    for spec_name, wire in taobao_tools.WIRE.items():
+        assert wire.startswith("taobao."), wire
+        assert spec_name in [s.name for s in taobao_tools._SPECS]
+
+
+def test_taobao_actions_are_confirmation_gated():
+    """加购/问客服/导航三件动作必须确认制（描述里带红线）。"""
+    names = {s.name: s for s in taobao_tools._SPECS}
+    for n in ("taobao_add_to_cart", "taobao_ask_seller", "taobao_navigate"):
+        assert "确认" in names[n].description, n
+
+
+def test_taobao_no_order_tools():
+    """淘宝域没有下单——MCP 本身不提供，这里也不许出现下单类名字。"""
+    registered = set(taobao_tools.WIRE.values())
+    for w in registered:
+        assert "order" not in w and "buy" not in w and "pay" not in w, w
+
+
+def test_taobao_handler_passthrough_and_failure():
+    client = FakeLink(ok=True, text="结果")
+    h = taobao_tools.make_handlers(client)
+    out = h["taobao_search"]({"keyword": "键盘"})
+    assert out == "结果"
+    assert client.calls == [("taobao.search", {"keyword": "键盘"})]
+
+    bad = taobao_tools.make_handlers(FakeLink(ok=False))
+    with pytest.raises(RuntimeError):
+        bad["taobao_search"]({"keyword": "键盘"})

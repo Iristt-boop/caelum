@@ -53,6 +53,7 @@ from attention.appraisal_llm import LLMAppraiser
 from tools.local_link import LocalLink, read_secret
 from tools import computer as computer_tools
 from tools import room as room_tools
+from tools import taobao as taobao_tools
 from attention.speaker import build_speaker
 from attention.waker import build_waker
 from attention.gate import DailyGate
@@ -671,6 +672,10 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
     #: 直接点属性会让 46 个和房间毫无关系的测试一起炸（同旁边 vision 那行）
     if not getattr(core.cfg, "room_url", ""):
         room_tools.register_all(core.loop, local_hand, room_tools.VIA_LINK)
+
+    #: 淘宝（2026-09-05）—— 她桌面版内置的本地 MCP，同一只手捎一段。
+    #: 注册不设条件：桌面版没开时调用会如实报错（room 同款处理）。
+    taobao_tools.register_all(core.loop, local_hand)
 
     attention = _build_attention(core, sessions, db)
     #: 🔴 感知层那条线交给 attention —— 躁动要知道"她此刻在用什么"。

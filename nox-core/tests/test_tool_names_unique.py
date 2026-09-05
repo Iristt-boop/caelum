@@ -18,6 +18,7 @@ from tools import intimate as intimate_tools
 from tools import kd100 as kd100_tools
 from tools import luckin as luckin_tools
 from tools import mcd as mcd_tools
+from tools import taobao as taobao_tools
 from tools import train as train_tools
 from tools import kd100 as kd100_tools
 from tools import todo as todo_tools
@@ -35,7 +36,7 @@ def _spec_names(module) -> list[str]:
 def test_no_duplicate_tool_names_across_modules():
     names: list[str] = []
     for mod in (amap_tools, daily_tools, didi_tools, intimate_tools,
-                kd100_tools, luckin_tools, mcd_tools, todo_tools, train_tools):
+                kd100_tools, luckin_tools, mcd_tools, taobao_tools, todo_tools, train_tools):
         names += _spec_names(mod)
 
     dupes = [n for n, c in Counter(names).items() if c > 1]
