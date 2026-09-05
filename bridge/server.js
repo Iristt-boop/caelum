@@ -22,7 +22,7 @@ import { Readable } from "node:stream";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer, WebSocket } from "ws";
-import initSqlJs from "sql.js";
+import Database from "better-sqlite3";
 import multer from "multer";
 import { lookupMovie, longEnough } from "./lib/movie-meta.js";
 import webpush from "web-push";
@@ -137,22 +137,39 @@ app.get("/api/auth/verify", (req, res) => {
 
 // ==============================================================
 // SQLite 初始化
+// 2026-09-05：sql.js（WASM）换 better-sqlite3（原生）。
+// 旧方案整库在内存、每次写全量 export 覆盖写盘——写放大 + 非原子写，
+// 断电就是损坏。现在 WAL 自动落盘，saveDb() 整个退役。
+// 文件本身是合法 SQLite，老库直接打开，零迁移。
+// 下面的薄壳保持 sql.js 的 db.run / db.exec 形状，30+ 处 DDL 调用点不用动。
 // ==============================================================
 const DB_PATH = process.env.DB_PATH || path.join(__dirname, "..", "data", "nox-bridge.db");
 const DATA_DIR = path.dirname(DB_PATH);
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 
-const SQL = await initSqlJs();
-let db;
-if (fs.existsSync(DB_PATH)) {
-  const buf = fs.readFileSync(DB_PATH);
-  db = new SQL.Database(buf);
-} else {
-  db = new SQL.Database();
-}
+const _db = new Database(DB_PATH);
+_db.pragma("journal_mode = WAL");
+_db.pragma("synchronous = NORMAL");
 
-function saveDb() { fs.writeFileSync(DB_PATH, Buffer.from(db.export())); }
-function dbRun(sql, params = []) { db.run(sql, params); saveDb(); }
+const db = {
+  run(sql, params = []) { _db.prepare(sql).run(...(Array.isArray(params) ? params : [params])); },
+  exec(sql, params = []) {
+    const rows = _db.prepare(sql).all(...(Array.isArray(params) ? params : [params]));
+    if (!rows.length) return [];
+    const columns = Object.keys(rows[0]);
+    return [{ columns, values: rows.map(o => columns.map(c => o[c])) }];
+  },
+};
+
+function dbRun(sql, params = []) { db.run(sql, params); }
+// 迁移专用：列已存在是预期，其余失败必须留一行日志再继续启动
+//（规范见 docs/LOGGING.md——「静默失败」是这个系统反复栽的形状）
+function dbTry(sql) {
+  try { db.run(sql); } catch (e) {
+    if (/duplicate column/i.test(e.message)) return;
+    console.warn("[Bridge] 迁移失败（继续启动）:", sql.slice(0, 60), "|", e.message);
+  }
+}
 function dbAll(sql, params = []) {
   const r = db.exec(sql, params);
   if (!r.length) return [];
@@ -194,7 +211,7 @@ db.run(`CREATE TABLE IF NOT EXISTS gallery (
 )`);
 // 2026-08-04 加 description 列 —— 相册图片的描述，让 Nox 能按内容选图而不是盲发。
 // ALTER 在列已存在时抛错，try/catch 吞掉。
-try { db.run(`ALTER TABLE gallery ADD COLUMN description TEXT DEFAULT ''`); } catch { /* 已加过 */ }
+dbTry(`ALTER TABLE gallery ADD COLUMN description TEXT DEFAULT ''`)
 // 共影的观影记录（2026-08-22，共影技术方案 v2.0 的 P1）。
 //
 // 一行 = 一次观影。**同时承担两件事**，别拆成两张表：
@@ -235,7 +252,7 @@ db.run(`CREATE TABLE IF NOT EXISTS todos (
 // 2026-08-05 加 synced 列 —— 这条有没有同步进 GitHub 的 todo.md。
 // 加之前 App 的待办和 todo.md 是两个孤岛，晨报只看得见后者，
 // 她在手机上记的东西第二天没人提。
-try { db.run(`ALTER TABLE todos ADD COLUMN synced INTEGER DEFAULT 0`); } catch { /* 已加过 */ }
+dbTry(`ALTER TABLE todos ADD COLUMN synced INTEGER DEFAULT 0`)
 // 2026-08-18 时间模型（Todo-Daily-Planner-设计.md 第一节）。
 // 前端 todo 成为唯一活清单，GitHub todo.md 退役为只读存档。
 //
@@ -251,22 +268,22 @@ try { db.run(`ALTER TABLE todos ADD COLUMN synced INTEGER DEFAULT 0`); } catch {
 //   weekly       = 每周一、四 19:00 —— 绑定具体星期，那天没做就追
 //   weekly_count = 每周 3 次，哪天都行 —— 是**一周的配额**，
 //                  追的不是「今天该做」，而是「这周还差几次，周末快到了」
-try { db.run(`ALTER TABLE todos ADD COLUMN repeat TEXT DEFAULT ''`); } catch { /* 已加过 */ }
-try { db.run(`ALTER TABLE todos ADD COLUMN at TEXT DEFAULT ''`); } catch { /* 已加过 */ }
-try { db.run(`ALTER TABLE todos ADD COLUMN weekdays TEXT DEFAULT ''`); } catch { /* 已加过 */ }
-try { db.run(`ALTER TABLE todos ADD COLUMN due TEXT DEFAULT ''`); } catch { /* 已加过 */ }
-try { db.run(`ALTER TABLE todos ADD COLUMN fired_on TEXT DEFAULT ''`); } catch { /* 已加过 */ }
-try { db.run(`ALTER TABLE todos ADD COLUMN times INTEGER DEFAULT 0`); } catch { /* 已加过 */ }
-try { db.run(`ALTER TABLE todos ADD COLUMN done_log TEXT DEFAULT ''`); } catch { /* 已加过 */ }
+dbTry(`ALTER TABLE todos ADD COLUMN repeat TEXT DEFAULT ''`)
+dbTry(`ALTER TABLE todos ADD COLUMN at TEXT DEFAULT ''`)
+dbTry(`ALTER TABLE todos ADD COLUMN weekdays TEXT DEFAULT ''`)
+dbTry(`ALTER TABLE todos ADD COLUMN due TEXT DEFAULT ''`)
+dbTry(`ALTER TABLE todos ADD COLUMN fired_on TEXT DEFAULT ''`)
+dbTry(`ALTER TABLE todos ADD COLUMN times INTEGER DEFAULT 0`)
+dbTry(`ALTER TABLE todos ADD COLUMN done_log TEXT DEFAULT ''`)
 // 2026-08-18：最后一次划掉的**完整时刻**。
 // `done_log` 只存日期（周配额要按天算），落不到「Nox 的一天」的时间轴上 ——
 // 那条轴要的是 14:48 这种精度，不是 2026-08-18。
-try { db.run(`ALTER TABLE todos ADD COLUMN last_done_at TEXT DEFAULT ''`); } catch { /* 已加过 */ }
+dbTry(`ALTER TABLE todos ADD COLUMN last_done_at TEXT DEFAULT ''`)
 // 2026-08-27：备注与分类标签（App / OS 双端 Today/Todo 重构加的）。
 // tag 是轻量分类：没有后台字典，前端按名字取色画彩点；note 纯文本，
 // 条目行上收起、点开才展示，列表接口原样透传即可。
-try { db.run(`ALTER TABLE todos ADD COLUMN note TEXT DEFAULT ''`); } catch { /* 已加过 */ }
-try { db.run(`ALTER TABLE todos ADD COLUMN tag TEXT DEFAULT ''`); } catch { /* 已加过 */ }
+dbTry(`ALTER TABLE todos ADD COLUMN note TEXT DEFAULT ''`)
+dbTry(`ALTER TABLE todos ADD COLUMN tag TEXT DEFAULT ''`)
 // 聊天消息表（搜索用 + Nox 兼容）
 db.run(`CREATE TABLE IF NOT EXISTS conversations (
   id TEXT, role TEXT, content TEXT, timestamp TEXT, metadata TEXT
@@ -279,7 +296,7 @@ db.run(`CREATE TABLE IF NOT EXISTS usage_log (
 )`);
 // 2026-08-01 加 model 列：以前只有一个模型，现在 DeepSeek 和 Claude 混着用，
 // 不记型号就没法分开算钱（两家单价差 10 倍以上）。老行的 model 为 NULL。
-try { db.run(`ALTER TABLE usage_log ADD COLUMN model TEXT`); } catch { /* 已经加过 */ }
+dbTry(`ALTER TABLE usage_log ADD COLUMN model TEXT`)
 // Web Push 订阅（iOS PWA 锁屏推送）
 db.run(`CREATE TABLE IF NOT EXISTS push_subs (endpoint TEXT PRIMARY KEY, sub TEXT, created_at TEXT)`);
 
@@ -453,8 +470,8 @@ db.run(`CREATE TABLE IF NOT EXISTS exercises (
   created_at    TEXT DEFAULT (datetime('now','localtime'))
 )`);
 // 迁移：旧表可能没有 difficulty / mood 列
-try { db.run(`ALTER TABLE exercises ADD COLUMN difficulty INTEGER DEFAULT 0`); } catch {}
-try { db.run(`ALTER TABLE exercises ADD COLUMN mood INTEGER DEFAULT 0`); } catch {}
+dbTry(`ALTER TABLE exercises ADD COLUMN difficulty INTEGER DEFAULT 0`)
+dbTry(`ALTER TABLE exercises ADD COLUMN mood INTEGER DEFAULT 0`)
 
 // 6. body_weight 体重
 db.run(`CREATE TABLE IF NOT EXISTS body_weight (
@@ -492,7 +509,7 @@ db.run(`CREATE TABLE IF NOT EXISTS location (
 // 24h 自动清理原始坐标（隐私：不存历史轨迹）
 setInterval(() => {
   try { dbRun("DELETE FROM location WHERE created_at < datetime('now','localtime','-24 hours')"); }
-  catch {}
+  catch (e) { console.warn("[Bridge] 位置历史清理失败:", e.message); } // 清理失败=轨迹在堆积，必须留痕
 }, 60 * 60e3);
 
 // 索引
@@ -507,7 +524,7 @@ try {
   db.run(`UPDATE meals SET meal_type='午餐' WHERE meal_type IN ('lunch','Lunch')`);
   db.run(`UPDATE meals SET meal_type='晚餐' WHERE meal_type IN ('dinner','Dinner')`);
   db.run(`UPDATE meals SET meal_type='加餐' WHERE meal_type IN ('snack','Snack')`);
-} catch { /* 表可能还不存在 */ }
+} catch (e) { console.warn("[Bridge] meal_type 迁移跳过:", e.message); }
 
 // ==============================================================
 const VAPID_PUB = process.env.VAPID_PUB || "REDACTED-VAPID-PUB";
@@ -526,9 +543,7 @@ async function sendPushAll(title, body) {
   }
 }
 // FTS5 全文索引
-try { db.run(`CREATE VIRTUAL TABLE IF NOT EXISTS conv_fts USING fts5(content, content_rowid='rowid')`); } catch {}
-saveDb();
-
+dbTry(`CREATE VIRTUAL TABLE IF NOT EXISTS conv_fts USING fts5(content, content_rowid='rowid')`); // FTS5 挂了搜索会静默哑掉，必须留痕
 // 文件上传
 const uploadDir = path.join(DATA_DIR, "uploads");
 if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
@@ -3546,5 +3561,20 @@ app.get("/api/health", async (req, res) => {
 // 账本快照：起来记一笔，之后每 6 小时记一笔（Models 页的真实口径靠它）
 snapshotLedgers();
 setInterval(snapshotLedgers, 6 * 3600 * 1000).unref();
+
+// ============ 崩溃与被吞异常的兜底（2026-09-05，docs/LOGGING.md）============
+// 兜底只负责让它出现在 journalctl 里，不负责救——
+// 这个系统的头号敌人是「静默失败」，usage_log 断更一天没人发现那种。
+process.on("unhandledRejection", (reason) => {
+  console.error("[Bridge] unhandledRejection:", reason?.stack || reason);
+});
+process.on("uncaughtException", (err) => {
+  console.error("[Bridge] uncaughtException:", err.stack || err);
+});
+// Express 错误中间件：必须注册在所有路由之后
+app.use((err, req, res, next) => {
+  console.error(`[Bridge] ${req.method} ${req.path} 500:`, err?.stack || err);
+  res.status(500).json({ error: err?.message || "internal error" });
+});
 
 server.listen(PORT, () => console.log(`Bridge → http://0.0.0.0:${PORT}`));
