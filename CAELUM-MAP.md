@@ -66,4 +66,5 @@
   在那之前记忆的加载条件①（活跃锚点）恒为 False，只有条件②（指向过去的说法）在跑。
   待做：关系状态可写可落盘 + 她点头的确认界面（P4）
 - 废弃物已归档：root `archive/`（memory/、haven-ombre/）、nox-app `archive/`（一代 backend、render/Dockerfile）
+- 🔭 **观察点：支付宝 AI 开放平台（aipay.alipay.com，2026-07 上线邀测）**——蜜雪冰城/肯德基/东航等首批以 MCP 插件/Skill 接入「阿宝」，走平台托管不对外发个人 Key。**等它开放个人开发者接入时接一次 = 白得一串茶饮/餐饮品牌**（喜茶/奈雪/茶百道等目前均无独立 MCP）。集成入口：Studio → MCP 面板（/api/nox/integrations）
 - 独立小项目（2026-09-05 确认保留，不归档）：`dsh-vscode-layout`（DSH 的 IDE 改造）、`fsr402-*`（传感器硬件实验）、`pixel-beads-generator`（拼豆工具）
