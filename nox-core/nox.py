@@ -19,10 +19,11 @@ from config import Config, _build_llm, config as default_config
 from context import ContextProviderRegistry
 from context.base import Turn
 from context.timeline import humanize
+from context.providers.understanding import has_live_anchor
 from context.providers import (
     HealthProvider, HomeProvider, LocationProvider, MemoryProvider,
     MoodProvider, MusicProvider, ResonanceProvider, TimeProvider, TodoProvider,
-    WeatherProvider,
+    UnderstandingProvider, WeatherProvider,
 )
 from memory import tools as memory_tools
 from memory.archiver import ArchiveResult, Archiver
@@ -33,11 +34,14 @@ from personality import prompt as personality
 from personality import scenes
 from router.intent import _NEED_MUSIC, classify, classify_context
 from router.router import RouteResult, Router
+from tools import amap as amap_tools
 from tools import daily as daily_tools
+from tools import didi as didi_tools
 from tools import diet as diet_tools
 from tools import eryu as eryu_tools
 from tools import ha as ha_tools
 from tools import intimate as intimate_tools
+from tools import kd100 as kd100_tools
 from tools import misc as misc_tools
 from tools import netease as netease_tools
 from tools import notion as notion_tools
@@ -46,6 +50,7 @@ from tools import reading as reading_tools
 from tools import room as room_tools
 from tools import search as search_tools
 from tools import tracker as tracker_tools
+from tools import train as train_tools
 from tools import watching as watching_tools
 from tools.bridge_client import BridgeClient
 from tools.mcp_client import McpClient
@@ -241,6 +246,46 @@ class Nox:
         else:
             logger.info("未配置 NOX_NETEASE_URL，跳过 netease 账号工具")
 
+        # ---- 国内 MCP（2026-09-05）：高德/滴滴/快递100/12306 ----
+        # 纪律：新块只能往后加（netease 之后、_build_prefix 之前），
+        # 工具注册顺序是缓存前缀的一部分
+        if self.cfg.amap_url:
+            amap_tools.register_all(
+                self.loop,
+                McpClient(self.cfg.amap_url, name="amap", timeout=self.cfg.amap_timeout),
+            )
+            logger.info("amap 地点工具已注册（%s）", self.cfg.amap_url)
+        else:
+            logger.info("未配置 NOX_AMAP_MCP_URL，跳过 amap 地点工具")
+
+        # 滴滴：只接预估/链接/查单。他不下单（tools/didi.py 头部红线）
+        if self.cfg.didi_url:
+            didi_tools.register_all(
+                self.loop,
+                McpClient(self.cfg.didi_url, name="didi", timeout=self.cfg.didi_timeout),
+            )
+            logger.info("didi 打车工具已注册（%s）", self.cfg.didi_url)
+        else:
+            logger.info("未配置 NOX_DIDI_MCP_URL，跳过 didi 打车工具")
+
+        if self.cfg.kd100_url:
+            kd100_tools.register_all(
+                self.loop,
+                McpClient(self.cfg.kd100_url, name="kd100", timeout=self.cfg.kd100_timeout),
+            )
+            logger.info("kd100 快递工具已注册（%s）", self.cfg.kd100_url)
+        else:
+            logger.info("未配置 NOX_KD100_MCP_URL，跳过 kd100 快递工具")
+
+        if self.cfg.train_url:
+            train_tools.register_all(
+                self.loop,
+                McpClient(self.cfg.train_url, name="train", timeout=self.cfg.train_timeout),
+            )
+            logger.info("train 火车票工具已注册（%s）", self.cfg.train_url)
+        else:
+            logger.info("未配置 NOX_TRAIN_MCP_URL，跳过 train 火车票工具")
+
         # 启动时取一次核心准则，之后**永不重取**。
         # 不做定时刷新：糖糖明确说了不需要，需要新记忆时他会自己调
         # recall_memory。定时刷新会让缓存前缀变动，得不偿失。
@@ -277,6 +322,13 @@ class Nox:
         # 传取值函数：attention 在 `api/server.py` 的 `_build_attention`
         # 里才造出来，那时候这里早注册完了（同上面 HealthProvider 的 world_ref）
         self.context.register(ResonanceProvider(
+            attention_ref=lambda: getattr(self, "attention", None)))
+        # 他理解着她的哪几件事（2026-09-05）。和上面那个是同一个教训的第二次：
+        # 理解层把「她说不想干了 = 觉得投入没意义」算出来写进 Registry，
+        # 不给他读就等于没算（CAELUM-MAP 三问之二：谁消费它）。
+        #
+        # 理解层没开时它渲染成空串，一个字都不占 —— 所以可以直接进每轮名单
+        self.context.register(UnderstandingProvider(
             attention_ref=lambda: getattr(self, "attention", None)))
         # 注册但**不进每轮名单**（见 _dynamic）。它一次检索约 7 秒，
         # 而且每轮塞不同记忆会让 dynamic_system 每轮都变，
@@ -481,7 +533,12 @@ class Nox:
         # 闲聊只有 time+mood（都是本地计算）；提到家电才拉 home，
         # 问到身体才拉 health。轻量路径强制最小集 —— 那条路的意义就是快。
         light = classify(text, has_images=has_images).light
-        names = classify_context(text, light=light)
+        # 他心里正搁着事的时候，才值得花 650ms 去翻记忆（2026-09-05 解禁）。
+        # 由理解层给答案，不在这里另写一套判断 —— 两处写迟早不一致
+        names = classify_context(
+            text, light=light,
+            has_understanding=has_live_anchor(getattr(self, "attention", None)),
+        )
         parts = [self.context.render(
             names, turn=Turn(text=text, voice=voice, scene=scene))]
         if voice:

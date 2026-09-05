@@ -19,6 +19,7 @@ import base64
 import json
 import logging
 import os
+import threading
 import urllib.request
 import uuid
 from collections import OrderedDict
@@ -46,7 +47,9 @@ from attention.service import (
 from attention.care.watching import WatchingCheck
 from attention.events import ExperienceEvent
 from attention.dejection import looks_like_giving_up
-from attention.appraisal import RuleAppraiser
+from attention import appraisal_llm
+from attention.appraisal import ANCHOR_PREFIX, RuleAppraiser
+from attention.appraisal_llm import LLMAppraiser
 from tools.local_link import LocalLink, read_secret
 from tools import computer as computer_tools
 from tools import room as room_tools
@@ -486,9 +489,16 @@ def _build_attention(core: Nox, sessions: "Sessions", db: Store) -> AttentionSer
             if _utility_cfg is not None and getattr(_utility_cfg, "usable", False):
                 from agent.adapters import make_adapter as _make_adapter
                 _pool_adapter = _make_adapter(_utility_cfg)
+            _trends_client = None
+            if getattr(core.cfg, "trends_url", ""):
+                from tools.mcp_client import McpClient as _McpClient
+                _trends_client = _McpClient(
+                    core.cfg.trends_url, name="trends",
+                    timeout=getattr(core.cfg, "trends_timeout", 15.0),
+                )
             topics_pool = TopicPool(
                 Path(core.cfg.db_path).parent / "topics.db",
-                world=world, adapter=_pool_adapter,
+                world=world, adapter=_pool_adapter, trends_client=_trends_client,
             )
             # 挂到 core 上：路由和 lifespan 从这儿拿（同 core.world 的理由）
             core.topics = topics_pool
@@ -784,7 +794,7 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
             return history
         return history[-VOICE_HISTORY:]
 
-    def _turn_ends(sid: str, text: str = "") -> None:
+    def _turn_ends(sid: str, text: str = "", reply: str = "") -> None:
         """一轮结束、消息真的落库之后，把这轮新留的纸条基准线校准到现在。
 
         ⚠️ **不做这一步，整条唤醒链永远不会触发，而且是静默的。**
@@ -923,6 +933,93 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
         except Exception:  # noqa: BLE001
             # 对齐这个函数的既有风格：增强路径炸了也绝不影响对话主链
             logger.exception("ConversationEvent 处理失败（不影响对话）")
+
+        # 理解层（2026-09-05）：她这句话**可能意味着什么**。
+        #
+        # ⚠️ 必须在上面那道测试会话闸门之内 —— 它会写 Registry（R6）。
+        # 放在最后是因为它是这个函数里唯一要打网络的一步，
+        # 前面那些本地计算不该等它。
+        try:
+            _appraise_async(sid, text, reply)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("意义推断启动失败（不影响对话）: %s", exc)
+
+    def _appraise_async(sid: str, text: str, reply: str) -> None:
+        """后台线程里做意义推断（理解层，2026-09-05）。
+
+        ## 🔴 为什么必须是后台线程
+
+        `_turn_ends` 跑在 SSE **`done` 帧之前**（见 `/chat/stream` 那个
+        生成器：`_turn_ends` 之后才 yield done）。在这里同步调 LLM
+        会把整条流的收尾拖住 1-2 秒 —— 正文早就流完了，进度条却一直转，
+        而且 bridge 要靠 done 帧记账。
+
+        抄 `_maybe_compact_async` 的形状（同一个文件，压缩就是这么跑的：
+        daemon 线程 + utility 模型 + 失败只记日志）。
+
+        ## 三种模式（`NOX_LLM_APPRAISAL`）
+
+            off     根本不起线程（默认）
+            shadow  跑完只记日志，**不写 Registry** —— 先看它判得准不准
+            on      写 Registry，走和规则版完全同一条下游
+
+        影子模式不是可有可无的谨慎：理解判错的后果是他念叨一件她根本没说的事，
+        而她无从知道他为什么这么想（`appraisal.py` 模块头）。
+        先看一周日志再转正，比出事之后回滚便宜得多。
+        """
+        m = appraisal_llm.mode()
+        if m == "off" or not text:
+            return
+
+        utility = core.router.light_adapter if core.router else None
+        if utility is None:
+            return
+
+        def _run() -> None:
+            try:
+                # 已有锚点喂给它，让它优先复用而不是每轮造一个新的 ——
+                # 「毕设」和「毕业设计」分成两条，他就会以为是两件事
+                known = tuple(
+                    a.subject[len(ANCHOR_PREFIX):]
+                    for a in attention.engine.registry.list()
+                    if a.subject.startswith(ANCHOR_PREFIX)
+                )
+                ap = LLMAppraiser(lambda: utility).appraise_turn(text, reply, known)
+                if ap is None:
+                    return
+
+                if m == "shadow":
+                    # 🔴 影子模式：**到此为止，一个字都不写库。**
+                    # 日志格式固定成一行，方便一周后 grep 出来整批看
+                    logger.info(
+                        "[理解层·影子] %s｜%s｜意义=%s｜强度 %.2f 确信 %.2f｜原话=%.40s",
+                        ap.subject, ap.valence, ap.meaning or "（无）",
+                        ap.intensity, ap.confidence, text,
+                    )
+                    return
+
+                decision = attention.engine.handle(ExperienceEvent(
+                    source=appraisal_llm.SOURCE,
+                    type=appraisal_llm.TYPE,
+                    payload={
+                        "text": text,
+                        # 摊平成 dict —— payload 要能进日志、能 to_dict
+                        # （events.py 的约定），不能塞对象
+                        "appraisal": ap.to_payload(),
+                        "session_id": sid,
+                    },
+                    origin_context={"sid": sid},
+                ))
+                logger.info(
+                    "[理解层] %s → %s（%s）",
+                    ap.subject, decision.action, decision.reason,
+                )
+            except Exception:  # noqa: BLE001
+                # 🔴 不许静默（docs/LOGGING.md）。这一层挂了的表现是
+                # 「他好像没那么懂我了」，没有任何报错——不留痕就查不出来
+                logger.exception("意义推断失败（不影响对话）")
+
+        threading.Thread(target=_run, daemon=True).start()
 
     def _maybe_compact_async(sid: str) -> None:
         """后台线程触发一次压缩。
@@ -1745,7 +1842,7 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
         # ⚠️ 完整历史 + 这轮新增。只传 r.messages 的话，通话轮会把
         # 内存缓存削成截断后那几条，下一次文字聊天跟着丢上下文（见 _for_voice）
         sessions.put(sid, list(history) + r.messages[len(sent):])
-        _turn_ends(sid, req.text or "")
+        _turn_ends(sid, req.text or "", r.text or "")
 
         result = r.result
         # 失败时给人话；但如果模型已经说了什么（比如截断的半截），
@@ -1826,7 +1923,7 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
 
             # 完整历史 + 新增，别让通话把缓存削短（见 _for_voice 的警告）
             sessions.put(sid, list(history) + final.messages[len(sent):])
-            _turn_ends(sid, req.text or "")
+            _turn_ends(sid, req.text or "", final.text or "")
             # 附带产物单独发一帧，让前端能在收尾之前就把图显示出来。
             # 外层 type 固定 attachment，具体是什么放 kind ——
             # 之前写成 {"type": "attachment", **att}，att 自带的
