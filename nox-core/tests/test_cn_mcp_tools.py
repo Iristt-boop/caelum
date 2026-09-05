@@ -110,7 +110,7 @@ def test_cn_trending_parses_numbered_lines(monkeypatch):
         "4. 这是一条很长很长的正经条目标题不要被截掉\n"
     ))
     monkeypatch.setattr(scout, "_TRENDS", {"client": client})
-    out = scout.cn_trending("get-weibo-trending")
+    out = scout.cn_trending("get_weibo_trending")
     titles = [c.title for c in out]
     assert "某某明星官宣结婚" in titles
     assert "某地突发大雨" in titles
@@ -119,25 +119,25 @@ def test_cn_trending_parses_numbered_lines(monkeypatch):
     assert all(c.source == "trendshub" for c in out)
     assert all(c.source_id.startswith("trend:") for c in out)
     assert all(c.category == "" for c in out)  # 方向由 DIRECTIONS 盖
-    assert client.calls == [("get-weibo-trending", {})]
+    assert client.calls == [("get_weibo_trending", {})]
 
 
 def test_cn_trending_inactive_without_client(monkeypatch):
     """没配 trends 桥 → 静默返回空（本地开发的默认状态）。"""
     monkeypatch.setattr(scout, "_TRENDS", {"client": None})
-    assert scout.cn_trending("get-weibo-trending") == []
+    assert scout.cn_trending("get_weibo_trending") == []
 
 
 def test_cn_trending_failure_returns_empty(monkeypatch):
     """桥挂了只跳过自己 —— 不能连累同方向的其他抓取器。"""
     monkeypatch.setattr(scout, "_TRENDS", {"client": _TrendsClient(ok=False)})
-    assert scout.cn_trending("get-zhihu-trending") == []
+    assert scout.cn_trending("get_zhihu_trending") == []
 
 
 def test_trends_wired_into_existing_directions():
     """中文源挂在既有方向上（weird/film/books）—— 不新增类别。"""
     def consts(f):
         return str(getattr(f, "__code__", f).co_consts) if hasattr(f, "__code__") else str(f)
-    assert any("get-weibo-trending" in consts(f) for f in scout.DIRECTIONS["weird"])
-    assert any("get-douban-rank" in consts(f) for f in scout.DIRECTIONS["film"])
-    assert any("get-weread-rank" in consts(f) for f in scout.DIRECTIONS["books"])
+    assert any("get_weibo_trending" in consts(f) for f in scout.DIRECTIONS["weird"])
+    assert any("get_douban_rank" in consts(f) for f in scout.DIRECTIONS["film"])
+    assert any("get_weread_rank" in consts(f) for f in scout.DIRECTIONS["books"])

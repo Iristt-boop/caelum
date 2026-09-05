@@ -265,15 +265,15 @@ DIRECTIONS: dict[str, list[_Fetcher]] = {
     "art": [lambda: gnews("艺术 展览 美术馆")],
     "design": [lambda: gnews("UI 设计 字体 排版")],
     "film": [lambda: gnews("电影 导演 影评"),
-             lambda: cn_trending("get-douban-rank", {"type": "movie"})],
+             lambda: cn_trending("get_douban_rank", {"type": "movie"})],
     "books": [lambda: gnews("新书 书评 作家"),
-              lambda: cn_trending("get-weread-rank")],
+              lambda: cn_trending("get_weread_rank")],
     "music": [lambda: gnews("专辑 乐评 新歌")],
     "weird": [
         lambda: hn("", 100),
-        lambda: cn_trending("get-weibo-trending"),
-        lambda: cn_trending("get-zhihu-trending"),
-        lambda: cn_trending("get-bilibili-rank"),
+        lambda: cn_trending("get_weibo_trending"),
+        lambda: cn_trending("get_zhihu_trending"),
+        lambda: cn_trending("get_bilibili_rank"),
     ],
 }
 
