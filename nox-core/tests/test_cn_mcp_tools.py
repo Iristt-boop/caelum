@@ -17,7 +17,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from tools import amap as amap_tools  # noqa: E402
 from tools import didi as didi_tools  # noqa: E402
-from tools import kd100 as kd100_tools  # noqa: E402
+from tools import kd100 as kd100_tools
+from tools import mcd as mcd_tools  # noqa: E402
 from tools import train as train_tools  # noqa: E402
 from topic_pool import scout  # noqa: E402
 
@@ -45,7 +46,7 @@ class FakeMcp:
 # ------------------------------------------------------------ 通用行为
 
 
-@pytest.mark.parametrize("module", [amap_tools, didi_tools, kd100_tools, train_tools])
+@pytest.mark.parametrize("module", [amap_tools, didi_tools, kd100_tools, mcd_tools, train_tools])
 def test_success_passthrough(module):
     """调用成功 → 服务端文本原样返回。"""
     client = FakeMcp(ok=True, text="返回内容")
@@ -56,7 +57,7 @@ def test_success_passthrough(module):
     assert client.calls[0][0] == module.SERVER_TOOLS[first_name]
 
 
-@pytest.mark.parametrize("module", [amap_tools, didi_tools, kd100_tools, train_tools])
+@pytest.mark.parametrize("module", [amap_tools, didi_tools, kd100_tools, mcd_tools, train_tools])
 def test_failure_raises_not_silence(module):
     """MCP 失败必须 raise —— 吞了他会编造「查到了」（ha.py 的老教训）。"""
     handlers = module.make_handlers(FakeMcp(ok=False))
@@ -67,7 +68,7 @@ def test_failure_raises_not_silence(module):
 
 def test_server_tool_mapping_covers_all_specs():
     """每个 ToolSpec 都要有对应的服务端工具名映射，防手滑。"""
-    for module in (amap_tools, didi_tools, kd100_tools, train_tools):
+    for module in (amap_tools, didi_tools, kd100_tools, mcd_tools, train_tools):
         spec_names = {s.name for s in module._SPECS}
         assert spec_names == set(module.SERVER_TOOLS)
 
@@ -181,3 +182,16 @@ def test_trends_wired_into_existing_directions():
     assert any("get_bilibili_rank" in consts(f) for f in scout.DIRECTIONS["weird"])
     assert any("get_douban_rank" in consts(f) for f in scout.DIRECTIONS["film"])
     assert any("get_weread_rank" in consts(f) for f in scout.DIRECTIONS["books"])
+
+
+# ------------------------------------------------------------ 麦当劳边界
+
+
+def test_mcd_has_no_ordering_tools():
+    """🔴 他不点餐：create/party/draw/bind 类动作工具不许注册。"""
+    for s in mcd_tools._SPECS:
+        server_tool = mcd_tools.SERVER_TOOLS[s.name]
+        assert "create" not in server_tool, server_tool
+        assert "draw" not in server_tool, server_tool
+        assert "bind" not in server_tool, server_tool
+        assert "party-order" not in server_tool, server_tool

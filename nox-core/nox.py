@@ -42,6 +42,7 @@ from tools import eryu as eryu_tools
 from tools import ha as ha_tools
 from tools import intimate as intimate_tools
 from tools import kd100 as kd100_tools
+from tools import mcd as mcd_tools
 from tools import misc as misc_tools
 from tools import netease as netease_tools
 from tools import notion as notion_tools
@@ -285,6 +286,17 @@ class Nox:
             logger.info("train 火车票工具已注册（%s）", self.cfg.train_url)
         else:
             logger.info("未配置 NOX_TRAIN_MCP_URL，跳过 train 火车票工具")
+
+        # 麦当劳：只读九件（门店/菜单/价格/券/订单/活动）—— 下单类不接
+        if self.cfg.mcd_url and self.cfg.mcd_token:
+            mcd_tools.register_all(
+                self.loop,
+                McpClient(self.cfg.mcd_url, name="mcd", timeout=self.cfg.mcd_timeout,
+                          headers={"Authorization": f"Bearer {self.cfg.mcd_token}"}),
+            )
+            logger.info("mcd 麦当劳工具已注册")
+        else:
+            logger.info("未配置 NOX_MCD_MCP_URL/NOX_MCD_TOKEN，跳过 mcd 麦当劳工具")
 
         # 启动时取一次核心准则，之后**永不重取**。
         # 不做定时刷新：糖糖明确说了不需要，需要新记忆时他会自己调
