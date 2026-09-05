@@ -1,10 +1,12 @@
-"""快递100 MCP（https://api.kuaidi100.com/mcp/streamable）—— 包裹轨迹与时效。
+"""快递100 MCP（https://api.kuaidi100.com/mcp/streamable?key=NOX_KD100_KEY）—— 包裹轨迹与时效。
 
 全部只读。按单扣费、40 天内同单号不重复扣 —— 她随口问「我的快递呢」
 不算成本压力，但**别循环轮询**同一个单号，问一次查一次就够了。
+寄件下单类（create_order / cancel_order / order_price）**不接**。
 
-⚠️ 服务端工具名还没实测过（Key 到位后跑 smoke_amap.py 同款流程校正
-SERVER_TOOLS 这一处即可）。
+鉴权：Key 走 URL 参数（.env 的 NOX_KD100_MCP_URL 里已带上），
+customer/secret/userid 绑定在账号侧，调用时不需要。
+工具名 2026-09-05 list_tools 实测。
 """
 
 from __future__ import annotations
@@ -16,10 +18,11 @@ from tools.mcp_client import McpClient
 
 logger = logging.getLogger(__name__)
 
-#: ⚠️ 占位：以 list_tools 实测为准
 SERVER_TOOLS = {
-    "kd100_track": "queryTrack",
-    "kd100_timeliness": "queryTimeliness",
+    "kd100_track": "query_trace",
+    "kd100_auto_number": "auto_number",
+    "kd100_timeliness": "estimate_time",
+    "kd100_price": "estimate_price",
 }
 
 
@@ -30,32 +33,60 @@ def _spec(name: str, description: str, params: dict) -> ToolSpec:
 TRACK = _spec(
     "kd100_track",
     "查快递轨迹：包裹到哪了、什么状态。她说「我的快递呢」「怎么还没到」时用。"
-    "需要快递公司编码和单号，单号她给了就查一次，别反复轮询。",
+    "只需要快递单号（顺丰/中通还要手机号）；不确定是哪家快递就先调 kd100_auto_number 识别。",
     {
         "type": "object",
         "properties": {
-            "number": {"type": "string", "description": "快递单号"},
-            "company": {"type": "string", "description": "快递公司编码，如「jd」「sf」（不确定就先问单号智能识别）"},
+            "kuaidiNum": {"type": "string", "description": "快递单号"},
+            "phone": {"type": "string", "description": "手机号后四位以上，顺丰/中通必填，其他快递不用"},
         },
-        "required": ["number"],
+        "required": ["kuaidiNum"],
+    },
+)
+
+AUTO_NUMBER = _spec(
+    "kd100_auto_number",
+    "智能识别单号属于哪家快递。她只给了单号没说快递公司时，先用这个。",
+    {
+        "type": "object",
+        "properties": {
+            "kuaidiNum": {"type": "string", "description": "快递单号"},
+        },
+        "required": ["kuaidiNum"],
     },
 )
 
 TIMELINESS = _spec(
     "kd100_timeliness",
-    "预估快递送达时间（发货前：什么时候能到）。她说「得等到哪天」时用。",
+    "预估快递送达时间（寄件前）。「今天寄，得等到哪天」时用。"
+    "kuaidicom 用小写编码，如 yuantong / zhongtong / shunfeng。",
     {
         "type": "object",
         "properties": {
-            "company": {"type": "string", "description": "快递公司编码"},
-            "from_address": {"type": "string", "description": "寄件地址"},
-            "to_address": {"type": "string", "description": "收件地址"},
+            "kuaidicom": {"type": "string", "description": "快递公司小写编码"},
+            "from": {"type": "string", "description": "出发地，如「广东省深圳市南山区」"},
+            "to": {"type": "string", "description": "目的地，如「北京海淀区」"},
         },
-        "required": ["company", "from_address", "to_address"],
+        "required": ["kuaidicom", "from", "to"],
     },
 )
 
-_SPECS = (TRACK, TIMELINESS)
+PRICE = _spec(
+    "kd100_price",
+    "预估寄件运费。「寄这个多少钱」时用。顺丰/京东/德邦三家。",
+    {
+        "type": "object",
+        "properties": {
+            "kuaidicom": {"type": "string", "description": "shunfeng / jd / deban"},
+            "recAddr": {"type": "string", "description": "收件地址"},
+            "sendAddr": {"type": "string", "description": "寄件地址"},
+            "weight": {"type": "string", "description": "重量 kg，默认 1.0"},
+        },
+        "required": ["kuaidicom", "recAddr", "sendAddr", "weight"],
+    },
+)
+
+_SPECS = (TRACK, AUTO_NUMBER, TIMELINESS, PRICE)
 
 
 def make_handlers(client: McpClient) -> dict[str, object]:
