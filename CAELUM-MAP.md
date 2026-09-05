@@ -57,4 +57,4 @@
 - 手机端 ToolDrawer 三 tab 纯样子；Home widget 墙部分静态
 - Resonance 不参与开口决策（V5）；话题池前端页未接（API 已有）
 - 废弃物已归档：root `archive/`（memory/、haven-ombre/）、nox-app `archive/`（一代 backend、render/Dockerfile）
-- 三个独立小项目待定去留：`dsh-vscode-layout`（DSH 的 IDE 改造）、`fsr402-*`（传感器硬件实验，建议归档）、`pixel-beads-generator`（拼豆工具）——归 she 拍板
+- 独立小项目（2026-09-05 确认保留，不归档）：`dsh-vscode-layout`（DSH 的 IDE 改造）、`fsr402-*`（传感器硬件实验）、`pixel-beads-generator`（拼豆工具）
