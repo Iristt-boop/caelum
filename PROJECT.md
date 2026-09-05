@@ -7,7 +7,7 @@
 > 最新交接：**`HANDOFF-2026-08-28.md`**（往前：`08-08` → `08-06` → `08-02` → `07-25`）  
 > ⚠️ **HANDOFF 只记那个窗口做了什么，会过期**；本文档才是现状。  
 > 两者冲突时以本文档为准 —— 08-08 校准就是因为它俩差了 23 个工具。  
-> 最后更新：2026-09-05（**Nox 理解层 P1+P3 上线，见第四十四节** ——
+> 最后更新：2026-09-05 晚（**国内 MCP 五件套接入：高德/滴滴/麦当劳已上线，12306/快递100/瑞幸状态见第四十五节**；往前：Nox 理解层 P1+P3 上线，见第四十四节 ——
 > 意义推断（LLM Appraisal，影子模式）+ 事件锚点 + UnderstandingProvider +
 > MemoryProvider 解禁（OB 加只读检索）。同日修正一处会害人的文档错误：
 > **线上 nox-core 是 Python 3.10.12 不是 3.12**，部署重启前必须先在线上编译；
@@ -6615,3 +6615,34 @@ Evaluator 把决策段拆成规则版和 LLM 版共用的 `_decide_from_appraisa
 - 回滚点：`/root/nox-core/*.bak-0905`、`.env.bak-0905`、`/root/ombre-brain/server.py.bak-0905`
 - 三个开关互相独立：理解层关掉不影响记忆解禁，反之亦然
 - 一周后看影子日志：`journalctl -u nox-core | grep '\[理解层·影子\]'`
+
+## 四十五、国内 MCP 五件套：Nox 接上真实世界（2026-09-05 晚）
+
+调研+接入同日完成。**白名单纪律**：每个 server 只挑核心工具（全量 40+ 会 +6-10K 前缀 token）；
+**滴滴/麦当劳红线**：下单、取消、抽奖、绑券、写地址类动作工具**故意不注册**——他查询、算价、发链接，
+扣扳机的永远是糖糖。McpClient 新增 `headers` 参数（远程 MCP 的 Bearer Token 只进请求头不进日志）。
+
+| server | 端点 | 白名单工具 | 状态 |
+|---|---|---|---|
+| 高德官方 | `https://mcp.amap.com/mcp?key=` + **现有 NOX_GAODE_KEY 直接可用** | amap_search_poi / search_nearby / route_driving / route_transit / weather（工具 63→70） | ✅ 上线，天气端到端验证 |
+| 滴滴官方 | `https://mcp.didichuxing.com/mcp-servers?key=`（App 扫码 Key） | didi_estimate / ride_link / order_status（**create/cancel 不接**） | ✅ 上线 |
+| 麦当劳官方 | `https://mcp.mcd.cn/mcp-servers/mcd-mcp` + Bearer（NOX_MCD_TOKEN） | mcd_nearby_stores / menu / meal_detail / price / order / orders / my_coupons / available_coupons / campaign（**create/party/draw/bind 不接**，工具 70→82） | ✅ 上线，活动日历真数据验证 |
+| Trends Hub | supergateway 桥 `http://127.0.0.1:9092/mcp`（systemd **mcp-trends.service**） | **不进工具列表**——scout 中文源：微博/知乎/B站→weird、豆瓣电影→film、微信读书→books | ✅ 上线 |
+| 12306（Joooook/12306-mcp 桥 :9093，systemd **mcp-train.service**） | get-tickets / get-interline-tickets / get-station-code-by-names | ⚠️ 境外冒烟已过（cookie 预热+Referer+UA），**待配 NOX_TRAIN_MCP_URL 激活** | 待激活 |
+| 快递100 | `https://api.kuaidi100.com/mcp/streamable?key=…` | kd100_track / timeliness（个人可注册，按单扣费 40 天同单号不重复扣） | ⏸️ 等糖糖注册 |
+| 瑞幸 | 端点在登录会话/WAF 后（CSRF+SPA 兜底），需从 open.lkcoffee.com/docs 复制 MCP 配置 JSON 给接线 | — | ⏸️ 等配置 |
+
+### 坑（都踩过，别再踩）
+
+1. **trends-hub 服务端工具名是下划线**（get_weibo_trending），腾讯云收录页写连字符——list_tools 实测为准。
+2. **trends 返回是 XML 标签块**且各源字段不一（微博 popularity / 豆瓣 rating_value / B站 author），
+   `scout.cn_trending` 按 `<title>` 切块解析、单源上限 12 条；zhihu 源从 VPS 抓偏慢会超时，容忍跳过。
+3. **SSH 22 口和 443 一起抖**（境外路由波动）：网关日志 `logs/caelum-gateway.log` 出现「链路建立」=VPS 活着，
+   重试即可，别慌。
+4. **双会话并发提交**：commit 消息文件禁止放 /tmp——Git Bash 的 /tmp 是 MSYS Temp，Windows python 的
+   /tmp 是 D:	mp，错位导致 3 条提交挂错消息（已 rebase 修正并 force push，新哈希见记忆/上列提交）。
+   消息文件放 `.git/` 内+唯一名；对方会话 force push 后必须先 pull。
+5. 瑞幸端点 POST /mcp 存在但被 WAF 的 CSRF+SPA 兜底挡住，盲猜不出真实路径——等她从浏览器复制配置 JSON。
+
+**边界**：新增工具全部 read-only 或链接确认制；`check-boundaries.sh` 无新越界。
+瑞幸/麦当劳的下单能力**存在但未接**——糖糖哪天想要「Nox 帮我点份麦乐鸡」，明确说一声再放开。
