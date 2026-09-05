@@ -38,10 +38,13 @@ class McpClient:
     改连接复用救不了。
     """
 
-    def __init__(self, url: str, name: str = "mcp", timeout: float = 30.0) -> None:
+    def __init__(self, url: str, name: str = "mcp", timeout: float = 30.0,
+                 headers: dict[str, str] | None = None) -> None:
         self.url = url
         self.name = name
         self.timeout = timeout
+        # 鉴权头（如麦当劳/瑞幸远程 MCP 的 Bearer Token）。只进请求头，不进 repr/日志
+        self.headers = headers or {}
 
     def __repr__(self) -> str:
         # 脱敏 —— ha-mcp 的访问凭据在 URL 路径里，异常栈和 repr 都会泄露它
