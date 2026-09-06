@@ -49,7 +49,9 @@ _RESPONSE: dict[str, str] = {
 
 # 模型每轮在回复末尾附的标记，解析完会从正文里剥掉。
 # 用方括号加固定前缀，避免和正常内容混淆。
-_MOOD_TAG = re.compile(r"\[mood:\s*([^\]]{1,12})\]\s*$", re.MULTILINE)
+# ⚠️ IGNORECASE：模型偶尔写 [Mood:平静]（大写 M），生产库漏过 3 次
+# （2026-09-06 查证）—— 不剥的话她屏幕上就是一行裸文字。
+_MOOD_TAG = re.compile(r"\[mood:\s*([^\]]{1,12})\]\s*$", re.MULTILINE | re.IGNORECASE)
 
 # 让模型顺带判断的指令。挂在动态块里，不进缓存前缀。
 MOOD_INSTRUCTION = (

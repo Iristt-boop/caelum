@@ -162,6 +162,9 @@ class MoodTagFilter:
     做法：见到 '[' 就转入缓冲，不再往外吐；等能确定它不是 mood 标记了，
     把缓冲原样放出去。代价是正文里出现方括号时会延迟几个字符才显示，
     这比让她看见 [mood:平静] 强得多。
+
+    ⚠️ 大小写不敏感。模型偶尔手滑写 [Mood:开心] —— 生产库里漏过 3 次
+    全是大写变体（2026-09-06 查证）。比较时 lower，放行时吐原始文本。
     """
 
     _PREFIX = "[mood:"
@@ -175,14 +178,15 @@ class MoodTagFilter:
         for ch in chunk:
             if self._buf:
                 self._buf += ch
-                if self._buf.startswith(self._PREFIX):
+                lowered = self._buf.lower()
+                if lowered.startswith(self._PREFIX):
                     # 确认是标记，吃掉直到闭合
                     if ch == "]":
                         self._buf = ""
                     continue
-                if self._PREFIX.startswith(self._buf):
+                if self._PREFIX.startswith(lowered):
                     continue          # 还可能是，继续缓冲
-                out.append(self._buf)  # 确认不是，放行
+                out.append(self._buf)  # 确认不是，放行（原始大小写）
                 self._buf = ""
             elif ch == "[":
                 self._buf = ch
@@ -194,7 +198,7 @@ class MoodTagFilter:
         """流结束时把剩下的放出去（除非它正好是个没闭合的标记）。"""
         left = self._buf
         self._buf = ""
-        return "" if left.startswith(self._PREFIX) else left
+        return "" if left.lower().startswith(self._PREFIX) else left
 
 
 class SegmentSplitter:

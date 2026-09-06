@@ -44,6 +44,24 @@ def test_filter_flushes_incomplete_bracket():
     assert out == "结尾有个 ["
 
 
+def test_filter_blocks_uppercase_mood_tag():
+    """模型偶尔手滑写 [Mood:xxx] —— 生产库漏过 3 次全是大写（2026-09-06）。
+    过滤器必须大小写不敏感，且放行普通文本时保持原始大小写。"""
+    f = MoodTagFilter()
+    out = "".join(f.feed(c) for c in "在呢\n[Mood:开心]") + f.flush()
+    assert out == "在呢\n"
+
+    # 带空格的大写变体（库里那条 [Mood: 撒娇]）
+    f = MoodTagFilter()
+    out = "".join(f.feed(c) for c in ["[Mood", ": 撒娇]"]) + f.flush()
+    assert out == ""
+
+    # 大小写混合 + 普通方括号不受影响
+    f = MoodTagFilter()
+    out = "".join(f.feed(c) for c in "x[Mo od:]y [OK] [mood:平静]") + f.flush()
+    assert out == "x[Mo od:]y [OK] "
+
+
 # ------------------------------------------------------ 流式 loop
 
 class FakeStreamAdapter:

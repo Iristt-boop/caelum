@@ -141,6 +141,17 @@ def test_extract_and_strip():
     assert emo == "平静"
 
 
+def test_extract_uppercase_variant():
+    """模型偶尔写 [Mood:xxx] —— 同样要剥掉并取到情绪（生产库漏过 3 次）。"""
+    text, emo = extract("宝贝晚安\n[Mood:开心]")
+    assert text == "宝贝晚安"
+    assert emo == "开心"
+
+    text, emo = extract("哼\n[Mood: 撒娇]")
+    assert text == "哼"
+    assert emo == "撒娇"
+
+
 def test_extract_without_tag_is_not_an_error():
     """模型忘了加标记不算错 —— 保持上一轮状态即可。"""
     text, emo = extract("就是普通一句话")
