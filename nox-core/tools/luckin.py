@@ -10,9 +10,12 @@
 
 from __future__ import annotations
 
+import json
 import logging
 
 from agent.llm import ToolSpec
+from orders import luckin as luckin_order_flow
+from tools import context as tool_context
 from tools.mcp_client import McpClient
 
 logger = logging.getLogger(__name__)
@@ -35,7 +38,11 @@ def _spec(name: str, description: str, params: dict) -> ToolSpec:
 SHOPS = _spec(
     "luckin_shops",
     "查附近的瑞幸门店。「附近有瑞幸吗」「这家瑞幸还开着吗」时用。"
-    "经纬度用 amap_search_poi 查或用环境里她的位置。",
+    "🔴 **她提到具体地名时（「中原万达附近」「公司楼下」），必须先用 "
+    "amap_search_poi 把那个地名查成坐标再传进来，不许用她当前的位置** ——"
+    "2026-09-06 就是直接用了当前位置，她要中原万达却搜到了桐柏路。"
+    "只有她说「附近」「我这儿」这种没指地方的时候，才用环境里她的位置。"
+    "同一个商场可能有两家店（中原万达就有），把 deptName 传上去能收窄。",
     {
         "type": "object",
         "properties": {
@@ -76,8 +83,11 @@ PRODUCT = _spec(
 
 PREVIEW = _spec(
     "luckin_preview",
-    "预览订单：算出这一单的总价和可用优惠。🔴 **下单前的必经步骤**——"
-    "把商品明细、总价、门店复述给她，得到明确确认才能调 luckin_order。",
+    "预览订单：算出这一单的原价、优惠和实付。她问「多少钱」时用。"
+    "🔴 返回里 totalInitialPrice=原价 privilegeMoney=优惠 discountPrice=实付，"
+    "**优惠那一项一定要说**——瑞幸的券是 preview 自动挑的，"
+    "你不说她就不知道有没有用上（2026-09-06 有过一次 20 块买了本该 10.9 的）。"
+    "⚠️ 下单不用先调这个：luckin_order 出卡时系统会自己调一次取权威价。",
     {
         "type": "object",
         "properties": {
@@ -102,9 +112,11 @@ PREVIEW = _spec(
 
 ORDER = _spec(
     "luckin_order",
-    "创建瑞幸订单。🔴 **确认制**：必须先 luckin_preview 报价并得到她的明确确认；"
-    "有优惠券的话 couponCodeList 从 previewOrder 的返回里拿。"
-    "下单成功后把取餐门店和取餐码告诉她。",
+    "出一张**待确认**的瑞幸下单卡给她。🔴 **这个工具不会下单** ——"
+    "它只把门店、明细、原价/优惠/实付算好，发一张卡到聊天里，"
+    "等她自己点「确认下单」才真的下。所以：**不要说「已经下单了」**，"
+    "也不要复述价格明细（卡片上都有），说一句「卡发你了，你看一眼」就够。"
+    "价格和优惠券由系统自己调 previewOrder 取权威值，你不用管、也不要转述。",
     {
         "type": "object",
         "properties": {
@@ -159,17 +171,145 @@ CANCEL = _spec(
 _SPECS = (SHOPS, SEARCH, PRODUCT, PREVIEW, ORDER, ORDER_DETAIL, CANCEL)
 
 
-def make_handlers(client: McpClient) -> dict[str, object]:
+#: 查门店必须有坐标。空着打上去，服务端只回一句 `empty String`，
+#: 从日志完全看不出是**谁**空了（2026-09-06 实录）。
+_NEEDS_COORDS = ("luckin_shops",)
+
+
+def _data(client: McpClient, tool: str, args: dict) -> dict:
+    """调一次 MCP 并把 data 段取出来。失败就抛（不许吞成空）。"""
+    r = client.call(SERVER_TOOLS[tool], args)
+    if not r.ok:
+        raise RuntimeError(f"瑞幸 {tool} 失败: {r.error}（传了 {sorted(args)}）")
+    try:
+        body = json.loads(r.text or "")
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(f"瑞幸 {tool} 返回的不是 JSON: {(r.text or '')[:80]}") from exc
+    if body.get("code") not in (0, "0"):
+        raise RuntimeError(f"瑞幸 {tool} 拒绝了: {body.get('msg')}")
+    return body.get("data") or {}
+
+
+def snapshot_for(client: McpClient, args: dict) -> tuple[dict, dict, str]:
+    """按下单参数算出一份权威快照。返回（卡, 下单参数, 指纹）。
+
+    🔴 **价格和券由 previewOrder 说了算，不问模型要。**
+    模型转述价格这条路一旦留着，就永远会有一次它转述错了而没人发现 ——
+    2026-09-06 那杯 20 块的生椰拿铁就是这么来的（本该 10.9）。
+
+    出卡时调一次，她点确认时**再调一次**并比对指纹 ——
+    价格或券变了就拒绝、重新出卡（调研文档第六节第二条）。
+    """
+    dept_id = str(args.get("deptId") or "")
+    product_list = args.get("productList") or []
+    if not dept_id or not product_list:
+        raise RuntimeError("缺门店或商品，没法算价（deptId / productList 必传）")
+
+    preview = _data(client, "luckin_preview",
+                    {"deptId": dept_id, "productList": product_list})
+
+    #: 附近还有哪几家 —— 她今天那次「中原万达」实际有两家店，
+    #: 他选了远的那个。让她在卡上一眼看见，比让他选准更可靠
+    nearby: list[dict] = []
+    lon, lat = str(args.get("longitude") or ""), str(args.get("latitude") or "")
+    if lon and lat:
+        try:
+            got = _data(client, "luckin_shops", {"longitude": lon, "latitude": lat})
+            nearby = got if isinstance(got, list) else []
+        except Exception as exc:  # noqa: BLE001
+            #: 拿不到候选门店不该挡住下单 —— 少一块信息而已。
+            #: 但要留痕，否则「换一家」按钮悄悄消失没人知道为什么
+            logger.warning("取附近门店失败，卡片少一块：%s", exc)
+
+    card, order_args = luckin_order_flow.build(
+        preview, nearby=nearby, product_list=product_list,
+        longitude=lon, latitude=lat,
+    )
+    return card, order_args, luckin_order_flow.fingerprint(card, order_args)
+
+
+def place(client: McpClient, order_args: dict) -> dict:
+    """真的下单。**只有确认端点会调它** —— 它不在工具表里，模型够不着。"""
+    return _data(client, "luckin_order", order_args)
+
+
+def make_handlers(
+    client: McpClient,
+    *,
+    store_ref: object = None,
+    session_id_ref: object = None,
+) -> dict[str, object]:
     def _call(tool: str, args: dict) -> str:
+        # 🔴 坐标空就**别打 API 碰运气**（2026-09-06）。
+        #
+        # 病根：她说「给我点杯咖啡」不带任何位置词，location Provider
+        # 没加载，他不知道她在哪，于是经纬度传了空串上去。
+        # 服务端回 `queryShopList 返回错误: empty String` —— 这句话
+        # 既不告诉他缺什么，也不告诉他该怎么办，他只能干瞪眼。
+        #
+        # 这是「不许编」那条纪律的同一面：**不知道就说不知道，
+        # 不要传一个空值上去看运气**。现在直接给他一句能照着做的话。
+        if tool in _NEEDS_COORDS:
+            missing = [k for k in ("longitude", "latitude")
+                       if not str(args.get(k) or "").strip()]
+            if missing:
+                raise RuntimeError(
+                    f"不知道她在哪（缺{'、'.join(missing)}），没法查门店。"
+                    "先用 amap_search_poi 查她说的地名，或者直接问她在哪儿。"
+                )
+
         r = client.call(SERVER_TOOLS[tool], args)
         if not r.ok:
-            raise RuntimeError(f"瑞幸查询失败: {r.error}")
+            # 带上工具名和参数键，否则日志里只有一句服务端的错误码，
+            # 查不出是哪一步、传了什么（docs/LOGGING.md：留痕要含输入）
+            raise RuntimeError(
+                f"瑞幸 {tool} 失败: {r.error}（传了 {sorted(args)}）"
+            )
         return r.text or "（瑞幸没返回内容）"
 
-    return {spec.name: (lambda args, _t=spec.name: _call(_t, args)) for spec in _SPECS}
+    def _make_card(args: dict) -> str:
+        """🔴 `luckin_order` 现在**不下单**，只出一张待确认卡（2026-09-06）。
+
+        真正的 `createOrder` 挪到 `/api/nox/orders/{id}/confirm` 后面 ——
+        模型物理上够不到它，因为它不在工具表里。
+
+        这是把「确认制」从一句提示词变成代码。在这之前，`tools/mcd.py` 的
+        `ACTION_TOOLS` 常量定义完之后**整个仓库没有任何地方用到**，
+        测试也只断言「描述里有『确认』二字」—— 验的是那句话写了没有，
+        不是确认真的发生了没有。
+        """
+        store = store_ref() if callable(store_ref) else store_ref
+        if store is None:
+            #: 🔴 **fail-closed**：订单库没接上就拒绝，绝不退回「那就直接下单吧」。
+            #: 退回去的话，一次配置疏漏就让确认闸门整个消失，而且完全不报错
+            raise RuntimeError(
+                "订单确认链路没接上（orders store 缺失），这单不能下。"
+                "如实告诉她现在下不了单，别自己想办法绕过去。"
+            )
+        sid = (session_id_ref() if callable(session_id_ref) else session_id_ref) or ""
+
+        card, order_args, fp = snapshot_for(client, args)
+        oid = store.create(session_id=sid, merchant=luckin_order_flow.MERCHANT,
+                           snapshot={"card": card, "args": order_args}, fingerprint=fp)
+
+        ctx = tool_context.current()
+        if ctx is not None:
+            #: 只把 card 那份带出去 —— args 里有她账号的券码
+            ctx.attach_order(oid, card)
+        else:
+            #: 不在轮次里（单测直接调）。单子照建，卡发不出去 ——
+            #: 要留痕，否则会表现成「他说出卡了但她什么都没看见」
+            logger.warning("不在对话轮次里，待确认单 %s 的卡片没发出去", oid)
+
+        return luckin_order_flow.summarize(card)
+
+    handlers = {spec.name: (lambda args, _t=spec.name: _call(_t, args))
+                for spec in _SPECS}
+    handlers["luckin_order"] = _make_card
+    return handlers
 
 
-def register_all(loop, client: McpClient) -> None:
-    handlers = make_handlers(client)
+def register_all(loop, client: McpClient, *, store_ref=None, session_id_ref=None) -> None:
+    handlers = make_handlers(client, store_ref=store_ref, session_id_ref=session_id_ref)
     for spec in _SPECS:  # 顺序固定
         loop.register(spec, handlers[spec.name])  # type: ignore[arg-type]

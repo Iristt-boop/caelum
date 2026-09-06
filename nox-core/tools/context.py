@@ -69,6 +69,20 @@ class ToolContext:
             "name": name, "artist": artist, "cover": cover, **meta,
         })
 
+    def attach_order(self, order_id: str, card: dict[str, Any], **meta: Any) -> None:
+        """标记「这张待确认单要作为卡片发到聊天里」（2026-09-06）。
+
+        🔴 `card` 是**给她看的那一份**，不含券码、不含付款链接。
+        下单要用的参数（`couponCodeList` 等）留在库里，不跟着卡走 ——
+        卡会被截图、会进日志，没必要把她账号里的东西带出去。
+
+        付款链接更是绝对不进这里：`Caelum-AI支付-可行性调研.md` 第六节
+        「收银台 URL 不进日志、不进聊天历史、不进数据库明文」。
+        """
+        self.attachments.append({
+            "type": "order", "order_id": order_id, "card": card, **meta,
+        })
+
     def attach_meme(self, tag: str, **meta: Any) -> None:
         """标记「这个表情要发到聊天里」。
 

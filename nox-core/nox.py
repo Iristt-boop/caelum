@@ -299,15 +299,23 @@ class Nox:
         else:
             logger.info("未配置 NOX_MCD_MCP_URL/NOX_MCD_TOKEN，跳过 mcd 麦当劳工具")
 
-        # 瑞幸：下单/取消确认制（tools/luckin.py 头部红线）
+        # 瑞幸。**`luckin_order` 现在不下单**，只出一张待确认卡（2026-09-06）——
+        # 真正的 createOrder 在 /api/nox/orders/{id}/confirm 后面，模型够不着。
+        # 设计见 `Caelum-点单确认卡-设计.md`。
         if self.cfg.luckin_url and self.cfg.luckin_token:
+            self.luckin_client = McpClient(
+                self.cfg.luckin_url, name="luckin", timeout=self.cfg.luckin_timeout,
+                headers={"Authorization": f"Bearer {self.cfg.luckin_token}"})
             luckin_tools.register_all(
-                self.loop,
-                McpClient(self.cfg.luckin_url, name="luckin", timeout=self.cfg.luckin_timeout,
-                          headers={"Authorization": f"Bearer {self.cfg.luckin_token}"}),
+                self.loop, self.luckin_client,
+                # 传取值函数：orders store 在 `api/server.py` 才造出来，
+                # 那时候这里早注册完了（同 ResonanceProvider 的 attention_ref）
+                store_ref=lambda: getattr(self, "orders", None),
+                session_id_ref=lambda: self.current_session_id,
             )
-            logger.info("luckin 瑞幸工具已注册")
+            logger.info("luckin 瑞幸工具已注册（下单走确认卡）")
         else:
+            self.luckin_client = None
             logger.info("未配置 NOX_LUCKIN_MCP_URL/NOX_LUCKIN_TOKEN，跳过 luckin 瑞幸工具")
 
         # 启动时取一次核心准则，之后**永不重取**。

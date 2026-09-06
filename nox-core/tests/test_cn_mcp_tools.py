@@ -48,15 +48,38 @@ class FakeMcp:
 # ------------------------------------------------------------ 通用行为
 
 
+#: 少数工具有**调用前置条件**，空参数进不去（那是有意的，见下面
+#: `test_missing_coords_never_reaches_the_api`）。这里给它们一份最小合法参数，
+#: 否则通用冒烟会被前置条件挡住，看起来像"透传坏了"。
+_MIN_ARGS = {"luckin_shops": {"longitude": "116.397", "latitude": "39.909"}}
+
+
 @pytest.mark.parametrize("module", [amap_tools, didi_tools, kd100_tools, luckin_tools, mcd_tools, train_tools])
 def test_success_passthrough(module):
     """调用成功 → 服务端文本原样返回。"""
     client = FakeMcp(ok=True, text="返回内容")
     handlers = module.make_handlers(client)
     first_name = list(handlers)[0]
-    out = handlers[first_name]({})
+    out = handlers[first_name](_MIN_ARGS.get(first_name, {}))
     assert out == "返回内容"
     assert client.calls[0][0] == module.SERVER_TOOLS[first_name]
+
+
+def test_missing_coords_never_reaches_the_api():
+    """🔴 查门店缺坐标时**不许打上去碰运气**（2026-09-06 实录）。
+
+    她说「给我点杯咖啡」不带位置词 → location Provider 没加载 →
+    他不知道她在哪 → 经纬度传空串 → 服务端只回一句
+    `queryShopList 返回错误: empty String`，既不说缺什么也不说该怎么办。
+
+    这是「不许编」的同一面：不知道就说不知道，别传空值试运气。
+    """
+    client = FakeMcp(ok=True, text="不该走到这里")
+    handlers = luckin_tools.make_handlers(client)
+    for bad in ({}, {"longitude": "116.4"}, {"longitude": "", "latitude": " "}):
+        with pytest.raises(RuntimeError, match="不知道她在哪"):
+            handlers["luckin_shops"](bad)
+    assert client.calls == [], "缺坐标时一次 API 都不该打"
 
 
 @pytest.mark.parametrize("module", [amap_tools, didi_tools, kd100_tools, luckin_tools, mcd_tools, train_tools])

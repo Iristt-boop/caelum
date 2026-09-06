@@ -50,6 +50,19 @@ from attention.dejection import looks_like_giving_up
 from attention import appraisal_llm
 from attention.appraisal import ANCHOR_PREFIX, RuleAppraiser
 from attention.appraisal_llm import LLMAppraiser
+from tools import luckin as luckin_tools
+import orders as orders_mod
+from orders import OrderStore
+
+#: 单子走不下去时给她的人话。**不许直接把状态字符串甩给她**
+_ORDER_STATE_TEXT = {
+    orders_mod.EXPIRED: "这张单过期了（超过 15 分钟），价格可能变了。让他重新出一张。",
+    orders_mod.CANCELLED: "这张单已经取消了。",
+    orders_mod.CONFIRMED: "这单正在下，稍等一下。",
+    orders_mod.PENDING_PAYMENT: "这单已经下好了，去付款就行。",
+    orders_mod.PAID: "这单已经付过了。",
+    orders_mod.ORDER_FAILED: "这单没下成。",
+}
 from tools.local_link import LocalLink, read_secret
 from tools import computer as computer_tools
 from tools import room as room_tools
@@ -676,6 +689,18 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
     #: 淘宝（2026-09-05）—— 她桌面版内置的本地 MCP，同一只手捎一段。
     #: 注册不设条件：桌面版没开时调用会如实报错（room 同款处理）。
     taobao_tools.register_all(core.loop, local_hand)
+
+    # 待确认单（2026-09-06）。**独立的库**，和 attention/world/topics 平级。
+    #
+    # 不并进 world.db：World Model 的契约是「Observation 冻结只追加、永不改写」，
+    # 而订单状态机天生要改（pending → confirmed → paid）。
+    # 不并进 sessions.db：订单是她和商家之间的事实，会话删了它也还在。
+    #
+    # 挂到 core 上：`tools/luckin.py` 的 store_ref 从这儿取（同 core.world 的理由）
+    core.orders = OrderStore(Path(core.cfg.db_path).parent / "orders.db")
+    _expired = core.orders.expire_stale()
+    if _expired:
+        logger.info("启动时收掉 %d 张过期的待确认单", _expired)
 
     attention = _build_attention(core, sessions, db)
     #: 🔴 感知层那条线交给 attention —— 躁动要知道"她此刻在用什么"。
@@ -1366,6 +1391,129 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
         # 工具的回执是写给**他**看的（带着「别追问细节」那类指示），
         # 不适合直接摆到界面上。这里只回结果，人话由前端自己写
         return {"ok": "记下了" in msg, "detail": msg}
+
+    # ---------------------------------------------------------------- 待确认单
+    #
+    # 🔴 **这几个端点就是那道闸门**（`Caelum-点单确认卡-设计.md`）。
+    #
+    # `luckin_order` 工具现在只出卡不下单；真正的 createOrder 在这后面。
+    # 模型物理上够不到它 —— 它不在工具表里。这是把「确认制」从一句
+    # 提示词变成代码：在这之前 `tools/mcd.py` 的 `ACTION_TOOLS` 常量
+    # 定义完之后整个仓库没有任何地方用到，测试也只断言
+    # 「描述里有『确认』二字」——验的是那句话写了没有。
+
+    def _orders():
+        return getattr(core, "orders", None)
+
+    @app.get("/api/nox/orders/{oid}")
+    def nox_order_get(oid: str) -> dict:
+        """看一张单现在什么状态。前端刷新后重新渲染卡片用。"""
+        store = _orders()
+        if store is None:
+            raise HTTPException(status_code=503, detail="订单链路没启用")
+        row = store.get(oid)
+        if row is None:
+            raise HTTPException(status_code=404, detail="没有这张单")
+        return {
+            "ok": True, "id": oid, "state": row["state"],
+            # 只回 card，**不回 args**（里面有她账号的券码）
+            "card": (row["snapshot"] or {}).get("card") or {},
+            "expires_at": row["expires_at"],
+        }
+
+    @app.post("/api/nox/orders/{oid}/cancel")
+    def nox_order_cancel(oid: str) -> dict:
+        store = _orders()
+        if store is None:
+            raise HTTPException(status_code=503, detail="订单链路没启用")
+        row = store.get(oid)
+        if row is None:
+            raise HTTPException(status_code=404, detail="没有这张单")
+        if row["state"] in orders_mod.FINAL:
+            return {"ok": True, "state": row["state"], "note": "这张单已经结束了"}
+        store.set_state(oid, orders_mod.CANCELLED)
+        return {"ok": True, "state": orders_mod.CANCELLED}
+
+    @app.post("/api/nox/orders/{oid}/confirm")
+    def nox_order_confirm(oid: str) -> dict:
+        """她点了「确认下单」。**这是唯一真的会下单的地方。**
+
+        三道校验，缺一不可：
+
+        1. `claim()` —— 原子地把 pending 翻成 confirmed。她连点两次
+           只有一次能成（先查后改的话两个请求都会看到 pending，于是下两单）
+        2. **重跑 preview 比指纹** —— 价格或券变了就拒绝、重新出卡。
+           对应调研文档第六节第二条「一次审批只绑定一份完整订单快照」
+        3. 商家调用失败 → `order_failed`，如实回给她，不重试
+        """
+        store = _orders()
+        if store is None:
+            raise HTTPException(status_code=503, detail="订单链路没启用")
+        client = getattr(core, "luckin_client", None)
+        if client is None:
+            raise HTTPException(status_code=503, detail="瑞幸没配置")
+
+        row = store.claim(oid)
+        if row is None:
+            cur = store.get(oid)
+            if cur is None:
+                raise HTTPException(status_code=404, detail="没有这张单")
+            # 过期 / 已取消 / 已经被点过 —— 都不是错误，如实回状态
+            return {"ok": False, "state": cur["state"],
+                    "detail": _ORDER_STATE_TEXT.get(cur["state"], cur["state"])}
+
+        snap = row["snapshot"] or {}
+        args = snap.get("args") or {}
+        try:
+            # 🔴 重算一遍，不信 15 分钟前那份
+            card2, args2, fp2 = luckin_tools.snapshot_for(client, args)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("确认时重算价格失败：%s", oid)
+            store.set_state(oid, orders_mod.ORDER_FAILED,
+                            detail={"error": f"重算价格失败: {exc}"})
+            return {"ok": False, "state": orders_mod.ORDER_FAILED,
+                    "detail": "没能重新确认价格，这单没下。再让他出一张新的吧。"}
+
+        if fp2 != row["fingerprint"]:
+            # 价格或券变了。**不许照旧下单** —— 她点的是那张卡上的价
+            logger.warning("订单 %s 指纹不一致，拒绝下单（%s → %s）",
+                           oid, row["fingerprint"], fp2)
+            store.set_state(oid, orders_mod.EXPIRED,
+                            detail={"reason": "fingerprint_changed"})
+            return {"ok": False, "state": orders_mod.EXPIRED, "card": card2,
+                    "detail": "价格或优惠变了，这单没下。看一下新的价再决定。"}
+
+        try:
+            result = luckin_tools.place(client, args2)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("订单 %s 下单失败", oid)
+            store.set_state(oid, orders_mod.ORDER_FAILED, detail={"error": str(exc)})
+            return {"ok": False, "state": orders_mod.ORDER_FAILED,
+                    "detail": f"下单没成：{exc}"}
+
+        merchant_order_id = str(
+            result.get("orderId") or result.get("orderNo") or result.get("id") or "")
+        # 付款链接单独存，**绝不进 snapshot / 日志 / 聊天历史**
+        # （调研文档第六节倒数第二条）
+        pay_url = ""
+        for k in ("payUrl", "payLink", "wxPayUrl", "url", "paymentUrl"):
+            if result.get(k):
+                pay_url = str(result[k])
+                break
+        if pay_url:
+            store.set_pay_link(oid, pay_url)
+        store.set_state(oid, orders_mod.PENDING_PAYMENT,
+                        merchant_order_id=merchant_order_id,
+                        detail={"has_pay_link": bool(pay_url)})
+        logger.info("订单 %s 已下单：商家单号 %s，付款链接 %s",
+                    oid, merchant_order_id or "(无)", "有" if pay_url else "无")
+        return {
+            "ok": True, "state": orders_mod.PENDING_PAYMENT,
+            "merchant_order_id": merchant_order_id,
+            "actual_fen": (snap.get("card") or {}).get("actual_fen"),
+            # P2 才做卡片二，这里先把链接给出去（不落聊天历史）
+            "pay_url": pay_url,
+        }
 
     @app.get("/api/nox/facts")
     def nox_facts(type: str, days: int = 30) -> dict:

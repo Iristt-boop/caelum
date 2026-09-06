@@ -909,6 +909,17 @@ async function coreMode(req, res, requestId) {
             res.write(`data: ${JSON.stringify({ type: "meme", tag: ev.tag })}\n\n`);
             saveMessage(sessionId, "assistant", "", { meme: ev.tag });
             console.log(`[Bridge] Core 发表情 ${ev.tag}`);
+          } else if (ev.kind === "order" && ev.order_id) {
+            // 待确认单卡片（2026-09-06）。此时**还没有下单** ——
+            // 她在卡上点「确认下单」才会真下，走 /api/nox/orders/:oid/confirm。
+            //
+            // ⚠️ 落库存的是 card 快照，翻历史时卡片还在；但状态是活的，
+            // 前端渲染时要拿 order_id 去查当前状态，不能只信这份快照
+            // （不然一张早就下过的单，翻回去还是「确认下单」按钮）。
+            const order = { orderId: String(ev.order_id), card: ev.card || {} };
+            res.write(`data: ${JSON.stringify({ type: "order", ...order })}\n\n`);
+            saveMessage(sessionId, "assistant", "", { order });
+            console.log(`[Bridge] Core 发待确认单 ${order.orderId}`);
           }
         } else if (ev.type === "error") {
           res.write(`data: ${JSON.stringify({ type: "error", message: ev.message })}\n\n`);
@@ -2386,6 +2397,42 @@ app.get("/api/nox/state", async (req, res) => {
     res.json({ ok: false, error: e.message });
   }
 });
+
+// ---------------------------------------------------------------- 待确认单
+//
+// 🔴 前端点「确认下单」走这里（2026-09-06，见 Caelum-点单确认卡-设计.md）。
+//
+// 为什么要经 bridge 转一道：R7「前端只打 bridge」+ R3「跨进程走 REST」。
+// 而且商家的 MCP token 在 nox-core 的 .env 里，bridge 拿不到也不该拿到 ——
+// 这边只做透明代理，一个业务判断都不做。
+//
+// ⚠️ 下单是**不可逆**的动作，所以超时给得比别的宽（30s）：
+// 超时重试会下两单，而这里宁可等。幂等由 nox-core 的 claim() 保证。
+const noxOrderProxy = (path, method, timeoutMs) => async (req, res) => {
+  const oid = String(req.params.oid || "");
+  if (!/^ord-[a-z0-9]{6,}$/i.test(oid)) {
+    return res.status(400).json({ ok: false, error: "订单号格式不对" });
+  }
+  try {
+    const r = await fetch(`${NOX_CORE_URL}/api/nox/orders/${oid}${path}`, {
+      method,
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    res.status(r.status).json(await r.json());
+  } catch (e) {
+    console.error(`[nox-order] ${method} ${oid}${path} 失败:`, e.message);
+    // 🔴 措辞要让她知道**这单可能已经下了** —— 超时不等于没下成。
+    // 说成「失败了」的话她会再点一次，那才是真出事
+    res.status(504).json({
+      ok: false,
+      error: e.message,
+      detail: "没能确认结果，先别重复点。去瑞幸 App 看一眼订单列表。",
+    });
+  }
+};
+app.get("/api/nox/orders/:oid", noxOrderProxy("", "GET", 8000));
+app.post("/api/nox/orders/:oid/confirm", noxOrderProxy("/confirm", "POST", 30000));
+app.post("/api/nox/orders/:oid/cancel", noxOrderProxy("/cancel", "POST", 8000));
 
 // 可切换的模型清单 + 当前系统默认（Models 设置页）。
 // 切换不走这里 —— 聊天请求带 model 短名，coreMode 本来就透传
