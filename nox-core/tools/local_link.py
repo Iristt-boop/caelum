@@ -156,9 +156,33 @@ class LocalLink:
     #: 事件保留条数。够看一天，又不至于让 /api/nox/link 的返回变大
     MAX_EVENTS = 20
 
+    #: 多快算「在抢」。60 秒内连上超过这么多次 = 不正常。
+    #:
+    #: 🔴 病例（2026-09-05 23:18–23:19）：两分钟里 107 次「正常关闭」，
+    #: 约每秒一次。病根是 `_handle` 里那句「新设备连上，顶掉旧链路」——
+    #: **两个网关进程同时活着**就会死循环：A 顶掉 B，B 退避 1 秒重连顶掉 A，
+    #: 来回不停。这种时候链路看起来一直「连着」，但工具随时打在半死的连接上，
+    #: 而日志里全是 1000（正常关闭），一眼扫过去像没事。
+    STORM_WINDOW_S = 60
+    STORM_THRESHOLD = 5
+
     def _log_event(self, kind: str, at: datetime, **extra: Any) -> None:
         self._events.insert(0, {"kind": kind, "at": at.isoformat(), **extra})
         del self._events[self.MAX_EVENTS:]
+
+    def _storming(self, now: datetime) -> int:
+        """最近一分钟连上了几次。>阈值就是有人在抢。"""
+        n = 0
+        for e in self._events:
+            if e["kind"] != "up":
+                continue
+            try:
+                at = datetime.fromisoformat(e["at"])
+            except Exception:  # noqa: BLE001
+                continue
+            if (now - at).total_seconds() <= self.STORM_WINDOW_S:
+                n += 1
+        return n
 
     def health(self, now: datetime | None = None) -> dict[str, Any]:
         """这条链路现在什么样。给 OS 侧栏的状态灯和 Advanced 页用。
@@ -178,6 +202,10 @@ class LocalLink:
             "since": ref.isoformat() if ref else None,
             #: 这个进程起来之后断过几次。重启清零（见 __init__ 那段）
             "drops": sum(1 for e in self._events if e["kind"] == "down"),
+            #: 最近一分钟重连了几次。≥5 基本就是两个网关在抢
+            #: —— 那种故障长得像「一直连着」，不喊出来根本看不见
+            "reconnects_1m": self._storming(now),
+            "storming": self._storming(now) >= self.STORM_THRESHOLD,
             "events": list(self._events),
         }
 
@@ -283,6 +311,16 @@ class LocalLink:
         self._log_event("up", now, gap_s=gap)
         logger.info("本地链路建立：%s%s", device,
                     f"（断了 {gap} 秒）" if gap else "")
+        # 🔴 抢链路的识别（见 STORM_THRESHOLD 那段的病例）。
+        # 不自动断开谁 —— 从这端分不出哪个才是她要的那个网关。
+        # 只把它**喊出来**：这种故障最要命的地方就是它长得像没事
+        storm = self._storming(now)
+        if storm >= self.STORM_THRESHOLD:
+            logger.warning(
+                "⚠️ 一分钟内链路重连了 %d 次 —— 很可能有两个 local-gateway "
+                "同时在跑，互相顶掉对方。去她电脑上看看是不是起了两个进程。",
+                storm,
+            )
 
         try:
             await self._read_loop(ws)

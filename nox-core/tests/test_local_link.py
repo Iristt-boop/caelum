@@ -366,3 +366,73 @@ def test_world_failure_does_not_break_link():
 
     link = LocalLink(world=Boom())
     link._on_message(_summary_frame())   # 不该抛
+
+
+# ---------------------------------------------------------------- 链路健康
+#
+# 2026-09-06 加。糖糖：「我没办法判断 local-gateway 进程在不在跑」。
+# 那天他自己也看不见 —— 断线时只能猜「进程退了/网络切换/电脑休眠」。
+
+
+def _link_at(events):
+    """造一个带指定事件的 LocalLink（不起 WS）。"""
+    from tools.local_link import LocalLink
+    ln = LocalLink()
+    ln._events = list(events)
+    return ln
+
+
+def test_health_reports_facts_not_guesses():
+    """只报事实。没连上时**不许**编一个原因出来。"""
+    from tools.local_link import LocalLink
+    h = LocalLink().health()
+    assert h["connected"] is False
+    assert h["device"] is None
+    #: 不该出现任何猜测字段（reason / cause / 原因…）
+    assert not any(k in h for k in ("reason", "cause", "why", "原因"))
+
+
+def test_storm_is_detected():
+    """🔴 两个网关互相顶掉对方 —— 这种故障长得像一切正常。
+
+    病例 2026-09-05 23:18–23:19：两分钟 107 次「正常关闭」（1000），
+    约每秒一次。`_handle` 里「新设备连上，顶掉旧链路」那句遇上
+    两个同时活着的网关进程就会死循环：A 顶掉 B，B 退避 1 秒重连顶掉 A。
+
+    期间链路一直显示「连着」，日志里全是 1000 —— 一眼扫过去像没事。
+    """
+    from datetime import datetime, timedelta, timezone
+    from tools.local_link import LocalLink
+
+    now = datetime(2026, 9, 5, 23, 19, tzinfo=timezone.utc)
+    ln = _link_at([
+        {"kind": "up", "at": (now - timedelta(seconds=i * 5)).isoformat()}
+        for i in range(LocalLink.STORM_THRESHOLD + 1)
+    ])
+    h = ln.health(now)
+    assert h["storming"] is True
+    assert h["reconnects_1m"] >= LocalLink.STORM_THRESHOLD
+
+
+def test_normal_reconnects_are_not_a_storm():
+    """偶尔断一次重连不算抢 —— 别让这个警报天天响，响多了她就不看了。"""
+    from datetime import datetime, timedelta, timezone
+    now = datetime(2026, 9, 6, 12, 0, tzinfo=timezone.utc)
+    ln = _link_at([
+        {"kind": "up", "at": (now - timedelta(minutes=m)).isoformat()}
+        for m in (0, 30, 90)
+    ])
+    h = ln.health(now)
+    assert h["storming"] is False
+    assert h["reconnects_1m"] == 1
+
+
+def test_events_are_capped():
+    """环形缓冲要封顶 —— 抢链路时一秒一条，不封顶会把接口返回撑爆。"""
+    from datetime import datetime, timezone
+    from tools.local_link import LocalLink
+    ln = LocalLink()
+    now = datetime(2026, 9, 6, 12, 0, tzinfo=timezone.utc)
+    for _ in range(LocalLink.MAX_EVENTS * 3):
+        ln._log_event("up", now)
+    assert len(ln._events) == LocalLink.MAX_EVENTS
