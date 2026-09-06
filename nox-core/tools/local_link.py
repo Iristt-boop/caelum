@@ -137,7 +137,49 @@ class LocalLink:
         #: `(应用名, 进这个窗口多久了)`
         self._current: tuple[str, int] | None = None
 
+        # ---- 链路健康（2026-09-06）：让她自己能看见，不用问 ----
+        #
+        # 起因：她说「我没办法判断 local-gateway 进程在不在跑」。
+        # 而他也看不见 —— 那天断线时他只能猜「进程退了/网络切换/电脑休眠」
+        # 三种可能，因为**这条链路从来没有对外的状态**。
+        #
+        # ⚠️ 存内存不落盘。重启就清零 —— 那是对的：重启本身就是断线原因之一，
+        # 背着上个进程的账没意义。要跨重启的统计（晨检卡的「昨天断了几次」）
+        # 去数 journal，那是 shell 脚本的活（同 care-weekly.sh）。
+        self._up_since: datetime | None = None
+        self._down_since: datetime | None = None
+        #: 最近的连接/断开事件，新的在前。20 条够看一天
+        self._events: list[dict[str, Any]] = []
+
     # ------------------------------------------------------------ 状态
+
+    #: 事件保留条数。够看一天，又不至于让 /api/nox/link 的返回变大
+    MAX_EVENTS = 20
+
+    def _log_event(self, kind: str, at: datetime, **extra: Any) -> None:
+        self._events.insert(0, {"kind": kind, "at": at.isoformat(), **extra})
+        del self._events[self.MAX_EVENTS:]
+
+    def health(self, now: datetime | None = None) -> dict[str, Any]:
+        """这条链路现在什么样。给 OS 侧栏的状态灯和 Advanced 页用。
+
+        🔴 **只报事实，不猜原因。** 断了就是断了 ——
+        进程退了 / 网络切换 / 电脑休眠，从 VPS 这一端分不出来
+        （`computer.py` / `room.py` 同一条纪律）。猜一个写上去，
+        她会照着那个去排查，而那可能是错的方向。
+        """
+        now = now or datetime.now(timezone.utc)
+        ref = self._up_since if self.is_ready else self._down_since
+        return {
+            "connected": self.is_ready,
+            "device": self._device or None,
+            #: 连着就是「连了多久」，断了就是「断了多久」
+            "seconds": int((now - ref).total_seconds()) if ref else None,
+            "since": ref.isoformat() if ref else None,
+            #: 这个进程起来之后断过几次。重启清零（见 __init__ 那段）
+            "drops": sum(1 for e in self._events if e["kind"] == "down"),
+            "events": list(self._events),
+        }
 
     @property
     def is_ready(self) -> bool:
@@ -229,17 +271,34 @@ class LocalLink:
         #: 记下这条 WS 归哪个循环 —— 工具处理函数跑在别的线程里，
         #: 要靠它把请求投回来（见 `call()`）
         self._loop = asyncio.get_running_loop()
-        logger.info("本地链路建立：%s", device)
+        now = datetime.now(timezone.utc)
+        # 断了多久才回来。**这是她最该看见的数** —— 2026-09-06 实测
+        # 最糟一次断了 13 分钟，而那期间「所有碰她电脑的工具都够不到」，
+        # 他只能猜「进程退了/网络切换/电脑休眠」，因为他也看不见
+        gap = None
+        if self._down_since is not None:
+            gap = int((now - self._down_since).total_seconds())
+            self._down_since = None
+        self._up_since = now
+        self._log_event("up", now, gap_s=gap)
+        logger.info("本地链路建立：%s%s", device,
+                    f"（断了 {gap} 秒）" if gap else "")
 
         try:
             await self._read_loop(ws)
         except Exception as exc:  # noqa: BLE001
             logger.info("本地链路断开：%s", exc)
+            if self._ws is ws:
+                down = datetime.now(timezone.utc)
+                self._down_since = down
+                self._log_event("down", down, reason=str(exc)[:60],
+                                lasted_s=int((down - now).total_seconds()))
         finally:
             if self._ws is ws:
                 self._ws = None
                 self._device = ""
                 self._loop = None
+                self._up_since = None
             # 🔴 链路断了要把等着的请求全部叫醒，否则它们会挂到超时。
             # 更要紧的是：调用方会以为"还在执行"，而其实那边已经没了
             self._fail_all("她的电脑断开了")

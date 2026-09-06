@@ -1452,6 +1452,33 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
     def _orders():
         return getattr(core, "orders", None)
 
+    @app.get("/api/nox/link")
+    def nox_link() -> dict:
+        """他那只手（她电脑上的网关）现在连着没有。
+
+        起因：糖糖 2026-09-06「我没办法判断 local-gateway 进程在不在跑」。
+        而他也判断不了 —— 那天断线时他只能猜「进程退了/网络切换/电脑休眠」，
+        因为这条链路从来没有对外的状态。
+
+        🔴 **只报事实不猜原因**（`computer.py` / `room.py` 同一条纪律）：
+        从 VPS 这一端分不出是进程退了、网切了还是电脑睡了。
+        猜一个写上去，她会照着那个错方向去排查。
+        """
+        # ⚠️ `local_hand` 是 `create_app` 的局部变量（第 667 行建的），
+        # 这个端点定义在它后面所以闭包取得到。别改成 getattr(core, …) ——
+        # core 上没有这个属性，那样会永远走到「没配」分支而且不报错
+        link = local_hand
+        if link is None:
+            #: 没配这条链路（本机开发就是这样）。**如实说没有**，
+            #: 不要回一个 connected=false —— 那会让灯变红，
+            #: 而红灯的意思是「本该连着但断了」
+            return {"ok": True, "enabled": False}
+        try:
+            return {"ok": True, "enabled": True, **link.health()}
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("读链路状态失败")
+            return {"ok": False, "enabled": True, "error": str(exc)}
+
     @app.get("/api/nox/orders/{oid}")
     def nox_order_get(oid: str) -> dict:
         """看一张单现在什么状态。前端刷新后重新渲染卡片用。"""
@@ -2275,7 +2302,26 @@ def main() -> int:
         format="%(asctime)s %(levelname)-7s %(name)s | %(message)s",
         datefmt="%H:%M:%S",
     )
-    uvicorn.run(create_app(), host=config.host, port=config.port, log_level="info")
+    uvicorn.run(
+        create_app(), host=config.host, port=config.port, log_level="info",
+        # 🔴 **反向链路（她电脑上的网关）断线的根因**（2026-09-06 查出来的）。
+        #
+        # uvicorn 的默认是 ping 20s / timeout **20s** —— 服务端每 20 秒 ping
+        # 一次，20 秒内收不到 pong 就把连接关掉。家用网络抖一下超过 20 秒，
+        # 这条链就没了，而她那边表现成「所有碰她电脑的工具都够不到」。
+        #
+        # 实测（09-05 ~ 09-06 的 journal，排掉部署重启的 1012）：
+        #   六次 (1005, None) 断开，间隔几小时不等 —— 不是固定超时，是网络抖动；
+        #   最糟一次 12:06:23 断、12:19:39 才回来，**13 分钟**。
+        #
+        # ping 仍然 20 秒一次（要及时发现真死掉的半开连接），
+        # 但给 60 秒等 pong —— 容忍一次网络打嗝，别为它拆掉一条好链路。
+        #
+        # ⚠️ 代价：对面真死了的时候，服务端最多多留 60 秒的僵尸链接。
+        # 那期间的工具调用会等到自己的超时。比起每几小时断一次，这个更划算。
+        ws_ping_interval=20.0,
+        ws_ping_timeout=60.0,
+    )
     return 0
 
 

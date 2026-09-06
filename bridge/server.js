@@ -2509,6 +2509,20 @@ app.get("/api/nox/integrations", async (req, res) => {
 // ⚠️ **bridge 是逐路由代理，不是通配。** Core 那边加了接口、这里不加，
 // 前端拿到的是 bridge 自己的 404 —— 而那看起来像「Core 挂了」，
 // 不像「少写了一行」。加 Core 接口时记得回来加这一条。
+// 他那只手连着没有（OS 侧栏的状态灯 + Settings→Advanced 页）。
+// 起因：糖糖「我没办法判断 local-gateway 进程在不在跑」
+app.get("/api/nox/link", async (req, res) => {
+  try {
+    const r = await fetch(`${NOX_CORE_URL}/api/nox/link`, { signal: AbortSignal.timeout(8000) });
+    res.json(await r.json());
+  } catch (e) {
+    console.error("[nox-link] 读链路状态失败:", e.message);
+    // ⚠️ 这里回 ok:false 而不是 connected:false —— 分清「链路断了」
+    // 和「我问不到 core」。灯要能区分这两种，否则 core 挂了会被读成手断了
+    res.json({ ok: false, error: e.message });
+  }
+});
+
 app.get("/api/nox/resonance", async (req, res) => {
   try {
     const r = await fetch(`${NOX_CORE_URL}/api/nox/resonance`, { signal: AbortSignal.timeout(8000) });
