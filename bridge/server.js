@@ -3281,6 +3281,9 @@ app.post("/api/toy/set", (req, res) => {
 // 所以白天的实际花费会比显示的高，看趋势够用，别当账单。
 const PRICING = {
   "deepseek-v4-flash": { miss: 1, hit: 0.02, out: 2 },
+  // vision 版文本与 flash 同价（图像单张 ≤384 tokens，按输入计，可忽略——官方口径）。
+  // 🔴 2026-09-06：缺这条时落 DEFAULT_PRICE（Sonnet 估价），账单虚高约 20 倍
+  "deepseek-v4-flash-vision-exp": { miss: 1, hit: 0.02, out: 2 },
   "deepseek-v4-pro":   { miss: 3, hit: 0.025, out: 6 },
   "anthropic/claude-sonnet-4-6": { miss: 21.6, hit: 2.16, out: 108 },
   "anthropic/claude-sonnet-4.5": { miss: 21.6, hit: 2.16, out: 108 },
@@ -3295,7 +3298,11 @@ const DEFAULT_PRICE = { miss: 21.6, hit: 2.16, out: 108 };   // 认不出的型�
 function rowCost(r) {
   // 老数据（2026-07-28 之前）没有 model 列，cost 存的是美元，直接换算
   if (!r.model) return (r.cost || 0) * 7.2;
-  const p = PRICING[r.model] || DEFAULT_PRICE;
+  const p = PRICING[r.model] || (() => {
+    // 🔴 认不出的型号 = PRICING 没跟上（这次 vision 就是这么虚报的），必须出声
+    console.warn("[Bridge] usage: 未知型号按 Sonnet 估价:", r.model);
+    return DEFAULT_PRICE;
+  })();
   const hit = r.cache_read || 0;
   const miss = Math.max(0, (r.tokens_in || 0) - hit);
   return (miss / 1e6) * p.miss + (hit / 1e6) * p.hit + ((r.tokens_out || 0) / 1e6) * p.out;
