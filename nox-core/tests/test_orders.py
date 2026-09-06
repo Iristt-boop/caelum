@@ -231,6 +231,43 @@ def test_pay_link_never_lands_in_the_snapshot(store):
     assert store.pay_link(oid, now=NOW).startswith("weixin://")
 
 
+@pytest.mark.parametrize("payload,want", [
+    # 字段名各种写法都能找到 —— 因为**不按字段名找**
+    ({"payUrl": "weixin://wxpay/bizpayurl?pr=A"}, "weixin://wxpay/bizpayurl?pr=A"),
+    ({"wxPayUrl": "weixin://x"}, "weixin://x"),
+    ({"某个没见过的字段": "weixin://y"}, "weixin://y"),
+    # 藏在嵌套里
+    ({"data": {"payment": {"link": "weixin://z"}}}, "weixin://z"),
+    ({"list": [{"a": 1}, {"deepLink": "weixin://w"}]}, "weixin://w"),
+    # 支付宝和 H5 收银台也认（万一哪天换了）
+    ({"x": "alipays://platformapi/x"}, "alipays://platformapi/x"),
+    ({"x": "https://wx.tenpay.com/cgi-bin/x"}, "https://wx.tenpay.com/cgi-bin/x"),
+    # 没有就是没有，不许瞎给一个
+    ({"orderId": "LK123", "status": 1}, ""),
+    ({}, ""),
+    ({"note": "订单已创建"}, ""),
+])
+def test_pay_link_is_found_by_shape_not_by_field_name(payload, want):
+    """🔴 **P2 的命根子。**
+
+    第一版按字段名猜（`payUrl` / `payLink` / `wxPayUrl` …）。猜错的后果
+    很特别：下单**成功了**（钱那边的单子真建了），但她拿不到付款链接，
+    这一单卡在那儿，而系统以为一切正常 —— 不报错、不回滚、不重试。
+
+    所以不认字段名，只认值长什么样。
+    """
+    assert flow.find_pay_link(payload) == want
+
+
+def test_shape_never_leaks_values():
+    """把响应结构记进日志是为了「下次不用猜」，但**不能把值带出去** ——
+    里面有付款链接和订单号。"""
+    s = flow.shape({"payUrl": "weixin://secret", "orderId": "LK999", "n": 3})
+    blob = json.dumps(s, ensure_ascii=False)
+    assert "weixin://secret" not in blob and "LK999" not in blob
+    assert "payUrl" in blob and "str" in blob
+
+
 def test_stale_pay_link_is_treated_as_gone(store):
     """过期的收银台链接点了也是报错页，不如当没有。"""
     oid = store.create(session_id="s", merchant="luckin",

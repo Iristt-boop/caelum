@@ -2431,6 +2431,8 @@ const noxOrderProxy = (path, method, timeoutMs) => async (req, res) => {
   }
 };
 app.get("/api/nox/orders/:oid", noxOrderProxy("", "GET", 8000));
+// 付款链接。⚠️ 只透传，**不落库不打日志** —— 它是支付凭证
+app.get("/api/nox/orders/:oid/pay", noxOrderProxy("/pay", "GET", 8000));
 app.post("/api/nox/orders/:oid/confirm", noxOrderProxy("/confirm", "POST", 30000));
 app.post("/api/nox/orders/:oid/cancel", noxOrderProxy("/cancel", "POST", 8000));
 

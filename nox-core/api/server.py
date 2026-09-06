@@ -1421,6 +1421,33 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
             "expires_at": row["expires_at"],
         }
 
+    @app.get("/api/nox/orders/{oid}/pay")
+    def nox_order_pay(oid: str) -> dict:
+        """取这一单的付款链接（卡片二用）。
+
+        🔴 **链接只从这里出，不进任何持久的地方** ——
+        不进 `snapshot_json`、不进 attachment、不进聊天历史、不进日志
+        （`Caelum-AI支付-可行性调研.md` 第六节倒数第二条）。
+
+        所以刷新页面之后卡片二要重新问一次。两小时后链接过期，
+        这里就回 `has_link=false` —— 过期的收银台点了也是报错页，
+        不如明说，让她去瑞幸 App 里付。
+        """
+        store = _orders()
+        if store is None:
+            raise HTTPException(status_code=503, detail="订单链路没启用")
+        row = store.get(oid)
+        if row is None:
+            raise HTTPException(status_code=404, detail="没有这张单")
+        url = store.pay_link(oid)
+        return {
+            "ok": True, "state": row["state"],
+            "merchant_order_id": row.get("merchant_order_id") or "",
+            "actual_fen": (row["snapshot"] or {}).get("card", {}).get("actual_fen"),
+            "has_link": bool(url),
+            "pay_url": url or "",
+        }
+
     @app.post("/api/nox/orders/{oid}/cancel")
     def nox_order_cancel(oid: str) -> dict:
         store = _orders()
@@ -1493,15 +1520,19 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
 
         merchant_order_id = str(
             result.get("orderId") or result.get("orderNo") or result.get("id") or "")
-        # 付款链接单独存，**绝不进 snapshot / 日志 / 聊天历史**
-        # （调研文档第六节倒数第二条）
-        pay_url = ""
-        for k in ("payUrl", "payLink", "wxPayUrl", "url", "paymentUrl"):
-            if result.get(k):
-                pay_url = str(result[k])
-                break
+        # 🔴 付款链接**不按字段名取**，按值的形状找（orders/luckin.py:find_pay_link）。
+        # 第一版按字段名猜，猜错的后果很特别：下单成功了（钱那边的单子真建了），
+        # 但她拿不到链接，这一单卡住而系统以为一切正常。
+        pay_url = luckin_order_flow.find_pay_link(result)
+        # 把返回的**结构**记一笔（键名 + 类型，不带值）——
+        # 这是我们第一次见 createOrder 的真实响应，下次就不用猜了
+        logger.info("createOrder 响应结构：%s",
+                    json.dumps(luckin_order_flow.shape(result), ensure_ascii=False)[:600])
         if pay_url:
+            # 单独存，**绝不进 snapshot / 日志 / 聊天历史**（调研第六节倒数第二条）
             store.set_pay_link(oid, pay_url)
+        else:
+            logger.warning("订单 %s 下单成功但没找到付款链接 —— 她得去瑞幸 App 付", oid)
         store.set_state(oid, orders_mod.PENDING_PAYMENT,
                         merchant_order_id=merchant_order_id,
                         detail={"has_pay_link": bool(pay_url)})

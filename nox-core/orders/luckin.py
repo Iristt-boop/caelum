@@ -129,6 +129,64 @@ def build(
     return card, args
 
 
+#: 付款链接长什么样。`weixin://` 是 2026-09-06 实测到的（糖糖说的：
+#: 「他会给我一个微信的付款链接，我要点链接复制到微信」）。
+#: 带上 http(s) 是兜底 —— 万一哪天它改成 H5 收银台
+_PAY_SCHEMES = ("weixin://", "alipays://", "alipay://", "https://", "http://")
+
+
+def find_pay_link(payload: Any, _depth: int = 0) -> str:
+    """在 createOrder 的返回里把付款链接翻出来。
+
+    ## 🔴 为什么不按字段名取
+
+    第一版写的是 `for k in ("payUrl", "payLink", "wxPayUrl", …)` —— **猜的**。
+    猜错的后果很特别：下单**成功了**（钱那边的单子真建了），
+    但她拿不到付款链接，于是这一单卡在那儿，而系统以为一切正常。
+
+    这项目栽过两次「构造数据自洽、串起来才现形」。所以这里不认字段名，
+    只认**值长什么样**：递归找第一个以已知 scheme 开头的字符串。
+    字段名怎么改都不影响。
+
+    ⚠️ 返回值是**支付凭证**：不进日志、不进 snapshot、不进聊天历史
+    （`Caelum-AI支付-可行性调研.md` 第六节倒数第二条）。
+    """
+    if _depth > 6:
+        return ""
+    if isinstance(payload, str):
+        s = payload.strip()
+        return s if s.startswith(_PAY_SCHEMES) else ""
+    if isinstance(payload, dict):
+        #: 先看像付款的键，再看其余的 —— 只影响命中顺序，不影响能不能找到
+        keys = sorted(payload, key=lambda k: 0 if "pay" in str(k).lower() else 1)
+        for k in keys:
+            got = find_pay_link(payload[k], _depth + 1)
+            if got:
+                return got
+        return ""
+    if isinstance(payload, (list, tuple)):
+        for v in payload:
+            got = find_pay_link(v, _depth + 1)
+            if got:
+                return got
+    return ""
+
+
+def shape(payload: Any, _depth: int = 0) -> Any:
+    """把返回的**结构**（键名 + 类型）抽出来，值一律不带。
+
+    用来在日志里认识一个我们还没见过的响应，而不泄露里面的任何东西。
+    第一笔真实订单跑完，看一眼日志就知道 `createOrder` 长什么样了。
+    """
+    if _depth > 4:
+        return "…"
+    if isinstance(payload, dict):
+        return {k: shape(v, _depth + 1) for k, v in payload.items()}
+    if isinstance(payload, (list, tuple)):
+        return [shape(payload[0], _depth + 1), f"×{len(payload)}"] if payload else []
+    return type(payload).__name__
+
+
 def fingerprint(card: dict[str, Any], args: dict[str, Any]) -> str:
     """这一份快照的指纹。
 
