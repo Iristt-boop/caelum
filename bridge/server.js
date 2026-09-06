@@ -3012,20 +3012,20 @@ app.get("/api/diet/weight", (req, res) => {
 const HEALTH_DB = process.env.HEALTH_DB || "/root/data/health.db";
 
 function healthDbAll(sql, params = []) {
+  // 2026-09-06 修：换 better-sqlite3 时这里还留着 sql.js 的 new SQL.Database(buf)
+  // —— 依赖已卸载，SQL 是 undefined，异常被吞成空数组，HealthKit 数据整页消失
+  //（静默失败又一次，见 docs/LOGGING.md）。现在用同一驱动只读打开，返回形状不变。
   try {
     if (!fs.existsSync(HEALTH_DB)) return [];
-    const buf = fs.readFileSync(HEALTH_DB);
-    const hdb = new SQL.Database(buf);
+    const hdb = new Database(HEALTH_DB, { readonly: true, fileMustExist: true });
     try {
-      const r = hdb.exec(sql, params);
-      if (!r.length) return [];
-      return r[0].values.map(row => {
-        const o = {};
-        r[0].columns.forEach((c, i) => o[c] = row[i]);
-        return o;
-      });
+      const rows = hdb.prepare(sql).all(...(Array.isArray(params) ? params : [params]));
+      return rows;
     } finally { hdb.close(); }
-  } catch { return []; }
+  } catch (e) {
+    console.warn("[Bridge] health.db 读取失败:", e.message);
+    return [];
+  }
 }
 
 // 健康数据。带 ?date= 就查那一天，不带则给最新一条。
