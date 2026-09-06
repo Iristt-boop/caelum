@@ -247,9 +247,15 @@ class LLMAppraiser:
 
         adapter = self.adapter_ref() if callable(self.adapter_ref) else self.adapter_ref
         if adapter is None:
-            #: 便宜模型没配就什么都不做。**不要退回主模型** ——
-            #: 这一层每轮都跑，用主模型的话账单会很难看，
-            #: 而且它的价值是"多一层理解"，不是"必须有"
+            #: utility 没配就什么都不做，**不要退回主模型**。
+            #:
+            #: ⚠️ 2026-09-06 更正：线上 utility 和 primary **是同一个模型**
+            #: （都是 deepseek-v4-flash），所以「省钱」不是现在的理由。
+            #: 真正的理由是**分工要稳定**：这一层每轮都跑，它该用哪个模型
+            #: 由 `NOX_UTILITY_MODEL` 一处说了算。悄悄退回主模型的话，
+            #: 哪天主模型换成贵的，这条线会跟着涨价而没人知道。
+            #:
+            #: 而且它的价值是"多一层理解"，不是"必须有" —— 缺了就不做。
             logger.info("没有可用的 utility 模型，这轮不做意义推断")
             return None
 
