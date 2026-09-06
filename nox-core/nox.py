@@ -340,6 +340,20 @@ class Nox:
         # 这是有意的：隔了一天再开口，本来也该是平常状态。
         self.mood = mood.Mood()
 
+        #: 🔴 **欠她一张卡的会话**（2026-09-06）。
+        #:
+        #: 病史：他说「卡发你了」但根本没调 `luckin_order`，连着两轮。
+        #: 那几轮进了会话历史之后，他开始**照抄自己** —— 同一个会话里
+        #: 再问还是只说不做。换个新会话立刻正常，可 Caelum App 是
+        #: **单一窗口、没有新建会话**（`Chat.jsx`），她换不了。
+        #:
+        #: 所以只能在同一条历史里把它掰回来：检测到「说了没做」就记一笔，
+        #: 下一轮在他的动态块里当面点破，直到真的发出卡才清掉。
+        #:
+        #: 进程内存不落盘 —— 重启就忘，那正好：重启后历史还在但他
+        #: 未必再犯，没必要背着一个可能过时的指控。
+        self.card_debt: set[str] = set()
+
         # Context Provider 注册表。第一个（也是眼下唯一一个）实例是 MoodProvider ——
         # 把本来就在跑的三层情绪收编进框架，而不是另起一套「每轮注入」的机制
         # （架构文档 0.3）。后续 time / memory / home 往这里加。
@@ -585,6 +599,15 @@ class Nox:
         span = self._session_span()
         if span:
             parts.append(span)
+        # 上一轮他说卡发了但没发。**当面点破**，否则他会照着自己的
+        # 历史继续只说不做（见 __init__ 里 card_debt 那段）
+        if self.current_session_id in self.card_debt:
+            parts.append(
+                "【纠正】你上一轮说了「卡发你了」之类的话，"
+                "**但你并没有调用 luckin_order，她那边什么都没收到**。\n"
+                "她现在正等着一张不存在的卡。这一轮如果她还要下单，"
+                "**必须真的调用工具**——只写字不调用等于骗她。"
+            )
         return "\n\n".join(parts)
 
     def _session_span(self) -> str:

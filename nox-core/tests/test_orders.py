@@ -115,13 +115,46 @@ def test_tool_never_places_the_order(store):
     out = _handler(mcp, store)(ARGS)
     assert "createOrder" not in mcp.tools, "工具直接下单了 —— 确认闸门形同虚设"
     assert "previewOrder" in mcp.tools, "没调 preview 就出卡，价格是模型编的"
-    assert "还没有下单" in out
+    # 断言**语义**不是特定字样 —— 措辞会改，「他必须知道这还没下单」不会
+    assert "未下单" in out or "还没有下单" in out
 
 
 def test_tool_output_tells_the_model_not_to_claim_success(store):
     """给模型的返回必须把话说死，否则他会说「已经帮你点好了」。"""
     out = _handler(FakeMcp(), store)(ARGS)
     assert "不要说" in out and "已经下单" in out
+
+
+#: 🔴 **2026-09-06 事故二：他说了台词，但没做动作。**
+#:
+#: 第一版的工具描述里写着「说一句『卡发你了，你看一眼』就够」——
+#: 当天他就真的**只说那句、根本没调工具**，连着两轮。
+#: 她等一张永远不来的卡，而日志里干干净净、一个错都没有。
+#:
+#: 给模型一句现成的话，等于在教他「说这句 = 完成任务」。
+#: `context/providers/resonance.py` 早写过同一条：「写台词的话，出来的是模板」。
+#: 这是它的动作版，更凶 —— 模板顶多难看，这个是**说了没做**。
+_SCRIPTED = ("卡发你了", "你看一眼", "已经帮你", "点确认就行")
+
+
+def test_no_quotable_lines_in_the_tool_description():
+    """工具描述里不许出现能照抄的句子。"""
+    desc = luckin_tools.ORDER.description
+    for line in _SCRIPTED:
+        assert line not in desc, f"描述里写了台词「{line}」—— 他会照说而不做"
+
+
+def test_no_quotable_lines_in_the_tool_result(store):
+    """工具返回里同样不许。它比描述更靠近生成那一刻，更容易被照抄。"""
+    out = _handler(FakeMcp(), store)(ARGS)
+    for line in _SCRIPTED:
+        assert line not in out, f"返回里写了台词「{line}」"
+
+
+def test_description_warns_that_saying_is_not_doing():
+    """反过来要明说：光说不调用，她那边什么都看不到。"""
+    desc = luckin_tools.ORDER.description
+    assert "才会出现" in desc or "才会真的" in desc
 
 
 def test_fail_closed_without_store():
@@ -375,9 +408,32 @@ class _Core:
         self.context = type("C", (), {"get": staticmethod(lambda n: None)})()
         self.router = type("R", (), {"light_adapter": None})()
         self.luckin_client = mcp
+        self.card_debt = set()
 
     def model_name(self, model=None):
         return model or "fake"
+
+    def chat_stream(self, text, history=None, **kw):
+        """够 /chat/stream 跑一遍的最小流。
+
+        ⚠️ 回的这句**故意声称发了卡**（而不带 order 附件）——
+        正好让 `_warn_if_claimed_without_doing` 走进它的报警分支，
+        那条路里的 NameError 才藏不住。
+        """
+        from agent.llm import Message, Usage
+        from agent.loop import LoopResult
+
+        said = "卡发你了，你点确认就行"
+        history = list(history or [])
+        result = LoopResult(
+            outcome="answered", text=said, iterations=1,
+            usage=Usage(input_tokens=10, output_tokens=3, cache_read_tokens=0),
+            messages=[*history, Message(role="user", text=text),
+                      Message(role="assistant", text=said)],
+            attachments=[],
+        )
+        yield type("E", (), {"type": "text", "text": said})()
+        yield type("E", (), {"type": "done", "result": result})()
 
 
 @pytest.fixture
@@ -455,6 +511,46 @@ def test_confirm_twice_over_http_places_one_order(client):
     second = c.post(f"/api/nox/orders/{oid}/confirm").json()
     assert first["ok"] is True and second["ok"] is False
     assert mcp.tools.count("createOrder") == 1, "下了两单"
+
+
+def test_claiming_a_card_without_sending_one_creates_a_debt(client):
+    """🔴 他说「卡发你了」但这轮没产出卡片 → 记一笔，下一轮当面点破。
+
+    2026-09-06 连着两轮：他回一句「卡发你了，你点确认就行」，
+    而 luckin_order 一次都没调、库里一张新单都没有。
+    **她等一张永远不来的卡，而日志干干净净、一个错都没有。**
+
+    换个新会话立刻正常 —— 但 Caelum App 是**单一窗口、她换不了会话**
+    （`Chat.jsx`）。所以只能在同一条历史里掰回来。
+
+    这条同时守着运行期 NameError：那个检查函数用到 `history` 和 `re`，
+    前者是流式端点的局部变量、后者要导入 —— 两样今天都栽过。
+    """
+    c, core, mcp = client
+    assert core.card_debt == set()
+    r = c.post("/chat/stream", json={"text": "给我下单", "session_id": "s-debt"})
+    assert r.status_code == 200, r.text
+    assert "NameError" not in r.text and "内部错误" not in r.text, r.text[:400]
+    assert "s-debt" in core.card_debt, "说了没做，却没被记账"
+
+
+def test_debt_is_cleared_once_a_card_really_goes_out(client):
+    """真发出卡就销账 —— 不能背着一个已经补上的指控继续骂他。"""
+    c, core, mcp = client
+    core.card_debt.add("s-debt2")
+
+    # 这一轮真带上 order 附件
+    real = core.chat_stream
+    def with_card(text, history=None, **kw):
+        for ev in real(text, history, **kw):
+            res = getattr(ev, "result", None)
+            if res is not None:
+                res.attachments = [{"type": "order", "order_id": "ord-x", "card": {}}]
+            yield ev
+    core.chat_stream = with_card
+
+    c.post("/chat/stream", json={"text": "再来一杯", "session_id": "s-debt2"})
+    assert "s-debt2" not in core.card_debt
 
 
 def test_pay_endpoint_returns_the_link(client):

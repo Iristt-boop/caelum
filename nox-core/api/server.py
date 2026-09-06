@@ -19,6 +19,7 @@ import base64
 import json
 import logging
 import os
+import re
 import threading
 import urllib.request
 import uuid
@@ -826,6 +827,49 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
         if not voice or len(history) <= VOICE_HISTORY:
             return history
         return history[-VOICE_HISTORY:]
+
+    #: 他声称发了卡的说法。**只用来报警，不改他的话。**
+    _CLAIMED_CARD = re.compile(r"(卡(片)?(已经)?(发|给)你|发你了|出(了|一张)?卡|下单卡)")
+
+    def _warn_if_claimed_without_doing(final, history: list, sid: str = "") -> None:
+        """🔴 他说「卡发你了」，但这一轮根本没产出卡片（2026-09-06 实录）。
+
+        当天连着两轮：他回一句「卡发你了，你点确认就行」，
+        而 `luckin_order` 一次都没调、库里一张新单都没有。
+        **她等一张永远不来的卡，而日志干干净净、一个错都没有。**
+
+        病根有两层：
+          ① 我在工具描述里写了台词「说一句『卡发你了』就够」——
+             等于教他「说这句 = 完成任务」（已删，有测试盯着）
+          ② 那两轮进了会话历史，于是他开始**照抄自己**：
+             同一个会话里再问，他还是只说不做。换个新会话立刻正常。
+
+        这里只做一件事：**把它变得看得见**。
+        不改他的话（改了就是替他圆场），也不重试（重试会下重单）。
+        `guard.py` 那套「不许编」管的是工具失败后编结果；
+        这是它的另一面 —— **根本没调工具却说做了**。
+        """
+        try:
+            debt = getattr(core, "card_debt", None)
+            if any(a.get("type") == "order" for a in (final.attachments or [])):
+                # 真发了 —— 销账。哪怕上一轮欠着，这一轮补上了就算清
+                if debt is not None and sid:
+                    debt.discard(sid)
+                return
+            text = (final.text or "")
+            if not _CLAIMED_CARD.search(text):
+                return
+            logger.warning(
+                "⚠️ 他说发了卡但这轮没产出卡片 —— 她会等一张不来的卡。"
+                "调过的工具：%s｜原话：%.60s",
+                _tools_this_turn(final.messages, history) or "（一个都没调）", text,
+            )
+            # 记一笔。下一轮 `_dynamic` 会把这件事当面摆给他看 ——
+            # Caelum App 是单一窗口、她换不了会话，只能在同一条历史里掰回来
+            if debt is not None and sid:
+                debt.add(sid)
+        except Exception:  # noqa: BLE001
+            logger.exception("卡片声称检查失败（不影响对话）")
 
     def _turn_ends(sid: str, text: str = "", reply: str = "") -> None:
         """一轮结束、消息真的落库之后，把这轮新留的纸条基准线校准到现在。
@@ -2154,6 +2198,9 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
 
             # 完整历史 + 新增，别让通话把缓存削短（见 _for_voice 的警告）
             sessions.put(sid, list(history) + final.messages[len(sent):])
+            # ⚠️ history 必须显式传 —— 它是这个生成器的局部变量，
+            # 闭包里取不到（差点又写成 NameError，同今天早些时候那次）
+            _warn_if_claimed_without_doing(final, history, sid)
             _turn_ends(sid, req.text or "", final.text or "")
             # 附带产物单独发一帧，让前端能在收尾之前就把图显示出来。
             # 外层 type 固定 attachment，具体是什么放 kind ——
