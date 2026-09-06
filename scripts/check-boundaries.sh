@@ -42,5 +42,13 @@ rule "R5" "前端不直接推消息" veto \
   "grep -rn 'api/push/send' nox-app/frontend/src nox-app/caelum-os-ui/src 2>/dev/null \
    | grep -vE ':[0-9]+:[[:space:]]*(//|\\*|/\\*)'"
 
+# R8 花钱的动作模型够不着（2026-09-06）：createOrder 这类只准出现在
+# 确认端点后面。工具层（tools/luckin.py）里若出现真下单调用就是闸门塌了。
+#
+# ⚠️ 认的是「工具层直接调 SERVER_TOOLS['luckin_order']」这种形状。
+# `place()` 是给 confirm 端点用的出口，它在 tools/ 里定义但只被 api/server.py 调 ——
+# 所以这里查的是**除 place 之外**有没有别的地方触达下单。
+rule "R8" "花钱的动作只在确认端点后面" veto   "grep -n \"SERVER_TOOLS\[.luckin_order.\]\" nox-core/tools/luckin.py    | grep -v 'def place' | grep -v '^[0-9]*: *#'"
+
 echo "════════"
 if [ "$FAIL" -eq 0 ]; then echo "边界法则全部守住了 ✓"; else echo "有越界，见上 ✗"; exit 1; fi

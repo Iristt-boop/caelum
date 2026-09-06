@@ -36,7 +36,10 @@
   陪伴服务：共读 :3100 · 共影 :3200 · 共听 eryu :9090 + netease :3456
 ```
 
-存储一览：bridge `/root/data/nox-bridge.db` · nox-core `sessions/attention/world/topics` 四库 · OB `buckets/ + embeddings.db`（全 SQLite；备份见 `scripts/caelum-backup.sh`，体检 `/root/doctor.sh`，探活 `/api/health`）。
+存储一览：bridge `/root/data/nox-bridge.db` · nox-core `sessions/attention/world/topics/orders` **五库** · OB `buckets/ + embeddings.db`（全 SQLite；备份见 `scripts/caelum-backup.sh`，体检 `/root/doctor.sh`，探活 `/api/health`）。
+
+> `orders.db`（2026-09-06 加）：待确认单的状态机。不并进 world.db —— 那边契约是
+> 「Observation 冻结只追加、永不改写」，订单状态天生要改。付款链接单独一张表带 TTL。
 
 ## 二、边界法则（写死，哨兵盯着）
 
@@ -49,6 +52,13 @@
 | R5 | 前端不直接推消息，主动消息的钥匙不给前端 | 无 | R5 |
 | R6 | 测试会话（`test-`/`sandbox-` 前缀）不碰任何全局注意力状态（Registry/Drive/纸条），`remind_myself` 拒留纸条 | 压缩除外（会话自己的数据） | `tests/test_test_session_isolation.py` |
 | R7 | 前端只打 bridge。历史直连特例固定三个：`reading.noxtang.com` / `music.noxtang.com` / `/watch/<token>`——**不许新增** | 上述三处 | 人工review |
+| R8 | **花钱的动作模型够不着。** 下单/支付类接口只准挂在确认端点后面（`/api/nox/orders/{id}/confirm`），不许进工具表。工具最多「准备交易」——出一张带快照和指纹的卡，她点了才执行 | 无 | `tests/test_orders.py::test_tool_never_places_the_order` |
+
+> R8 的由来（2026-09-06）：在它之前「确认制」的全部实现是工具描述里那句
+> 「她没确认就不许调」，而 `tools/mcd.py` 的 `ACTION_TOOLS` 常量**定义完之后
+> 整个仓库没有任何地方用到**，测试也只断言「描述里有『确认』二字」——
+> 验的是那句话写了没有，不是确认真的发生了没有。
+> ⚠️ 麦当劳目前**还是提示词确认制**，属于已知欠账（见第四节）。
 
 ## 三、新能力三问（每加一个能力必须先回答）
 
@@ -65,6 +75,12 @@
   MemoryProvider 解禁（OB 只读检索）。**理解层默认影子模式**，转正等一周真实日志 ——
   在那之前记忆的加载条件①（活跃锚点）恒为 False，只有条件②（指向过去的说法）在跑。
   待做：关系状态可写可落盘 + 她点头的确认界面（P4）
+- 点单确认卡（2026-09-06）P1+P2 已上线（瑞幸）。**欠账**：麦当劳还是提示词确认制，
+  没走 R8 的结构闸门；P3 自动查取餐码（轮询 `queryOrderDetailInfo` → CareLedger
+  记 `order_update` 不吃配额）还没做，形状已验（`orderStatusName` / `takeMealCodeInfo`）
+- 淘宝：**决定不做卡片**（2026-09-06 结案，见 `Caelum-点单确认卡-设计.md` 第十一节）。
+  ⚠️ 服务端 instructions 里提到 `buy_now`，但 `tools/list` 里没有 ——
+  **不许用调用去探测它在不在**，真存在的话那一下就是真下单
 - 废弃物已归档：root `archive/`（memory/、haven-ombre/）、nox-app `archive/`（一代 backend、render/Dockerfile）
 - ⏸ **12306 暂缓（2026-09-05 查实）**：第三方包 12306-mcp 的请求被 12306 反爬**无声丢弃**（查票必挂起，60s 无响应；它 fetch 连 UA 都没带，补了 UA 仍挂——缺 cookie 会话流程）。**境外 IP 没被封**：裸 curl 带 cookie 预热+Referer+UA 能查到真实余票。现状：tools/train.py 和桥（mcp-train.service，disabled）都留着；恢复路 = 自写 REST 工具约 80 行（流程已验证），糖糖说想上时再做
 - 🔭 **观察点：支付宝 AI 开放平台（aipay.alipay.com，2026-07 上线邀测）**——蜜雪冰城/肯德基/东航等首批以 MCP 插件/Skill 接入「阿宝」，走平台托管不对外发个人 Key。**等它开放个人开发者接入时接一次 = 白得一串茶饮/餐饮品牌**（喜茶/奈雪/茶百道等目前均无独立 MCP）。集成入口：Studio → MCP 面板（/api/nox/integrations）
