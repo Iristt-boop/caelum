@@ -988,11 +988,22 @@ async function coreMode(req, res, requestId) {
   res.end();
 }
 
+// 用户表情包（2026-09-04）：她也能发猫猫图了。tag 清单是
+// nox-app/frontend/src/memes.js 的镜像 —— 那边加表情这边要跟着改。
+// 不认的 tag 直接 400 不能落库：meta.meme 在前端查不到图、content 又是空，
+// 这条消息会整个人间蒸发，比报错糟糕得多。
+const MEME_TAGS = new Set([
+  "开心", "哈哈", "委屈", "生气", "撒娇", "拥抱", "爱你", "害羞", "得意", "翻白眼",
+  "亲亲", "疑问", "震惊", "无语", "吃醋", "早安", "晚安", "不开心", "大哭", "嫌弃",
+]);
+
 app.post("/api/chat", async (req, res) => {
   // merged：合并发图（微信 1:1）——前端勾了「发送后合并展示」，存进
   // metadata，重载时聊天页还原成折叠卡而不是一张张缩略图
-  const { message, images, sessionId, mode, voice, merged } = req.body;
-  if (!message && !images?.length) return res.status(400).json({ error: "empty" });
+  // meme：她发的表情包 tag（纯图不带字，走同一套会话/落库/SSE）
+  const { message, images, sessionId, mode, voice, merged, meme } = req.body;
+  if (!message && !images?.length && !meme) return res.status(400).json({ error: "empty" });
+  if (meme && !MEME_TAGS.has(meme)) return res.status(400).json({ error: `不认识的表情：${meme}` });
 
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache");
@@ -1024,10 +1035,19 @@ app.post("/api/chat", async (req, res) => {
 
   // 落库只存用户原话（语音指令不入库，否则前端会把整条隐藏掉）。
   // 只发图不带字的情况也落库（meta.images 非空，saveMessage 不会跳过）。
-  const userMeta = imgUrls.length ? { images: imgUrls } : {};
+  // 表情包：content 存空、meta.meme 存 tag —— 前端按图渲染（同小克那条链路）。
+  const userMeta = {};
+  if (imgUrls.length) userMeta.images = imgUrls;
   if (merged && imgUrls.length) userMeta.merged = true;
-  if (message || imgUrls.length) {
+  if (meme) userMeta.meme = meme;
+  if (message || imgUrls.length || meme) {
     saveMessage(sessionId, "user", message || "", Object.keys(userMeta).length ? userMeta : "");
+  }
+
+  // 表情包不是文字：转给 Core 前翻成一句他能读的话 —— 他的会话库存的也是
+  // 这句，往后他翻记忆时看到的是「她发了什么表情」，不是一条空消息。
+  if (meme) {
+    req.body.message = message ? `${message}（发了个表情包：${meme}）` : `（发了一个表情包：${meme}）`;
   }
 
   console.log(`[Bridge] Chat request ${requestId.slice(0,6)} | msg:${(message||"").slice(0,30)} | imgs:${images?.length||0}`);
