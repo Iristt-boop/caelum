@@ -265,6 +265,51 @@ def test_pay_link_is_found_by_shape_not_by_field_name(payload, want):
     assert flow.find_pay_link(payload) == want
 
 
+#: 🔴 **createOrder 的真实响应**（2026-09-06 从日志里读到的形状，不是猜的）。
+#: 这是第一次真正看到它长什么样 —— 之前两版都在猜字段名。
+REAL_ORDER_RESULT = {
+    "orderId": 7682330841411158026,
+    "payOrderUrl": "weixin://wxpay/bizpayurl?pr=REDACTED",
+    "payOrderQrCodeUrl": "https://payqr.example.lkcoffee.com/x.png",
+    "discountPrice": 10.9,
+    "needPay": True,
+    "tradeNo": None, "description": None, "businessNotifyUrl": None,
+    "subMchid": None, "orderIdStr": "7682330841411158026", "payParams": None,
+}
+
+
+def test_native_scan_link_is_flagged():
+    """🔴 `weixin://wxpay/bizpayurl?pr=…` 是微信支付的 NATIVE（扫码）链接，
+    **点了不弹支付**。
+
+    2026-09-06 实测：糖糖点了「微信付款」，微信启动了但什么都没出来。
+    她第一次手动下单时是「复制链接 → 去微信粘贴打开」，那条路是通的。
+    所以前端要据此把主操作从「跳转」换成「复制」。
+    """
+    url, qr = flow.find_links(REAL_ORDER_RESULT)
+    assert url.startswith("weixin://wxpay/bizpayurl")
+    assert flow.is_native_scan(url) is True
+    assert qr.startswith("https://"), "二维码图没取到"
+
+
+@pytest.mark.parametrize("url,native", [
+    ("weixin://wxpay/bizpayurl?pr=X", True),
+    ("https://wx.tenpay.com/cgi-bin/x", False),   # H5 收银台，点得开
+    ("alipays://platformapi/x", False),
+    ("", False),
+])
+def test_only_native_urls_are_scan_only(url, native):
+    """别把能点的链接也标成扫码 —— 那会让她白白多复制一次。"""
+    assert flow.is_native_scan(url) is native
+
+
+def test_qr_field_must_be_an_image_url():
+    """二维码那个字段要是也给了 weixin://，那它不是图，当没有。"""
+    _, qr = flow.find_links({"payOrderUrl": "weixin://wxpay/bizpayurl?pr=A",
+                             "payOrderQrCodeUrl": "weixin://wxpay/bizpayurl?pr=A"})
+    assert qr == ""
+
+
 def test_shape_never_leaks_values():
     """把响应结构记进日志是为了「下次不用猜」，但**不能把值带出去** ——
     里面有付款链接和订单号。"""

@@ -78,6 +78,7 @@ CREATE INDEX IF NOT EXISTS idx_orders_state ON orders(state);
 CREATE TABLE IF NOT EXISTS pay_links (
   order_id   TEXT PRIMARY KEY,
   url        TEXT NOT NULL,
+  qr_url     TEXT,
   expires_at TEXT NOT NULL
 );
 """
@@ -98,6 +99,10 @@ class OrderStore:
         self._conn.row_factory = sqlite3.Row
         with self._lock:
             self._conn.executescript(_SCHEMA)
+            # 老库没有 qr_url 列，幂等补上（CREATE TABLE IF NOT EXISTS 不加列）
+            cols = {r["name"] for r in self._conn.execute("PRAGMA table_info(pay_links)")}
+            if "qr_url" not in cols:
+                self._conn.execute("ALTER TABLE pay_links ADD COLUMN qr_url TEXT")
             self._conn.execute("PRAGMA journal_mode=WAL")
             self._conn.commit()
 
@@ -176,13 +181,19 @@ class OrderStore:
                 return None
         return self._row(row)
 
-    def set_pay_link(self, oid: str, url: str, now: datetime | None = None) -> None:
-        """付款链接单独存。**绝不进 snapshot_json**（见模块头）。"""
+    def set_pay_link(self, oid: str, url: str, qr_url: str = "",
+                     now: datetime | None = None) -> None:
+        """付款链接单独存。**绝不进 snapshot_json**（见模块头）。
+
+        `qr_url` 是二维码图。瑞幸给的是 `weixin://wxpay/bizpayurl?pr=…`——
+        微信支付的 NATIVE（扫码）链接，点了不弹支付，只能扫或复制进微信。
+        """
         now = now or _now()
         with self._lock:
             self._conn.execute(
-                "INSERT OR REPLACE INTO pay_links(order_id, url, expires_at) VALUES(?,?,?)",
-                (oid, url, (now + timedelta(hours=2)).isoformat()))
+                "INSERT OR REPLACE INTO pay_links(order_id, url, qr_url, expires_at)"
+                " VALUES(?,?,?,?)",
+                (oid, url, qr_url or None, (now + timedelta(hours=2)).isoformat()))
             self._conn.commit()
 
     # ------------------------------------------------------------ 读
@@ -195,15 +206,22 @@ class OrderStore:
 
     def pay_link(self, oid: str, now: datetime | None = None) -> str | None:
         """取付款链接。过期就当没有 —— 过期的收银台链接点了也是报错页。"""
+        row = self._pay_row(oid, now)
+        return row["url"] if row else None
+
+    def pay_qr(self, oid: str, now: datetime | None = None) -> str | None:
+        """取二维码图的地址。没有就是没有。"""
+        row = self._pay_row(oid, now)
+        return (row["qr_url"] or None) if row else None
+
+    def _pay_row(self, oid: str, now: datetime | None = None):
         now = now or _now()
         with self._lock:
             row = self._conn.execute(
                 "SELECT * FROM pay_links WHERE order_id=?", (oid,)).fetchone()
-        if row is None:
+        if row is None or datetime.fromisoformat(row["expires_at"]) <= now:
             return None
-        if datetime.fromisoformat(row["expires_at"]) <= now:
-            return None
-        return row["url"]
+        return row
 
     def expire_stale(self, now: datetime | None = None) -> int:
         """把过了期还挂着的单子收掉。返回收了几张。"""

@@ -1449,6 +1449,11 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
             "actual_fen": (row["snapshot"] or {}).get("card", {}).get("actual_fen"),
             "has_link": bool(url),
             "pay_url": url or "",
+            "qr_url": store.pay_qr(oid) or "",
+            # 🔴 告诉前端这条链接**点了没用**（微信支付 NATIVE 扫码链接）。
+            # 前端据此把主操作从「跳转」换成「复制」——
+            # 2026-09-06 实测：直接点它，微信启动但什么都不弹
+            "scan_only": luckin_order_flow.is_native_scan(url or ""),
         }
 
     @app.post("/api/nox/orders/{oid}/cancel")
@@ -1546,14 +1551,14 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
         pay_url = ""
         try:
             # 付款链接**不按字段名取**，按值的形状找（orders/luckin.py:find_pay_link）
-            pay_url = luckin_order_flow.find_pay_link(result)
+            pay_url, qr_url = luckin_order_flow.find_links(result)
             # 把返回的**结构**记一笔（键名 + 类型，不带值）——
             # 这是我们第一次见 createOrder 的真实响应，下次就不用猜了
             logger.info("createOrder 响应结构：%s",
                         json.dumps(luckin_order_flow.shape(result), ensure_ascii=False)[:600])
             if pay_url:
                 # 单独存，**绝不进 snapshot / 日志 / 聊天历史**（调研第六节倒数第二条）
-                store.set_pay_link(oid, pay_url)
+                store.set_pay_link(oid, pay_url, qr_url)
             else:
                 logger.warning("订单 %s 下单成功但没找到付款链接 —— 她得去瑞幸 App 付", oid)
         except Exception:  # noqa: BLE001
@@ -1564,8 +1569,11 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
             "ok": True, "state": orders_mod.PENDING_PAYMENT,
             "merchant_order_id": merchant_order_id,
             "actual_fen": (snap.get("card") or {}).get("actual_fen"),
-            # P2 才做卡片二，这里先把链接给出去（不落聊天历史）
+            # 链接直接回给前端（不落聊天历史）。scan_only 告诉它这条
+            # 点了没用、要复制或扫 —— 见 /pay 那个端点的注释
             "pay_url": pay_url,
+            "qr_url": store.pay_qr(oid) or "",
+            "scan_only": luckin_order_flow.is_native_scan(pay_url),
         }
 
     @app.get("/api/nox/facts")

@@ -172,6 +172,45 @@ def find_pay_link(payload: Any, _depth: int = 0) -> str:
     return ""
 
 
+#: 🔴 `weixin://wxpay/bizpayurl?pr=…` 是微信支付的 **NATIVE（扫码支付）** 链接。
+#:
+#: 它被设计成**编成二维码给人扫**，不是拿来直接点开的。
+#: 2026-09-06 实测：在同一台手机上点它，微信会启动但**什么都不弹** ——
+#: 糖糖的原话「付款跳转后没有反应，在微信页面没有跳出支付」。
+#:
+#: 而她第一次手动下单时是**把链接复制粘贴进微信再点**，那条路是通的。
+#: 所以卡片上的主操作是「复制链接」，不是直接跳转。
+NATIVE_SCHEMES = ("weixin://wxpay/bizpayurl",)
+
+#: createOrder 里放二维码图的字段。**这不是猜的** ——
+#: 2026-09-06 从真实响应里读到的（见下面 shape 记的那行日志）：
+#:   {"orderId": int, "payOrderUrl": str, "payOrderQrCodeUrl": str,
+#:    "discountPrice": float, "needPay": bool, "orderIdStr": str, …}
+_QR_KEYS = ("payOrderQrCodeUrl", "qrCodeUrl", "qrUrl")
+
+
+def is_native_scan(url: str) -> bool:
+    """这个链接是「只能扫、点了没用」的那种吗。"""
+    return str(url or "").startswith(NATIVE_SCHEMES)
+
+
+def find_links(result: dict[str, Any]) -> tuple[str, str]:
+    """从 createOrder 的返回里取出（付款链接, 二维码图 URL）。
+
+    付款链接仍然走 `find_pay_link` 按形状找（字段名怎么改都不影响）；
+    二维码那个按已知字段名取 —— 那是实测来的，而且**只认 http(s)**：
+    要是它本身也是个 `weixin://`，那就不是图，当没有。
+    """
+    primary = find_pay_link(result)
+    qr = ""
+    for k in _QR_KEYS:
+        v = str(result.get(k) or "").strip()
+        if v.startswith(("http://", "https://")):
+            qr = v
+            break
+    return primary, qr
+
+
 def shape(payload: Any, _depth: int = 0) -> Any:
     """把返回的**结构**（键名 + 类型）抽出来，值一律不带。
 
