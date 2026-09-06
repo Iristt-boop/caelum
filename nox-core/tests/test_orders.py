@@ -70,7 +70,13 @@ class FakeMcp:
 
     def __init__(self, order_result: dict | None = None):
         self.calls: list[tuple[str, dict]] = []
-        self.order_result = order_result or {"orderId": "LK202609060991"}
+        #: 带上付款链接 —— 真实的 createOrder 会给一个 `weixin://`
+        #: （糖糖 2026-09-06 实测）。有了它，happy path 才能断言
+        #: 链接真被提取出来了，从而直接抓住「模块没导入」这种错
+        self.order_result = order_result or {
+            "orderId": "LK202609060991",
+            "payUrl": "weixin://wxpay/bizpayurl?pr=TESTONLY",
+        }
 
     def call(self, tool, args):
         self.calls.append((tool, args))
@@ -277,6 +283,145 @@ def test_stale_pay_link_is_treated_as_gone(store):
 
 
 # ---------------------------------------------------------------- 串起来
+
+
+# ---------------------------------------------------------------- 端点（真的打一次）
+#
+# 🔴 **2026-09-06 事故补的这一组。**
+#
+# 那天上线后糖糖点了「确认下单」：瑞幸那边订单真建出来了（小程序里
+# 看得到「未支付」），我们这边却显示「下单失败」——
+# `api/server.py` 里 `luckin_order_flow` 这个名字**没导入**，
+# `createOrder` 成功返回之后下一行 NameError，于是 set_state 没跑到。
+#
+# **她看到失败，而钱那边是成功的。** 比下单失败糟得多 —— 她会再点一次。
+#
+# 上面那些测试一条都没拦住，因为它们全在工具层，**从没调用过那个端点**。
+# py_compile 也拦不住（NameError 是运行期的名字查找）。
+# 所以这里必须真的把 HTTP 请求打进去。
+
+
+class _Cfg:
+    history_limit = 40
+    recent_window_tokens = 8000
+    context_budget_tokens = 20000
+
+    class primary:  # noqa: N801
+        model = "fake"
+
+    class utility:
+        usable = False
+        model = ""
+        base_url = ""
+
+    def __init__(self, db_path):
+        self.db_path = str(db_path)
+
+
+class _Core:
+    """够 create_app 跑起来的最小 core。"""
+
+    def __init__(self, db_path, mcp):
+        self.cfg = _Cfg(db_path)
+        self.loop = type("L", (), {"tools": {}, "register": lambda *a, **k: None})()
+        self.bridge = None
+        self.system_prompt = "（前缀）"
+        self.current_session_id = None
+        self.context = type("C", (), {"get": staticmethod(lambda n: None)})()
+        self.router = type("R", (), {"light_adapter": None})()
+        self.luckin_client = mcp
+
+    def model_name(self, model=None):
+        return model or "fake"
+
+
+@pytest.fixture
+def client(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+    from api.server import create_app
+    from data.store import Store
+
+    monkeypatch.delenv("NOX_ATTENTION", raising=False)
+    mcp = FakeMcp()
+    core = _Core(tmp_path / "sessions.db", mcp)
+    s = Store(tmp_path / "sessions.db")
+    c = TestClient(create_app(core, s))
+    yield c, core, mcp
+    s.close()
+
+
+def test_confirm_endpoint_actually_works(client):
+    """🔴 把请求真的打进去 —— 这是唯一能拦住端点里 NameError 的测试。"""
+    c, core, mcp = client
+    oid = core.orders.create(
+        session_id="s-1", merchant="luckin",
+        snapshot={"card": {"actual_fen": 1090}, "args": ARGS},
+        fingerprint=luckin_tools.snapshot_for(mcp, ARGS)[2])
+
+    r = c.post(f"/api/nox/orders/{oid}/confirm")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["ok"] is True, body
+    assert body["state"] == orders_mod.PENDING_PAYMENT
+    assert core.orders.get(oid)["state"] == orders_mod.PENDING_PAYMENT
+    # 🔴 断言链接**真被提取出来了**。少这一条的话，
+    # 「取链接那段整个炸了」会被结构兜底吞掉而测试照样绿 ——
+    # 那正是 2026-09-06 事故里最难发现的那一半
+    assert core.orders.pay_link(oid) == "weixin://wxpay/bizpayurl?pr=TESTONLY"
+
+
+def test_order_is_never_lost_when_bookkeeping_blows_up(client, monkeypatch):
+    """🔴 **下单成功之后的任何失败，都不许把「已经下单」这个事实丢掉。**
+
+    2026-09-06 那次就是：createOrder 成功了，下一行炸了，
+    于是库里停在 confirmed、没商家单号、没链接，前端显示失败，
+    而瑞幸那边订单好好挂着。她会以为可以再点一次。
+
+    所以顺序写死：先落状态，再做别的；后面全包在 try 里。
+    """
+    c, core, mcp = client
+    oid = core.orders.create(
+        session_id="s-1", merchant="luckin",
+        snapshot={"card": {"actual_fen": 1090}, "args": ARGS},
+        fingerprint=luckin_tools.snapshot_for(mcp, ARGS)[2])
+
+    # 让「下单之后」的那段炸掉
+    import api.server as srv
+    monkeypatch.setattr(srv.luckin_order_flow, "find_pay_link",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("炸了")))
+
+    r = c.post(f"/api/nox/orders/{oid}/confirm")
+    assert r.status_code == 200, r.text
+    assert r.json()["state"] == orders_mod.PENDING_PAYMENT
+    row = core.orders.get(oid)
+    assert row["state"] == orders_mod.PENDING_PAYMENT, "订单被丢了 —— 她会以为可以再点一次"
+    assert row["merchant_order_id"] == "LK202609060991"
+
+
+def test_confirm_twice_over_http_places_one_order(client):
+    """她连点两次「确认下单」，走真实 HTTP 也只能下一单。"""
+    c, core, mcp = client
+    oid = core.orders.create(
+        session_id="s-1", merchant="luckin",
+        snapshot={"card": {"actual_fen": 1090}, "args": ARGS},
+        fingerprint=luckin_tools.snapshot_for(mcp, ARGS)[2])
+
+    first = c.post(f"/api/nox/orders/{oid}/confirm").json()
+    second = c.post(f"/api/nox/orders/{oid}/confirm").json()
+    assert first["ok"] is True and second["ok"] is False
+    assert mcp.tools.count("createOrder") == 1, "下了两单"
+
+
+def test_pay_endpoint_returns_the_link(client):
+    """卡片二刷新之后要能重新拿到链接。"""
+    c, core, mcp = client
+    oid = core.orders.create(session_id="s", merchant="luckin",
+                             snapshot={"card": {"actual_fen": 1090}, "args": {}},
+                             fingerprint="fp")
+    core.orders.set_pay_link(oid, "weixin://wxpay/bizpayurl?pr=AAA")
+    d = c.get(f"/api/nox/orders/{oid}/pay").json()
+    assert d["has_link"] is True
+    assert d["pay_url"].startswith("weixin://")
 
 
 def test_end_to_end_card_then_confirm_then_order(store):

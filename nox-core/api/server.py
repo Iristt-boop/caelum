@@ -53,6 +53,9 @@ from attention.appraisal_llm import LLMAppraiser
 from tools import luckin as luckin_tools
 import orders as orders_mod
 from orders import OrderStore
+#: ⚠️ 2026-09-06 漏了这一行，代价是一单真下出去了却被记成失败 ——
+#: 见下面 `nox_order_confirm` 里那段「下单已经成功」的注释
+from orders import luckin as luckin_order_flow
 
 #: 单子走不下去时给她的人话。**不许直接把状态字符串甩给她**
 _ORDER_STATE_TEXT = {
@@ -1518,26 +1521,45 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
             return {"ok": False, "state": orders_mod.ORDER_FAILED,
                     "detail": f"下单没成：{exc}"}
 
+        # ══════════════════════════════════════════════════════════════
+        # 🔴 **到这里，钱那边的单子已经真的建出来了。**
+        #
+        # 从这一行往下的任何失败，都不许把「已经下单」这个事实丢掉。
+        #
+        # 2026-09-06 就是这么翻的车：下面取付款链接那行有个 NameError
+        # （`luckin_order_flow` 没导入），于是 set_state 根本没跑到 ——
+        # 瑞幸那边订单好好地挂着「未支付」，我们库里却停在 confirmed、
+        # 没有商家单号、没有链接，前端收到 500 显示「下单失败」。
+        #
+        # **她看到的是失败，而钱那边是成功的。** 这是这套系统里
+        # 最坏的一种失败模式，比下单失败糟得多 —— 她会以为可以再点一次。
+        #
+        # 所以顺序写死：**先落状态，再做别的。**
+        # 后面那些（找链接、记结构）全都包在 try 里，炸了也只是少块信息。
+        # ══════════════════════════════════════════════════════════════
         merchant_order_id = str(
             result.get("orderId") or result.get("orderNo") or result.get("id") or "")
-        # 🔴 付款链接**不按字段名取**，按值的形状找（orders/luckin.py:find_pay_link）。
-        # 第一版按字段名猜，猜错的后果很特别：下单成功了（钱那边的单子真建了），
-        # 但她拿不到链接，这一单卡住而系统以为一切正常。
-        pay_url = luckin_order_flow.find_pay_link(result)
-        # 把返回的**结构**记一笔（键名 + 类型，不带值）——
-        # 这是我们第一次见 createOrder 的真实响应，下次就不用猜了
-        logger.info("createOrder 响应结构：%s",
-                    json.dumps(luckin_order_flow.shape(result), ensure_ascii=False)[:600])
-        if pay_url:
-            # 单独存，**绝不进 snapshot / 日志 / 聊天历史**（调研第六节倒数第二条）
-            store.set_pay_link(oid, pay_url)
-        else:
-            logger.warning("订单 %s 下单成功但没找到付款链接 —— 她得去瑞幸 App 付", oid)
         store.set_state(oid, orders_mod.PENDING_PAYMENT,
-                        merchant_order_id=merchant_order_id,
-                        detail={"has_pay_link": bool(pay_url)})
-        logger.info("订单 %s 已下单：商家单号 %s，付款链接 %s",
-                    oid, merchant_order_id or "(无)", "有" if pay_url else "无")
+                        merchant_order_id=merchant_order_id)
+        logger.info("订单 %s 已下单：商家单号 %s", oid, merchant_order_id or "(无)")
+
+        pay_url = ""
+        try:
+            # 付款链接**不按字段名取**，按值的形状找（orders/luckin.py:find_pay_link）
+            pay_url = luckin_order_flow.find_pay_link(result)
+            # 把返回的**结构**记一笔（键名 + 类型，不带值）——
+            # 这是我们第一次见 createOrder 的真实响应，下次就不用猜了
+            logger.info("createOrder 响应结构：%s",
+                        json.dumps(luckin_order_flow.shape(result), ensure_ascii=False)[:600])
+            if pay_url:
+                # 单独存，**绝不进 snapshot / 日志 / 聊天历史**（调研第六节倒数第二条）
+                store.set_pay_link(oid, pay_url)
+            else:
+                logger.warning("订单 %s 下单成功但没找到付款链接 —— 她得去瑞幸 App 付", oid)
+        except Exception:  # noqa: BLE001
+            # 单子已经落好了，这里炸了只是她拿不到链接 —— 去 App 里付即可。
+            # **绝不能因此把订单记成失败**
+            logger.exception("订单 %s 取付款链接失败（单子已经下出去了）", oid)
         return {
             "ok": True, "state": orders_mod.PENDING_PAYMENT,
             "merchant_order_id": merchant_order_id,
