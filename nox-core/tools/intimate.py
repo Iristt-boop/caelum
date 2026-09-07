@@ -11,13 +11,29 @@
 from __future__ import annotations
 
 import logging
+import re
 
-from agent.llm import ToolSpec
+from agent.llm import MEME_TAGS, ToolSpec
 from tools import context
 from tools.bridge_client import BridgeClient
 from tools.github_obsidian import GithubObsidian, GithubObsidianError
 
 logger = logging.getLogger(__name__)
+
+# 模型不调 send_meme、把 [tag] 直接写进正文时的兜底抽取（2026-09-06）。
+# 流式过滤器（MoodTagFilter）负责别让 tag 当文字上屏；这里负责把剥掉的
+# tag 转回真正的表情事件 —— 任何位置都认，分段不分段都能发出。
+_MEME_TEXT_RE = re.compile(r"\[(" + "|".join(MEME_TAGS) + r")\]")
+
+
+def extract_text_tags(text: str | None) -> tuple[str | None, list[str]]:
+    """从回复正文里抽出 [tag]，返回 (剥掉后的正文, tags 按出现顺序)。"""
+    if not text:
+        return text, []
+    tags = _MEME_TEXT_RE.findall(text)
+    if not tags:
+        return text, []
+    return _MEME_TEXT_RE.sub("", text).strip(), tags
 
 
 # ------------------------------------------------------------------ 表情包

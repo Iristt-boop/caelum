@@ -152,6 +152,22 @@ def test_extract_uppercase_variant():
     assert emo == "撒娇"
 
 
+def test_extract_bare_mood_line():
+    """连方括号都不写的「mood: 平静」变体（2026-09-06 截图）——
+    整行剥掉、情绪照取；不是她的情绪词就不动。"""
+    text, emo = extract("晚安，做个好梦\nmood: 撒娇")
+    assert text == "晚安，做个好梦"
+    assert emo == "撒娇"
+
+    text, emo = extract("早\nMood：开心")
+    assert text == "早"
+    assert emo == "开心"
+
+    text, emo = extract("今天 mood: 不确定啊")
+    assert text == "今天 mood: 不确定啊"
+    assert emo is None
+
+
 def test_extract_without_tag_is_not_an_error():
     """模型忘了加标记不算错 —— 保持上一轮状态即可。"""
     text, emo = extract("就是普通一句话")

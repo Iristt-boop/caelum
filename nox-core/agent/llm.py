@@ -10,6 +10,7 @@ temperature、thinking、effort、budget_tokens 这些词的存在 —— 那些
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol
@@ -153,52 +154,124 @@ class LLMAdapter(Protocol):
         ...
 
 
+# ── 表情 tag / 她的情绪词 ─────────────────────────────────────────────
+# MEME_TAGS 与 bridge/server.js 的 MEME_TAGS、nox-app 的 memes.js **三处同步**
+# —— 加新表情三处都要改，缺一处就静默坏（tag 不过滤 or 白名单 400）。
+MEME_TAGS = (
+    "开心", "哈哈", "委屈", "生气", "撒娇", "拥抱", "爱你", "害羞", "得意", "翻白眼",
+    "亲亲", "疑问", "震惊", "无语", "吃醋", "早安", "晚安", "不开心", "大哭", "嫌弃",
+    "暖被窝", "累了", "亲个嘴", "老婆第一", "老婆说的对", "呜呜呜", "在吗", "不服",
+    "对不起", "爱你的形状", "烦了你来", "很气", "忙完找我", "脸红爱你", "忧愁",
+    "早安亲亲", "暗中窃听", "小情绪", "emmm", "别说了", "满头问号", "请求通话",
+    "wink", "哼哼", "超想要", "一大口亲亲", "发红包", "拒收消息", "余额不足",
+)
+
+# 糖糖的情绪词（mood 判定用；personality/mood.py 也 import 这份）
+HER_EMOTIONS = ("开心", "难过", "烦躁", "撒娇", "兴奋", "疲惫", "平静")
+
+
 class MoodTagFilter:
-    """挡住流式输出里的 [mood:xxx] 标记。
+    """挡住流式输出里**不该让她看见**的三类标记：
 
-    非流式时可以等文本收全了统一剥掉，流式下不行 —— 标记会一个字一个字
-    出现在糖糖屏幕上。
+    1. [mood:xxx] —— 情绪标记（大小写不敏感，[Mood: 在生产库漏过 3 次）
+    2. mood: xxx —— 模型偶尔不写方括号的变体（2026-09-06 截图实锤，行首）
+    3. [开心] 等表情 tag —— 他不调 send_meme、直接把 tag 写进正文时的懒写法。
+       **任何位置**都吞（2026-09-06 她报的：混在一段话里就降级成文字）——
+       收尾时 nox.py 会从完整文本里把这些 tag 抽出来转成真正的表情事件，
+       所以这里吞掉的不会丢，只是不作为文字出现。
 
-    做法：见到 '[' 就转入缓冲，不再往外吐；等能确定它不是 mood 标记了，
-    把缓冲原样放出去。代价是正文里出现方括号时会延迟几个字符才显示，
-    这比让她看见 [mood:平静] 强得多。
-
-    ⚠️ 大小写不敏感。模型偶尔手滑写 [Mood:开心] —— 生产库里漏过 3 次
-    全是大写变体（2026-09-06 查证）。比较时 lower，放行时吐原始文本。
+    做法：见 '[' 或行首 'mood:' 就转入缓冲，确认不是标记后原样放行。
+    代价是正文里的方括号、行首 m 开头的英文行会延迟几个字符显示。
     """
 
     _PREFIX = "[mood:"
+    _MOOD_LINE_RE = re.compile(
+        r"\s*mood\s*[:：]\s*(" + "|".join(HER_EMOTIONS) + r")\s*[。\.]*\n?\s*",
+        re.IGNORECASE,
+    )
+    # 比最长的 tag（5 字）+ 括号还宽的缓冲直接放行 —— 不可能是 tag
+    _MAX_TAG_BUF = 14
 
     def __init__(self) -> None:
-        self._buf = ""
+        self._buf = ""        # '[' 开头的缓冲
+        self._line = None     # 行首 mood: 疑似行（None = 不在行缓冲）
+        self._line_start = True
+        self._meme_tags = frozenset(MEME_TAGS)
 
     def feed(self, chunk: str) -> str:
         """吃进增量，吐出可以安全显示的部分。"""
         out: list[str] = []
         for ch in chunk:
+            # ── 行缓冲：行首 mood: 疑似行，攒到换行统一判定
+            if self._line is not None:
+                self._line += ch
+                if ch == "\n":
+                    resolved = self._resolve_line()
+                    if resolved:
+                        out.append(resolved)
+                    self._line = None
+                    self._line_start = True
+                continue
+
+            # ── '[' 缓冲：[mood: 或 [tag 或普通方括号
             if self._buf:
                 self._buf += ch
                 lowered = self._buf.lower()
                 if lowered.startswith(self._PREFIX):
-                    # 确认是标记，吃掉直到闭合
+                    # 确认是情绪标记，吃掉直到闭合
                     if ch == "]":
                         self._buf = ""
                     continue
                 if self._PREFIX.startswith(lowered):
                     continue          # 还可能是，继续缓冲
-                out.append(self._buf)  # 确认不是，放行（原始大小写）
-                self._buf = ""
-            elif ch == "[":
+                if ch == "]":
+                    tag = self._buf[1:-1].strip()
+                    if tag in self._meme_tags:
+                        self._buf = ""            # 表情 tag：吞掉
+                    else:
+                        out.append(self._buf)     # 普通方括号：放行
+                        self._buf = ""
+                        self._line_start = False
+                    continue
+                if len(self._buf) > self._MAX_TAG_BUF:
+                    out.append(self._buf)
+                    self._buf = ""
+                    self._line_start = self._buf.endswith("\n")
+                continue
+
+            if ch == "[":
                 self._buf = ch
-            else:
-                out.append(ch)
+                self._line_start = False
+                continue
+
+            # ── 普通字符：行首 m/M 进 mood 行缓冲（"me too" 这类整行
+            #    缓冲到换行再放行，无损只是慢一拍）
+            if self._line_start and ch in "mM":
+                self._line = ch
+                self._line_start = False
+                continue
+
+            out.append(ch)
+            self._line_start = ch == "\n"
         return "".join(out)
 
+    def _resolve_line(self) -> str:
+        """整行收齐了：是 mood 变体行就吞，否则原样放行。"""
+        return "" if self._MOOD_LINE_RE.match(self._line) else self._line
+
     def flush(self) -> str:
-        """流结束时把剩下的放出去（除非它正好是个没闭合的标记）。"""
-        left = self._buf
-        self._buf = ""
-        return "" if left.lower().startswith(self._PREFIX) else left
+        """流结束时把剩下的放出去（确定是标记的除外）。"""
+        parts: list[str] = []
+        if self._line is not None:
+            resolved = self._resolve_line()
+            if resolved:
+                parts.append(resolved)
+            self._line = None
+        if self._buf:
+            if not self._buf.lower().startswith(self._PREFIX):
+                parts.append(self._buf)
+            self._buf = ""
+        return "".join(parts)
 
 
 class SegmentSplitter:

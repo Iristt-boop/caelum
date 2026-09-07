@@ -128,3 +128,28 @@ def test_流式每步在各自的_context_里也不炸():
 
     assert result is not None
     assert [a["url"] for a in result.attachments] == ["/uploads/a.jpg"]
+
+
+# ---------------------------------------------------- 正文 [tag] 兜底抽取
+
+def test_extract_text_tags_any_position():
+    """他不调 send_meme、把 [开心] 直接写进正文时的兜底 ——
+    任何位置都抽出来转成表情事件（2026-09-06 她报的降级问题）。"""
+    from tools.intimate import extract_text_tags
+
+    # 混在一段话中间
+    text, tags = extract_text_tags("得了你一个早安亲亲[早安亲亲]真好")
+    assert text == "得了你一个早安亲亲真好"
+    assert tags == ["早安亲亲"]
+
+    # 多个、保持顺序
+    text, tags = extract_text_tags("[开心]早安[暖被窝]")
+    assert text == "早安"
+    assert tags == ["开心", "暖被窝"]
+
+    # 没有 tag 原样返回
+    text, tags = extract_text_tags("普通一句话")
+    assert (text, tags) == ("普通一句话", [])
+
+    # 空值安全
+    assert extract_text_tags(None) == (None, [])

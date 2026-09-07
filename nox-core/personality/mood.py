@@ -19,6 +19,8 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
+from agent.llm import HER_EMOTIONS
+
 # 固定 UTC+8，不用 datetime.now() 的机器本地时间。
 #
 # 为什么不依赖机器时区：本地开发在 Windows（台北时间）、线上在阿里云新加坡
@@ -53,10 +55,18 @@ _RESPONSE: dict[str, str] = {
 # （2026-09-06 查证）—— 不剥的话她屏幕上就是一行裸文字。
 _MOOD_TAG = re.compile(r"\[mood:\s*([^\]]{1,12})\]\s*$", re.MULTILINE | re.IGNORECASE)
 
+# 二级兜底：模型偶尔连方括号都不写，直接一行「mood: 撒娇」
+# （2026-09-06 截图实锤）。只认她的七个情绪词、只认整行 —— 零误伤。
+_MOOD_LINE = re.compile(
+    r"^[ \t]*mood\s*[:：][ \t]*(" + "|".join(HER_EMOTIONS) + r")[ \t。\.]*$",
+    re.MULTILINE | re.IGNORECASE,
+)
+
 # 让模型顺带判断的指令。挂在动态块里，不进缓存前缀。
 MOOD_INSTRUCTION = (
     "回复的最后另起一行，附上你对糖糖当前情绪的判断，格式 [mood:xxx]，"
     "xxx 从 开心/难过/烦躁/撒娇/兴奋/疲惫/平静 里选一个。"
+    "必须带方括号、写成完整的 [mood:xxx] —— 写成 mood: xxx 她就会看到。"
     "这一行不会展示给她，是给你自己记的。"
 )
 
@@ -185,7 +195,10 @@ def render(mood: Mood, user_text: str, now: datetime | None = None) -> str:
 
 
 def extract(text: str | None) -> tuple[str | None, str | None]:
-    """从回复里取出 [mood:xxx] 并剥掉。
+    """从回复里取出情绪标记并剥掉。
+
+    认两种：[mood:xxx]（标准）和整行「mood: xxx」（模型偶尔不写方括号
+    的变体，只认她的七个情绪词，零误伤）。
 
     返回 (清理后的正文, 情绪)。模型忘了加标记时情绪为 None ——
     那不算错误，保持上一轮的状态即可。
@@ -193,6 +206,9 @@ def extract(text: str | None) -> tuple[str | None, str | None]:
     if not text:
         return text, None
     m = _MOOD_TAG.search(text)
-    if not m:
-        return text, None
-    return _MOOD_TAG.sub("", text).rstrip(), m.group(1).strip()
+    if m:
+        return _MOOD_TAG.sub("", text).rstrip(), m.group(1).strip()
+    m2 = _MOOD_LINE.search(text)
+    if m2:
+        return _MOOD_LINE.sub("", text).rstrip(), m2.group(1).strip()
+    return text, None

@@ -62,6 +62,58 @@ def test_filter_blocks_uppercase_mood_tag():
     assert out == "x[Mo od:]y [OK] "
 
 
+def test_filter_blocks_meme_tag_anywhere():
+    """[开心] 写在正文里也要吞 —— 收尾时 nox.py 会转成表情事件，
+    这里只管别让它当文字上屏（2026-09-06 她报的降级问题）。"""
+    # 行首
+    f = MoodTagFilter()
+    out = "".join(f.feed(c) for c in "[开心]早安呀") + f.flush()
+    assert out == "早安呀"
+    # 混在一段话中间
+    f = MoodTagFilter()
+    out = "".join(f.feed(c) for c in "得了你一个早安亲亲[早安亲亲]真好") + f.flush()
+    assert out == "得了你一个早安亲亲真好"
+    # 分片到达
+    f = MoodTagFilter()
+    out = "".join(f.feed(c) for c in ["好[", "呜呜", "呜]好"]) + f.flush()
+    assert out == "好好"
+    # 不是 tag 的方括号照常放行
+    f = MoodTagFilter()
+    out = "".join(f.feed(c) for c in "备注[重要]一下") + f.flush()
+    assert out == "备注[重要]一下"
+    # 未闭合的 [ 开头流结束放行
+    f = MoodTagFilter()
+    out = f.feed("写了个 [开心") + f.flush()
+    assert out == "写了个 [开心"
+
+
+def test_filter_blocks_bare_mood_line():
+    """行首「mood: 平静」（不带方括号）也要吞 —— 2026-09-06 截图实锤。"""
+    f = MoodTagFilter()
+    out = "".join(f.feed(c) for c in "晚安，做个好梦\nmood: 撒娇") + f.flush()
+    assert out == "晚安，做个好梦\n"
+
+    # 中文冒号变体
+    f = MoodTagFilter()
+    out = "".join(f.feed(c) for c in "嗯\nMood：平静\n") + f.flush()
+    assert out == "嗯\n"
+
+    # 词不在她的七个情绪词里 → 不吞，原样放行
+    f = MoodTagFilter()
+    out = "".join(f.feed(c) for c in "mood: 不确定\n") + f.flush()
+    assert out == "mood: 不确定\n"
+
+    # 行中（非行首）的 mood: 不碰 —— "in a good mood: happy" 是正常英文
+    f = MoodTagFilter()
+    out = "".join(f.feed(c) for c in "in a good mood: happy\n") + f.flush()
+    assert out == "in a good mood: happy\n"
+
+    # 行首 m 开头的普通英文行，整行缓冲后放行
+    f = MoodTagFilter()
+    out = "".join(f.feed(c) for c in "me too\n") + f.flush()
+    assert out == "me too\n"
+
+
 # ------------------------------------------------------ 流式 loop
 
 class FakeStreamAdapter:
