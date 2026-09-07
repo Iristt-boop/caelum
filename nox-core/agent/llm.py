@@ -24,7 +24,9 @@ StopReason = Literal[
     "error",       # 调用本身失败
 ]
 
-Depth = Literal["low", "medium", "high"]
+Depth = Literal["none", "low", "medium", "high"]
+#: "none" = 别想，直接说（2026-09-06 加）。怎么跟各家说这句话，
+#: 见 `agent/effort.py` 的方言表 —— 这里只管词表本身
 
 
 @dataclass
@@ -108,14 +110,24 @@ class Message:
 class StreamEvent:
     """流式事件。
 
-    只有两种：文本增量、这一轮结束。工具调用不单独发事件 ——
-    调用方拿到 done 事件里的 Turn 就知道要不要调工具了，
-    中途 yield 一个半成品的 tool_call 没有意义（参数还没拼完）。
+    **adapter 只发两种**：文本增量、这一轮结束。工具调用在 adapter 那层不发事件 ——
+    参数还在一个字符一个字符地拼，中途 yield 一个半成品的 tool_call 没有意义。
+
+    `tool_start` / `tool_end` 是 **loop 那层**发的（`AgentLoop.run_stream`）：
+    到那儿参数已经拼全、马上要真的执行了。
+
+    🔴 为什么要发（2026-09-07）：工具跑起来的十几二十秒里，这条流**一个字节都不吐**。
+    打字聊天时那只是"等一会儿"，**语音通话时那是一段纯粹的死寂** ——
+    她没法判断他是在干活还是卡死了。这两帧是通话里唯一的进度信号。
     """
 
-    type: Literal["text", "split", "done"]
+    type: Literal["text", "split", "done", "tool_start", "tool_end"]
     text: str = ""
     turn: Turn | None = None
+    #: 工具名。只有 tool_start / tool_end 用
+    tool: str = ""
+    #: 这次调用成没成。只有 tool_end 用（失败也要报 —— 她该知道他没做成）
+    ok: bool = True
 
 
 class LLMAdapter(Protocol):

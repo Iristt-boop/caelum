@@ -32,7 +32,7 @@ from fastapi import FastAPI, HTTPException, WebSocket
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from agent import vision
+from agent import meter, vision
 from agent.llm import Message
 from attention.service import (
     DEJECTION_KEY,
@@ -506,7 +506,9 @@ def _build_attention(core: Nox, sessions: "Sessions", db: Store) -> AttentionSer
             _pool_adapter = None
             if _utility_cfg is not None and getattr(_utility_cfg, "usable", False):
                 from agent.adapters import make_adapter as _make_adapter
-                _pool_adapter = _make_adapter(_utility_cfg)
+                # 贴任务名记账（2026-09-06）——话题池一天 96 次，
+                # 在这之前一个数都没有。见 agent/meter.py
+                _pool_adapter = meter.tag(_make_adapter(_utility_cfg), "topic-filter")
             _trends_client = None
             if getattr(core.cfg, "trends_url", ""):
                 from tools.mcp_client import McpClient as _McpClient
@@ -701,6 +703,10 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
     # 不并进 sessions.db：订单是她和商家之间的事实，会话删了它也还在。
     #
     # 挂到 core 上：`tools/luckin.py` 的 store_ref 从这儿取（同 core.world 的理由）
+    # utility 用量记账接上 bridge（2026-09-06）。
+    # 没接 = 不记账，行为完全不变 —— 它是观测，不是功能
+    meter.bind(lambda: getattr(core, "bridge", None))
+
     core.orders = OrderStore(Path(core.cfg.db_path).parent / "orders.db")
     _expired = core.orders.expire_stale()
     if _expired:
@@ -1051,6 +1057,7 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
         utility = core.router.light_adapter if core.router else None
         if utility is None:
             return
+        utility = meter.tag(utility, "appraisal")
 
         def _run() -> None:
             try:
@@ -1108,6 +1115,8 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
             utility = core.router.light_adapter if core.router else None
             if utility is None:
                 return
+            # 压缩一天 59 次，之前完全没记账（见 agent/meter.py）
+            utility = meter.tag(utility, "compaction")
             import threading
             t = threading.Thread(
                 target=maybe_compact,

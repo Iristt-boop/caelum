@@ -10,6 +10,7 @@ from typing import Any
 from config import LLMConfig
 from collections.abc import Iterator
 
+from agent import effort
 from agent.llm import (
     Depth,
     LLMAdapter,
@@ -419,14 +420,37 @@ class OpenAICompatAdapter:
                 }
                 for t in tools
             ]
-        # depth 在这一侧无对应概念，忽略（见上方注释）。
         # 温度固定，保证措辞自然 —— 这是聊天，不是抽取结构化数据。
         kwargs["temperature"] = _CHAT_TEMPERATURE
+        # 思考深度。**方言在 effort.py 里翻译**，这里只管把结果塞进去 ——
+        # 换厂商时改那张表，不动这里（糖糖 2026-09-06：换模型该是无感的）
+        eff = effort.kwargs_for(self.cfg.model, depth)
+        kwargs.update(eff)
 
         try:
             resp = self._client.chat.completions.create(**kwargs)
         except Exception as exc:  # noqa: BLE001
-            return Turn(stop_reason="error", error=f"{type(exc).__name__}: {exc}")
+            # 🔴 只有「带了 effort 才失败」时才值得重试一次。
+            # 记下来之后就不再发（`effort.note_rejected` 只认参数类错误，
+            # 不认超时限流），否则模型不认这个参数会让**每一轮都白打一次请求**
+            # —— `vision.py` 原来就是那么写的。
+            #
+            # ⚠️ 重试成功后**不在这儿解析** —— 落回下面那段共用的解析逻辑，
+            # 抄一份出来迟早两边不一致
+            retried = None
+            if eff:
+                effort.note_rejected(self.cfg.model, exc)
+                if self.cfg.model in effort.rejected():
+                    for k in eff:
+                        kwargs.pop(k, None)
+                    try:
+                        retried = self._client.chat.completions.create(**kwargs)
+                    except Exception as exc2:  # noqa: BLE001
+                        return Turn(stop_reason="error",
+                                    error=f"{type(exc2).__name__}: {exc2}")
+            if retried is None:
+                return Turn(stop_reason="error", error=f"{type(exc).__name__}: {exc}")
+            resp = retried
 
         choice = resp.choices[0]
         stop = _OPENAI_STOP.get(choice.finish_reason or "", "end_turn")
@@ -548,6 +572,9 @@ class OpenAICompatAdapter:
             # 要 usage 必须显式开，否则流式下拿不到 token 数
             "stream_options": {"include_usage": True},
         }
+        # 🔴 流式这条**必须也接**：主聊天走的就是它。
+        # 只改非流式的话，实测起来「怎么还是在思考」而看不出为什么
+        kwargs.update(effort.kwargs_for(self.cfg.model, depth))
         if tools:
             kwargs["tools"] = [
                 {

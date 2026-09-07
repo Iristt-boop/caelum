@@ -297,6 +297,11 @@ db.run(`CREATE TABLE IF NOT EXISTS usage_log (
 // 2026-08-01 加 model 列：以前只有一个模型，现在 DeepSeek 和 Claude 混着用，
 // 不记型号就没法分开算钱（两家单价差 10 倍以上）。老行的 model 为 NULL。
 dbTry(`ALTER TABLE usage_log ADD COLUMN model TEXT`)
+// 2026-09-06 加 task 列：在这之前 usage_log **只记聊天主链路**
+// （写在 SSE done 帧里），而 utility 一天跑 166+ 次（压缩 59 / 话题池 96 /
+// 意义推断 11）—— 比聊天还多，却一个数都没有。
+// 老行为 NULL，按 'chat' 读（那时候只有聊天在记）。
+dbTry(`ALTER TABLE usage_log ADD COLUMN task TEXT`)
 // Web Push 订阅（iOS PWA 锁屏推送）
 db.run(`CREATE TABLE IF NOT EXISTS push_subs (endpoint TEXT PRIMARY KEY, sub TEXT, created_at TEXT)`);
 
@@ -601,12 +606,38 @@ server.on("upgrade", (req, socket, head) => {
   socket.destroy();
 });
 
-sttWss.on("connection", (clientWs) => {
+/** 判定「她说完了」的静音时长，**由前端按场景传进来**。
+ *
+ * 🔴 原来这里写死 400ms。前端后来按场景分了档（陪伴 600 / 口述指令 1200），
+ * 可这一条链路上**有两个 VAD**：客户端数静音，dashscope 也在 server_vad。
+ * 400 比客户端任何一档都急，于是前端调了等于没调 ——
+ * 她中间停 400ms，阿里先判说完，`stt-final` 直接下来，话断在半句上
+ * （糖糖 2026-09-07：「一句话没说完，可能只识别了前两个字」）。
+ *
+ * 夹一下范围：太小是老毛病复发，太大她会觉得他反应迟钝。
+ */
+const STT_SILENCE_MIN_MS = 300;
+const STT_SILENCE_MAX_MS = 2500;
+const STT_SILENCE_DEFAULT_MS = 700;
+
+function readSilenceMs(req) {
+  try {
+    const raw = Number(new URL(req.url || "/", "http://127.0.0.1").searchParams.get("silence_ms"));
+    if (!Number.isFinite(raw)) return STT_SILENCE_DEFAULT_MS;
+    return Math.min(STT_SILENCE_MAX_MS, Math.max(STT_SILENCE_MIN_MS, Math.round(raw)));
+  } catch {
+    return STT_SILENCE_DEFAULT_MS;
+  }
+}
+
+sttWss.on("connection", (clientWs, req) => {
   if (!DASHSCOPE_API_KEY) {
     clientWs.send(JSON.stringify({ type: "error", error: "stt_unavailable" }));
     clientWs.close();
     return;
   }
+  const silenceMs = readSilenceMs(req);
+  console.log(`[STT-RT] 新通话，静音阈值 ${silenceMs}ms`);
 
   const upstreamUrl = `${DASHSCOPE_REALTIME_URL.replace(/\/$/, "")}?model=${encodeURIComponent(DASHSCOPE_REALTIME_MODEL)}`;
   const upstreamWs = new WebSocket(upstreamUrl, {
@@ -640,7 +671,7 @@ sttWss.on("connection", (clientWs) => {
         turn_detection: {
           type: "server_vad",
           threshold: 0.0,
-          silence_duration_ms: 400,
+          silence_duration_ms: silenceMs,
         },
       },
     });
@@ -809,10 +840,31 @@ async function coreMode(req, res, requestId) {
     }
   }
 
+  /* 🔴 她挂断/插话时，**这条上游也要跟着断**（2026-09-07）。
+   *
+   * 原来只有前端 abort 了自己那截 SSE，而 bridge 照旧读 Core、Core 照旧
+   * 把这一轮跑完 —— 工具照调、审批弹窗照弹。于是弹出来的是**上一句**的操作。
+   * 糖糖原话：「基本是我说到下一个问题了，他才操作上一个指令。」
+   * 那不是延迟，是错位：打断根本没有真的中断。
+   *
+   * 断开之后 Core 那边会在下一个 `yield` 上收到 GeneratorExit ——
+   * 而 `tool_start` 恰好是每件工具**执行之前**的那个 yield，
+   * 所以最坏情况是跑完手上这一件就停，不会继续做后面的。
+   */
+  const upstreamAbort = new AbortController();
+  let clientGone = false;
+  res.on("close", () => {
+    if (res.writableEnded) return;   // 正常收尾，不是她断的
+    clientGone = true;
+    console.log(`[Bridge] 前端断了 ${requestId.slice(0, 6)}，掐掉 Core 那一轮`);
+    try { upstreamAbort.abort(); } catch { /* 已经结束了 */ }
+  });
+
   try {
     const upstream = await fetch(`${NOX_CORE_URL}/chat/stream`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      signal: upstreamAbort.signal,
       body: JSON.stringify({
         text: message || "",
         images: imgs,
@@ -921,6 +973,16 @@ async function coreMode(req, res, requestId) {
             saveMessage(sessionId, "assistant", "", { order });
             console.log(`[Bridge] Core 发待确认单 ${order.orderId}`);
           }
+        } else if (ev.type === "tool_start" || ev.type === "tool_end") {
+          // 他动手的实时进度（2026-09-07）。原样透传，**不落库** ——
+          // 这是过程不是内容，翻历史时该看到的是 done 里那份 toolsUsed 清单。
+          //
+          // 🔴 它的用处几乎全在语音通话上：工具跑十几秒，这条流在那段时间里
+          // 一个字都不吐，电话里就是一段纯粹的死寂。有了这两帧，
+          // 界面能说出「他在写文件」，她才分得清干活和卡死。
+          res.write(`data: ${JSON.stringify({
+            type: ev.type, tool: ev.tool || "", ok: ev.ok !== false,
+          })}\n\n`);
         } else if (ev.type === "error") {
           res.write(`data: ${JSON.stringify({ type: "error", message: ev.message })}\n\n`);
         } else if (ev.type === "done") {
@@ -945,12 +1007,13 @@ async function coreMode(req, res, requestId) {
           // 表面上完全看不出来 —— Console 照常显示，只是数字不再变。
           if (ev.input_tokens > 0 || ev.output_tokens > 0) {
             try {
-              dbRun("INSERT INTO usage_log VALUES (?,?,?,?,?,?,?)", [
+              dbRun("INSERT INTO usage_log VALUES (?,?,?,?,?,?,?,?)", [
                 new Date().toISOString(),
                 ev.input_tokens || 0, ev.output_tokens || 0,
                 ev.cached_tokens || 0, ev.cache_write_tokens || 0,
                 0,                       // 成本在 /api/usage-stats 按型号现算，见 PRICING
                 ev.model || "",
+                "chat",                  // 2026-09-06：和 utility 分开算
               ]);
             } catch (e) { console.log("[Bridge] usage_log 写入失败:", e.message); }
           }
@@ -962,6 +1025,19 @@ async function coreMode(req, res, requestId) {
       }
     }
   } catch (e) {
+    /* 她自己打断的，不是故障 —— 别往她屏幕上写「连不上脑子」。
+     *
+     * **也不落库**：Core 那边被掐断时同样走不到 `sessions.put`，
+     * 两边一起忘掉这半句，状态是一致的。
+     *
+     * ⚠️ 严格说正确做法是「只记她真正听到的那半句」（pipecat 的做法，
+     * 见 PROJECT.md 二十二节那张表最后一行）—— 但只有前端知道播到哪儿了。
+     * 在那之前，宁可两边都不记：记全文会让他下一轮引用一句
+     * **她根本没听见的话**，那比忘掉更让人发毛。 */
+    if (clientGone || e.name === "AbortError") {
+      console.log(`[Bridge] ${requestId.slice(0, 6)} 被打断，已停（这半句不落库）`);
+      return;
+    }
     console.log(`[Bridge] Core mode failed: ${e.message}`);
     const friendly = "我这会儿连不上自己的脑子，等一下再跟我说一次。";
     res.write(`data: ${JSON.stringify({ type: "error", message: friendly })}\n\n`);
@@ -1319,8 +1395,107 @@ async function pipeTts(upstream, res) {
   return bytes;
 }
 
+/* ==================== 中文走阿里，不走 ElevenLabs（2026-09-07）====================
+ *
+ * 糖糖测完 OS 端通话之后说的：
+ *   「不用 ele 家的，换一个中文识别更好的，ele 的中文不好，再去掉情绪更不好了。」
+ *
+ * 背景是「一段语音里出现两种声音」。查下来根因**不是音色配置**，是这条链路
+ * 把一段话切成了好几次**独立**的合成请求（分句流水线，为了压首字延迟），
+ * 而降级是**逐请求**的：任何一句 v3 失败就换 turbo，再失败换 edge-tts ——
+ * edge 是完全另一个人。加上 eleven_v3 的 stability 0.34 很低（表现力强＝随机性大），
+ * 就算全部成功，逐句独立生成也会在句间跳。
+ *
+ * 而且查证过：**eleven_v3 既不支持 request stitching，也不支持标准 TTS WebSocket**，
+ * 也就是说只要还是「v3 + 分句」，就没有任何办法让相邻两句保持同一把声音。
+ *
+ * 换成 qwen3-tts 解决三件事：
+ *   ① 中文原生，不再是英文模型硬念中文
+ *   ② **情绪没丢**：instruct 系列吃 `instructions`（中文自然语言指令），
+ *      比 [softly] 那套标签还细 —— 她不用为了流畅牺牲语气
+ *   ③ 稳定模型，逐句之间本来就一致；再加下面的「一轮粘住一个引擎」兜底
+ *
+ * ⚠️ **一轮之内不许换引擎**：前端把上一句用的引擎回传（`engine`），
+ * 这边优先用它。真失败了就降级，并在 `X-TTS-Engine` 里说清楚换成了谁 ——
+ * 最多换一次，不会在一段话里来回横跳。
+ *
+ * 📌 「优雅降级会把故障藏起来」（第二十二节的教训）这次是第二遍应验：
+ * 上次是 ele 的 key 坏了整整一段时间没人发现，这次是逐句降级导致换声音。
+ * 所以这一版**把用了哪个引擎回给前端**（响应头 + 通话面板小字），
+ * 不再让它悄悄发生。
+ */
+const QWEN_TTS_URL = process.env.QWEN_TTS_URL
+  || "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation";
+//: instruct 版才吃 `instructions`（情绪指令）。不想要指令就配普通版 qwen3-tts-flash
+const QWEN_TTS_MODEL = process.env.QWEN_TTS_MODEL || "qwen3-tts-instruct-flash";
+/** 他的中文音色。**先用 scripts/tts-audition.mjs 试听再定** ——
+ *  这个默认值是从文档音色表里挑的男声候选，不是听过的。 */
+const QWEN_TTS_VOICE = process.env.QWEN_TTS_VOICE || "Ethan";
+
+/** 情景 → 语气指令。中文自然语言，比 [softly] 那套标签好写也好调。 */
+const QWEN_TTS_INSTRUCTIONS = process.env.QWEN_TTS_INSTRUCTIONS
+  || "用男朋友在电话里说话的语气：温柔、放松、语速偏慢，句尾自然收住，不要播音腔。";
+
+/**
+ * 阿里 qwen3-tts。非流式：拿到音频 URL 再回源转发。
+ *
+ * ⚠️ 这里**不假装自己会流式**。DashScope 的 SSE 流式（`X-DashScope-SSE: enable`）
+ * 吐的是 base64 分片，格式要真机验过才知道能不能直接喂 MediaSource ——
+ * 没验过就写等于埋一个「静默播不出声」。先把音色定下来，流式是下一步。
+ *
+ * @returns {Promise<Response|null>} 上游音频响应，失败返回 null
+ */
+async function qwenTts(text, { voice, instructions } = {}) {
+  if (!DASHSCOPE_API_KEY) return null;
+  try {
+    const body = {
+      model: QWEN_TTS_MODEL,
+      input: {
+        text,
+        voice: voice || QWEN_TTS_VOICE,
+        //: 单一语言时明确指定能显著提升质量（文档原话）。
+        //: 中文占比高就报 Chinese，否则交给 Auto
+        language_type: /[一-鿿]/.test(text) ? "Chinese" : "Auto",
+      },
+    };
+    if (instructions ?? QWEN_TTS_INSTRUCTIONS) {
+      body.input.instructions = instructions ?? QWEN_TTS_INSTRUCTIONS;
+    }
+    const r = await fetch(QWEN_TTS_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${DASHSCOPE_API_KEY}`,
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(20000),
+    });
+    if (!r.ok) {
+      console.error("[TTS] qwen3-tts 返回", r.status, (await r.text().catch(() => "")).slice(0, 300));
+      return null;
+    }
+    const jd = await r.json();
+    const url = jd?.output?.audio?.url;
+    if (!url) {
+      // ⚠️ 200 但没有 url —— 大概率是模型名/音色名不对（音色和模型版本要配套）。
+      // **把返回体打出来**，否则这里会变成一个「静默没声音」
+      console.error("[TTS] qwen3-tts 没给 url：", JSON.stringify(jd).slice(0, 400));
+      return null;
+    }
+    const audio = await fetch(url, { signal: AbortSignal.timeout(20000) });
+    if (!audio.ok || !audio.body) {
+      console.error("[TTS] qwen3-tts 音频取不回来", audio.status);
+      return null;
+    }
+    return audio;
+  } catch (e) {
+    console.error("[TTS] qwen3-tts error:", e.message);
+    return null;
+  }
+}
+
 app.post("/api/tts", async (req, res) => {
-  const { text } = req.body;
+  const { text, engine, voice, instructions } = req.body;
   if (!text) return res.status(400).json({ error: "text required" });
 
   const raw = text.trim();
@@ -1331,56 +1506,96 @@ app.post("/api/tts", async (req, res) => {
   // 剥情绪标签的版本，给不认标签的降级模型用
   const clean = raw.replace(VOICE_TAG_RE, "").replace(/\s{2,}/g, " ").trim().slice(0, TTS_MAX_CHARS);
 
-  // ElevenLabs v3 — 保留情绪标签，走 /stream 边合成边下发
-  try {
-    const r = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${ELEVEN_VOICE}/stream`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "xi-api-key": ELEVEN_KEY },
-      body: JSON.stringify({
-        text: withTags,
-        model_id: "eleven_v3",
-        voice_settings: { stability: 0.34, style: 0.84 },
-      }),
-      signal: AbortSignal.timeout(30000),
-    });
-    if (r.ok && r.body) {
+  /* 引擎顺序。`engine` 是前端回传的「上一句用的是谁」——
+   * 一轮之内粘住它，别在一段话中间换声音（见上面那段注释）。
+   * 认不出的值一律忽略，走默认顺序。 */
+  const ORDER = ["qwen", "eleven-v3", "eleven-turbo", "edge"];
+  const from = ORDER.indexOf(String(engine || ""));
+  const chain = from > 0 ? ORDER.slice(from) : ORDER;
+
+  const sendEngine = (name) => {
+    //: ⚠️ 一定要在写 body 之前设。设完头再降级是不行的 ——
+    //: 头已经发出去了，改不回来（下面每一档都先查 headersSent 就是这个道理）
+    if (!res.headersSent) res.setHeader("X-TTS-Engine", name);
+  };
+  //: 让前端读得到这个头。跨域时不显式暴露的话，浏览器**看得见也拿不到**
+  res.setHeader("Access-Control-Expose-Headers", "X-TTS-Engine");
+
+  // 中文优先走阿里（她的原话：ele 的中文不好）
+  if (chain.includes("qwen")) {
+    const upstream = await qwenTts(clean, { voice, instructions });
+    if (upstream) {
+      sendEngine("qwen");
+      //: 阿里回的是 wav，不是 mp3 —— **Content-Type 要如实转发**。
+      //: 前端拿它建 Blob / MediaSource，写死 audio/mpeg 的话是一段静音
+      const ct = upstream.headers.get("content-type") || "audio/wav";
+      if (!res.headersSent) res.setHeader("Content-Type", ct);
       const t0 = Date.now();
-      const bytes = await pipeTts(r, res);
-      console.log(`[TTS] v3 流式 ${bytes}B / ${Date.now() - t0}ms`);
+      const bytes = await pipeTts(upstream, res);
+      console.log(`[TTS] qwen3-tts ${bytes}B / ${Date.now() - t0}ms`);
       return;
     }
-    console.error("[TTS] ElevenLabs v3 failed:", r.status, "- trying turbo fallback");
-  } catch (e) {
-    console.error("[TTS] ElevenLabs v3 error:", e.message, "- trying turbo fallback");
+    console.error("[TTS] qwen3-tts 不可用，降级到 ElevenLabs");
+    if (res.headersSent) return res.end();
   }
 
-  // 一旦开始写响应就不能再降级了 —— 前面已经吐了半截音频出去，
-  // 再拼上另一个模型的音频会是两个声音接在一起
-  if (res.headersSent) return res.end();
+  // ElevenLabs v3 — 保留情绪标签，走 /stream 边合成边下发。
+  // 英文陪练还留着它：那套情绪标签是 8-15 才修好真正生效的，英文上确实好听
+  if (chain.includes("eleven-v3")) {
+    try {
+      const r = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${ELEVEN_VOICE}/stream`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "xi-api-key": ELEVEN_KEY },
+        body: JSON.stringify({
+          text: withTags,
+          model_id: "eleven_v3",
+          voice_settings: { stability: 0.34, style: 0.84 },
+        }),
+        signal: AbortSignal.timeout(30000),
+      });
+      if (r.ok && r.body) {
+        sendEngine("eleven-v3");
+        const t0 = Date.now();
+        const bytes = await pipeTts(r, res);
+        console.log(`[TTS] v3 流式 ${bytes}B / ${Date.now() - t0}ms`);
+        return;
+      }
+      console.error("[TTS] ElevenLabs v3 failed:", r.status, "- trying turbo fallback");
+    } catch (e) {
+      console.error("[TTS] ElevenLabs v3 error:", e.message, "- trying turbo fallback");
+    }
+
+    // 一旦开始写响应就不能再降级了 —— 前面已经吐了半截音频出去，
+    // 再拼上另一个模型的音频会是两个声音接在一起
+    if (res.headersSent) return res.end();
+  }
 
   // 降级: turbo 模型，剥掉情绪标签
-  try {
-    const r = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${ELEVEN_VOICE}/stream`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "xi-api-key": ELEVEN_KEY },
-      body: JSON.stringify({
-        text: clean,
-        model_id: "eleven_turbo_v2_5",
-        voice_settings: { stability: 0.34, style: 0.84 },
-      }),
-      signal: AbortSignal.timeout(15000),
-    });
-    if (r.ok && r.body) {
-      await pipeTts(r, res);
-      console.log("[TTS] turbo 流式降级");
-      return;
+  if (chain.includes("eleven-turbo")) {
+    try {
+      const r = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${ELEVEN_VOICE}/stream`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "xi-api-key": ELEVEN_KEY },
+        body: JSON.stringify({
+          text: clean,
+          model_id: "eleven_turbo_v2_5",
+          voice_settings: { stability: 0.34, style: 0.84 },
+        }),
+        signal: AbortSignal.timeout(15000),
+      });
+      if (r.ok && r.body) {
+        sendEngine("eleven-turbo");
+        await pipeTts(r, res);
+        console.log("[TTS] turbo 流式降级");
+        return;
+      }
+      console.error("[TTS] ElevenLabs turbo also failed:", r.status);
+    } catch (e) {
+      console.error("[TTS] ElevenLabs turbo error:", e.message);
     }
-    console.error("[TTS] ElevenLabs turbo also failed:", r.status);
-  } catch (e) {
-    console.error("[TTS] ElevenLabs turbo error:", e.message);
-  }
 
-  if (res.headersSent) return res.end();
+    if (res.headersSent) return res.end();
+  }
 
   // 最终降级: Edge TTS
   //
@@ -1400,6 +1615,7 @@ app.post("/api/tts", async (req, res) => {
       stdio: ["ignore", "pipe", "pipe"],
       timeout: 15000,
     });
+    sendEngine("edge");
     res.setHeader("Content-Type", "audio/mpeg");
     proc.stdout.on("data", chunk => res.write(Buffer.from(chunk)));
     proc.on("close", () => res.end());
@@ -2514,6 +2730,38 @@ app.get("/api/nox/integrations", async (req, res) => {
 // ⚠️ **bridge 是逐路由代理，不是通配。** Core 那边加了接口、这里不加，
 // 前端拿到的是 bridge 自己的 404 —— 而那看起来像「Core 挂了」，
 // 不像「少写了一行」。加 Core 接口时记得回来加这一条。
+// nox-core 上报 utility 用量（2026-09-06）。
+//
+// 🔴 **为什么让 core 回头打 bridge，而不是 core 自己存一份**：
+// 用量只该有一个真源。分两处存的话，Console 页要么只显示一半（现状），
+// 要么得去合并两个库 —— 而 R3 明令 nox-core 不许直读别人的 SQLite。
+//
+// ⚠️ 这是 fire-and-forget：core 那边失败也不许影响主线（压缩/推断本身是增强）。
+// 所以这里任何情况都回 200，只把问题记进日志。
+app.post("/api/usage", (req, res) => {
+  try {
+    const b = req.body || {};
+    const n = (v) => Math.max(0, parseInt(v, 10) || 0);
+    // task 是自由字符串但要有个上限，免得日志被撑爆
+    const task = String(b.task || "utility").slice(0, 40);
+    if (n(b.input_tokens) === 0 && n(b.output_tokens) === 0) {
+      return res.json({ ok: true, skipped: "空用量" });
+    }
+    dbRun("INSERT INTO usage_log VALUES (?,?,?,?,?,?,?,?)", [
+      new Date().toISOString(),
+      n(b.input_tokens), n(b.output_tokens),
+      n(b.cached_tokens), n(b.cache_write_tokens),
+      0,
+      String(b.model || "").slice(0, 60),
+      task,
+    ]);
+    res.json({ ok: true });
+  } catch (e) {
+    console.error("[usage] 记 utility 用量失败:", e.message);
+    res.json({ ok: false, error: e.message });
+  }
+});
+
 // 他那只手连着没有（OS 侧栏的状态灯 + Settings→Advanced 页）。
 // 起因：糖糖「我没办法判断 local-gateway 进程在不在跑」
 app.get("/api/nox/link", async (req, res) => {

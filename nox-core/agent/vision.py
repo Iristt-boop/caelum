@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import logging
 
+from agent import effort
 from config import LLMConfig
 
 logger = logging.getLogger(__name__)
@@ -80,21 +81,26 @@ def describe(images: list[str], cfg: LLMConfig, user_text: str = "",
     msg = [{"role": "user", "content": parts}]
     try:
         client = OpenAI(api_key=cfg.api_key, base_url=cfg.base_url or None, timeout=timeout)
+        # 🔴 **关掉思考。** 2026-08-22 在共影那边实测：
+        # 这个模型（deepseek-v4-flash-vision-exp）思考占输出 token 的 78%，
+        # 一次看图 10~15 秒；关掉之后 **2~3 秒**，描述质量一模一样
+        # （两版都准确抄下了画面里的字幕和水印）。
+        #
+        # ⚠️ 别在 prompt 里写「不要思考」—— 试过，思考反而涨到 1557 token。
+        #
+        # 2026-09-06 改：怎么说这句话交给 `effort.py` 的方言表 ——
+        # 原来这里写死 `reasoning_effort="none"`，换成 GLM 就是 400
+        # （它压根不接受 none）。糖糖：「换模型该是无感的」。
+        eff = effort.kwargs_for(cfg.model, "none")
         try:
             r = client.chat.completions.create(
-                model=cfg.model, max_tokens=cfg.max_tokens, messages=msg,
-                # 🔴 **关掉思考。** 2026-08-22 在共影那边实测：
-                # 这个模型（deepseek-v4-flash-vision-exp）思考占输出 token 的 78%，
-                # 一次看图 10~15 秒；关掉之后 **2~3 秒**，描述质量一模一样
-                # （两版都准确抄下了画面里的字幕和水印）。
-                #
-                # ⚠️ 别用 minimal / low —— 实测比默认还慢。
-                # 也别在 prompt 里写「不要思考」—— 试过，思考反而涨到 1557 token。
-                reasoning_effort="none",
-            )
-        except Exception:  # noqa: BLE001
-            # 参数哪天没了别整条链挂掉，退回慢的那条
-            logger.warning("reasoning_effort=none 不被接受，退回默认（会慢 3-5 倍）")
+                model=cfg.model, max_tokens=cfg.max_tokens, messages=msg, **eff)
+        except Exception as exc:  # noqa: BLE001
+            # 参数哪天没了别整条链挂掉，退回慢的那条。
+            # 记一笔，之后不再试 —— 否则每看一张图都要白打一次请求
+            if eff:
+                effort.note_rejected(cfg.model, exc)
+            logger.warning("看图时思考深度参数不被接受，退回默认（会慢 3-5 倍）：%.100s", exc)
             r = client.chat.completions.create(
                 model=cfg.model, max_tokens=cfg.max_tokens, messages=msg)
         text = (r.choices[0].message.content or "").strip()

@@ -109,6 +109,17 @@ BACKENDS: dict[str, Backend] = {
         "https://dashscope.aliyuncs.com/compatible-mode/v1",
         ("DASHSCOPE_API_KEY",),
     ),
+    # 智谱 GLM（2026-09-06）。OpenAI 兼容，但**路径是 /api/paas/v4 不是 /v1** ——
+    # 有些客户端会硬拼 `/v1/chat/completions` 导致 404，我们的 SDK 用整段 base_url。
+    #
+    # ⚠️ GLM-5 系是**关不掉思考**的模型（原话：「该模型始终思考，不支持关闭思考，
+    # 请使用 low、high 或 max」）。默认档 reasoning 占输出 86-94%，
+    # 怎么把它压下去见 `agent/effort.py` 的方言表 —— 不要在这里写死参数。
+    "zhipu": Backend(
+        "openai_compat",
+        "https://open.bigmodel.cn/api/paas/v4",
+        ("ZHIPU_API_KEY", "GLM_API_KEY"),
+    ),
 }
 
 
@@ -369,6 +380,9 @@ class Config:
         # 发图不再绕「先转文字」那一跳；纯文本对话它和 v4-flash 同源
         "v4-flash-vision": ModelChoice(
             "deepseek-v4-flash-vision-exp", "deepseek", "DeepSeek V4 Flash 视觉版"),
+        # 智谱 GLM（2026-09-06 加，糖糖要试一个月看语气有没有变化）。
+        # ⚠️ 关不掉思考，只能调档 —— 见 agent/effort.py
+        "glm-5.3-flash": ModelChoice("glm-5.3-flash", "zhipu", "GLM 5.3 Flash"),
         # OpenRouter 转发的 Claude
         "sonnet-4-6": ModelChoice("anthropic/claude-sonnet-4-6", "openrouter", "Sonnet 4.6"),
         "sonnet-5": ModelChoice("anthropic/claude-sonnet-5", "openrouter", "Sonnet 5"),

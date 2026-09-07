@@ -66,11 +66,16 @@ def test_tools_lists_specs(monkeypatch, tmp_path):
 
 
 def test_integrations_bare_config_all_not_configured(monkeypatch, tmp_path):
-    """裸配置：11 个插口全列出、全 not_configured、一次网络都不碰。"""
+    """裸配置：插口全列出、全 not_configured、一次网络都不碰。
+
+    ⚠️ **不钉死条数**（2026-09-06 改）。原来写死 19，加一家 MCP 就红一次 ——
+    而它想守的从来不是「正好 19 个」，是「**全部**列出来、状态全对」。
+    钉死数字只会让每次加集成都顺手把它改大一格，那这条测试就没意义了。
+    """
     c = _client(monkeypatch, tmp_path)
     d = c.get("/api/nox/integrations").json()
     assert d["ok"] is True and d["cached"] is False
-    assert len(d["items"]) == 19
+    assert len(d["items"]) >= 19, "插口少了 —— 有集成没被列出来"
     # taobao 是特例：不靠 URL 配置（走 LocalLink 反向链路，工具恒注册），
     # 状态 = 她电脑的网关链路通不通——测试环境没有网关，如实是 down
     assert all(x["status"] == "not_configured" for x in d["items"] if x["name"] != "taobao")
