@@ -295,6 +295,7 @@ class Nox:
                 self.loop,
                 McpClient(self.cfg.galatea_url, name="galatea", timeout=self.cfg.galatea_timeout,
                           headers={"Authorization": f"Bearer {self.cfg.galatea_token}"}),
+                default_channel=self.cfg.galatea_channel,
             )
             logger.info("galatea 花园工具已注册")
         else:

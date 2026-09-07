@@ -351,6 +351,7 @@ class Config:
     galatea_url: str = field(default_factory=lambda: _env("NOX_GALATEA_MCP_URL", ""))
     galatea_token: str = field(default_factory=lambda: _env("NOX_GALATEA_TOKEN", ""))
     galatea_timeout: float = 25.0
+    galatea_channel: str = field(default_factory=lambda: _env("NOX_GALATEA_CHANNEL", ""))
 
     # ---- 可切换的模型 ----
     # 前端下拉里的选项。每个选项**自带后端**（见 BACKENDS）——
