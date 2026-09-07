@@ -150,7 +150,7 @@ def make_handlers(client: McpClient, default_channel: str = "") -> dict[str, obj
     return {spec.name: (lambda args, _t=spec.name: _call(_t, args)) for spec in _SPECS}
 
 
-def register_all(loop, client: McpClient) -> None:
-    handlers = make_handlers(client)
+def register_all(loop, client: McpClient, default_channel: str = "") -> None:
+    handlers = make_handlers(client, default_channel=default_channel)
     for spec in _SPECS:  # 顺序固定
         loop.register(spec, handlers[spec.name])  # type: ignore[arg-type]
