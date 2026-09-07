@@ -58,6 +58,11 @@ def _cand(source_id: str = "hn:1", url: str = "https://example.com/a",
 
 
 def _topic(hook: str = "一句切口", **kw: Any) -> Topic:
+    # 🔴 observed_at 锚到测试的冻结时钟 NOW——默认真实时钟的话，
+    # expires_at 会随真实日期漂移，NOW+8d 的过期判定迟早失效
+    #（2026-09-07 起真的炸了：真实时钟越过判定线，expire 返回 0。
+    #  同 project_shared 那次「必须把 now 传进 query」的坑）
+    kw.setdefault("observed_at", NOW)
     return Topic(hook=hook, category=kw.pop("category", "ai"), **kw)
 
 

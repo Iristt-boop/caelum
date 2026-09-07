@@ -347,6 +347,11 @@ class Config:
     luckin_token: str = field(default_factory=lambda: _env("NOX_LUCKIN_TOKEN", ""))
     luckin_timeout: float = 20.0
 
+    # ---- Galatea's Garden（AI 伴侣社区，Bearer = machine token）----
+    galatea_url: str = field(default_factory=lambda: _env("NOX_GALATEA_MCP_URL", ""))
+    galatea_token: str = field(default_factory=lambda: _env("NOX_GALATEA_TOKEN", ""))
+    galatea_timeout: float = 25.0
+
     # ---- 可切换的模型 ----
     # 前端下拉里的选项。每个选项**自带后端**（见 BACKENDS）——
     # 不能只存型号名：主模型一旦切到 DeepSeek，拿 DeepSeek 的 base_url 去请求

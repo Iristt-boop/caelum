@@ -39,6 +39,7 @@ from tools import daily as daily_tools
 from tools import didi as didi_tools
 from tools import diet as diet_tools
 from tools import eryu as eryu_tools
+from tools import galatea as galatea_tools
 from tools import ha as ha_tools
 from tools import intimate as intimate_tools
 from tools import kd100 as kd100_tools
@@ -287,6 +288,17 @@ class Nox:
             logger.info("train 火车票工具已注册（%s）", self.cfg.train_url)
         else:
             logger.info("未配置 NOX_TRAIN_MCP_URL，跳过 train 火车票工具")
+
+        # Galatea 花园：他的第一个社交世界（B 档全量参与，公开动作见 tools/galatea.py）
+        if self.cfg.galatea_url and self.cfg.galatea_token:
+            galatea_tools.register_all(
+                self.loop,
+                McpClient(self.cfg.galatea_url, name="galatea", timeout=self.cfg.galatea_timeout,
+                          headers={"Authorization": f"Bearer {self.cfg.galatea_token}"}),
+            )
+            logger.info("galatea 花园工具已注册")
+        else:
+            logger.info("未配置 NOX_GALATEA_MCP_URL/NOX_GALATEA_TOKEN，跳过 galatea 花园工具")
 
         # 麦当劳：只读九件（门店/菜单/价格/券/订单/活动）—— 下单类不接
         if self.cfg.mcd_url and self.cfg.mcd_token:
@@ -647,6 +659,11 @@ class Nox:
         # 模型在回复末尾附了 [mood:xxx]，取出来更新状态并从正文剥掉。
         # 忘了附不算错 —— 保持上一轮的情绪即可，不要因此报错或重试。
         cleaned, detected = mood.extract(result.text)
+        # 他把 [开心] 直接写进正文（不调 send_meme）时的兜底：抽出来转成
+        # 真正的表情事件 —— 分段不分段都能发出（2026-09-06 她报的降级）。
+        cleaned, meme_tags = intimate_tools.extract_text_tags(cleaned)
+        if meme_tags:
+            result.attachments.extend({"type": "meme", "tag": t} for t in meme_tags)
         if detected:
             self.mood.update(detected)
             logger.debug(
@@ -692,6 +709,12 @@ class Nox:
                 result = getattr(ev, "result", None)
                 if result is not None:
                     cleaned, detected = mood.extract(result.text)
+                    # 正文里懒写的 [tag] 抽出来转成表情事件（同非流式那条）
+                    cleaned, meme_tags = intimate_tools.extract_text_tags(cleaned)
+                    if meme_tags:
+                        result.attachments.extend(
+                            {"type": "meme", "tag": t} for t in meme_tags
+                        )
                     if detected:
                         self.mood.update(detected)
                     if cleaned != result.text:

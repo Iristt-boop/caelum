@@ -17,6 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from tools import amap as amap_tools  # noqa: E402
 from tools import didi as didi_tools  # noqa: E402
+from tools import galatea as galatea_tools
 from tools import kd100 as kd100_tools
 from tools import luckin as luckin_tools
 from tools import mcd as mcd_tools  # noqa: E402
@@ -54,7 +55,7 @@ class FakeMcp:
 _MIN_ARGS = {"luckin_shops": {"longitude": "116.397", "latitude": "39.909"}}
 
 
-@pytest.mark.parametrize("module", [amap_tools, didi_tools, kd100_tools, luckin_tools, mcd_tools, train_tools])
+@pytest.mark.parametrize("module", [amap_tools, didi_tools, galatea_tools, kd100_tools, luckin_tools, mcd_tools, train_tools])
 def test_success_passthrough(module):
     """调用成功 → 服务端文本原样返回。"""
     client = FakeMcp(ok=True, text="返回内容")
@@ -82,7 +83,7 @@ def test_missing_coords_never_reaches_the_api():
     assert client.calls == [], "缺坐标时一次 API 都不该打"
 
 
-@pytest.mark.parametrize("module", [amap_tools, didi_tools, kd100_tools, luckin_tools, mcd_tools, train_tools])
+@pytest.mark.parametrize("module", [amap_tools, didi_tools, galatea_tools, kd100_tools, luckin_tools, mcd_tools, train_tools])
 def test_failure_raises_not_silence(module):
     """MCP 失败必须 raise —— 吞了他会编造「查到了」（ha.py 的老教训）。"""
     handlers = module.make_handlers(FakeMcp(ok=False))
@@ -93,7 +94,7 @@ def test_failure_raises_not_silence(module):
 
 def test_server_tool_mapping_covers_all_specs():
     """每个 ToolSpec 都要有对应的服务端工具名映射，防手滑。"""
-    for module in (amap_tools, didi_tools, kd100_tools, luckin_tools, mcd_tools, train_tools):
+    for module in (amap_tools, didi_tools, galatea_tools, kd100_tools, luckin_tools, mcd_tools, train_tools):
         spec_names = {s.name for s in module._SPECS}
         assert spec_names == set(module.SERVER_TOOLS)
 
@@ -308,3 +309,24 @@ def test_all_cn_mcp_schemas_wellformed():
                     f"{spec.name}.properties.{k} = {v!r} —— "
                     "properties 的值必须是字段 schema（dict），不是字符串"
                 )
+
+
+# ------------------------------------------------------------ Galatea（B 档全量参与）
+
+
+def test_galatea_full_participation():
+    """🟡 B 档：26 件工具全注册（含对外公开动作），tool_schema 自查直通。"""
+    assert len(galatea_tools.SERVER_TOOLS) == 26
+    assert galatea_tools.SERVER_TOOLS["galatea_tool_schema"][0] == "get_tool_schema"
+    # 公开动作在描述里都带对外提示
+    def desc(name):
+        return next(s for s in galatea_tools._SPECS if s.name == name).description
+    for n in ("galatea_send_message", "galatea_create_thread", "galatea_game_chat"):
+        assert "公开" in desc(n) or "对外" in desc(n), n
+
+
+def test_galatea_deletes_are_marked_irreversible():
+    """删帖删回复不可逆——描述里必须有提示。"""
+    for s in galatea_tools._SPECS:
+        if galatea_tools.SERVER_TOOLS[s.name][0].startswith("delete"):
+            assert "不可逆" in s.description or "明确要求" in s.description, s.name
