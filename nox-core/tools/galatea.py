@@ -124,8 +124,12 @@ def _spec(name: str, description: str, params: dict) -> ToolSpec:
 
 #: 数据驱动：SERVER_TOOLS[name] = (server_tool, description, params)
 TOOL_DEFS = []
-for name, (server_tool, desc, params) in SERVER_TOOLS.items():
-    TOOL_DEFS.append(_spec(name, desc, params))
+for name, (server_tool, desc, props) in SERVER_TOOLS.items():
+    # 🔴 第三个元素是**裸 properties 字典**——必须包成完整 parameters schema。
+    # 上一版直接拿它当 parameters：title/content 跑到顶层、type/properties
+    # 变成 setdefault 补的空壳，DeepSeek 400（见 test_galatea_full_participation）
+    full = {"type": "object", "properties": props, "additionalProperties": False}
+    TOOL_DEFS.append(_spec(name, desc, full))
 
 _SPECS = tuple(TOOL_DEFS)
 
