@@ -109,6 +109,12 @@ SERVER_TOOLS = {
 
 
 def _spec(name: str, description: str, params: dict) -> ToolSpec:
+    # 🔴 DeepSeek strict 模式要求 object 显式 additionalProperties:false——
+    # 缺了就是 400 拒绝**整个请求**（所有对话全灭），这里统一注入防漏
+    params.setdefault("additionalProperties", False)
+    for v in params.get("properties", {}).values():
+        if isinstance(v, dict) and v.get("type") == "object":
+            v.setdefault("additionalProperties", False)
     return ToolSpec(name=name, description=description, parameters=params)
 
 
