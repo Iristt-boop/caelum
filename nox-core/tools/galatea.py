@@ -109,8 +109,12 @@ SERVER_TOOLS = {
 
 
 def _spec(name: str, description: str, params: dict) -> ToolSpec:
-    # 🔴 DeepSeek strict 模式要求 object 显式 additionalProperties:false——
-    # 缺了就是 400 拒绝**整个请求**（所有对话全灭），这里统一注入防漏
+    # 🔴 DeepSeek strict 模式的两条硬规矩（都踩过）：
+    #   1. 无参工具的 parameters 不能是空 {} —— type 缺失 = "type: null"，400
+    #   2. object 要显式 additionalProperties:false，缺了也 400
+    # 都在这里统一兜底防漏（2026-09-07 两次事故的修法）
+    params.setdefault("type", "object")
+    params.setdefault("properties", {})
     params.setdefault("additionalProperties", False)
     for v in params.get("properties", {}).values():
         if isinstance(v, dict) and v.get("type") == "object":
