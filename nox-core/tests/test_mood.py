@@ -168,6 +168,23 @@ def test_extract_bare_mood_line():
     assert emo is None
 
 
+def test_extract_mood_tag_before_body():
+    """[mood:xxx] 写在行首还跟着正文 —— 主动消息实锤
+    （2026-09-07「[mood:开心]18:34了…」）。任意位置都要剥掉并取到情绪。"""
+    text, emo = extract("[mood:开心]18:34了，番茄炒蛋可以安排了")
+    assert text == "18:34了，番茄炒蛋可以安排了"
+    assert emo == "开心"
+
+    text, emo = extract("[Mood:温柔]番茄炒蛋做了没？")
+    assert text == "番茄炒蛋做了没？"
+    assert emo == "温柔"
+
+    # 句中出现也剥，前后文字保留
+    text, emo = extract("想你了[mood:撒娇]快来")
+    assert text == "想你了快来"
+    assert emo == "撒娇"
+
+
 def test_extract_without_tag_is_not_an_error():
     """模型忘了加标记不算错 —— 保持上一轮状态即可。"""
     text, emo = extract("就是普通一句话")

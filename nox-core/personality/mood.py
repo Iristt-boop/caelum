@@ -62,6 +62,11 @@ _MOOD_LINE = re.compile(
     re.MULTILINE | re.IGNORECASE,
 )
 
+# 三级兜底：标记写在**任意位置**（行首还跟着正文）——主动消息实锤
+# （2026-09-07：「[mood:开心]18:34了…」，上面两个 pattern 都够不着，
+# 她锁屏上就是裸的）。不限行尾、词不限七个，带前导空白一起吃。
+_MOOD_TAG_ANY = re.compile(r"\s*\[mood:\s*([^\]]{1,12})\]", re.IGNORECASE)
+
 # 让模型顺带判断的指令。挂在动态块里，不进缓存前缀。
 MOOD_INSTRUCTION = (
     "回复的最后另起一行，附上你对糖糖当前情绪的判断，格式 [mood:xxx]，"
@@ -197,8 +202,9 @@ def render(mood: Mood, user_text: str, now: datetime | None = None) -> str:
 def extract(text: str | None) -> tuple[str | None, str | None]:
     """从回复里取出情绪标记并剥掉。
 
-    认两种：[mood:xxx]（标准）和整行「mood: xxx」（模型偶尔不写方括号
-    的变体，只认她的七个情绪词，零误伤）。
+    认三种：[mood:xxx] 在行尾（标准）、整行「mood: xxx」（不写方括号）、
+    [mood:xxx] 在**任意位置**（行首跟着正文 —— 主动消息 2026-09-07 实锤：
+    「[mood:开心]18:34了…」，speaker 走非流式没有过滤器，只能靠这里兜）。
 
     返回 (清理后的正文, 情绪)。模型忘了加标记时情绪为 None ——
     那不算错误，保持上一轮的状态即可。
@@ -211,4 +217,7 @@ def extract(text: str | None) -> tuple[str | None, str | None]:
     m2 = _MOOD_LINE.search(text)
     if m2:
         return _MOOD_LINE.sub("", text).rstrip(), m2.group(1).strip()
+    m3 = _MOOD_TAG_ANY.search(text)
+    if m3:
+        return _MOOD_TAG_ANY.sub("", text).strip(), m3.group(1).strip()
     return text, None
