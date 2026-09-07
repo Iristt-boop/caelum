@@ -1778,6 +1778,7 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
             ("mcd", "麦当劳 · 门店 / 菜单 / 券 / 下单（确认制）", getattr(cfg, "mcd_url", "")),
             ("luckin", "瑞幸 · 门店 / 点单（确认制）", getattr(cfg, "luckin_url", "")),
             ("trends", "中文热榜 · 喂话题池", getattr(cfg, "trends_url", "")),
+            ("galatea", "花园 · 他的社交世界（游戏/聊天/论坛）", getattr(cfg, "galatea_url", "")),
             ("train", "火车票查询（12306，暂缓）", getattr(cfg, "train_url", "")),
         ]
         items = []
@@ -2212,7 +2213,13 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
                         # 分段点。前端收到这个就开一个新气泡 ——
                         # 切点是模型自己标的（|||），不是按标点机械切
                         yield _sse({"type": "split"})
-                    else:
+                    elif ev.type == "tool_start":
+                        # 他要动手了。**通话期间唯一的进度信号** ——
+                        # 工具跑十几秒，这条流在那段时间里什么都不吐（见 agent/llm.py）
+                        yield _sse({"type": "tool_start", "tool": ev.tool})
+                    elif ev.type == "tool_end":
+                        yield _sse({"type": "tool_end", "tool": ev.tool, "ok": ev.ok})
+                    elif ev.type == "done":
                         final = getattr(ev, "result", None)
             except Exception as exc:  # noqa: BLE001
                 logger.exception("流式对话异常")

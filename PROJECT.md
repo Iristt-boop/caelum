@@ -7,7 +7,12 @@
 > 最新交接：**`HANDOFF-2026-08-28.md`**（往前：`08-08` → `08-06` → `08-02` → `07-25`）  
 > ⚠️ **HANDOFF 只记那个窗口做了什么，会过期**；本文档才是现状。  
 > 两者冲突时以本文档为准 —— 08-08 校准就是因为它俩差了 23 个工具。  
-> 最后更新：2026-09-06（**点单确认卡 + 反向链路可见性，见第四十六节** ——
+> 最后更新：2026-09-07（**OS 端 Voice Call：能指挥他做事的通话，见第四十七节** ——
+> 通话引擎抽成两端共用的 `nox-app/shared/voice/`；Core 新增 `tool_start`/`tool_end`
+> 两帧，补上「工具跑十几秒 SSE 一个字不吐」那段死寂；通话面板**长在左栏**
+> 而不是全屏浮层，因为 `computer_write_file` 要她当场点头，全屏会盖住审批弹窗。
+> ⚠️ 真机通话还没验，第一通要看的三件事见 47.6）；
+> 往前：2026-09-06（**点单确认卡 + 反向链路可见性，见第四十六节** ——
 > 下单从「模型说了算」变成「她点了算」（新库 `orders.db`，`luckin_order` 够不到 `createOrder`）；
 > 查出反向链路断线根因是 **uvicorn 默认 ws 超时 20 秒**；认出「两个网关互抢」那种
 > **长得像一切正常**的故障；OS 侧栏加链路灯 + Settings→Advanced 诊断页 + 晨检卡第五块。
@@ -6702,6 +6707,7 @@ Evaluator 把决策段拆成规则版和 LLM 版共用的 `_decide_from_appraisa
 | 麦当劳官方 | `https://mcp.mcd.cn/mcp-servers/mcd-mcp` + Bearer（NOX_MCD_TOKEN） | mcd_nearby_stores / menu / meal_detail / price / order / orders / my_coupons / available_coupons / campaign（9）+ **动作四件（确认制）**：mcd_create_order / draw_lottery / bind_coupons / create_address——下单前必须报价复述、她明确确认；抽奖先展示消耗规则；地址五项她原话给齐。领券免确认（不花钱）。团餐/商城下单仍未接（工具 70→86） | ✅ 上线，券/日历真数据验证 |
 | Trends Hub | supergateway 桥 `http://127.0.0.1:9092/mcp`（systemd **mcp-trends.service**） | **不进工具列表**——scout 中文源：微博/知乎/B站→weird、豆瓣电影→film、微信读书→books | ✅ 上线 |
 | 淘宝桌面版 | `http://127.0.0.1:3654/mcp`（桌面版 2.5+ 内置，登录态复用）——**走 LocalLink 反向链路**（nox-core tools/taobao.py → 网关 taobao-tools.ts → 回环），**只在她电脑开淘宝时可用** | taobao_search / image_search / product_skus / **add_to_cart（审批+确认制）** / browse_history / ask_seller（审批）/ navigate（审批）/ list_pages；低级页面原语 11 件和评价工具不进 catalog；无下单工具 | ✅ 上线，真实搜索报价验证（HP GK400F ¥60） |
+| **Galatea's Garden**（AI 伴侣社区，galatea.abysslumina.com） | `https://galatea.abysslumina.com/mcp` + Bearer machine token（NOX_GALATEA_TOKEN，**她的账号 id 3325 绑定 Nox 档案**） | **B 档全量 26 工具**：游戏（列表/加入/行动/总结）、聊天室（读/发/撤）、自我（档案/资料/头像/machine）、论坛（帖/回/删/互动）、通知/动态/漂流瓶；galatea_tool_schema 直通供他自查参数 | ✅ 上线，get_self 真实档案验证；部分服务端接口（聊天室/动态/论坛）内测期自报错误——他如实汇报了 |
 | 12306（Joooook/12306-mcp 桥 :9093，systemd **mcp-train.service**） | get-tickets / get-interline-tickets / get-station-code-by-names | 🔴 **暂缓**：包的内部 web 请求被 12306 反爬无声丢弃（查票必挂起，60s 也不返回）；已从 .env 摘除。裸 curl 带 cookie+UA 能通——替代方案是自写 REST 工具（~80 行，流程已验证） | 暂缓 |
 | 快递100 | `https://api.kuaidi100.com/mcp/streamable?key=` | kd100_track / auto_number（单号智能识别）/ timeliness / price（寄件下单类不接） | ✅ 上线，智能识别实测 SF 单号→顺丰 |
 | 瑞幸 | `https://gwmcp.lkcoffee.com/order/user/mcp` + Bearer（NOX_LUCKIN_TOKEN） | luckin_shops / search / product / preview / **order（确认制）** / order_detail / **cancel（确认制）**（switchProduct 语义不明不接） | ✅ 上线，真实门店数据验证 |
@@ -6835,3 +6841,118 @@ A 顶掉 B，B 退避 1 秒重连顶掉 A。
   `/root/morning-check.sh.bak-0906`
 - ⚠️ **Caelum OS 的前端不在 VPS 上** —— Electron 托管本地 `caelum-os-ui/dist`，
   改完要重启 app 才生效
+
+## 四十七、OS 端 Voice Call：能指挥他做事的通话（2026-09-07）
+
+糖糖开口时说的是「今天做 OS 端的 Voice call」，做到一半补了一句 ——
+这句才是这一节的全部：
+
+> 「严格来讲，我要的 OS voice call 不单单是打电话。而是在语音期间可以指挥他做事情，
+> 比如，我说你去帮我添加个 todo，在本机给我写个架构文档这样。」
+
+「打电话」和「电话里指挥他干活」是两个东西。下面按这个差别写。
+
+### 47.1 先查实的三件事（都和直觉相反）
+
+| 以为 | 实际 |
+|---|---|
+| 语音模式大概关了工具 | **没关**。`chat_stream` 走同一个 AgentLoop，80+ 工具一个没少（`nox.py:696`）。语音只换了个精简前缀 + 关掉分段 |
+| 工具能调 = 这事就成了 | 差得远。工具跑十几秒，SSE **一个字节都不吐** —— 打字时那是「等一会儿」，电话里是**一段纯粹的死寂** |
+| 精简前缀只是省 token | 它把**约束也省掉了**。`Scene.system()` 不带那 11.5K 核心准则，于是「该真调工具」「花钱要她点头」这些规矩打电话时一条都不在场。**能力在、约束不在**，是最危险的组合 |
+
+### 47.2 引擎抽成一份：`nox-app/shared/voice/`
+
+原来 1837 行的 `VoiceCallDesktop.jsx` 里，界面和引擎是长在一起的。
+桌面端要用同一套听/转写/打断/播，只有两条路：复制一份，或者抽出来。
+
+**抽出来**，因为里面每个数都是她对着读数调出来的：静音 600ms、
+打断 0.04/200ms/220ms、起播 6000 字节、分句 12 字。留两份 = 改一处忘另一处 =
+**她在手机和电脑上的体感不一样，而两边代码看起来都"对"**。
+
+```
+shared/voice/tuning.js   那几个阈值（每个都带「为什么是这个数」）
+shared/voice/audio.js    纯计算：自相关基频、降采样、WAV 编码、分句
+shared/voice/tags.js     情绪标记的两种剥法（念稿版压空白 / 显示版一个换行都不动）
+shared/voice/engine.js   状态机，**不依赖框架**：只有 Web Audio / WebSocket / fetch
+```
+
+依赖注入的三个口子，正好是两端唯一的差别：
+
+- `fetchApi` —— 手机端全局改过 `window.fetch` 自动塞 X-Nox-Token；OS 没有那层，
+  **直接搬过去的话 `/api/tts`、`/api/stt`、`/api/scribe-token`、`/api/translate` 全是 403**
+- `wsUrl` —— OS 返回 `null`。`desktop/main.js` 的 `PROXY_PREFIXES` 虽然写了 `/ws`，
+  但那个本地服务只接了 `request` 事件、**没有 `upgrade` 处理**，WebSocket 升不上去；
+  vite dev（5273）也没代理 `/ws`。返回 null 让它当场落回批量，
+  而不是让她盯着一个永远连不上的「连接中」
+- `getSessionId` —— OS 走 `ensureSessionId()`，通话落进和 Chat **同一条会话**
+
+手机端 `VoiceCallDesktop.jsx` 只剩界面（1837 → 约 560 行），lint 问题 28 → 9。
+
+### 47.3 `tool_start` / `tool_end`：死寂那十几秒里唯一的信号
+
+**这是「指挥他做事」和「打电话」的全部区别所在。** 没有它，
+「在想…」和「卡死了」长得一模一样，她只能干等。
+
+```
+agent/loop.py     每件工具执行**前后**各 yield 一帧
+api/server.py     SSE 透传 {"type":"tool_start","tool":...}
+bridge/server.js  原样转发，**不落库**（这是过程不是内容，历史里看 done 的 toolsUsed）
+两端界面          「⚙ 在你电脑上写文件」
+```
+
+⚠️ 实现上最容易写错的一行：原来是
+
+```python
+outcomes = [self._execute(c, tracker, ctx) for c in turn.tool_calls]
+```
+
+**列表推导会把这一批工具整个跑完才回到调用方** —— 事件是发了，但全挤在最后，
+等于没发。测试直接盯着这一点：`tool_start` 到达时断言工具**还没跑**
+（`test_tool_progress_events_bracket_each_call`）。
+
+顺带：`api/server.py` 里那个 `else: final = getattr(ev, "result", None)` 改成了
+显式 `elif ev.type == "done"` —— 新事件身上没有 `result`，`else` 会把 final 冲成 None。
+`tests/test_stream.py` 的 `collect()` 同一个毛病，一起改了。
+
+### 47.4 通话面板长在**左栏**，不是全屏浮层
+
+糖糖定的位置（「就是方案二，但是是在左侧」）。左栏那个 Voice Call 按钮从
+2026-08 就摆在那儿没接线，现在接上了：点它，下半截变成通话面板，
+**导航和主区照常用**。
+
+不做全屏，是因为全屏会盖住两样东西，而这两样正是这种通话的关键：
+
+1. **审批弹窗**。`computer_write_file` / `computer_run_command` 每次都要她点头
+   （Gateway 的 `policy.ts`）。盖住了她就点不了，60 秒超时，
+   而超时回给他的是「取消」——**他会以为她不同意**
+2. **正文**。她让他加的待办、写的文档，得能当场翻过去看
+
+量出来的一处：窗口最小高 680 时，84px 的头像 + 两行称呼会把导航挤到
+只剩两项可见。所以**通话中头像缩到 44px、名字那两行收起来** ——
+不是为了好看，是那句「一边说话一边点开 Todo 看他刚加的那条」要能做到。
+
+还有一个不起眼但会挨骂的点：挂断键**不能用 `--accent-2`**。
+那不是危险色，是主色的浅色版（`#e7c2b1` / `#d0c7e5`…），白图标压上去
+几乎看不见 —— 实测就是一个发白的圆片。改用 `rose-500`，
+和侧栏那条「手 · 断了」是同一个语言。
+
+### 47.5 提示词侧：把丢掉的约束补两条
+
+`personality/scenes.py` 的 `_VOICE_COMMON`（两个情景共用）加了两句：
+
+- 她在电话里让你做事 → **先真的把工具调了再开口**。只说「好，记下了」= 骗她
+- **电话里不许直接下单、付款**。要买东西出确认卡让她点 ——
+  她在电话里说的「好啊」不算点头，**你可能听错**
+
+第二条是补 R8 在语音路径上的缺口：瑞幸走的是结构闸门（工具够不到 `createOrder`），
+不受影响；**麦当劳还是提示词确认制**，而语音前缀里原本一个字都没有。
+
+### 47.6 现状与没验的部分
+
+- ✅ Core 侧有测试（工具事件顺序 + 失败标记）；shared 的纯函数有 vitest（分句/编码/剥标签/工具名）
+- ✅ 面板视觉在五套主题下过了（探针 `caelum-os-ui/probe-call.html`，dev-only）
+- ⚠️ **真机通话没验**：要麦克风 + 登录态，得在 Electron 里真打一通。
+  第一通要看的三件事：① 麦克风权限（Electron 默认放行，卡的话是 Windows 系统隐私开关）
+  ② 「⚙ 在你电脑上写文件」有没有出现 ③ 审批弹窗弹出来时电话没断
+- ⚠️ 工具跑起来时**他不会出声**（界面上有字，耳朵里没有）。要不要加一句
+  「等我一下」这种口头填充，等她真打过一通再定 —— 现在加是猜
