@@ -131,3 +131,86 @@ def test_同一个模型只建一次():
     b = _adapter_for(f, "opus-4-8", PRIMARY)
     assert a is b
     assert f.built == ["anthropic/claude-opus-4-8"]
+
+
+# ---------------------------------------------------------------- key 跟着 backend 走
+#
+# 2026-09-08 事故：把 NOX_UTILITY_BACKEND 切成 zhipu 之后，utility 连着
+# **三十多个小时**都在 401（一天 200 次：压缩没在压、理解层没在推断、
+# 话题池没在筛），而主聊天一切正常 —— 所以表面上完全看不出来。
+#
+# 病根是 config.py 里 utility 有一行 primary 没有的：
+#     key_override=_env("DEEPSEEK_API_KEY") or _env("OPENROUTER_API_KEY")
+# 它**无视 NOX_UTILITY_BACKEND，永远拿 DeepSeek 的 key**。
+
+
+def _utility_of(monkeypatch, **env):
+    """按给定环境变量算出 utility 的 LLMConfig。
+
+    ⚠️ **不 reload config 模块**：`Config` 的字段是 `field(default_factory=lambda…)`，
+    那些 lambda 在类定义时就闭包捕获了当时的 `_env`，reload 之后拿到的
+    仍是旧的一份 —— 第一版测试就栽在这儿，症状是 key 对了但 base_url 不对。
+    直接调 `_build_llm` 走同一条路，干净得多。
+    """
+    #: 🔴 先清掉可能盖过 backend 的两个 override —— 它们优先级最高。
+    #: 本机 .env 里就躺着一行陈的 `NOX_UTILITY_BASE_URL=openrouter`，
+    #: 第一版测试被它坑了半天：key 跟着 backend 走对了，地址却纹丝不动。
+    #: 测试不能靠「这台机器碰巧干净」。
+    for k in ("NOX_UTILITY_BASE_URL", "NOX_UTILITY_PROVIDER", "NOX_UTILITY_API_KEY"):
+        monkeypatch.delenv(k, raising=False)
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+    from config import _build_llm, _env
+    return _build_llm(
+        backend=_env("NOX_UTILITY_BACKEND", "deepseek"),
+        model=_env("NOX_UTILITY_MODEL", "deepseek-v4-flash"),
+        provider_override=_env("NOX_UTILITY_PROVIDER"),
+        base_override=_env("NOX_UTILITY_BASE_URL"),
+        key_override=_env("NOX_UTILITY_API_KEY"),
+        max_tokens=4000,
+    )
+
+
+def test_utility_key_follows_its_backend(monkeypatch):
+    """🔴 切了 backend，key 必须跟着切 —— 不许再硬塞某一家的。"""
+    u = _utility_of(
+        monkeypatch,
+        NOX_UTILITY_BACKEND="zhipu", NOX_UTILITY_MODEL="glm-5.3-flash",
+        ZHIPU_API_KEY="zhipu-key-xxx", DEEPSEEK_API_KEY="deepseek-key-yyy",
+    )
+    assert u.api_key == "zhipu-key-xxx", (
+        "utility 拿着别家的 key 去打智谱 —— 这就是 09-08 那次 401 的原因"
+    )
+    assert "bigmodel" in u.base_url, "key 跟上了但地址没跟上，一样打不通"
+
+
+def test_config_py_no_longer_hardcodes_a_vendor_key():
+    """守住病根本身：utility 的 key_override 里不许再出现某一家的名字。
+
+    原来那行是 `key_override=_env("DEEPSEEK_API_KEY") or _env("OPENROUTER_API_KEY")`，
+    等于**无视 NOX_UTILITY_BACKEND**。而 primary 没有这一行 ——
+    不一致正是这次事故三十多小时没被发现的原因：**主链路好好的**，
+    只有那条没人看的 utility 在闷声 401。
+    """
+    from pathlib import Path
+    src = (Path(__file__).resolve().parents[1] / "config.py").read_text(encoding="utf-8")
+    block = src.split("utility: LLMConfig")[1].split("vision:")[0]
+    #: 只看那一行**代码**，不看注释 —— 注释里会提到这几个名字（讲事故经过）
+    line = next((ln for ln in block.splitlines()
+                 if "key_override=" in ln and not ln.strip().startswith("#")), "")
+    assert line, "utility 的 key_override 那行不见了"
+    for vendor in ("DEEPSEEK_API_KEY", "OPENROUTER_API_KEY", "ZHIPU_API_KEY"):
+        assert vendor not in line, (
+            f"utility 又把 {vendor} 写死了 —— key 该跟着 backend 走。\n"
+            f"当前那行：{line.strip()}"
+        )
+
+
+def test_explicit_override_still_wins(monkeypatch):
+    """要手动指定仍然可以 —— 但得显式写 NOX_UTILITY_API_KEY，不是偷偷来。"""
+    u = _utility_of(
+        monkeypatch,
+        NOX_UTILITY_BACKEND="zhipu", NOX_UTILITY_MODEL="glm-5.3-flash",
+        ZHIPU_API_KEY="zhipu-key-xxx", NOX_UTILITY_API_KEY="my-own-key",
+    )
+    assert u.api_key == "my-own-key"

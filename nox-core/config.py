@@ -189,7 +189,20 @@ class Config:
             model=_env("NOX_UTILITY_MODEL", "deepseek-v4-flash"),
             provider_override=_env("NOX_UTILITY_PROVIDER"),
             base_override=_env("NOX_UTILITY_BASE_URL"),
-            key_override=_env("DEEPSEEK_API_KEY") or _env("OPENROUTER_API_KEY"),
+            # 🔴 **不许在这儿写死某一家的 key**（2026-09-08 修）。
+            #
+            # 原来这行是 `key_override=_env("DEEPSEEK_API_KEY") or _env("OPENROUTER_API_KEY")`，
+            # 那等于**无视 NOX_UTILITY_BACKEND，永远拿 DeepSeek 的 key**。
+            # 09-07 把 backend 切成 zhipu 之后，utility 就一直拿着 DeepSeek 的 key
+            # 去打智谱 → 401「令牌已过期或验证不正确」，**一天 200 次**：
+            # 压缩没在压、理解层没在推断、话题池没在筛。
+            #
+            # 而 primary 没有这一行（它从 BACKENDS 取），所以主聊天一切正常 ——
+            # 这正是它三十多个小时没被发现的原因：**表面上他好好的**。
+            #
+            # key 现在和 primary 一样从 `BACKENDS[backend]` 带出来。
+            # 想手动指定仍然可以，走 NOX_UTILITY_API_KEY。
+            key_override=_env("NOX_UTILITY_API_KEY"),
             max_tokens=_env_int("NOX_UTILITY_MAX_TOKENS", 4000),
         )
     )
