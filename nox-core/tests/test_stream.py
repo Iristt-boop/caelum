@@ -71,8 +71,10 @@ def test_filter_blocks_meme_tag_anywhere():
     assert out == "早安呀"
     # 混在一段话中间
     f = MoodTagFilter()
-    out = "".join(f.feed(c) for c in "得了你一个早安亲亲[早安亲亲]真好") + f.flush()
-    assert out == "得了你一个早安亲亲真好"
+    # ⚠️ 正文里刻意也有同样的字 —— 验证只吃 `[…]` 那份、不误伤正文。
+    #    tag 名跟 `agent/llm.py` 的 MEME_TAGS 走（2026-09-08 改过名）
+    out = "".join(f.feed(c) for c in "得了你一个抱抱[抱抱]真好") + f.flush()
+    assert out == "得了你一个抱抱真好"
     # 分片到达
     f = MoodTagFilter()
     out = "".join(f.feed(c) for c in ["好[", "呜呜", "呜]好"]) + f.flush()
@@ -139,12 +141,16 @@ def spec(name: str) -> ToolSpec:
 
 
 def collect(loop: AgentLoop, text: str):
-    """跑一遍流，返回（拼起来的文本, 最终 LoopResult）。"""
+    """跑一遍流，返回（拼起来的文本, 最终 LoopResult）。
+
+    ⚠️ 这里必须显式认 `done`，不能写 `else:` —— 流里还有 tool_start / tool_end，
+    那两种事件身上没有 `result`，`else` 会当场 AttributeError（2026-09-07）。
+    """
     parts, result = [], None
     for ev in loop.run_stream(text):
         if ev.type == "text":
             parts.append(ev.text)
-        else:
+        elif ev.type == "done":
             result = ev.result  # type: ignore[attr-defined]
     return "".join(parts), result
 
@@ -184,6 +190,56 @@ def test_text_before_tool_call_is_streamed():
     text, r = collect(loop, "灯什么状态")
     assert text == "让我看看灯开着呢"
     assert r.outcome == "answered" and r.iterations == 2
+
+
+def test_tool_progress_events_bracket_each_call():
+    """他动手的那几秒，流里必须有东西 —— 否则语音通话里是一段死寂。
+
+    盯两件事：
+      ① tool_start 在**执行之前**发出（不是攒到最后一起补）
+      ② 顺序是 start → 真的跑 → end
+    """
+    seen = []
+
+    adapter = FakeStreamAdapter([
+        ([], Turn(stop_reason="tool_use",
+                  tool_calls=[ToolCall(id="c1", name="add_todo", arguments={})])),
+        (["加好了"], Turn(stop_reason="end_turn", text="加好了")),
+    ])
+    loop = AgentLoop(adapter=adapter)
+    loop.register(spec("add_todo"), lambda a: seen.append("ran") or "ok")
+
+    events = []
+    for ev in loop.run_stream("帮我加个待办"):
+        if ev.type in ("tool_start", "tool_end"):
+            events.append((ev.type, ev.tool, ev.ok))
+            # 🔴 关键断言：start 到达时工具**还没跑**。
+            # 写成列表推导（`[self._execute(c) ...]`）的话这里会是 ["ran"]，
+            # 因为那一批工具早已整个跑完才回到调用方
+            if ev.type == "tool_start":
+                assert seen == [], "tool_start 应该在工具执行之前就发出来"
+
+    assert events == [("tool_start", "add_todo", True), ("tool_end", "add_todo", True)]
+    assert seen == ["ran"]
+
+
+def test_tool_end_reports_failure():
+    """做没做成也要报。她该听见「没成」，而不是以为已经办好了。"""
+    adapter = FakeStreamAdapter([
+        ([], Turn(stop_reason="tool_use",
+                  tool_calls=[ToolCall(id="c1", name="computer_write_file", arguments={})])),
+        (["没写成"], Turn(stop_reason="end_turn", text="没写成")),
+    ])
+    loop = AgentLoop(adapter=adapter)
+
+    def boom(_a):
+        raise ConnectionError("够不到她的电脑")
+
+    loop.register(spec("computer_write_file"), boom)
+
+    ends = [ev for ev in loop.run_stream("写个文档") if ev.type == "tool_end"]
+    assert len(ends) == 1
+    assert ends[0].ok is False
 
 
 def test_stream_reports_truncated():

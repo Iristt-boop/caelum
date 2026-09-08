@@ -138,9 +138,13 @@ def test_extract_text_tags_any_position():
     from tools.intimate import extract_text_tags
 
     # 混在一段话中间
-    text, tags = extract_text_tags("得了你一个早安亲亲[早安亲亲]真好")
-    assert text == "得了你一个早安亲亲真好"
-    assert tags == ["早安亲亲"]
+    # ⚠️ 这里刻意让**正文里也出现一遍同样的字**，验证只剥 `[…]` 那份、
+    #    不误伤正文。tag 名跟着 `agent/llm.py` 的 MEME_TAGS 走 ——
+    #    2026-09-08 那次改名（早安亲亲 → where my kiss）说是「五处同步」，
+    #    漏的第六处就是这儿，测试红了两条
+    text, tags = extract_text_tags("得了你一个抱抱[抱抱]真好")
+    assert text == "得了你一个抱抱真好"
+    assert tags == ["抱抱"]
 
     # 多个、保持顺序
     text, tags = extract_text_tags("[开心]早安[暖被窝]")
