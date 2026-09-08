@@ -165,6 +165,27 @@ _TURN = """她说：{her}
 他回：{his}"""
 
 
+#: 🔴 **这些会话里的「用户消息」不是她说的话**（2026-09-07 影子日志实录）。
+#:
+#: 日记批注（`diary-<id>`）和共读回批注（`reading-<id>`）都是**程序拼的提示词**
+#: 塞进 `/chat` 的，开头是「（系统提示：这不是聊天窗口…）」。
+#: 影子模式第 12 条就把它当成她的原话推断了：
+#:
+#:   她说的：日记本｜distress｜原话=（系统提示：这不是聊天窗口。糖糖刚写了一篇日记…）
+#:
+#: 它猜的意义也许没错，但**依据是错的** —— 它读的是我们自己写的提示词。
+#: 而且那条会写进 Registry 的 evidence，Care 开口时会当成「她说过的话」说出来。
+#:
+#: ⚠️ 按**会话前缀**判，不按字符串匹配：提示词的措辞会改，链路的身份不会
+#: （`bridge/server.js` 的 `diary-${id}` / `co-reading` 的 `reading-<id>`）。
+NOT_HER_WORDS = ("diary-", "reading-")
+
+
+def is_injected(session_id: str) -> bool:
+    """这一轮的「用户消息」是程序拼的，不是她打的字。"""
+    return str(session_id or "").startswith(NOT_HER_WORDS)
+
+
 def mode() -> str:
     """这一层现在是什么状态。
 
@@ -343,7 +364,25 @@ class LLMAppraiser:
         #: 🔴 天花板在这里落地。模型给 0.9 也只能拿到 0.62
         intensity = max(0.0, min(self.ceiling, intensity))
 
+        #: 强度 0 = 什么都不用记（2026-09-07 影子日志第 1、10 条）。
+        #: `relief` 除外 —— 它的 0 是「这份记挂可以松了」，是个真信号。
+        if intensity <= 0.0 and valence != "relief":
+            logger.debug("意义推断：强度 0，没什么要记的（%.30s）", her_text)
+            return None
+
         anchor = str(d.get("anchor") or "").strip()[:MAX_ANCHOR]
+        #: 🔴 **她心情好的时候不建锚点**（2026-09-07 影子日志实录）。
+        #:
+        #: `evaluator._decide_from_appraisal` 里 warm/playful **就地返回 ignore，
+        #: 根本不进 Registry**。给它们建一个「她说的：陪伴」这样的锚点，
+        #: 只会让日志看起来记下了什么 —— 实际算完就扔。
+        #:
+        #: ⚠️ 这不代表那些话不值得留。影子日志里
+        #: 「我想早点造一个全屋智能的让你住进去」确信 0.95，
+        #: 那是很该被记住的一句 —— 但**该由 OB 的 remember/grow 来存，
+        #: 不是塞进「他惦记着的事」那张表**。两件事别混。
+        if valence in ("playful", "warm"):
+            anchor = ""
         topic = str(d.get("topic") or "").strip()
         if topic not in _TOPICS:
             #: 不在表里就回退。**不要原样采用** ——

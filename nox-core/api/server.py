@@ -1053,6 +1053,13 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
         m = appraisal_llm.mode()
         if m == "off" or not text:
             return
+        # 🔴 日记批注 / 共读回批注那两条链路，`text` 是**程序拼的提示词**
+        # 不是她打的字（开头是「（系统提示：这不是聊天窗口…）」）。
+        # 影子日志第 12 条就把它当成她的原话推断了，而那会写进 Registry 的
+        # evidence，Care 开口时当成「她说过的话」说出来
+        if appraisal_llm.is_injected(sid):
+            logger.debug("%s 是注入型会话，不做意义推断", sid)
+            return
 
         utility = core.router.light_adapter if core.router else None
         if utility is None:

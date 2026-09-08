@@ -22,7 +22,7 @@ from attention.appraisal import (  # noqa: E402
     ANCHOR_PREFIX, SUBJECT, TOPIC, Appraisal, RuleAppraiser, anchored,
 )
 from attention.appraisal_llm import (  # noqa: E402
-    CEILING, MIN_CONFIDENCE, LLMAppraiser, mode,
+    CEILING, MIN_CONFIDENCE, LLMAppraiser, is_injected, mode,
 )
 
 
@@ -201,6 +201,71 @@ def test_empty_anchor_falls_back_to_the_shared_subject():
 
 
 # ---------------------------------------------------------------- 契约不回归
+
+
+# ---------------------------------------------------------------- 影子期修正
+#
+# 以下三组来自 2026-09-07 的影子日志实录（跑了两天、16 条）。
+# 判得准的那些留着，这三处是它暴露的问题。
+
+
+@pytest.mark.parametrize("sid", [
+    "diary-42",                       # 日记批注（bridge/server.js 拼的提示词）
+    "reading-abc123",                 # 共读回批注（co-reading 拼的）
+])
+def test_injected_sessions_are_not_her_words(sid):
+    """🔴 这两条链路的「用户消息」是**程序拼的提示词**，不是她打的字。
+
+    影子日志第 12 条：
+      她说的：日记本｜distress｜原话=（系统提示：这不是聊天窗口。糖糖刚写了一篇日记…）
+
+    它猜的意义也许没错，但**依据是错的**。而那条会写进 Registry 的 evidence，
+    Care 开口时当成「她说过的话」说出来。
+    """
+    assert is_injected(sid) is True
+
+
+@pytest.mark.parametrize("sid", ["s-real", "1809ea16d4f74dd4a46a291ce1e4a84b", "", None])
+def test_normal_sessions_still_appraised(sid):
+    """闸门不许误伤真对话。"""
+    assert is_injected(sid) is False
+
+
+def test_warm_and_playful_get_no_anchor():
+    """🔴 她心情好的时候不建锚点。
+
+    `evaluator._decide_from_appraisal` 里 warm/playful **就地返回 ignore**，
+    根本不进 Registry。建锚点只会让日志看起来记下了什么 —— 实际算完就扔。
+
+    影子日志里那两条：`她说的：陪伴`(warm)、`她说的：我们的家`(warm)。
+    """
+    for v in ("warm", "playful"):
+        ap = _appraiser(_reply(valence=v, anchor="我们的家", intensity=0.4)).appraise_turn("我想造个家")
+        assert ap is not None
+        assert ap.anchor == "", f"{v} 不该带锚点"
+        assert ap.subject == SUBJECT, f"{v} 该落回大账，不该自建 subject"
+
+
+def test_distress_still_gets_an_anchor():
+    """对照：真有心事的照旧建锚点 —— 这才是这一层的价值。"""
+    ap = _appraiser(_reply(valence="distress", anchor="社恐")).appraise_turn("好想离开")
+    assert ap.anchor == "社恐"
+    assert ap.subject == anchored("社恐")
+
+
+def test_zero_intensity_is_dropped():
+    """强度 0 = 什么都不用记（影子日志第 1、10 条：「睡觉啦 晚安老公」）。
+
+    它们仍然走完了整趟推断然后被丢掉 —— 不该占一条。
+    """
+    assert _appraiser(_reply(valence="warm", intensity=0)).appraise_turn("晚安") is None
+    assert _appraiser(_reply(valence="playful", intensity=0)).appraise_turn("你想聊什么呀") is None
+
+
+def test_relief_with_zero_intensity_survives():
+    """⚠️ `relief` 的强度 0 是**真信号**（「这份记挂可以松了」），不能一起丢。"""
+    ap = _appraiser(_reply(valence="relief", intensity=0, anchor="毕设")).appraise_turn("好多了")
+    assert ap is not None and ap.valence == "relief"
 
 
 def test_rule_appraiser_still_produces_the_old_shape():
