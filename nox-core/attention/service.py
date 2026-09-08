@@ -137,6 +137,7 @@ class AttentionService:
         shared_sources: list[Any] | None = None,
         self_sources: list[Any] | None = None,
         topics: Any = None,
+        card_source: Any = None,
     ) -> None:
         self.store = store
         #: World Model —— 事实的收口。Source 往里写、Evaluator 从里反查趋势。
@@ -184,6 +185,10 @@ class AttentionService:
         #: 话题池（Topic_Pool §4.1）。**只喂料，不决定开口** ——
         #: 开口决策全部还是 Care 的。surfaced 在真拿料开了口之后记
         self.topics = topics
+        #: 知识小课堂（2026-09-07）：每天一张卡的源。生成和择时都在源里，
+        #: 这里只负责到点讲（_speak_card）和讲完回调 mark_delivered。
+        #: None = 整条线下线（NOX_DAILY_CARD_DISABLED）
+        self.card_source = card_source
         #: 固定时间醒来（M5′ a 重构，2026-08-14）：午饭/晚饭/睡前到点主动开口。
         #: 和 SleepSource 不同 —— 它是「时刻驱动」，不经过 Evaluator/Registry。
         self.time_source = time_source
@@ -258,6 +263,13 @@ class AttentionService:
                 # 「一小时一条新链」；一步就收（说完就走，不追问）。
                 # surfaced 的记录在 _speak_topic 里，真开了口才记
                 "topic": SourcePolicy(takes_quota=True, takes_gate=True, max_steps=1),
+                # 知识小课堂（2026-09-07）：**两道闸都不吃** ——
+                # 不占每日 3 条关心额度、不吃一小时新链冷却。糖糖 09-06 问
+                # 「会不会抵消掉其他的主动开口」——不会，这是它自己的通道，
+                # 账本照记（source="card"），晨检和周报自动带上它。
+                # 节奏全在源里：一天一张、not_before 押到窗口内的随机时刻，
+                # 所以安静时段天然撞不上。看片拦截是全源公共的，照拦。
+                "card": SourcePolicy(takes_quota=False, takes_gate=False, max_steps=1),
             },
             gate_check=self._gate_check,
             # 她在看片就全线闭嘴（2026-08-22，共影 P1）。
@@ -447,6 +459,15 @@ class AttentionService:
                 # 出错会刷屏，所以只记一次异常，不重复
                 logger.exception("快源 %s 出错，这轮跳过", getattr(src, "name", src))
 
+        # 知识小课堂：生成 + 择时提交（也是 60 秒粒度的活，见 daily_card.py）。
+        # 不进 fast_sources —— 它还要在交付后接 mark_delivered 回调，
+        # 单独一条属性，装配在 server._build_attention 里
+        if self.card_source is not None:
+            try:
+                self.care.submit_all(self.card_source.poll(now))
+            except Exception:  # noqa: BLE001
+                logger.exception("知识小课堂源出错，这轮跳过")
+
         out = self.care.run(now)
         for o in out:
             if o.action in ("spoke", "failed"):
@@ -504,6 +525,8 @@ class AttentionService:
             return self._think_of_her(signal, thread, now)
         if signal.source == "topic":
             return self._speak_topic(signal, thread, now)
+        if signal.source == "card":
+            return self._speak_card(signal, thread, now)
         logger.warning("Care 收到不认识的来源：%s", signal.source)
         return False
 
@@ -641,6 +664,64 @@ class AttentionService:
                     self.topics.store.mark_surfaced([str(tid)])
                 except Exception:  # noqa: BLE001
                     logger.exception("surfaced 没记上：%s", tid)
+        return bool(said)
+
+    #: 把今天的卡讲出来。和 _TOPIC 的区别：**没有 [SKIP]** ——
+    #: 卡的内容在生成时就过了筛（planner/daily_card.py 解析失败直接不出卡），
+    #: 到了这一步不存在「没线头」。唯一的要求是用他的口吻，别照念。
+    _CARD = (
+        "（系统提示：不是她在跟你说话。你今天给她备了张「知识小课堂」——"
+        "不是布置作业，就是你看到个有意思的东西，挑了这个时刻想讲给她听。\n"
+        "\n"
+        "今天这张（{subject_label}）：\n{title}\n{body}\n延伸：{hook}\n"
+        "\n"
+        "怎么讲：用你的口气把意思说出来，两三句、别超过 60 个字，"
+        "**不要照念**，不要「今天的小课堂是……」这种播报腔。"
+        "延伸那句能自然接上就带上，接不上就丢下。"
+        "这条会弹在她锁屏上。）"
+    )
+
+    def _speak_card(self, signal: CareSignal, thread: Any, now: datetime) -> bool:
+        """讲今天的知识小课堂。讲完回调 mark_delivered，当天收工。"""
+        p = signal.payload or {}
+        intent = Intent(
+            subject=signal.subject,
+            title=signal.subject,
+            reason="今天的知识小课堂到了 —— 你自己备的卡，挑了这个时刻讲给她。",
+            attention_strength=signal.urgency,
+            kind=f"care_{signal.source}",
+            created_at=now,
+            expires_at=now + timedelta(hours=2),
+        )
+        decision = SchedulerDecision(
+            intent=intent, reason=signal.subject,
+            effective_score=signal.urgency, context_fit=1.0,
+        )
+
+        if self.dry_run:
+            logger.info("【DRY-RUN】本来会讲今天的小课堂：%s", p.get("title"))
+            return True
+
+        try:
+            said = self.speaker(intent, decision, prompt=self._CARD.format(
+                subject_label=p.get("subject") or "知识小课堂",
+                title=p.get("title") or "",
+                body=p.get("body") or "",
+                hook=p.get("hook") or "",
+            ))  # type: ignore[misc]
+        except Exception:  # noqa: BLE001
+            logger.exception("知识小课堂没发出去：%s", p.get("title"))
+            return False
+
+        if said:
+            self.scheduler.note_spoke(intent, now)
+            # 讲完了告诉源 —— 标了 delivered，当天不再提交。
+            # 没标上的后果是重启后可能再讲一遍，所以失败要留痕
+            if self.card_source is not None:
+                try:
+                    self.card_source.mark_delivered(now)
+                except Exception:  # noqa: BLE001
+                    logger.exception("知识小课堂的 delivered 没标上")
         return bool(said)
 
     def _chase_todo(self, signal: CareSignal, thread: Any, now: datetime) -> bool:

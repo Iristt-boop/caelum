@@ -593,12 +593,32 @@ def _build_attention(core: Nox, sessions: "Sessions", db: Store) -> AttentionSer
             from attention.sources.curiosity import CuriositySource
             self_sources.append(CuriositySource(astore, topics_pool))
 
+        # 知识小课堂（2026-09-07）：每天一张卡，生成与择时都在源里。
+        # 生成走 utility flash（≈0.005 元/天）。**单独建 adapter** ——
+        # 上面那个 _pool_adapter 贴着 topic-filter 的账，不能蹭
+        card_source = None
+        if not getattr(core.cfg, "daily_card_disabled", False):
+            try:
+                from attention.sources.daily_card import DailyCardSource
+                _card_utility = None
+                _card_cfg = getattr(core.cfg, "utility", None)
+                if _card_cfg is not None and getattr(_card_cfg, "usable", False):
+                    from agent.adapters import make_adapter as _make_card_adapter
+                    _card_utility = meter.tag(_make_card_adapter(_card_cfg), "daily-card")
+                card_source = DailyCardSource(
+                    astore, utility=_card_utility,
+                    bridge=core.bridge, world=world,
+                    gen_hour=getattr(core.cfg, "daily_card_gen_hour", 6),
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception("知识小课堂装配失败，这条线不跑")
+
         svc = AttentionService(astore, provider, speaker=speaker, waker=waker,
                                todo_source=todo_source, fast_sources=fast_sources,
                                gate=gate, time_source=time_source, world=world,
                                watching=watching, shared_sources=[shared_source],
                                self_sources=self_sources,
-                               topics=topics_pool)
+                               topics=topics_pool, card_source=card_source)
 
         # 体重 / 生理期：HealthKit 那条同步坏了（体重 14 天一条没有，
         # 经期表被快捷指令写坏），改成他在对话里主动记进 World Model
@@ -1742,9 +1762,11 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
         if cfg is None or primary is None:
             raise HTTPException(status_code=503, detail="Core 没起来")
 
+        pricing_cny = getattr(cfg, "PRICING_CNY", None) or {}
         choices = [
             {"key": k, "model": c.model, "backend": c.backend,
-             "label": c.label or c.model}
+             "label": c.label or c.model,
+             **({"price": pricing_cny[c.model]} if c.model in pricing_cny else {})}
             for k, c in (getattr(cfg, "models", {}) or {}).items()
         ]
         providers = {}

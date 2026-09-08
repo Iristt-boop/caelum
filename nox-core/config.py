@@ -377,6 +377,14 @@ class Config:
     galatea_timeout: float = 25.0
     galatea_channel: str = field(default_factory=lambda: _env("NOX_GALATEA_CHANNEL", ""))
 
+    # ---- 知识小课堂（2026-09-07）：每天一张卡，独立通道不占关心额度 ----
+    #: 整体下线开关。生成走 utility flash，一天 ≈0.005 元
+    daily_card_disabled: bool = field(
+        default_factory=lambda: _env("NOX_DAILY_CARD_DISABLED", "") == "1")
+    #: 生成时刻（CST 小时）：她醒来之前卡就备好了
+    daily_card_gen_hour: int = field(
+        default_factory=lambda: _env_int("NOX_DAILY_CARD_GEN_HOUR", 6))
+
     # ---- 国内计价表（元/百万 tokens，官方标价；GLM-5.3-Flash 限时 1/20 促销未计入）----
     # Model 页按这个显示费用；bridge 计费的 PRICING 表同步维护
     PRICING_CNY = {
