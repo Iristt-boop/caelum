@@ -226,16 +226,25 @@ def classify_context(text: str, *, light: bool = False,
         return names
 
     s = (text or "").strip()
+    # 🔴 **这个顺序就是丢弃顺序**（`ContextRegistry.render()` 按序累加，
+    # 装不下的从后往前丢）。所以排在这里的先后 = 谁更该被他看见。
+    #
+    # todo 排在 memory 前面（2026-09-08 调）：她今天要做什么是**事实**，
+    # 记忆是**背景**（memory.py 自己那句叮嘱：「这些是背景，别刻意提起」）。
+    # 真到了装不下的时候，宁可少一段背景，不能少她今天那几件事。
+    #
+    # 病例：调之前 memory 在前，todo 排第 9 —— 48 小时里 61 轮
+    # 他都不知道她今天要干嘛，而 800 字预算只超了 56 字。
+    if _NEED_TODO.search(s):
+        names.append("todo")
+    if _NEED_HEALTH.search(s):
+        names.append("health")
     if has_understanding or _NEED_MEMORY.search(s):
         names.append("memory")
     if _NEED_HOME.search(s):
         names.append("home")
-    if _NEED_HEALTH.search(s):
-        names.append("health")
     if _NEED_WEATHER.search(s):
         names.append("weather")
-    if _NEED_TODO.search(s):
-        names.append("todo")
     if _NEED_LOCATION.search(s):
         names.append("location")
     # 音乐。复用 MUSIC_SCENE 那套触发词 —— 会聊到音乐的场合，

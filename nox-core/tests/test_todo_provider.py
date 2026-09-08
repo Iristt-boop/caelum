@@ -212,5 +212,84 @@ def test_not_in_the_per_turn_lineup():
     assert '"todo"' not in lineup
 
 
+# ------------------------------------------------------- 本地清单那条路（2026-09-08）
+#
+# 🔴 上面所有测试走的都是 **GitHub 路径**，那条路的 `due_soon` 只收今明两天
+# 到期的、通常一两条 —— 所以「不裁不限」看起来没问题，`test_render_is_within_budget`
+# 也一直是绿的。
+#
+# 而线上早在 2026-08-18 就改读**本地清单**了，那条路的 `due_soon` 装的是
+# **整个「进行中」分区**。换源时只改了取数没改渲染，于是：
+#   `Context 超出 800 字预算，这轮略过: todo` —— 48 小时 61 次，
+#   他每天有几十轮根本看不见她的待办，而且不报错。
+#
+# **测试覆盖的是没在跑的那条路，正在跑的那条一条没测。**
+# 下面这几条补的就是这个。
+
+
+class _FakeBridge:
+    """假的 bridge，只回 `/api/todo/list`。"""
+
+    def __init__(self, sections: dict) -> None:
+        self.sections = sections
+
+    def get(self, path, params=None):
+        assert path == "/api/todo/list"
+        return RestResult(True, {"ok": True, "sections": self.sections})
+
+
+def _local(**sections):
+    p = TodoProvider(bridge=_FakeBridge(sections))
+    return p, p.get_state(Turn())
+
+
+def test_本地清单的进行中全进了_due_soon():
+    """先钉住这个**含义差异**本身 —— 它就是病根。
+
+    走 GitHub 时 due_soon = 今明两天到期的；走本地清单时 = 整个「进行中」。
+    以后谁再换源，这条会提醒他回去看渲染那一段。
+    """
+    _, s = _local(进行中=["每天 09:00 吃药", "9月8日 交房租"], 随时=["读尼采"])
+    assert len(s["due_soon"]) == 2
+    assert all(x.startswith("今天：") for x in s["due_soon"])
+
+
+def test_今天要做的也要裁掉破折号后面的说明():
+    """那些说明是写给糖糖看的，他只要知道是哪件事。"""
+    p, s = _local(进行中=["写晨检卡 —— 要接日志摘要、还要处理静音名单和突增判据"])
+    line = p.render(s)
+    assert "写晨检卡" in line
+    assert "静音名单" not in line, f"细节说明不该出现：{line}"
+
+
+def test_今天要做的有条数上限():
+    p, s = _local(进行中=[f"第{i}件事" for i in range(12)])
+    line = [x for x in p.render(s).splitlines() if x.startswith("【要做的】")][0]
+    assert line.count("、") == p.max_due - 1
+    assert f"还有 {12 - p.max_due} 项" in line
+
+
+def test_一整屏待办也不许吃光预算():
+    """🔴 这条是这次事故的正身。
+
+    12 条、每条都带一长段说明 —— 线上真实形状。修之前这里能渲染到
+    **一千多字**，而整个 dynamic_system 的预算只有 800，
+    于是 todo 每次都被 `ContextRegistry.render()` 整条丢掉。
+    """
+    p, s = _local(
+        进行中=[f"第{i}件事 —— {'细' * 60}" for i in range(12)],
+        随时=[f"挂着的{i} —— {'节' * 60}" for i in range(8)],
+        近期=[f"近期{i} —— {'说' * 60}" for i in range(5)],
+    )
+    text = p.render(s)
+    assert len(text) < 300, f"太长了：{len(text)} 字\n{text}"
+
+
+def test_没有待办时什么都不说():
+    """🔴 不许编一个「你今天没什么事」出来 —— 那和「我没查到」是两回事。"""
+    p, s = _local(进行中=[], 随时=[], 近期=[])
+    assert p.render(s) == ""
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))

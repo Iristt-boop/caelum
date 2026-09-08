@@ -171,11 +171,32 @@ def test_order_is_stable():
     """输出顺序稳定 —— 顺序变了 dynamic_system 就变，白掉一次缓存。"""
     a = classify_context("把灯关了，我昨晚没睡好")
     b = classify_context("把灯关了，我昨晚没睡好")
-    assert a == b == MINIMAL + ["home", "health"]
+    assert a == b == MINIMAL + ["health", "home"]
 
     # 全命中时的顺序
     assert classify_context("外面冷吗，我没睡好，把电热毯开上，今天还有什么安排") == \
-        MINIMAL + ["home", "health", "weather", "todo"]
+        MINIMAL + ["todo", "health", "home", "weather"]
+
+
+def test_todo_outranks_memory():
+    """🔴 **顺序就是丢弃顺序** —— 这条钉的是优先级，不是字节。
+
+    `ContextRegistry.render()` 按这个顺序累加，装不下的从后往前丢。
+    所以「谁排前面」= 「装不下时谁留下」。
+
+    她今天要做什么是**事实**；记忆是**背景**（memory.py 自己那句叮嘱：
+    「这些是背景，别刻意提起，也别一条条复述」）。真到了装不下的时候，
+    宁可少一段背景，不能少她今天那几件事。
+
+    病例（2026-09-08）：调之前 memory 在前、todo 排第 9，
+    `Context 超出 800 字预算，这轮略过: todo` 48 小时喊了 61 次 ——
+    他有几十轮根本不知道她今天要干嘛，而预算只超了 56 字。
+    """
+    names = classify_context("今天怎么样？还记得我们上次说的那件事吗")
+    assert "todo" in names and "memory" in names
+    assert names.index("todo") < names.index("memory"), (
+        f"todo 又排到 memory 后面去了，装不下时会先丢掉她的待办：{names}"
+    )
 
 
 def test_greeting_is_light_so_stays_minimal():

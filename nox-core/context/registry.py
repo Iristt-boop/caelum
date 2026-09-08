@@ -30,7 +30,25 @@ logger = logging.getLogger(__name__)
 #: 架构文档第十二节：「不要把整个 World State 的 JSON 原样塞进去 ——
 #: 那是给程序看的，给模型看要挑重点，几百字以内。」
 #: 这段在缓存断点之后，每个字都按未命中价付费，所以要卡死上限。
-DEFAULT_BUDGET = 800
+#:
+#: 🔴 800 → 1200（2026-09-08）。**这个数是在 MemoryProvider 解禁之前定的。**
+#: 2026-09-05 记忆一解禁就往每轮上下文里加了约 266 字，而预算没跟着动，
+#: 于是排在第 9 位的 todo 每次都被挤掉 —— 48 小时 61 次，
+#: 他有几十轮**根本看不见她今天要做什么**，而且不报错。
+#:
+#: 线上实测那一轮（新日志格式打出来的）：
+#:     已用 604（memory 266、mood 167、health 97、location 43、time 26）
+#:     + todo 252 = 856 —— 超 56 字，就为这 56 字整条丢掉。
+#: 没有哪个 provider 是畸形的，是**预算本身过时了**。
+#:
+#: 抬到 1200 的代价（按 glm-5.3-flash 未命中价 0.8 元/M、80 轮/天算）：
+#:     400 字 ≈ 267 token × 0.8/1e6 × 80 × 30 ≈ **0.5 元/月**。
+#: 拿五毛钱换「他每天看得见她的待办」，这个账不用算第二遍。
+#:
+#: ⚠️ 但上限还是要有：这段每个字都是未命中价，provider 会一直加下去。
+#: 再撞上限的时候，**先看那条 WARNING 里「吃得最多的」是谁**，
+#: 而不是条件反射再抬一次 —— 抬预算是权宜，砍冗余才是正路。
+DEFAULT_BUDGET = 1200
 
 
 class ContextProviderRegistry:
@@ -123,7 +141,8 @@ class ContextProviderRegistry:
         states = self.get_context_set(names, turn=turn, force_refresh=force_refresh)
         lines: list[str] = []
         used = 0
-        dropped: list[str] = []
+        dropped: list[tuple[str, int]] = []
+        kept: list[tuple[str, int]] = []
         for name in names:                     # 按 Router 给的顺序，输出稳定
             state = states.get(name)
             if state is None:
@@ -138,14 +157,26 @@ class ContextProviderRegistry:
             if not text:
                 continue
             if used + len(text) > budget:
-                dropped.append(name)
+                dropped.append((name, len(text)))
                 continue
             lines.append(text)
             used += len(text) + 1
+            kept.append((name, len(text)))
         if dropped:
             # 不许悄悄少说 —— 让他知道有东西没给他看到，比让他以为看全了要好
-            logger.warning("Context 超出 %d 字预算，这轮略过: %s", budget, "、".join(dropped))
-            lines.append(f"（还有 {'、'.join(dropped)} 的情况没放进来，需要就问我）")
+            #
+            # 🔴 **连「谁吃掉的」一起打**（2026-09-08 补）。原来只报丢了谁，
+            # 于是这条警告 48 小时里喊了 61 次、没有一次能直接查下去 ——
+            # 想知道是谁把预算吃满的，只能去线上重放一轮。
+            # 一条查不下去的警告和没有这条警告差不多。
+            eat = "、".join(f"{n} {c}" for n, c in
+                            sorted(kept, key=lambda x: -x[1])[:5])
+            logger.warning(
+                "Context 超出 %d 字预算，这轮略过: %s（已用 %d，吃得最多的：%s）",
+                budget, "、".join(f"{n}({c}字)" for n, c in dropped), used, eat)
+            #: 给他看的那句只说名字 —— 字数是运维信息，跟他没关系
+            lines.append(
+                f"（还有 {'、'.join(n for n, _ in dropped)} 的情况没放进来，需要就问我）")
         return "\n".join(lines)
 
     # ------------------------------------------------------------ 其它

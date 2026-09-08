@@ -67,6 +67,11 @@ class TodoProvider(BaseContextProvider):
     #: 「进行中」最多列几条。这段每轮都要付未命中价，不能让它无限长
     max_ongoing = 5
 
+    #: 「今天要做的」最多列几条。**这一档比上面那档要紧**，所以给得宽一点，
+    #: 但同样得有上限 —— 本地清单里它装的是整个「进行中」分区，
+    #: 不限的话一个 provider 就能把 800 字预算吃光（2026-09-08 的病根）
+    max_due = 6
+
     def __init__(self, repo: str = "", path: str = "todo.md", token: str = "",
                  bridge: Any = None, **kw: Any) -> None:
         super().__init__(**kw)
@@ -94,7 +99,13 @@ class TodoProvider(BaseContextProvider):
         `/api/todo/list` 回 `{ok, sections: {进行中, 近期, 随时}}`，
         分区规则在 bridge 那边（`hitsToday()`，三种时间模型）。
         「进行中」= 今天命中的那些（区名沿用旧的，因为手机端照它取值）。
-        这里只负责映射到 `render()` 认的那三个桶 —— 渲染一个字没改。
+        这里只负责映射到 `render()` 认的那三个桶。
+
+        ⚠️ **`due_soon` 在这条路上的含义变了**：走 GitHub 时它只收今明两天
+        到期的（通常一两条），这里它装的是**整个「进行中」分区**（可能十几条）。
+        2026-08-18 换源时只改了取数、没改渲染，于是 todo 一个人就能吃光
+        800 字预算 —— `render()` 里那段红字记的就是这件事。
+        以后再换源，**取数的含义变了就得回去看渲染**。
         """
         r = self.bridge.get("/api/todo/list")
         if not r.ok:
@@ -159,9 +170,23 @@ class TodoProvider(BaseContextProvider):
         stale = "（缓存）" if state.get("stale") else ""
         lines: list[str] = []
 
-        # 今天/明天到期的最要紧，单独一行放最前
-        for item in state.get("due_soon", []):
-            lines.append(f"【要做的{stale}】{item}")
+        # 今天/明天到期的最要紧，放最前。
+        #
+        # 🔴 **和下面的「手头在做」用同一套裁法**（2026-09-08 修）。
+        # 原来这里是「每条一整行、原文照搬、不限条数」——
+        # 走 GitHub 那阵子没事，因为 `due_soon` 只收今明两天到期的，通常一两条。
+        # 2026-08-18 改读本地清单后，`_fetch_local` 把**整个「进行中」分区**
+        # 都塞进了 due_soon，而渲染这边一个字没跟着改（那行注释还写着
+        # 「渲染一个字没改」，当时是优点，现在是病根）。
+        #
+        # 后果实测：`Context 超出 800 字预算，这轮略过: todo` 48 小时喊了 61 次。
+        # todo 在加载顺序里排第 9，前面 memory 一个就吃 330 字 —— 它基本必被丢。
+        # 也就是说**他每天有几十轮根本看不见她的待办**，而且不报错。
+        due = [_title(x) for x in state.get("due_soon", [])]
+        if due:
+            shown = due[: self.max_due]
+            tail = f"，还有 {len(due) - len(shown)} 项" if len(due) > len(shown) else ""
+            lines.append(f"【要做的{stale}】{'、'.join(shown)}{tail}。")
 
         # 「在忙什么」只要标题，破折号后面那些说明是写给糖糖看的。
         # 不裁的话这一行能到 200 多字，把 800 预算吃掉四分之一，
