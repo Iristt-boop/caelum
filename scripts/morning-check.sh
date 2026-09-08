@@ -14,7 +14,7 @@ set -u
 LOG_TAG="[晨检 $(date '+%m-%d %H:%M')]"
 
 SUMMARY=$(python3 - <<'PYEOF'
-import json, sqlite3, subprocess, time
+import json, re, sqlite3, subprocess, time
 from datetime import datetime, timedelta, timezone
 
 problems = []
@@ -113,6 +113,72 @@ try:
 except Exception as e:
     problems.append(f"系统检查炸了:{e}")
     parts.append("系统✗异常")
+
+
+# ── 5) 他那只手：反向链路昨天断了几次 ────────────────
+#
+# 2026-09-06 加。糖糖：「断线基本 1-2 天出现一次」「我没办法判断
+# local-gateway 在不在跑」。OS 侧栏的灯只看得见**此刻**，
+# 这里补上「昨天怎么样」—— 那才是判断「是不是变差了」的依据。
+#
+# 🔴 只数 1005/1006（真的异常断开）。**1012 是 Service Restart**，
+# 那是部署重启，不是故障 —— 09-06 那天 7 次 1012 全是部署，
+# 混进来会让这个数字天天报警而她学会无视它。
+try:
+    j = subprocess.run(
+        ["journalctl", "-u", "nox-core", "--since", "24 hours ago", "--no-pager"],
+        capture_output=True, text=True, timeout=30).stdout
+    drops = [l for l in j.splitlines()
+             if "本地链路断开" in l and ("1005" in l or "1006" in l)]
+    ups = [l for l in j.splitlines() if "本地链路建立" in l]
+    if not ups and not drops:
+        parts.append("手·无记录")
+    elif drops:
+        # 「断了 N 秒」是新版 local_link 在重连时打的，能直接读出恢复时长
+        gaps = []
+        for l in ups:
+            m = re.search(r"断了 (\d+) 秒", l)
+            if m:
+                gaps.append(int(m.group(1)))
+        worst = f"，最久 {max(gaps)//60 or 1} 分" if gaps else ""
+        parts.append(f"手✗断{len(drops)}次{worst}")
+        problems.append(f"链路断 {len(drops)} 次{worst}")
+    else:
+        parts.append("手✓稳")
+except Exception as e:
+    parts.append("手·查不到")
+
+# ── 6) 日志里出了什么新问题 ──────────────────────────
+#
+# 2026-09-08 加。糖糖：「有日志有警告，没人看是个问题吧？」
+# 那天量出来的代价：utility 全线 401 **三十多个小时**没人发现
+# （主聊天照常，表面看不出来）、bridge 的估价告警喊了 8728 次。
+# 三件全躺在日志里，一条都没被看见。
+#
+# 🔴 这里**只放一句结论**。卡的 body 硬卡在 260 字，塞不下细节 ——
+# 细节在 Caelum OS → Settings → Advanced，log-digest 顺手写成 JSON 了。
+# 「没人看日志」的解法不是「再加一个要看的地方」。
+#
+# 🔴 扫描器**自己不修任何东西**。她划的线：「先报给 nox，
+# 让他理清楚，但是先不让他自己操作」。
+try:
+    r = subprocess.run(["python3", "/root/log-digest.py", "--since", "48 hours ago"],
+                       capture_output=True, text=True, timeout=180)
+    line = next((l for l in r.stdout.splitlines() if l.startswith("日志")), "")
+    if not line:
+        parts.append("日志·没产出")
+    elif line.startswith("日志✓"):
+        parts.append("日志✓")
+    else:
+        # 「新增 N 类」原样搬过来 —— 这几个字就是全部结论
+        parts.append(line.replace("日志⚠️ ", "日志⚠️"))
+        problems.append(line.replace("日志⚠️ ", "日志"))
+    # 哑巴服务是另一行，单独挂上去（它永远不会出现在「新增」里）
+    mute = next((l for l in r.stdout.splitlines() if l.startswith("日志🔇")), "")
+    if mute:
+        parts.append("🔇" + mute.split(" ")[1].split("(")[0] + "等不写日志")
+except Exception as e:
+    parts.append("日志·查不到")
 
 # ── 组摘要（bridge 会把 body 截到 300 字，这里控制在 260 内）────
 head = "晨检✅ " if not problems else f"晨检⚠️ {len(problems)}项 "

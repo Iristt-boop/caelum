@@ -1495,6 +1495,36 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
             logger.exception("读链路状态失败")
             return {"ok": False, "enabled": True, "error": str(exc)}
 
+    @app.get("/api/nox/logs/digest")
+    def nox_log_digest() -> dict:
+        """昨天的日志里出了什么新问题。
+
+        起因：糖糖 2026-09-08「有日志有警告，没人看是个问题吧？」
+        那天量出来的代价 —— utility 全线 401 **三十多个小时**没人发现
+        （主聊天照常，表面看不出来）、bridge 的估价告警喊了 8728 次。
+        三件全躺在日志里，一条都没被看见。
+
+        产出方是 `vps-scripts/log-digest.py`（cron 每天早上跑，在晨检之前）。
+        这里**只读它写好的文件，不现算** —— 扫 48 小时 journal 要几十秒，
+        挂在 HTTP 请求上会把 Advanced 页拖死，而且她每刷新一次就重扫一遍。
+
+        🔴 这条链**只看不动**。糖糖 09-08 划的线：「先报给 nox，让他理清楚，
+        但是先不让他自己操作」。所以这里没有任何修复入口，也不该有。
+        """
+        import json as _json
+        from pathlib import Path as _Path
+
+        p = _Path("/root/nox-core/data/log-digest.json")
+        if not p.exists():
+            #: 还没跑过（本机开发就是这样）。**如实说没有**，
+            #: 别回一个空摘要 —— 那在页面上长得跟「昨天很干净」一模一样
+            return {"ok": True, "ready": False}
+        try:
+            return {"ok": True, "ready": True, **_json.loads(p.read_text(encoding="utf-8"))}
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("读日志摘要失败")
+            return {"ok": False, "ready": False, "error": str(exc)}
+
     @app.get("/api/nox/orders/{oid}")
     def nox_order_get(oid: str) -> dict:
         """看一张单现在什么状态。前端刷新后重新渲染卡片用。"""

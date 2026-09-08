@@ -2784,6 +2784,21 @@ app.get("/api/nox/link", async (req, res) => {
   }
 });
 
+// 昨天日志里的新问题（Settings→Advanced 页）。
+// 起因：糖糖「有日志有警告，没人看是个问题吧？」
+app.get("/api/nox/logs/digest", async (req, res) => {
+  try {
+    const r = await fetch(`${NOX_CORE_URL}/api/nox/logs/digest`, { signal: AbortSignal.timeout(8000) });
+    res.json(await r.json());
+  } catch (e) {
+    console.error("[nox-logs] 读日志摘要失败:", e.message);
+    // ⚠️ 同 /api/nox/link：`ok:false` ≠ `ready:false`。
+    // 「问不到 core」和「core 说还没跑过」在页面上必须长得不一样，
+    // 否则 core 挂了会被读成「昨天很干净」—— 这个方向的错最要命
+    res.json({ ok: false, error: e.message });
+  }
+});
+
 app.get("/api/nox/resonance", async (req, res) => {
   try {
     const r = await fetch(`${NOX_CORE_URL}/api/nox/resonance`, { signal: AbortSignal.timeout(8000) });

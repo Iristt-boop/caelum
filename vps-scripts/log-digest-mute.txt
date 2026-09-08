@@ -1,0 +1,13 @@
+# log-digest 静音名单 —— 每行一个子串，指纹里含它就不报
+#
+# 加法：ssh 上去跑 `python3 /root/log-digest.py --mute "那段字"`
+# 或者直接编这个文件（正典在 vps-scripts/，改完记得同步回来）
+#
+# ⚠️ 静音是有代价的：这里每加一行，就少一类东西会被看见。
+#    只放「确定是正常噪音」的，不确定的先让它吵两天。
+
+# 启动横幅，写成 WARNING 是为了刷屏时显眼，不是故障
+Attention 是 LIVE 的
+
+# uvicorn 关连接时的收尾提示，客户端正常断开也会有
+Session termination failed
