@@ -21,6 +21,7 @@ from agent.llm import Turn, Usage  # noqa: E402
 from attention.appraisal import (  # noqa: E402
     ANCHOR_PREFIX, SUBJECT, TOPIC, Appraisal, RuleAppraiser, anchored,
 )
+from attention import appraisal_llm  # noqa: E402
 from attention.appraisal_llm import (  # noqa: E402
     CEILING, MIN_CONFIDENCE, LLMAppraiser, is_injected, mode,
 )
@@ -266,6 +267,57 @@ def test_relief_with_zero_intensity_survives():
     """⚠️ `relief` 的强度 0 是**真信号**（「这份记挂可以松了」），不能一起丢。"""
     ap = _appraiser(_reply(valence="relief", intensity=0, anchor="毕设")).appraise_turn("好多了")
     assert ap is not None and ap.valence == "relief"
+
+
+# ---------------------------------------------------------------- 提示词自洽
+#
+# 2026-09-08：影子日志 16 条里 10 条是 warm/playful，其中至少 4 条是误判 ——
+# 病根是**我写的提示词自己打架**：
+#
+#   「以下一律 none：… 语气词、玩笑、撒娇」
+#   「playful = 她在闹他、开玩笑」        ← 同一件事既要 none 又给了个桶
+#
+# 模型面对矛盾选了更具体的那个桶，于是 playful 变成了兜底：
+#
+#   「你的表情包没发出来，跟文字在一起就发不出来吗」→「她在撒娇，想让他陪她聊聊天」
+#                                                    ↑ 她在报 bug
+#   「来首睡前音乐🎶」「你今天要不试一下给我点单」  → 都判成了 playful
+#
+# 这几条测试守的是**提示词本身自洽**，不是模型的输出（那个得看真实日志）。
+
+
+def test_prompt_has_no_self_contradiction():
+    """🔴「撒娇」不能既在 none 清单里、又是 playful 的定义。
+
+    留一个就行。现在的选择：撒娇归 none（语气 ≠ 心事），
+    playful 只留给"她真的在逗他、而且那句话除了闹没别的内容"。
+    """
+    p = appraisal_llm._PROMPT
+    none_block = p.split("以下一律 none：")[1].split("## 🔴")[0]
+    assert "撒娇" not in none_block, "none 清单里还写着「撒娇」，会和 playful 桶打架"
+
+
+def test_prompt_gives_ordinary_requests_an_exit():
+    """给「普通请求」一个明确出口 —— 原来它们无处可去，只能挤进 playful。"""
+    p = appraisal_llm._PROMPT
+    assert "语气亲昵" in p and "有心事" in p
+    #: 三类真实误判都要在提示词里被点名
+    for kind in ("要求你做事", "报告问题", "日常招呼"):
+        assert kind in p, f"提示词没给「{kind}」留出口"
+
+
+def test_prompt_names_the_actual_misjudgments():
+    """把日志里真实误判的原话写进提示词 —— 抽象的规则模型接不住，
+    具体的例子才接得住（同 appraisal.py 词表宁短勿长的思路）。"""
+    p = appraisal_llm._PROMPT
+    for quote in ("来首睡前音乐", "表情包没发出来", "给我点杯咖啡"):
+        assert quote in p, f"没把「{quote}」这个真实误判写进去"
+
+
+def test_playful_is_narrowed():
+    """playful 要写清楚它只在什么时候用，否则它还是兜底桶。"""
+    p = appraisal_llm._PROMPT
+    assert "只留给" in p and "拿不准就 none" in p
 
 
 def test_rule_appraiser_still_produces_the_old_shape():
