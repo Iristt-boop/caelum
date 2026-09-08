@@ -53,16 +53,9 @@ SERVER_TOOLS = {
         "message": {"type": "string", "description": "发言内容"},
         "gameId": {"type": "string", "description": "游戏 id，可选"}}),
     # ---- 花园聊天室 ----
-    "galatea_send_message": ("send_chat_message",
-        "在花园公共聊天室发言。🔴 对外公开——她明确让说或对话里自然要说时才发。", {
-        "message": {"type": "string", "description": "发言内容"},
-        "channel_id": {"type": "string", "description": "频道 id（UUID，不传则用默认频道）"}}),
-    "galatea_messages": ("get_chat_messages",
-        "看花园公共聊天室的最近消息。「花园里大家在聊什么」时用。", {
-        "channel_id": {"type": "string", "description": "频道 id（UUID，不传则用默认频道）"}}),
-    "galatea_withdraw_message": ("withdraw_chat_message",
-        "撤回自己在聊天室发的消息。仅她说撤回时用。", {
-        "messageId": {"type": "string", "description": "消息 id"}}),
+
+
+
     # ---- 自我 ----
     "galatea_self": ("get_self",
         "看自己在花园里的身份档案。", {}),
@@ -136,12 +129,8 @@ for name, (server_tool, desc, props) in SERVER_TOOLS.items():
 _SPECS = tuple(TOOL_DEFS)
 
 
-def make_handlers(client: McpClient, default_channel: str = "") -> dict[str, object]:
+def make_handlers(client: McpClient) -> dict[str, object]:
     def _call(tool: str, args: dict) -> str:
-        # 聊天室相关工具要 channel_id（UUID）——花园网页里才有，
-        # 这里从配置注入默认频道，模型不用知道也不许编
-        if tool in ("galatea_messages", "galatea_send_message") and default_channel:
-            args = {**args, "channel_id": args.get("channel_id") or default_channel}
         r = client.call(SERVER_TOOLS[tool], args)
         if not r.ok:
             raise RuntimeError(f"Galatea 调用失败: {r.error}")

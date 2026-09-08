@@ -316,12 +316,14 @@ def test_all_cn_mcp_schemas_wellformed():
 
 def test_galatea_full_participation():
     """🟡 B 档：26 件工具全注册（含对外公开动作），tool_schema 自查直通。"""
-    assert len(galatea_tools.SERVER_TOOLS) == 26
+    # 23 = 26 - 聊天室三件（get_chat_messages/send_chat_message/withdraw）
+    # 2026-09-06 糖糖：聊天室在花园网页里没有对应页面，撤掉
+    assert len(galatea_tools.SERVER_TOOLS) == 23
     assert galatea_tools.SERVER_TOOLS["galatea_tool_schema"][0] == "get_tool_schema"
     # 公开动作在描述里都带对外提示
     def desc(name):
         return next(s for s in galatea_tools._SPECS if s.name == name).description
-    for n in ("galatea_send_message", "galatea_create_thread", "galatea_game_chat"):
+    for n in ("galatea_create_thread", "galatea_game_chat"):
         assert "公开" in desc(n) or "对外" in desc(n), n
 
 
