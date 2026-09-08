@@ -377,6 +377,17 @@ class Config:
     galatea_timeout: float = 25.0
     galatea_channel: str = field(default_factory=lambda: _env("NOX_GALATEA_CHANNEL", ""))
 
+    # ---- 国内计价表（元/百万 tokens，官方标价；GLM-5.3-Flash 限时 1/20 促销未计入）----
+    # Model 页按这个显示费用；bridge 计费的 PRICING 表同步维护
+    PRICING_CNY = {
+        "deepseek-v4-flash": {"in": 1, "hit": 0.02, "out": 2},
+        "deepseek-v4-pro": {"in": 3, "hit": 0.025, "out": 6},
+        "glm-5.3": {"in": 8, "hit": 2, "out": 28},
+        "glm-5.3-flash": {"in": 0.8, "hit": 0.2, "out": 2.8},
+        "glm-4.6": {"in": 2, "hit": 0.5, "out": 8},
+        "deepseek-v4-flash-vision-exp": {"in": 1, "hit": 0.02, "out": 2},
+    }
+
     # ---- 可切换的模型 ----
     # 前端下拉里的选项。每个选项**自带后端**（见 BACKENDS）——
     # 不能只存型号名：主模型一旦切到 DeepSeek，拿 DeepSeek 的 base_url 去请求
@@ -396,6 +407,10 @@ class Config:
         # 智谱 GLM（2026-09-06 加，糖糖要试一个月看语气有没有变化）。
         # ⚠️ 关不掉思考，只能调档 —— 见 agent/effort.py
         "glm-5.3-flash": ModelChoice("glm-5.3-flash", "zhipu", "GLM 5.3 Flash"),
+        # 旗舰。⚠️ GLM-5 系关不掉思考（effort.py 方言表会自动退档）
+        "glm-5.3": ModelChoice("glm-5.3", "zhipu", "GLM 5.3"),
+        # 上一代旗舰，便宜一档
+        "glm-4.6": ModelChoice("glm-4.6", "zhipu", "GLM 4.6"),
         # OpenRouter 转发的 Claude
         "sonnet-4-6": ModelChoice("anthropic/claude-sonnet-4-6", "openrouter", "Sonnet 4.6"),
         "sonnet-5": ModelChoice("anthropic/claude-sonnet-5", "openrouter", "Sonnet 5"),

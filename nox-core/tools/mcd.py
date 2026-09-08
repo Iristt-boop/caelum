@@ -154,7 +154,7 @@ CREATE_ORDER = _spec(
     "mcd_create_order",
     "创建麦当劳订单。🔴 **确认制**：调用前必须先用 mcd_price 算出总价，把"
     "门店、餐品明细、总价完整复述给她，得到她明确的「确认/下单」答复后才能调；"
-    "她没确认就不许调。外送(orderType=2)还需 addressId（mcd 查她的地址拿）。"
+    "她没确认就不许调。外送(orderType=2)还需 addressId；到店(orderType=1)还需 takeWayCode（门店查询返回里拿）。"
     "创建成功后把订单号和取餐/配送信息告诉她。",
     {
         "type": "object",
@@ -164,6 +164,7 @@ CREATE_ORDER = _spec(
             "beType": {"type": "integer", "description": "1-到店 2-麦乐送 5-得来速"},
             "beCode": {"type": "string", "description": "业务编码（外送/得来速必传，门店查询里拿）"},
             "addressId": {"type": "string", "description": "外送地址 id（orderType=2 必传）"},
+            "takeWayCode": {"type": "string", "description": "取餐方式编码（orderType=1 到店必传；值从 mcd_nearby_stores / mcd_menu 的返回里拿）"},
             "items": {
                 "type": "array",
                 "description": "商品列表",
