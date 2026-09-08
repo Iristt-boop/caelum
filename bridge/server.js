@@ -3580,12 +3580,25 @@ const PRICING = {
   // 🔴 2026-09-06：缺这条时落 DEFAULT_PRICE（Sonnet 估价），账单虚高约 20 倍
   "deepseek-v4-flash-vision-exp": { miss: 1, hit: 0.02, out: 2 },
   "deepseek-v4-pro":   { miss: 3, hit: 0.025, out: 6 },
+  // 智谱 GLM（2026-09-08 补）。官方口径：输入 0.8 / 输出 2.8 / 缓存命中 0.23。
+  //
+  // 🔴 缺这条的三天里，日志喊了 **8728 次**「未知型号按 Sonnet 估价」，
+  // 而 Console 上的钱虚高约 27 倍（Sonnet 的 21.6 vs GLM 的 0.8）——
+  // 和 2026-09-06 vision 版那次是同一个洞，注释都写过一遍了还是漏了。
+  //
+  // ⚠️ **换模型的检查单里要加一条：先补 PRICING 再切**（PROJECT.md 24.9）。
+  // 这张表不跟上，页面不会报错，只会安静地骗人。
+  "glm-5.3-flash":     { miss: 0.8, hit: 0.23, out: 2.8 },
   "anthropic/claude-sonnet-4-6": { miss: 21.6, hit: 2.16, out: 108 },
   "anthropic/claude-sonnet-4.5": { miss: 21.6, hit: 2.16, out: 108 },
   "anthropic/claude-sonnet-5":   { miss: 21.6, hit: 2.16, out: 108 },
   "anthropic/claude-opus-4-6":   { miss: 108, hit: 10.8, out: 540 },
   "anthropic/claude-opus-4-7":   { miss: 108, hit: 10.8, out: 540 },
   "anthropic/claude-opus-4-8":   { miss: 108, hit: 10.8, out: 540 },
+  // Fable 5：$10 / $50 / 命中 $1（× 7.2 汇率，同上面几条的口径）。
+  // 🔴 2026-09-08 补 —— 它在前端下拉里挂了很久，价格表却一直没有，
+  // 是新加的 pricing.test.js 第一次跑就抓出来的（人肉看了两次都没看见）
+  "anthropic/claude-fable-5":    { miss: 72, hit: 7.2, out: 360 },
 };
 const DEFAULT_PRICE = { miss: 21.6, hit: 2.16, out: 108 };   // 认不出的型号按 Sonnet 估
 
