@@ -129,8 +129,12 @@ for name, (server_tool, desc, props) in SERVER_TOOLS.items():
 _SPECS = tuple(TOOL_DEFS)
 
 
-def make_handlers(client: McpClient) -> dict[str, object]:
+def make_handlers(client: McpClient, default_channel: str = "") -> dict[str, object]:
+    # default_channel：花园网页里的聊天频道 UUID（api/server.py 传入）。
+    # 有值时 messages/send 自动带上；空 = 聊天室未接入，调用会如实报错
     def _call(tool: str, args: dict) -> str:
+        if default_channel and tool in ("galatea_messages", "galatea_send_message"):
+            args = {**args, "channel_id": default_channel}
         r = client.call(SERVER_TOOLS[tool], args)
         if not r.ok:
             raise RuntimeError(f"Galatea 调用失败: {r.error}")
