@@ -1083,7 +1083,8 @@ app.post("/api/chat", async (req, res) => {
   // merged：合并发图（微信 1:1）——前端勾了「发送后合并展示」，存进
   // metadata，重载时聊天页还原成折叠卡而不是一张张缩略图
   // meme：她发的表情包 tag（纯图不带字，走同一套会话/落库/SSE）
-  const { message, images, sessionId, mode, voice, merged, meme } = req.body;
+  // display：**给她看的那句**，和发给 Nox 的 message 不是一回事（见下面落库那段）
+  const { message, images, sessionId, mode, voice, merged, meme, display } = req.body;
   if (!message && !images?.length && !meme) return res.status(400).json({ error: "empty" });
   if (meme && !MEME_TAGS.has(meme)) return res.status(400).json({ error: `不认识的表情：${meme}` });
 
@@ -1118,12 +1119,30 @@ app.post("/api/chat", async (req, res) => {
   // 落库只存用户原话（语音指令不入库，否则前端会把整条隐藏掉）。
   // 只发图不带字的情况也落库（meta.images 非空，saveMessage 不会跳过）。
   // 表情包：content 存空、meta.meme 存 tag —— 前端按图渲染（同小克那条链路）。
+  //
+  // 🔴 **`display`：给她看的那句 ≠ 发给他的那段**（2026-09-09 加）
+  //
+  // 共影把整段场景描述拼进提示词喂给 Nox：
+  //   「【共影】她暂停在 315.0 秒问你：【当前画面】这是一个静态的全景镜头，
+  //     画面主体是一群站在谷仓门口的绵羊……（几百字）」
+  //
+  // 那是**给他的上下文**，不是她说的话。原来整段按 role=user 落进
+  // conversations，于是在手机 App 的聊天记录里被当成一条正常消息渲染
+  // 出来 —— 糖糖 2026-09-09：「这个共影画面记录到我的上下文太奇怪了吧。
+  // 隐藏一下。喂到他内部就行了。」
+  //
+  // 所以分开：`message` 照旧整段转给 Core（他该看见），
+  // `display` 是落进她聊天记录的那一句。
+  //   · 传她的原话 → 记录里只留「能看到画面不」，干净
+  //   · 传空串     → 这一轮她**根本没开口**（他主动说的弹幕），一个字不落
+  //   · 不传       → 老行为，`message` 原样落库（别的调用方不受影响）
+  const shown = display === undefined ? (message || "") : String(display);
   const userMeta = {};
   if (imgUrls.length) userMeta.images = imgUrls;
   if (merged && imgUrls.length) userMeta.merged = true;
   if (meme) userMeta.meme = meme;
-  if (message || imgUrls.length || meme) {
-    saveMessage(sessionId, "user", message || "", Object.keys(userMeta).length ? userMeta : "");
+  if (shown || imgUrls.length || meme) {
+    saveMessage(sessionId, "user", shown, Object.keys(userMeta).length ? userMeta : "");
   }
 
   // 表情包不是文字：转给 Core 前翻成一句他能读的话 —— 他的会话库存的也是
