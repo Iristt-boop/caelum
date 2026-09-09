@@ -3623,6 +3623,15 @@ const PRICING = {
   // ⚠️ **换模型的检查单里要加一条：先补 PRICING 再切**（PROJECT.md 24.9）。
   // 这张表不跟上，页面不会报错，只会安静地骗人。
   "glm-5.3-flash":     { miss: 0.8, hit: 0.23, out: 2.8 },
+  // 旗舰。官方口径：输入 8 / 输出 28 / 缓存命中 2（2026-09-09 核对定价页）。
+  // ⚠️ Flash 现在挂着限时 5 折（今晚 24:00 到期），这里和 config.py 的
+  // PRICING_CNY 一样只写**刊例价** —— 促销价写进来，到期就悄悄算少了
+  "glm-5.3":           { miss: 8, hit: 2, out: 28 },
+  // 上一代旗舰。官方按量计价表已经不列它了（只剩私有实例 175 元/算力单元/天），
+  // 所以取 config.py PRICING_CNY 的历史价 2 / 0.5 / 8，两张表保持一致。
+  // 继任的 GLM-4.7 最低档是 2 / 8、命中 0.4 —— 我们这条命中价稍贵一点，
+  // 按「宁可高估」的口径留着
+  "glm-4.6":           { miss: 2, hit: 0.5, out: 8 },
   "anthropic/claude-sonnet-4-6": { miss: 21.6, hit: 2.16, out: 108 },
   "anthropic/claude-sonnet-4.5": { miss: 21.6, hit: 2.16, out: 108 },
   "anthropic/claude-sonnet-5":   { miss: 21.6, hit: 2.16, out: 108 },
