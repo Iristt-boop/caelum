@@ -1415,7 +1415,7 @@ async function pipeTts(upstream, res) {
   return bytes;
 }
 
-/* ==================== 中文走阿里，不走 ElevenLabs（2026-09-07）====================
+/* ==================== TTS 引擎链（2026-09-07 定，09-09 删掉阿里）====================
  *
  * 糖糖测完 OS 端通话之后说的：
  *   「不用 ele 家的，换一个中文识别更好的，ele 的中文不好，再去掉情绪更不好了。」
@@ -1429,11 +1429,15 @@ async function pipeTts(upstream, res) {
  * 而且查证过：**eleven_v3 既不支持 request stitching，也不支持标准 TTS WebSocket**，
  * 也就是说只要还是「v3 + 分句」，就没有任何办法让相邻两句保持同一把声音。
  *
- * 换成 qwen3-tts 解决三件事：
- *   ① 中文原生，不再是英文模型硬念中文
- *   ② **情绪没丢**：instruct 系列吃 `instructions`（中文自然语言指令），
- *      比 [softly] 那套标签还细 —— 她不用为了流畅牺牲语气
- *   ③ 稳定模型，逐句之间本来就一致；再加下面的「一轮粘住一个引擎」兜底
+ * 🔴 **阿里 qwen3-tts 那条路 2026-09-09 整套删掉了，别再加回来。**
+ * 09-07 接过一版，还把它写成了 `/api/tts` 的全局默认，糖糖手机上的声音当天
+ * 就被换掉了 —— 而她**从头到尾没听过那个音色**。她的原话：
+ * 「我没听过阿里的音色，很不好听」「我还没决定用什么 tts 那个会话就直接用了阿里」。
+ *
+ * 当天回滚时只把 qwen 从链上摘了、代码全留着「一行就能开回来」——
+ * 那条留给自己的后路本身就是问题：**她没点头的东西不该在代码里等着被打开**。
+ * 所以这次连根删。真要再选一家，顺序是**先让她听、她点头、再接**，
+ * `test/tts-chain.test.js` 有一条断言守着这道闸。
  *
  * ⚠️ **一轮之内不许换引擎**：前端把上一句用的引擎回传（`engine`），
  * 这边优先用它。真失败了就降级，并在 `X-TTS-Engine` 里说清楚换成了谁 ——
@@ -1444,75 +1448,8 @@ async function pipeTts(upstream, res) {
  * 所以这一版**把用了哪个引擎回给前端**（响应头 + 通话面板小字），
  * 不再让它悄悄发生。
  */
-const QWEN_TTS_URL = process.env.QWEN_TTS_URL
-  || "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation";
-//: instruct 版才吃 `instructions`（情绪指令）。不想要指令就配普通版 qwen3-tts-flash
-const QWEN_TTS_MODEL = process.env.QWEN_TTS_MODEL || "qwen3-tts-instruct-flash";
-/** 他的中文音色。**先用 scripts/tts-audition.mjs 试听再定** ——
- *  这个默认值是从文档音色表里挑的男声候选，不是听过的。 */
-const QWEN_TTS_VOICE = process.env.QWEN_TTS_VOICE || "Ethan";
-
-/** 情景 → 语气指令。中文自然语言，比 [softly] 那套标签好写也好调。 */
-const QWEN_TTS_INSTRUCTIONS = process.env.QWEN_TTS_INSTRUCTIONS
-  || "用男朋友在电话里说话的语气：温柔、放松、语速偏慢，句尾自然收住，不要播音腔。";
-
-/**
- * 阿里 qwen3-tts。非流式：拿到音频 URL 再回源转发。
- *
- * ⚠️ 这里**不假装自己会流式**。DashScope 的 SSE 流式（`X-DashScope-SSE: enable`）
- * 吐的是 base64 分片，格式要真机验过才知道能不能直接喂 MediaSource ——
- * 没验过就写等于埋一个「静默播不出声」。先把音色定下来，流式是下一步。
- *
- * @returns {Promise<Response|null>} 上游音频响应，失败返回 null
- */
-async function qwenTts(text, { voice, instructions } = {}) {
-  if (!DASHSCOPE_API_KEY) return null;
-  try {
-    const body = {
-      model: QWEN_TTS_MODEL,
-      input: {
-        text,
-        voice: voice || QWEN_TTS_VOICE,
-        //: 单一语言时明确指定能显著提升质量（文档原话）。
-        //: 中文占比高就报 Chinese，否则交给 Auto
-        language_type: /[一-鿿]/.test(text) ? "Chinese" : "Auto",
-      },
-    };
-    if (instructions ?? QWEN_TTS_INSTRUCTIONS) {
-      body.input.instructions = instructions ?? QWEN_TTS_INSTRUCTIONS;
-    }
-    const r = await fetch(QWEN_TTS_URL, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${DASHSCOPE_API_KEY}`,
-      },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(20000),
-    });
-    if (!r.ok) {
-      console.error("[TTS] qwen3-tts 返回", r.status, (await r.text().catch(() => "")).slice(0, 300));
-      return null;
-    }
-    const jd = await r.json();
-    const url = jd?.output?.audio?.url;
-    if (!url) {
-      // ⚠️ 200 但没有 url —— 大概率是模型名/音色名不对（音色和模型版本要配套）。
-      // **把返回体打出来**，否则这里会变成一个「静默没声音」
-      console.error("[TTS] qwen3-tts 没给 url：", JSON.stringify(jd).slice(0, 400));
-      return null;
-    }
-    const audio = await fetch(url, { signal: AbortSignal.timeout(20000) });
-    if (!audio.ok || !audio.body) {
-      console.error("[TTS] qwen3-tts 音频取不回来", audio.status);
-      return null;
-    }
-    return audio;
-  } catch (e) {
-    console.error("[TTS] qwen3-tts error:", e.message);
-    return null;
-  }
-}
+//: ⚠️ `DASHSCOPE_API_KEY`（第 1206 行）**不要跟着删** —— 语音识别还在用它，
+//: 删掉的只是 TTS 这一头。同理 `qwen3.5-flash` 是他的眼睛，也不在这次范围里。
 
 app.post("/api/tts", async (req, res) => {
   const { text, engine, voice, instructions, profile } = req.body;
@@ -1553,24 +1490,6 @@ app.post("/api/tts", async (req, res) => {
   };
   //: 让前端读得到这个头。跨域时不显式暴露的话，浏览器**看得见也拿不到**
   res.setHeader("Access-Control-Expose-Headers", "X-TTS-Engine");
-
-  // 阿里 qwen3-tts。中文原生，`instructions` 吃中文语气指令
-  async function tryQwen() {
-    const upstream = await qwenTts(clean, { voice, instructions });
-    if (!upstream) {
-      console.error("[TTS] qwen3-tts 不可用，往下降级");
-      return false;
-    }
-    sendEngine("qwen");
-    //: 阿里回的是 wav，不是 mp3 —— **Content-Type 要如实转发**。
-    //: 前端拿它建 Blob / MediaSource，写死 audio/mpeg 的话是一段静音
-    const ct = upstream.headers.get("content-type") || "audio/wav";
-    if (!res.headersSent) res.setHeader("Content-Type", ct);
-    const t0 = Date.now();
-    const bytes = await pipeTts(upstream, res);
-    console.log(`[TTS] qwen3-tts ${bytes}B / ${Date.now() - t0}ms`);
-    return true;
-  }
 
   /** ElevenLabs 两档共用。v3 保留情绪标签（英语陪练的命根子），turbo 用剥净的文本。 */
   async function tryEleven(name, modelId, body, timeout) {
@@ -1632,14 +1551,13 @@ app.post("/api/tts", async (req, res) => {
   /* 🔴 **按 chain 的顺序一档一档试**。
    *
    * 上一版是三个独立的 `if (chain.includes(...))` —— 那等于顺序写死在代码结构里，
-   * chain 只能决定「跳过谁」，决定不了「谁先来」。手机那条链把 v3 排在前面
-   * 也没用，qwen 那个 if 写在最上面就永远先跑。 */
+   * chain 只能决定「跳过谁」，决定不了「谁先来」：排在最上面的那个 if 永远先跑，
+   * 链里怎么排都没用。09-07 加第四家的时候就是这么把手机也一起切走的。 */
   for (const name of chain) {
     if (name === "edge") { tryEdge(); return; }
 
     let ok = false;
-    if (name === "qwen") ok = await tryQwen();
-    else if (name === "eleven-v3") ok = await tryEleven("eleven-v3", "eleven_v3", withTags, 30000);
+    if (name === "eleven-v3") ok = await tryEleven("eleven-v3", "eleven_v3", withTags, 30000);
     else if (name === "eleven-turbo") ok = await tryEleven("eleven-turbo", "eleven_turbo_v2_5", clean, 15000);
     if (ok) return;
 
