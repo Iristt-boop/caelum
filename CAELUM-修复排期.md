@@ -422,6 +422,100 @@ app-tracker` + `co-reading-mcp` 的代码），其中包含**糖糖的接触记�
 
 ---
 
+### 第八批（2026-09-12 凌晨：release 布局铺到第 3–5 个服务 + 自证回滚真的会滚）
+
+**① 铺完三个 —— 现在 5 个服务在 release 布局上**
+
+| 服务 | 它为什么安全 |
+|---|---|
+| `touch-server` | 数据目录 `TOUCH_DATA_DIR` 由 unit 显式指定，且落在 release 目录**外面** |
+| `co-watching` | 所有数据路径都是绝对的（`DATA_DIR`/`COOKIES`/`LEDGER`/`/tmp/watching-*`）；**WorkingDirectory 故意留在 `/root/co-watching`**，不指 code —— 以后有人加相对路径也不会跟着 release 跑掉 |
+| `touch-mcp` | 自己不存数据，读的是 touch-server 那份 jsonl（绝对路径） |
+
+每个都是同一套动作：**先造一份和线上逐字节相同的 release 0 → 翻软链 → 验证数据没动 →
+再用 git 部署**。判据是**数据文件 md5 + 数据子目录清单**，不是「服务起来了」。
+
+**② 给两个服务补了 `/health`**
+
+`co-watching`（FastAPI）和 `touch-mcp`（FastMCP/Starlette）原来都没有健康端点，
+而 `deploy-remote.sh` 要求 200，否则回滚。
+
+两个 `/health` 查的都是**数据目录在不在**，不是「服务活着吗」——
+真出问题的地方是数据路径指到别处，那时服务照常起、照常 200，只有数据不见了。
+**「服务器活着」恰恰是那个陷阱最难查的地方。**
+
+（特意不查数据**文件**本身：要等她摸过娃娃才有，查它会让全新安装永远不健康。）
+
+**③ 自证：回滚是真的会滚**
+
+这是整套机制的价值所在，不验就是空话。用一个隔离测试证明：
+
+```
+造一份「能编译、能启动、但 /health 必 503」的代码 → 手动跑 deploy-remote.sh
+
+  [3] 软链 → zz2-test-rollback
+  [4] 🔴 健康检查没过（unit=active health=503）—— 自动回滚
+      回滚到 2026-09-11-9ed8924c6902，unit=active
+  退出码 1    耗时 47 秒（重试 20 次才放弃）
+  核对：软链翻回原来那份、unit active、/health 200
+```
+
+**④ 我在这轮里弄坏了一次线上，也顺手撞出一个真坑**
+
+测试**第一次设计错了**：`sed` 改的是代码里的**默认值**，而 unit 的
+`Environment=TOUCH_DATA_FILE=...` 覆盖了它 → `/health` 照样 200，什么也没测到。
+（这本身是个好消息：显式 env 挡住了坏默认值。）
+
+然后清理时我**把软链正指向的那个 release 目录删了** → `touch-mcp` 的 `code` 变成断链。
+立即修好并复验。
+
+但它暴露的坑值得做成守卫：**断链的服务现在好好的**（代码已经在内存里），
+**下次重启才起不来** —— 在你重启之前一个字都不表现。已加进 `doctor.sh` 第 9 节，
+实测能叫出来（故意断链 → 明确报出服务名和错误指向）。
+
+> `deploy-remote.sh` 自己的 KEEP 清理是**保护当前指向那份**的
+> （`case "$(readlink -f "$LINK")"`），所以正常流程不会产生断链；会断的是人手动删。
+
+**⑤ 删掉两份「上膛的枪」**
+
+`fsr402-touch-server/touch-server.service` 和 `co-watching/co-watching.service` ——
+都是**第三份副本**（线上 / deploy-config / 代码仓），路径还是 release 布局之前的，
+而且会被 `git archive` 打进 release 目录，**一个 `cp` 就能把配置改回去**。
+
+touch-server 那份尤其危险：**它没有 `EnvironmentFile`（所以没有 `TOUCH_TOKEN`），
+而代码是 fail-open 的** —— 谁部署了它，她的接触记录就重新敞开。
+
+**⑥ 顺带堵掉审计的 Critical：touch-server 的 fail-open**
+
+```python
+TOUCH_TOKEN = os.environ.get("TOUCH_TOKEN", "")
+if TOUCH_TOKEN:   ...校验...          ← 空值整段跳过 = 鉴权关闭
+```
+
+改成：**没配就拒绝启动**（跟 bridge 的 `NOX_TOKEN` 一个道理）。
+本机测试留**显式**逃生门 `TOUCH_ALLOW_NO_AUTH=1`（而不是靠"忘了设"）。
+实测：不设 → exit 1；设了 → 正常起、`/health` 200。
+
+**⑦ 还没做的**
+- 其余服务铺 release 布局：`app-tracker`、`ha-mcp`、`toy-mcp`、`health-mcp`
+  （`ombre-brain`/`eryu`/`netease-mcp` 在 VPS 上本来就是 git 仓库，优先级低；
+  `mcp-trends`/`mcp-train` 走 npx 无源码目录；`nox-daily`/`caddy` 不适用）
+- **`co-watching` 的 3200 绑在 `0.0.0.0`**（审计 0.6 绑定收口）——
+  Caddy 只反代 `/watch/<token>/`，但它自己是敞着的，安全组一变就全开
+- 网易云凭据 35 天了（doctor 在提醒）
+- **`eryu` / `netease-mcp` 的方向**（她 2026-09-11 说的）：想做成自己的 `co-listening`。
+  我的建议是三步，别一步跳到底：
+  **第一步**先正经 fork 成自己的仓库、把那 **8 项未提交改动**（eryu 5 + netease 3，
+  现在只存在于 VPS 上）入库、上游挂成 `upstream` —— 这一步做完"不协调"的感觉会消失大半，
+  因为那个感觉的真正来源是"我改了什么自己都说不清"；
+  **第二步**再按 `co-reading`/`co-watching` 的形状重排成一个服务；
+  **第三步**才考虑重写内部 —— 而且大概率不需要，因为
+  **你真正在意的部分已经是你的了**（ob-tools 的音频分析、`eryu_experience`、
+  按能量分档选歌、上下文接线），第三方那层主要是**网易云的管道**
+  （cookie 登录 / 签名 / 反爬），重写它的收益比看起来小得多
+
+---
+
 ### 第三批（4.8 部署版本化：机制建成 + 两个服务上线）
 
 **机制已建成，`nox-core` 和 `bridge` 已切到 release 布局**（`deploy.ps1 -Status` 可查）：

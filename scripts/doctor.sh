@@ -181,6 +181,31 @@ else
 fi
 rm -f /tmp/.caddy-chk
 
+# ── 9) 部署软链自检（断链 = 下次重启就起不来）────
+#
+# 2026-09-11 铺 release 布局时自己撞到的：release 目录被删掉、而软链还指着它。
+# 表现是「服务现在好好的」—— 因为代码已经在内存里了 —— **但下次重启就起不来**。
+# 这是最阴的一类故障：在你重启之前它一个字都不表现。
+#
+# ⚠️ deploy-remote.sh 自己的 KEEP 清理是**保护当前指向那份**的
+#    （`case "$(readlink -f "$LINK")"`），所以正常流程不会产生断链；
+#    会断的是人手动删 release 目录。这条就是给那种时刻兜底的。
+echo "-- 部署软链 --"
+BROKEN=0
+for pair in nox-core:/root/nox-core/code \
+            bridge:/root/bridge/code \
+            touch-server:/root/touch-server/code \
+            co-watching:/root/co-watching/code \
+            touch-mcp:/root/touch-mcp/code; do
+  svc=${pair%%:*}; link=${pair#*:}
+  # -L 判「它是软链」，-e 会跟随软链（断链时为假）
+  if [ -L "$link" ] && [ ! -e "$link" ]; then
+    bad "$svc 的 code 软链是断的 → $(readlink "$link") —— 现在跑着没事，重启就起不来"
+    BROKEN=$((BROKEN + 1))
+  fi
+done
+[ "$BROKEN" = "0" ] && good "release 布局的服务软链都有效"
+
 echo "════════"
 if [ "$ISSUES" -eq 0 ]; then
   echo "全部正常 ✓"
