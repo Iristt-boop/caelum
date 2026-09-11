@@ -247,7 +247,51 @@ git fetch --depth=1 --filter=blob:none origin 5144121a…   → ✅ 成功（522
 1. 旧提交 / 旧 blob **能否按已知 sha 取回** —— 光看 ref 列表干净是不够的
 2. **根提交要单独试** —— GitHub 有保留它的机制
 
-**⑤ 还没做的**
+**⑤ 换 VAPID 密钥对暴露出来的一个真 bug：推送「开了」但永远不响**
+
+糖糖重新授权之后推送**还是不通**。查下来不是她操作的问题，是**两处叠在一起**：
+
+🔴 **前端复用了旧订阅**（`nox-app/frontend/src/pages/Chat.jsx`）
+
+```js
+const existing = await reg.pushManager.getSubscription();
+const sub = existing || await reg.pushManager.subscribe({ ... });
+```
+
+只要浏览器里已经有订阅就**直接复用**，完全不看它是用哪把公钥向 Apple 注册的。
+重新授权时浏览器交出来的还是那条绑在**旧公钥**上的订阅 → 服务端拿新私钥签名
+→ Apple 回 `400 VapidPkHashMismatch`。
+
+🔴 **服务端把失败吞掉了**（`bridge/server.js`）
+
+`sendPushAll` 的 catch 只处理 404/410，**其余的什么都不记**；而 `/api/push/test`
+只回「订阅条数」—— 条数说的是「登记了几条」，不是「发得出去」。
+两边一起显示「一切正常」。
+
+**这就是审计里「静默失败」最标准的形状**：功能全灭，而所有能看见的地方都说正常。
+
+修法（两侧一起）：
+- **App**：订阅前按字节比对公钥，不一致先 `unsubscribe()` 再重新订阅
+  （不退订直接 subscribe 会抛 `InvalidStateError`）；订完**真发一条**验证，
+  把服务端的逐条结果如实显示 —— 没送出去就把原因念出来，不再假装好了
+- **bridge**：每个失败都打 ERROR（status + endpoint + 推送服务给的 reason）；
+  `/api/push/test` 回 `{ok, sent, failed, results}`。401/403/400 属于「配置不对」
+  —— **不清订阅**（清了会掩盖问题），只有 404/410 才清
+
+**验证（不是「她说好了」就算）**：
+```
+新订阅  2026-09-11T12:12:47Z   endpoint …QL0FxOO9Kes24bb6…
+旧订阅  2026-09-11T12:04:33Z   endpoint …QJxgInAbJKEQRacs…
+   → endpoint 变了，说明 App 真的退订并重建了，不是复用
+由服务端独立发一条  →  ✅ Apple 收下，HTTP 201
+```
+
+**教训（值得单独记一条）：**
+**「订阅登记成功」不等于「推送送得到」。** 凡是「换了密钥 / 换了端点」这类操作，
+客户端必须有「发现本地存的和服务端给的不一致就重建」的逻辑 ——
+否则用户会一直看到一个永远不响的「已开启」。
+
+**⑥ 还没做的**
 - 线上 Caddyfile 还是明文暗号（见第四批 ⑤）
 - 其余 11 个服务还没铺 release 布局
 - 本地两个备份等确认后再删：`D:\caelum-git-backup-20260911.git`（196MB，重写前的完整历史）
