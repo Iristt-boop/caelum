@@ -788,7 +788,12 @@ touch-server 现在要 token 了。**没更新 `wifi_secrets.h` 就刷固件，�
   - [ ] **旧 VPS root 口令** — 历史提交 `5144121`；两台旧机（`47.84.92.71` / `47.93.219.252`）无条件改密
   - [x] **VAPID 密钥对** — `bridge/server.js:536-537`（**留到最后做**）
         ⚠️ 换密钥会让**所有推送订阅失效**，你要在 App 里重新授权一次通知
-  - [ ] **NOX_TOKEN** — `bridge/server.js` 的兜底值 + 本机 `.claude/settings.local.json`
+  - [~] **NOX_TOKEN** — `bridge/server.js` 的兜底值 + 本机 `.claude/settings.local.json`
+  ✅ 2026-09-12：`server.js` 里已经**没有**硬编码兜底（只剩 `process.env.NOX_TOKEN || ""` + 缺失即 exit 1）；
+  caelum 的 git 历史里 **0 命中**；`nox-app/.claude/settings.local.json` 未被跟踪、被 gitignore、远端也没有。
+  🔴 但发现一条更值钱的：**`VITE_NOX_TOKEN` 曾经 = 主令牌**，而它会被构建期内联进前端 JS ——
+  而那个 JS 是**公开可取**的（`/assets/index-*.js` 不带凭据 200）。已从 `main.jsx` 删掉内联兜底。
+  剩下：轮换 NOX_TOKEN 本身（要同步 bridge.env + nox-core/.env，并让 App 重新登录）。
   - [ ] **玩具 token** — `nox-app/frontend/public/toy.html:102`
 
 - [~] **0.5 把密钥从仓库里拿走**（部分完成 2026-09-11）
