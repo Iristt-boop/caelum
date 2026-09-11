@@ -76,6 +76,85 @@ init 静默失败，于是后面的 `git add -A` 一路向上跑进了**父仓�
 - `deploy-config` 还**没有 remote**（要你建一个私有仓库）
 - 其余 11 个服务还没铺 release 布局
 
+### 第五批（2026-09-11 夜：174 项入库 + 全历史密钥清除 + VAPID 搬出源码）
+
+**① 174 项未提交改动全部入库** —— 分成 7 个提交，不是一坨。顺带抓到三件漏网的：
+
+- **4 个敏感文件还躺在 git 索引里。** `.gitignore` 只管"新增"，不管"已跟踪"：
+  三个 tar.gz（明文 DeepSeek/Gemini key + **记忆数据本身**）和 `breath-output.txt`
+  （26.8KB 真实记忆）一直还在被跟踪 → `git rm --cached`（**磁盘上的文件一个没删**）
+- **整个仓库没有 `.gitattributes`。** `core.autocrlf=true` 而没有属性文件，
+  磁盘上现在是纯 LF **全靠运气** —— 一次 `git checkout .` 或重新 clone 就会把
+  `deploy-remote.sh` 变成 CRLF，传上 VPS 交给 bash 时报 `$'\r': command not found`，
+  **而且是在软链已经翻完之后**。现在锁死了（脚本 LF、`.cmd`/`.ps1` CRLF），零改动量。
+- **我自己那份审计文档里漏了一个真 token**（`/touch/` 那条）—— 因为之前的指纹扫描
+  只查 40 位以上的 hex，32 位的漏了。**工具的参数选窄了，就等于没查。**
+
+**② 全历史密钥清除（`git filter-repo`，已完成并强推）**
+
+先做了一轮完整的历史取证，把范围收到确定，而不是"扫到什么算什么"：
+
+| 凭证 | 位置 |
+|---|---|
+| HA 长期令牌（JWT） | 5 个被跟踪的 `scratch/tmp_*.sh` |
+| OpenRouter key | `vps-scripts/update-bridge-env.py` 等 |
+| 4 个 Caddy 路径暗号（48 位 hex） | `touch-mcp/Caddyfile` |
+| bridge `X-Nox-Token`（48 位） | `scratch/tmp_chat_debug.sh` |
+| `/touch/` 路径 token | `touch-mcp/Caddyfile` + `PROJECT.md` + 审计文档 |
+| 高德 API key | `scratch/tmp_gaode_test.sh` |
+| 家庭 WiFi 名 + 密码 | 2 个 fsr402 文件 + `PROJECT.md` |
+| VAPID 公钥 / **私钥** | `bridge/server.js` + PROJECT.md / HANDOFF |
+| 三个 tar.gz（含 key + **记忆数据**） | `vps-scripts/`（按路径整条从历史移除） |
+| `breath-output.txt`（26.8KB 真实记忆） | 同上 |
+
+**有意不动的两处**：`1809e…`/`c7bf1…`/`456c4…` 是**会话 ID 不是凭据**，
+而且 `1809e…` 嵌在 `nox-core/tests/test_appraisal_llm.py` 里当测试夹具 ——
+盲扫 32 位 hex 会把测试打坏。PROJECT.md 里公钥的 16 字符前缀也留着：
+那行自己就写着"公钥，公开无妨"。
+
+**三重验证**：
+1. 重写后的 **HEAD 树与重写前逐字节对比：只有 4 个文件各变 1 行**，全是「值 → `REDACTED-*`」
+2. 全 154 个提交重扫 9 类密钥形状 → **全部 0 处**
+3. 实测旧 HEAD `f5220e4` 在 GitHub 上 **`git fetch` 报 `not our ref`** ——
+   远端对象库里已经不可达。**所以不需要删库重建。**
+
+备份：`D:\caelum-git-backup-20260911.git`（196MB mirror clone，重写前的完整历史）。
+**留着它** —— 轮换全部做完之后里面的旧值就没用了；在那之前它是唯一的退回路径。
+
+教训一条：`git status` 说文件改了、`git diff` 说没改 —— 是**索引里缓存的 stat 过期**
+（我把 CRLF 归一化成 LF，字节数 192968 → 188936）。用
+`git hash-object --path=<文件> <文件>` 跟 `git rev-parse HEAD:<文件>` 对哈希就能定死，
+再 `git add` 一下刷新缓存。**别急着以为内容真的坏了。**
+
+**③ VAPID 私钥搬出源码（审计里的 High，`PROJECT.md` 记"待修"记了很久）**
+
+查线上时发现比记录里更糟：`/etc/nox/bridge.env` **根本没配 VAPID** ——
+那段硬编码不是兜底，是**唯一来源**，她的推送一直靠它。
+所以顺序不能反：先把值写进 env（600，留 `.bak-vapid-20260911-191014`）→ 再删代码。
+
+现在源码只从 env 读、**不留兜底**；缺了不静默降级（启动打 ERROR、关掉推送、
+`/api/push/vapid` 和 `/api/push/subscribe` 回 503）。回一个空 key 会让 App
+订阅成功但永远不响 —— 那种坏法比直接报错难查得多。`/health` 现在也报 push 状态。
+
+**行为零变化**：env 里填的就是原来那对值，`/api/push/vapid` 返回的公钥
+**逐字节一致（87 字符）**，3 条订阅全在，她不用重新授权。bridge 97/97 测试通过。
+
+⚠️ **仍然要轮换（0.6）**：这把私钥在 git 里躺了很久，写进 env 只是止损。
+轮换会让所有推送订阅失效，要在 App 里重新授权通知 ——
+生成新密钥对 → 写 env → 删兜底 → App 重授权，**顺序不能反**。
+
+**④ 部署账本修正**：重写让所有 commit hash 变了，`CURRENT` 里记的 `f5220e4` 已经不存在于 git。
+重发了一次 bridge（`2026-09-11-15e49d1466d6`）—— 内容一个字节没变，
+只是让"线上跑的是哪个 commit"这句话重新成立。这正是 4.8 要解决的问题本身。
+
+**⑤ 还没做的**
+- **OpenRouter 旧 key 还是活的**（实测 200）—— 唯一一条必须你本人去后台删的
+- 线上 Caddyfile 还是明文暗号（见第四批 ⑤）
+- `deploy-config` 已推到 `Iristt-boop/caelum-deploy-config`（`af4f092`，40 文件，无未推送）
+- 其余 11 个服务还没铺 release 布局
+- 🔴 **`ob-tools/audio/` 在 git 里占 177MB**（109 个 mp3）—— 这是仓库 182MB 的全部原因。
+  建议搬出 git（留磁盘 + 备份），但那是删内容，**等你拍板**
+
 ---
 
 ### 第三批（4.8 部署版本化：机制建成 + 两个服务上线）
