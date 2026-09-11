@@ -1,0 +1,88 @@
+# 换行统一（2026-09-11 加）
+#
+# 起因：core.autocrlf=true，而仓库里没有 .gitattributes。
+# 索引里存的是 LF（这是对的，695 个文件全部 i/lf），但**每次 checkout，
+# git 都会把工作区文件改写成 CRLF** —— 也就是说磁盘上现在是 LF 纯属运气，
+# 一次 `git checkout .` / 一次重新 clone 就会变。
+#
+# 这不是「看着别扭」，是真的会炸，而且炸在最不该炸的地方：
+#   scripts/deploy-remote.sh 由 deploy.ps1 传上 VPS 交给 bash 执行。
+#   带上 CR 之后 bash 报 `$'\r': command not found` ——
+#   而那时软链可能已经翻完、服务已经重启过了，属于典型的「事后才发现」。
+#   Python 的 shebang（#!/usr/bin/env python3\r）同理。
+#   .cmd 反过来：LF-only 在 cmd.exe 里遇到 label/goto 会出怪问题，必须 CRLF。
+#
+# 所以：脚本一律锁 LF、Windows 原生一律锁 CRLF，写进仓库，不靠谁记得配。
+#
+# 加完之后索引无需重写（本来就是 LF），零改动量。
+
+# 默认：文本文件在仓库里一律 LF（text=auto 会自己跳过二进制）
+* text=auto eol=lf
+
+# 要在 Linux 上跑、或者被 Linux 读的东西 —— 锁死 LF
+*.sh        text eol=lf
+*.bash      text eol=lf
+*.py        text eol=lf
+*.js        text eol=lf
+*.mjs       text eol=lf
+*.cjs       text eol=lf
+*.ts        text eol=lf
+*.tsx       text eol=lf
+*.jsx       text eol=lf
+*.json      text eol=lf
+*.jsonl     text eol=lf
+*.yml       text eol=lf
+*.yaml      text eol=lf
+*.toml      text eol=lf
+*.ini       text eol=lf
+*.cfg       text eol=lf
+*.conf      text eol=lf
+*.md        text eol=lf
+*.txt       text eol=lf
+*.csv       text eol=lf
+*.sql       text eol=lf
+*.html      text eol=lf
+*.css       text eol=lf
+*.svg       text eol=lf
+*.ino       text eol=lf
+Caddyfile   text eol=lf
+*.caddyfile text eol=lf
+*.service   text eol=lf
+
+# Windows 原生 —— 必须 CRLF
+*.cmd       text eol=crlf
+*.bat       text eol=crlf
+*.ps1       text eol=crlf
+
+# 二进制：不做任何换行转换，也别拿来 diff
+*.png       binary
+*.jpg       binary
+*.jpeg      binary
+*.gif       binary
+*.webp      binary
+*.ico       binary
+*.bmp       binary
+*.woff      binary
+*.woff2     binary
+*.ttf       binary
+*.otf       binary
+*.mp3       binary
+*.mp4       binary
+*.wav       binary
+*.ogg       binary
+*.webm      binary
+*.zip       binary
+*.gz        binary
+*.tgz       binary
+*.7z        binary
+*.pdf       binary
+*.db        binary
+*.sqlite    binary
+*.sqlite3   binary
+*.pyc       binary
+*.so        binary
+*.dll       binary
+*.exe       binary
+*.apk       binary
+*.glb       binary
+*.gltf      binary
