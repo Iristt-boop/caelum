@@ -300,6 +300,125 @@ const sub = existing || await reg.pushManager.subscribe({ ... });
 
 ---
 
+### 第七批（2026-09-11 深夜续：Caddy 暗号外置 + 全仓库盘点 + 一条把顺序讲反的教训）
+
+**① Caddy 的 9 个明文暗号搬出 Caddyfile（完成，行为零变化）**
+
+一共 9 个：`/ombre/ /tracker/ /toy-mcp/ /ha-mcp/`（4×48 位 hex）、`/touch/`（32 位）、
+`/watch/`（24 位）、`/agent/`（24 位字母数字）、`panel.noxtang.com` 下两条（2×16 位）。
+
+现在住 `/etc/nox/caddy.env`（0600 root:root），systemd drop-in
+`EnvironmentFile=/etc/nox/caddy.env` 只是**必需形式**（前面不加 `-`）。
+
+**关键发现（让这件事能无痛做到）**：`ExecReload=/usr/bin/caddy reload ...` ——
+systemd 会把 `Environment*=` 应用到**所有** `Exec*`，包括 `ExecReload`。
+所以 `systemctl reload caddy` 就能拿到新变量，**不需要 restart、不断连接**。
+没确认这一点的话，就会去做一个会断线的 restart。
+
+**验证（三层，一层比一层强）**：
+
+    caddy adapt 前后           4309 字节 → 4309 字节      逐字节相同
+    运行中配置快照前后         12388 字节 → 12388 字节     逐字节相同
+    空变量 / 未解析占位符      0 处
+    /etc/caddy/Caddyfile      明文暗号 0 行（权限仍 644，因为已经不含凭据）
+    8 份带明文的旧备份        → /root/caddy-backups（0700，文件 600）
+
+**② 顺手抓到 3 个「正则比数据窄」（今天第 3、4、5 次同型）**
+
+- `export-config-remote.sh` 的脱敏只覆盖 `/<服务>/<hex>/` 和 `/agent/<tok>/`，
+  **漏了 panel 那种 `handle /<16位hex>/`**；而它的**残留检查用的是同一个窄正则**
+  → 它报「残留 0」的时候，那 2 个 panel 暗号正躺在 `deploy-config` 仓库里
+- 同一个脚本第 [5] 步的 `s/^([A-Z_]+)=.*/`：**`[A-Z_]+` 不匹配数字**，
+  而变量名是 `CADDY_TOKEN_PANEL_SUB_B64` → 那一行的值原样导出。
+  **这个是被第 [6] 步的指纹扫描抓回来的** —— 扫描器是今天唯一真正救过场的那道网
+- `doctor.sh` 的服务清单里**没有 `caddy`** —— 整套系统唯一的入口，体检从来不查它
+
+**检查的正则比要查的东西窄，等于没查。**
+
+**③ 我搞错的一件事**
+
+我说过「release 目录只增不减，该加保留策略」。**错的。**
+`deploy-remote.sh:151-161` 里早就有（`KEEP=5`，且永不删当前指向的那份），
+`/root/releases` 现在 6 个目录 = bridge 5 个（正好 KEEP）+ nox-core 1 个，**一直在正常工作**。
+**没读那段代码就断言了。**
+
+**④ 我今天亲手制造的回归：密钥搬了家，备份没跟着走**
+
+备份脚本的配置清单里明确列着 `/etc/caddy/Caddyfile` —— 那是暗号**搬之前**住的地方。
+而今天我做的两件事恰好把它挖空了：
+
+  · 15 条凭据从 systemd unit 搬进 `/etc/nox/*.env`
+  · 9 个 Caddy 路径暗号搬进 `/etc/nox/caddy.env`
+
+`/etc/nox/` **从来不在备份清单里**。所以搬完之后：VPS 一没，恢复出来的是
+**一份没有暗号的 Caddyfile 模板 + 一堆指向空变量的 unit**。
+
+> **「把密钥挪到更安全的地方」和「备份跟着改」是同一件事的两半。**
+> 只做前一半，比不做还难查 —— 原来的密钥至少还躺在一个被备份的文件里。
+
+一起修的还有：**8 个服务的源码只存在于 VPS，且不在任何 git 仓库里**
+（`co-watching / ha-mcp / toy-mcp / touch-mcp / touch-server / health-mcp /
+app-tracker` + `co-reading-mcp` 的代码），其中包含**糖糖的接触记录**
+`touch_moments.jsonl` —— 既不在 git 也不在备份。
+
+**恢复演练（真解密真解包，不是看清单）**：
+
+    解出 1216 个文件 / 33M
+    config/nox-env/caddy.env   9 个暗号全在、零空值        ✅
+    config/Caddyfile / bridge.env / 六个库 / ombre-buckets / uploads  ✅
+    code/ 八个服务源码 + touch_moments.jsonl               ✅
+    包体积 16M → 17M（几乎没涨）
+
+**⑤ 🔴 最重要的一条：轮换 > 改历史（我前面把顺序讲反了）**
+
+今天查 nox-app 的时候才想明白。我前面一直把「删库重建」当解法，但实测证明了两件事：
+
+**1. 在 GitHub 上，「重写历史 + 强推」永远不彻底。**
+重写完，**旧的根提交仍然可达** —— `git fetch --filter=blob:none origin <旧根>` 成功，
+整棵树 522 个文件全在。caelum 这样，`caelum-deploy-config` 也这样（实测隔了 20 分钟仍可拉）。
+「改历史」这条路本身是漏的，它在跟 GitHub 的对象保留策略赛跑。
+
+**2. 真正的解毒剂是轮换那个凭据。** 值一作废，历史里那些字节就是废纸。
+
+所以 SOP 应该**反过来**：
+
+    发现某个凭据进过 git
+      → ① 先测它还活不活着（拿真值打端点看 HTTP 码）
+      → ② 活着就吊销 —— **这一步才是修复**
+      → ③ 历史清理是次要的；而且要做就删库重建（重写 + 强推不够）
+
+我在 nox-app 上正好做反了：先翻的历史、后测的活性。
+**如果那两把 key 早就死了，根本不需要讨论重建仓库。**
+
+**⑥ 全仓库盘点（本机 21 个 + VPS 3 个）—— 这张表本该早点做**
+
+| 仓库 | 提交 | 结论 |
+|---|---|---|
+| `caelum`（根） | 161 | ✅ 今天重建过，零命中 |
+| `Iristt-boop/Claude`（Ombre-Brain origin） | 7 | ✅ 9/05 那次清理**确实落在 GitHub 上了**：main 就是「数据出库：buckets 不再进代码仓」那条 |
+| `caelum-room` | 5 | ✅ 零命中 |
+| `ai-fishing-game-mcp` | 11 | ✅ 零命中 |
+| `/root/ombre-brain` | 8 | ✅ 零命中 |
+| `/root/netease-music-mcp` | 36 | ✅ 零命中（3 项未提交是漂移，不是泄露） |
+| `/root/eryu` | 1 | ✅ 零命中（5 项未提交） |
+| 12 个第三方克隆 | — | 不是她的仓库，不用管 |
+| **`nox-app`** | 336 | 🔴 `backend/.env` 里 **2 个 API key**（comeu.ai / lmuai.com）在 `origin/main` 上**直接可达** |
+| `caelum-deploy-config` | 2 | 🔴 2 个 panel 路径暗号在旧根提交里 |
+
+**nox-app 的处理**：先测活性 → **两把都还活着（HTTP 200）** → 她已吊销（复验 401）→
+历史清理降级为可选（值已作废，336 提交 × 3 分支的重写不值得）。
+教训：**先测活性再决定动不动历史。**
+
+**⑦ 还没做的**
+- **其余 10 个服务还没铺 release 布局**（普查已做完，见 ① 的清单；
+  `mcp-trends`/`mcp-train` 走 npx 无源码目录，`nox-daily`/`caddy` 不适用）
+- `caelum-deploy-config` 等糖糖删库重建后重推（本地已备好：`6e58378`，42 文件，零明文）
+- nox-app 历史清理（可选，值已作废）
+- 网易云凭据 35 天了（doctor 在提醒）
+- WiFi 密码没换（她的选择）
+
+---
+
 ### 第三批（4.8 部署版本化：机制建成 + 两个服务上线）
 
 **机制已建成，`nox-core` 和 `bridge` 已切到 release 布局**（`deploy.ps1 -Status` 可查）：
