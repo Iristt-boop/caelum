@@ -2,13 +2,21 @@
 # Caelum 一键体检 —— 全部只读，不动任何服务
 # 用法: /root/doctor.sh        （人看的 [✓]/[!]/[✗] 报告，退出码 0=健康 1=有问题）
 set -u
-OK="✓"; WARN="!"; BAD="✗"
-ISSUES=0
+OK="✓"; WARN="!"; BAD="✗"; NOTE="·"
+ISSUES=0; NOTES=0
 
 say()  { echo "[$1] $2"; }
 good() { say "$OK" "$1"; }
 warn() { say "$WARN" "$1"; ISSUES=$((ISSUES+1)); }
 bad()  { say "$BAD" "$1"; ISSUES=$((ISSUES+1)); }
+
+#: note 是**不计数**的：给「已知、已确认接受、暂时不动」的事用。
+#:
+#: 🔴 为什么非要有这一级（2026-09-12 加）：
+#:    如果已知问题也让体检退出 1，那**真出了新问题就淹在噪音里**，
+#:    报告就变成"又有那两条"然后没人看 —— 这正是这份体检要防的坏事。
+#:    她明确说了触觉那条线不重要，所以它和"网易云凭据快过期"都归到这一级。
+note() { say "$NOTE" "$1"; NOTES=$((NOTES+1)); }
 
 echo "════════ Caelum 体检 $(date '+%F %T') ════════"
 
@@ -75,8 +83,8 @@ age_days() { echo $(( (NOW - $(stat -c %Y "$1" 2>/dev/null || echo NOW)) / 86400
 NC_ENV=/root/netease-music-mcp/.env
 if [ -f "$NC_ENV" ]; then
   d=$(age_days "$NC_ENV")
-  if [ "$d" -gt 45 ]; then warn "网易云凭据文件已 $d 天没更新——cookie 大概率过期，点歌会哑（重新扫码提取）"
-  elif [ "$d" -gt 30 ]; then warn "网易云凭据 $d 天了，留意过期"
+  if [ "$d" -gt 45 ]; then note "网易云凭据文件已 $d 天没更新——cookie 大概率过期，点歌会哑（重新扫码提取）"
+  elif [ "$d" -gt 30 ]; then note "网易云凭据 $d 天了，留意过期"
   else good "网易云凭据 $d 天前更新过"; fi
 else warn "找不到 $NC_ENV"; fi
 WATCH_COOKIES=/root/watch/cookies.txt
@@ -245,7 +253,10 @@ t = datetime.datetime.fromisoformat('$TCHLAST')
 print(int((datetime.datetime.now() - t).total_seconds() // 86400))
 " 2>/dev/null)
     if [ "${TCHDAYS:-0}" -gt 7 ]; then
-      bad "最后一次触觉上报是 ${TCHLAST}（${TCHDAYS} 天前）—— 这条线可能已经断了（设备 / WiFi / 安全组 / token）"
+      # ⚠️ 用 note 不用 bad：她 2026-09-12 明确说了**触觉那条线不重要**。
+      #    如果它让体检永远退 1，真出了新问题就淹在噪音里 —— 报告就没人看了。
+      #    要恢复得三件事同时成立：设备重烧（带 token）+ 安全组放行 9333 + TOUCH_TOKEN 已在生效。
+      note "最后一次触觉上报是 ${TCHLAST}（${TCHDAYS} 天前）—— 已知，暂不处理（设备 / WiFi / 安全组）"
     else
       good "触觉上报正常（最后 ${TCHLAST}）"
     fi
@@ -254,9 +265,14 @@ fi
 
 echo "════════"
 if [ "$ISSUES" -eq 0 ]; then
-  echo "全部正常 ✓"
+  if [ "$NOTES" -gt 0 ]; then
+    echo "没有需要现在处理的事 ✓（另有 $NOTES 条已知项，带 [·]，不计数）"
+  else
+    echo "全部正常 ✓"
+  fi
   exit 0
 else
   echo "有 $ISSUES 处要注意（上面带 [!] / [✗] 的行）"
+  [ "$NOTES" -gt 0 ] && echo "（另有 $NOTES 条已知项，带 [·]，不计数）"
   exit 1
 fi
