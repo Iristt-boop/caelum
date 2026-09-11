@@ -5119,14 +5119,21 @@ FSR402 → ESP32 边沿检测 → WiFi POST :9333/touch → touch-server 写 jso
 
 ### 连接器地址
 ```
-https://noxtang.com/touch/REDACTED-TOUCH-TOKEN/mcp
+https://noxtang.com/touch/<TOKEN>/mcp     ← 真实暗号不写进仓库
 ```
 类型 **streamable-http**（同 ombre / ha-mcp）。路径里 24 字节 hex 是门禁，
 记在 VPS `/root/mcp-urls.txt`（600）。transport 是 streamable-http 不是 sse（同 health-mcp）。
 
+> ⚠️ 2026-09-11：这一行原来贴着**完整的真实 URL**（含暗号），而本文件是被 git 跟踪的。
+> `touch-mcp` 应用层零鉴权，那段 hex 就是唯一门禁 —— 等于"能读仓库就能连 MCP"。
+> 已改成占位符，同时**那段暗号必须轮换**（它已经在 git 历史里了）。见修复排期 0.5 / 0.7。
+> 同类检查清单：`touch-mcp/Caddyfile`（已改模板）、`scratch/Caddyfile`（已 ignore）、
+> `/root/mcp-urls.txt`（在 VPS 上，600，不进库）。
+
 ### 供电与运行
 - 刷完程序**不用连电脑**——数据走 WiFi，USB 只供电（5V 充电头/充电宝都行）
-- 前提：在 WiFi REDACTED-WIFI-SSID 覆盖范围内；换网络要连电脑改 SSID/密码重刷
+- 前提：在自家 WiFi 覆盖范围内；换网络要连电脑改 `wifi_secrets.h` 再重刷
+  （SSID/密码从 2026-09-11 起不进仓库，也不再写在这里）
 
 ### 验证（2026-08-13 实测）
 - ESP32 → VPS 端到端：糖糖摸了 3 下右手（1.9s / 1.5s / 1.0s），jsonl 落 3 条

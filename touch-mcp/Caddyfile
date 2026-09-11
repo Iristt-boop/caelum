@@ -1,17 +1,28 @@
+# ⚠️ 这份是**模板**，不是线上那份（2026-09-11 改）。
+#
+# 原来这里明文写着五个 24 字节的真实路径暗号（ombre / tracker / toy-mcp /
+# ha-mcp / touch），而这个文件是**被 git 跟踪的**。那五个服务的应用层全是零鉴权，
+# 唯一门禁就是这段路径 —— 也就是说"能读仓库"等于"能连全部 MCP"。
+#
+# 现在真实值只存在于线上 /etc/caddy/Caddyfile，用 Caddy 的 env 占位符注入：
+#     {$TOKEN_OMBRE} {$TOKEN_TRACKER} {$TOKEN_TOY} {$TOKEN_HA} {$TOKEN_TOUCH}
+# 部署时由 /etc/systemd/system/caddy.service.d/tokens.conf 提供（655 权限、只 root 可读）：
+#     Environment=TOKEN_OMBRE=...
+# 详见修复排期 0.5 / 0.7。**暗号本身必须轮换过一次** —— 旧值已经在 git 历史里了。
 noxtang.com {
-    handle_path /ombre/REDACTED-CADDY-TOKEN/* {
+    handle_path /ombre/REPLACE_ME_OMBRE/* {
         reverse_proxy localhost:8002
     }
-    handle_path /tracker/REDACTED-CADDY-TOKEN/* {
+    handle_path /tracker/REPLACE_ME_TRACKER/* {
         reverse_proxy localhost:8000
     }
-    handle_path /toy-mcp/REDACTED-CADDY-TOKEN/* {
+    handle_path /toy-mcp/REPLACE_ME_TOY/* {
         reverse_proxy localhost:8003
     }
-    handle_path /ha-mcp/REDACTED-CADDY-TOKEN/* {
+    handle_path /ha-mcp/REPLACE_ME_HA/* {
         reverse_proxy localhost:8004
     }
-    handle_path /touch/REDACTED-TOUCH-TOKEN/* {
+    handle_path /touch/REPLACE_ME_TOUCH/* {
         reverse_proxy localhost:9336
     }
     # 健康数据接收（iPhone 快捷指令 POST 进来）。

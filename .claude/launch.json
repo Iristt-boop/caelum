@@ -18,6 +18,19 @@
         "nox-app/frontend"
       ],
       "port": 5173
+    },
+    {
+      "name": "caelum-os-dist",
+      "runtimeExecutable": "C:\\Users\\14372\\.workbuddy\\binaries\\node\\versions\\22.22.2-2\\node.exe",
+      "runtimeArgs": [
+        "nox-app/caelum-os-ui/node_modules/vite/bin/vite.js",
+        "preview",
+        "nox-app/caelum-os-ui",
+        "--port",
+        "4273",
+        "--strictPort"
+      ],
+      "port": 4273
     }
   ]
 }

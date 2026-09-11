@@ -99,3 +99,86 @@ logs/
 .DS_Store
 Thumbs.db
 .trash-*/
+
+# ============ æ‰“åŒ…å¤–å¸¦çš„å¯†é’¥/æ•°æ®ï¼ˆ2026-09-11 è¡¥ï¼‰============
+# ğŸ”´ è¿™å‡ ä¸ª tar æ˜¯"ç»•è¿‡ .gitignore æŠŠå¯†é’¥é€è¿›ä»“åº“"çš„é€šé“ï¼š
+#   ob.tar.gz / full-ob.tar.gz   å†…å« ombre-brain/config.yamlï¼ˆæ˜æ–‡ DeepSeek + Gemini keyï¼‰
+#   buckets-data.tar.gz          å†…å« buckets/ â€”â€” **å¥¹çš„è®°å¿†æ•°æ®æœ¬èº«**
+# å®ƒä»¬æ›¾è¢« git è·Ÿè¸ªå¹¶æ¨åˆ° masterã€‚æ–‡ä»¶ä» 2026-09-11 èµ·ä¸å†å…¥åº“ï¼ˆç•™åœ¨ç›˜ä¸Šå¤‡ç”¨ï¼‰ï¼Œ
+# ä½†**å†å²é‡Œè¿˜åœ¨** â€”â€” æ‰€ä»¥å¯¹åº”çš„ key å¿…é¡»è½®æ¢ï¼Œè§ä¿®å¤æ’æœŸ 0.4ã€‚
+# è§„åˆ™ï¼švps-scripts ä¸‹åªå…è®¸ .py / .sh / .mdï¼Œä»»ä½•å‹ç¼©åŒ…ä¸€å¾‹æŒ¡æ‰ã€‚
+vps-scripts/*.tar.gz
+vps-scripts/*.tgz
+vps-scripts/*.tar
+vps-scripts/*.zip
+
+#: Caddyfile çš„çœŸå®å¿«ç…§é‡Œå¸¦ç€äº”ä¸ª MCP çš„è·¯å¾„æš—å·ï¼ˆé‚£äº”ä¸ªæœåŠ¡åº”ç”¨å±‚é›¶é‰´æƒï¼‰ã€‚
+#: `touch-mcp/Caddyfile` å·²æ”¹æˆæ¨¡æ¿ï¼›`scratch/Caddyfile` æ˜¯æ—§å¿«ç…§ï¼Œæœªè·Ÿè¸ªä½†èººåœ¨å·¥ä½œåŒºï¼Œ
+#: ä¸€æ¬¡ `git add -A` å°±ä¼šæŠŠæš—å·æ‰«å›ä»“åº“ â€”â€” æ‰€ä»¥æ˜¾å¼æŒ¡æ‰ã€‚
+scratch/Caddyfile
+scratch/*.Caddyfile
+
+# ============ æœ¬æœºå‡­æ®ï¼ˆ2026-09-11 åŠ ï¼‰============
+#: çœŸå®çš„å†…å­˜å¿«ç…§æ ·æœ¬ â€”â€” é‡Œé¢æ˜¯å¥¹çš„çœŸå®è®°å¿†å†…å®¹ï¼ˆbucket id / core_facts /
+#: emotion_state / todos / summaryï¼‰ï¼Œå’Œ buckets-data.tar.gz åŒä¸€ç±»ã€‚
+#: æ–‡ä»¶ç•™åœ¨ç›˜ä¸Šåšå‚è€ƒï¼Œä½†ä¸è¿›åº“ã€‚
+vps-scripts/breath-output.txt
+
+#: ESP32 / MicroPython çš„ WiFi å‡­æ®ã€‚æºç é‡Œç°åœ¨æ˜¯ include/import è¿™ä¸¤ä¸ªæ–‡ä»¶ï¼Œ
+#: æ‹¿ä¸åˆ°å°±é€€åŒ–æˆç©ºä¸²ï¼ˆè¿ä¸ä¸Šä½†ä¸ä¼šæŠŠå¯†ç å†™è¿› gitï¼‰ã€‚
+wifi_secrets.h
+wifi_secrets.py
+**/wifi_secrets.h
+**/wifi_secrets.py
+
+#: scratch/ é‡Œçš„ bridge æºç å‰¯æœ¬ â€”â€” å®ƒä»¬å¸¦ç€ `bridge/server.js` é‡Œç¡¬ç¼–ç çš„
+#: **VAPID ç§é’¥**ï¼ˆé‚£æ˜¯å·²çŸ¥æ¬ è´¦ï¼Œè§ PROJECT.md ç¬¬å››èŠ‚ï¼‰ã€‚è¿™äº›å‰¯æœ¬æœªè·Ÿè¸ªï¼Œ
+#: ä½†ä¸€æ¬¡ `git add -A` å°±ä¼šæŠŠç§é’¥æ‰«è¿›ä»“åº“ã€‚åªæŒ¡è¿™å‡ ä¸ªæ–‡ä»¶ï¼Œä¸åŠ¨ scratch å…¶ä½™éƒ¨åˆ†
+#: ï¼ˆscratch/ é‡Œæœ‰ 88 ä¸ªæ–‡ä»¶æ˜¯æœ‰æ„è·Ÿè¸ªçš„ï¼Œæ•´ä¸ªç›®å½• ignore ä¼šæ”¹å˜å¥¹çš„ä¹ æƒ¯ï¼‰ã€‚
+scratch/local-bridge-head.js
+scratch/remote-bridge-server.js
+scratch/local-ob-before-myedit.py
+scratch/remote-ob-server.py
+scratch/vps-nox-patch-base.py
+scratch/mock-ob.py
+scratch/split/
+
+#: æ¢é’ˆç•™ä¸‹çš„ API è¯·æ±‚/å“åº”è½¬å‚¨ï¼ˆå¯èƒ½å¸¦ Authorization å¤´ï¼‰ã€‚
+scratch/z_*.json
+scratch/zt_*.json
+scratch/zc_*.json
+
+# ============ ÅäÖÃ²Ö¿â£¨2026-09-11 Æğ£¬ÒÒ£©============
+#: VPS µÄ systemd unit / drop-in / Caddyfile Ä¿±êÌ¬ / crontab ¡ª¡ª ÅäÖÃÄÇ°ë¸ö²¿Êğ¡£
+#: ËüÊÇ**¶ÀÁ¢µÄ git ²Ö¿â**£¨ºÍ Ombre-Brain / nox-app Ò»ÑùÊÇÇ¶Ì×²Ö¿â£©£¬
+#: ËùÒÔÕâÀï±ØĞëÅÅµô£º·ñÔò git add -A »á±¨ "does not have a commit checked out"¡£
+#: ?? ÀïÃæ**²»ĞíÓĞÃÜÔ¿**£ºÃÜÔ¿ÔÚ VPS µÄ /etc/nox/*.env£¨600£©£¬²»½ø°æ±¾¿ØÖÆ¡£
+deploy-config/
+
+# ============ scratch ÀïµÄ¶ş½øÖÆÓëÍâ²¿¿ËÂ¡£¨2026-09-11 ²¹£©============
+#: ?? Õâ 6 ¸öÊÇ**±ğÈËÏîÄ¿µÄ¿ËÂ¡**£¨¸÷×Ô´ø .git£©¡£µ±ÆÕÍ¨ÎÄ¼ş¼Ó½øÈ¥»á±ä³É
+#: »µµôµÄ gitlink/submodule ÒıÓÃ ¡ª¡ª 2026-09-11 ÎÒÎóÌá½»¹ıÒ»´Î£¬ÒÑ»Ø¹ö¡£
+scratch/books-3d-ref/
+scratch/commonplace-book/
+scratch/react-pageflip/
+scratch/ref-bookfolio/
+scratch/ref-bookopen/
+scratch/ref-nootbook/
+#: Í¼Æ¬ / ×ÖÌåÕâÀà¶ş½øÖÆ£º½ø git Ö»»áÈÃ²Ö¿â±äÅÖ£¬¶øÇÒÄÜ´ÓÔ´ÖØ½¨¡£
+scratch/*.png
+scratch/*.jpg
+scratch/*.jpeg
+scratch/*.gif
+scratch/*.webp
+scratch/*.woff2
+scratch/*.mp4
+scratch/iris-preview/
+scratch/limezu-frames/
+scratch/limezu-peek/
+scratch/diary-preview/
+
+# ============ Ò»´ÎĞÔÌ½Õë / ¹¤¾ß²úÎï / »úÆ÷±¾µØ£¨2026-09-11 ²¹£©============
+tsdown-probe/
+pnpm-shim/
+.zcode/
+.last-dsh-backup.txt

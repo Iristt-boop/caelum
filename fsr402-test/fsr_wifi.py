@@ -22,9 +22,19 @@ import time
 from machine import ADC, Pin
 from time import sleep_ms
 
-# ═══════════ 配置（改成你自己的）═══════════
-WIFI_SSID = "REDACTED-WIFI-SSID"              # WiFi 名
-WIFI_PASS = "REDACTED-WIFI-PASS"         # WiFi 密码
+# ═══════════ 配置 ═══════════
+# 🔴 真实 WiFi 凭据**不进仓库**（2026-09-11 改）。
+# 之前这里明文写着家庭 WiFi 的 SSID 和密码，而这个文件是被 git 跟踪的。
+# 本机在同目录建一个 `wifi_secrets.py`（已加进 .gitignore），内容两行：
+#     WIFI_SSID = "你家WiFi名"
+#     WIFI_PASS = "密码"
+# 拿不到时凭据为空 → 下面会打印提示并且连不上，而不是把密码写进 git。
+# （这个脚本已被 fsr402-touch-server + fsr402-wifi 取代，留着当参考。）
+try:
+    from wifi_secrets import WIFI_SSID, WIFI_PASS
+except ImportError:
+    WIFI_SSID = ""
+    WIFI_PASS = ""
 VPS_HOST  = "43.133.211.140"     # VPS IP（腾讯云东京）
 VPS_PORT  = 9333                 # touch-server 端口
 # ═════════════════════════════════════════

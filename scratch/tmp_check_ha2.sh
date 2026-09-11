@@ -1,10 +1,10 @@
 #!/bin/bash
 echo "=== device_tracker.iris 完整状态 ==="
-curl -s -H 'Authorization: Bearer REDACTED-JWT' http://localhost:8123/api/states/device_tracker.iris | python3 -m json.tool
+curl -s -H "Authorization: Bearer ${HA_TOKEN:?请先 export HA_TOKEN}" http://localhost:8123/api/states/device_tracker.iris | python3 -m json.tool
 
 echo ""
 echo "=== mobile_app 相关传感器 ==="
-curl -s -H 'Authorization: Bearer REDACTED-JWT' http://localhost:8123/api/states | python3 -c "
+curl -s -H "Authorization: Bearer ${HA_TOKEN:?请先 export HA_TOKEN}" http://localhost:8123/api/states | python3 -c "
 import sys,json
 for s in json.load(sys.stdin):
     eid = s.get('entity_id','')
