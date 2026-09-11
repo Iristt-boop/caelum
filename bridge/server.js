@@ -561,11 +561,37 @@ try {
 } catch (e) { console.warn("[Bridge] meal_type 迁移跳过:", e.message); }
 
 // ==============================================================
-const VAPID_PUB = process.env.VAPID_PUB || "REDACTED-VAPID-PUB";
-const VAPID_PRIV = process.env.VAPID_PRIV || "REDACTED-VAPID-PRIV";
-webpush.setVapidDetails("mailto:i35768737@gmail.com", VAPID_PUB, VAPID_PRIV);
+// ── Web Push（VAPID）──────────────────────────────────────────
+//
+// 2026-09-11：原来公钥和**私钥**都以字面量写在这里当兜底，而线上
+// /etc/nox/bridge.env 里根本没配 VAPID —— 也就是说这段字面量是唯一来源、
+// 一直在生效。私钥进过 git，谁拿到仓库读权限就能往她的 iPhone 伪造推送
+// （PROJECT.md 第四节把它记成「待修」，HANDOFF-2026-08-08 也记过，都没修）。
+//
+// 现在只从 env 读，**不留兜底**。缺了不静默降级：打一条 ERROR、关掉推送、
+// 并让 /api/push/vapid 回 503 —— 否则 App 会拿一个空 key 去 subscribe，
+// 表现成「通知开了但从来不响」，比直接报错难查得多。
+//
+// ⚠️ 改完仍然要轮换密钥对：这把私钥在 git 里躺过，写进 env 只是止损。
+// 轮换会让所有推送订阅失效，她要在 App 里重新授权通知 —— 见 CAELUM-修复排期 0.6。
+const VAPID_PUB = process.env.VAPID_PUB || "";
+const VAPID_PRIV = process.env.VAPID_PRIV || "";
+const PUSH_ENABLED = Boolean(VAPID_PUB && VAPID_PRIV);
+
+if (PUSH_ENABLED) {
+  webpush.setVapidDetails("mailto:i35768737@gmail.com", VAPID_PUB, VAPID_PRIV);
+} else {
+  console.error(
+    "[Bridge] VAPID_PUB / VAPID_PRIV 未在 /etc/nox/bridge.env 配置 —— Web Push 已禁用。" +
+    "（代码里不再有兜底：那把私钥进过 git。）"
+  );
+}
 
 async function sendPushAll(title, body) {
+  if (!PUSH_ENABLED) {
+    console.error("[Bridge] sendPushAll 被调用但推送未启用，跳过:", title);
+    return;
+  }
   const rows = dbAll("SELECT endpoint, sub FROM push_subs");
   for (const r of rows) {
     try {
@@ -1686,7 +1712,8 @@ app.post("/api/scribe-token", async (req, res) => {
 
 // 健康检查
 app.get("/health", (req, res) => {
-  res.json({ status: "ok", tts: "available" });
+  // push 也报出来 —— 缺 VAPID 是「通知开了但从来不响」那种没人看得见的坏法。
+  res.json({ status: "ok", tts: "available", push: PUSH_ENABLED ? "available" : "disabled" });
 });
 
 // 这里原来有 /api/agents（在线 agent 列表）和 /api/chat-json
@@ -3519,8 +3546,13 @@ app.post("/api/settings", (req, res) => {
 });
 
 // Web Push 订阅
-app.get("/api/push/vapid", (req, res) => res.json({ key: VAPID_PUB }));
+app.get("/api/push/vapid", (req, res) => {
+  // 没配就明说，别回一个空 key —— 前端拿空 key 去 subscribe 是静默失败。
+  if (!PUSH_ENABLED) return res.status(503).json({ error: "push disabled: VAPID not configured" });
+  res.json({ key: VAPID_PUB });
+});
 app.post("/api/push/subscribe", (req, res) => {
+  if (!PUSH_ENABLED) return res.status(503).json({ error: "push disabled: VAPID not configured" });
   const sub = req.body;
   if (!sub?.endpoint) return res.status(400).json({ error: "bad subscription" });
   dbRun("INSERT OR REPLACE INTO push_subs VALUES (?,?,?)", [sub.endpoint, JSON.stringify(sub), new Date().toISOString()]);
