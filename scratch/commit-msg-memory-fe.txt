@@ -1,0 +1,14 @@
+Memory 星空页：每段记忆一颗星，点开看全文
+
+- 底层氛围银河用 React Bits 的 Galaxy（ogl shader）。shader 星是程序化
+  噪声，点不到也对不上数据——真正的记忆星是上面一层 DOM 按钮：
+  位置日期定半径（新记忆在星系核心，旧记忆往外摊）+ id 播种角度抖动，
+  亮度/大小跟 importance 走，钉住（permanent）换金色、带十字星芒
+- 点星右侧滑出详情层：全文、★钉住徽章、重要度十点、标签、最近想起日期、
+  桶 id；Esc / 点空处合上。正文只有她亲手点开才摊开，侧栏卡照旧只给名字
+- ⚠️ Galaxy 的 useEffect 依赖数组里有 focal/rotation，props 必须是模块级
+  常量——行内字面量每次渲染都把 WebGL 上下文拆了重建
+- 鼠标不带排斥力（她的要求），只留一点视差漂移
+- 全文走 bridge 新端点 /api/memory/:id（转 OB /memory/{id}，见根仓库提交）
+- 沙箱联调走 .env.local 的 VITE_API_URL 直连 :3999 bridge 副本 + 假 OB
+  （scratch/mock-ob.py），没动 vite.config.js 的代理指向

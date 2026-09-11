@@ -1,0 +1,15 @@
+空壳午餐修好了——记餐先验 food_id，顺带告诉 nox 库在 VPS 上
+
+- bridge /api/diet/meals：food 匹配不上从「静默 continue」改成先整体
+  预校验、缺档直接 400。9-4 午餐 total 全 0 的根因就是静默跳过：
+  菜还没建档就记餐，items 全没挂上，落了餐头没落 item。
+- VPS 数据已修（停服务窗口内 SQL 直改）：
+  meal 73 补 items「减脂烤箱板 200g」130kcal/蛋白21，total 回写，
+  预算 remaining=765 对上；foods 1947 每100g 140→65、蛋白 20→10.5
+  （整盘 140kcal/200g 被当成了每 100g 建档，复用会双倍算）。
+- bridge 新 server.js 已部署（旧文件备份 server.js.bak-20260904），
+  坏 food_id 实测返回 400 且不落库。
+- nox-core 人设加「你的数据环境」：数据库全在 VPS，本地没有 .db，
+  改数据走 bridge API。要重启 nox-core 才生效（缓存前缀会重算一次）。
+- PROJECT.md 第四节补「生产数据库」：nox-bridge.db 是 sql.js 全量内存态，
+  服务跑着改文件会被 saveDb() 覆盖。

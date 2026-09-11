@@ -1,0 +1,4 @@
+OB /recent ok: True items: 3
+bridge recent ok: True items: 3
+detail ok: True pinned: True len(content): 100
+404 path: 404 (expected 404)

@@ -1,0 +1,13 @@
+Memory 星空页后端：单条记忆全文链路（OB → bridge → OS）
+
+- OB（Ombre-Brain/server.py）加 GET /memory/{bucket_id}：/recent 的配套
+  结构化端点，Caelum OS 星空页点星看全文用。免鉴权同 /recent 先例——
+  服务只听 OB 本机端口，bridge 是唯一调用方、自带 token 层；
+  name 为空回空不回退 id 的规矩也同 /recent。这个接口的存在意义就是
+  全文，列表才需要克制
+- bridge（bridge/server.js）加 GET /api/memory/:id 转发，404 透传。
+  ⚠️ 必须注册在 /api/memory/recent 之后——Express 按注册顺序匹配，
+  不然 "recent" 会被 :id 吞掉
+- 沙箱验证：假 OB（scratch/mock-ob.py，stdlib 仿两个接口形状）
+  + :3999 bridge 副本 + 前端 .env.local VITE_API_URL 直连，全链路点星
+  到详情层实测通过

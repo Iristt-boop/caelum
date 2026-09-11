@@ -1,0 +1,14 @@
+topic pool 落地——Scout 抓回来的料，先过一道便宜模型的闸再进池子
+
+topic_pool 包：scout 四个抓取器（HN Algolia / GitHub 新仓 / arXiv /
+Google News RSS），每轮随机抽 2~3 个方向 + world_hook 名额（她在读
+在看什么就定向抓书评影评，state stale 了不追）；candidates 短命缓存
+48h，Filter 挂了可重筛；filter 用 utility 模型，禁止编造不靠提示词
+靠校验——source_id 对不上候选直接扔，title/url 用我们自己抓的那份；
+shared 枝条从 world model 直接投影（看完一场、读完一本），共听不投影，
+togetherCount 的账 eryu 本来就有。
+
+边界写死：follow 只是记号，不触发自动研究。world / adapter 缺哪个
+降哪个，三块服务没配照样攒候选。API：GET /api/nox/topics、
+POST /api/nox/topics/{id}/status。NOX_TOPIC_SCOUT_INTERVAL_S 默认 6h，
+NOX_TOPICS_DISABLED=1 可关。

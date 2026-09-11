@@ -1,0 +1,15 @@
+她也能发表情了——表情面板上线，同轮修了 nox 网关误杀
+
+- App 聊天输入栏加笑脸按钮：开 20 个猫猫表情面板（5×4 网格），
+  点图即发送；表情走同一 /api/chat，落库 content 空 + meta.meme=tag，
+  渲染/历史回填复用现役链路（mapServerMsg 本来就认 meta.meme）。
+- bridge /api/chat：新增 meme 字段，MEME_TAGS 白名单（memes.js 镜像，
+  不认的 tag 400——落库会变成永远显示不出的蒸发消息）；
+  转给 Core 前把表情翻成「（发了一个表情包：X）」，他的会话库存这句。
+- 前端 dist 已 build（node 在 C:\Users\14372\bin\node.cmd 包装的
+  .workbuddy/.../22.22.2-2）+ 原子换新部署；坏 tag 400 探针 + test-% 会话
+  真发表情端到端验证过，小克正常接话。
+- ⚠️ 事故：验证旧库时 taskkill //IM node.exe 按映像名杀了两个 node——
+  其中一个是 caelum-gateway（nox 正在帮她逛淘宝加购物车，链路被切断）。
+  已用计划任务脚本 scripts/caelum-gateway-start.ps1 恢复（幂等，39100 判活）。
+  铁律：杀进程必须按 PID（netstat 找端口→taskkill //PID），永远别按映像名。

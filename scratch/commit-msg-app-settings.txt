@@ -1,0 +1,14 @@
+App 端对齐 OS 这一套——设置升一级菜单，两颗重复的 pill 安息
+
+Settings 从底部小入口升为一级菜单（系统组），design 里「不能放
+一级菜单」的旧约束作废删除（糖糖拍的）。Setting 页扩建五区：
+主题（原有）、模型（读写 nox-chat-model，与 Chat 选择器同键
+双向同步）、用量（今日/累计/缓存命中，标注估算口径）、窗口
+天气（OS 的 Falling 整套搬来，App 第一次有飘落物）、通知
+（开口 X/3、安静时段、惦记账本、订阅数+测试推送）。
+
+NoxStatus 去重：收起态=英文状态行（Thinking about your
+sleep & activity），展开态=跟 OS 一致的读数（Thought of you
+20× · Spoke 3/3 · Held back N）+ 念头/纸条/安静时段——
+同一段「在关心」不再出现两遍，也不再有中文主题直出。
+DESIGN.md 同步（导航表、Footer、旧约束删除）。

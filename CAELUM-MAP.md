@@ -51,8 +51,16 @@
 | R4 | 长期记忆只经 MCP 客户端（`memory/ob_client.py`），直连 OB 端口的只准 config 定义处 | 无 | R4 |
 | R5 | 前端不直接推消息，主动消息的钥匙不给前端 | 无 | R5 |
 | R6 | 测试会话（`test-`/`sandbox-` 前缀）不碰任何全局注意力状态（Registry/Drive/纸条），`remind_myself` 拒留纸条 | 压缩除外（会话自己的数据） | `tests/test_test_session_isolation.py` |
-| R7 | 前端只打 bridge。历史直连特例固定三个：`reading.noxtang.com` / `music.noxtang.com` / `/watch/<token>`——**不许新增** | 上述三处 | 人工review |
+| R7 | 前端只打 bridge。历史直连特例固定三个：`reading.noxtang.com` / `music.noxtang.com` / `/watch/<token>`——**不许新增**。第四条是 STT 直连（见下） | 上述三处 + Scribe | 人工review |
 | R8 | **花钱的动作模型够不着。** 下单/支付类接口只准挂在确认端点后面（`/api/nox/orders/{id}/confirm`），不许进工具表。工具最多「准备交易」——出一张带快照和指纹的卡，她点了才执行 | 无 | `tests/test_orders.py::test_tool_never_places_the_order` |
+
+> R7 的第四条例外：**通话的实时转写直连 ElevenLabs**（`wss://api.elevenlabs.io`）。
+> 手机端 2026-08-15 就这么跑了，2026-09-07 桌面端也走同一份引擎，补记在这里。
+> 它和前三条不同 —— 连的不是我们自己的服务，而是第三方 API，
+> 而且**钥匙仍然握在 bridge 手上**：浏览器先 `POST /api/scribe-token` 换一张
+> 15 分钟的一次性票，`ELEVENLABS_API_KEY` 一个字节都不下发。
+> 直连的理由是它的全部意义所在：音频不经 VPS 中转，省掉一整个跨国来回
+> （绕东京 610ms vs 直连 93ms）。**放行范围仅限音频上行**，其余照旧只打 bridge。
 
 > R8 的由来（2026-09-06）：在它之前「确认制」的全部实现是工具描述里那句
 > 「她没确认就不许调」，而 `tools/mcd.py` 的 `ACTION_TOOLS` 常量**定义完之后
@@ -69,6 +77,10 @@
 ## 四、已知占位与待接（截至 2026-09-05）
 
 - OS UI：Tasks/Skills/Agents/Workflows 及多数 Settings 子页是占位壳（RoomPlaceholder）；caelum-room（像素房间 MCP）未接入 Room 页
+  - ✅ Voice Call 2026-09-07 接上：**面板长在左栏**（不是全屏浮层），
+    通话期间导航和主区照常用 —— 因为她要在电话里指挥他做事，
+    而 `computer_write_file` 那类要她当场点头，全屏会把审批弹窗盖住。
+    引擎两端共用 `nox-app/shared/voice/`
 - 手机端 ToolDrawer 三 tab 纯样子；Home widget 墙部分静态
 - Resonance 不参与开口决策（V5）；话题池前端页未接（API 已有）
 - 理解层（2026-09-05 起）P1+P3 已上线：LLM Appraisal + UnderstandingProvider +

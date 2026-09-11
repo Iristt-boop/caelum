@@ -1,0 +1,10 @@
+厂商账本——页面上终于有能称为「真」的钱
+
+DeepSeek 没有明细账单 API（只有余额接口），OpenRouter 的 credits
+接口给累计真实消耗。所以真账走快照差值：PROVIDER_LEDGERS 一个
+服务商一个 fetcher，起来记一笔、之后每 6 小时记一笔（读账时快照
+超过 1 小时旧就顺手补，不阻塞），存进 ledger_balance 表；真实日
+消耗 = 相邻快照差值，DeepSeek 的余额差要加上 topped_up 增量，
+不然充值那天显示成倒赚。没配 key 的账本安静地空着，新服务商加
+一个 fetcher 自己长出来。usage-stats 多了 providers 块（余额 +
+真实日消耗 + 该厂商流水估算），流水那套估算照旧，两本账并排放。

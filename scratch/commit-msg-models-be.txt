@@ -1,0 +1,8 @@
+Models 页的后端——模型清单和账本摆上桌面
+
+GET /api/nox/models：config.models 的八个选项（DeepSeek 直连两个、
+OpenRouter 转发六个）+ 当前默认 + 哪家配了 key（只答配没配，
+一个字节 key 都不出）。⚠️ LLMConfig 里没有 backend 字段——它在
+构建时被翻译成 provider/base_url，provider 又是两家共用的协议，
+所以按 base_url 认人。bridge 逐路由代理加 /api/nox/models 一条；
+/usage-stats 补了近 14 天日粒度（空日子补零，图要连续）。

@@ -1,0 +1,6 @@
+Notifications 页的后端——闸把安静时段也报出来，订阅清单带掩码
+
+gate.dump_state 补 quiet_start/quiet_end：安静时段是这页的主角，
+前端抄常量早晚和这里漂移。bridge 加 GET /api/push/subscriptions——
+endpoint 只给前 44 位加省略号，整条订阅地址等同一把推送凭证，
+不能整个甩到前端。

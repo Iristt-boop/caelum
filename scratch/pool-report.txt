@@ -1,0 +1,126 @@
+== 各轮收成（journalctl，Aug 31 起）==
+Aug 31 19:24:17 VM-0-8-ubuntu nox-core[1839592]: 19:24:17 ERROR   topic_pool.pool | 话题池一轮出错，下一轮继续
+Aug 31 19:26:18 VM-0-8-ubuntu nox-core[1839592]: 19:26:18 ERROR   topic_pool.pool | 话题池一轮出错，下一轮继续
+Aug 31 19:30:04 VM-0-8-ubuntu nox-core[1840990]: 19:30:04 INFO    topic_pool.pool | 话题池一轮：{'directions': ['books', 'film'], 'candidates': 138, 'new_candidates': 138, 'world_hooks': 0, 'external_topics': 3, 'shared_topics': 0, 'expired': 3, 'pool': {'expired': 3}}
+Aug 31 19:35:07 VM-0-8-ubuntu nox-core[1842351]: 19:35:07 INFO    topic_pool.pool | 话题池一轮：{'directions': ['ai', 'art'], 'candidates': 214, 'new_candidates': 214, 'world_hooks': 0, 'external_topics': 3, 'shared_topics': 0, 'expired': 0, 'pool': {'open': 3}}
+Aug 31 20:04:50 VM-0-8-ubuntu nox-core[1849634]: 20:04:50 INFO    topic_pool.pool | 话题池一轮：{'directions': ['design', 'art', 'music'], 'candidates': 183, 'new_candidates': 91, 'world_hooks': 1, 'external_topics': 3, 'shared_topics': 1, 'expired': 1, 'pool': {'expired': 1, 'open': 6}}
+Sep 01 02:05:25 VM-0-8-ubuntu nox-core[1849634]: 02:05:25 INFO    topic_pool.pool | 话题池一轮：{'directions': ['books', 'opensource'], 'candidates': 78, 'new_candidates': 28, 'world_hooks': 1, 'external_topics': 3, 'shared_topics': 0, 'expired': 0, 'pool': {'expired': 1, 'open': 9}}
+Sep 01 08:06:08 VM-0-8-ubuntu nox-core[1849634]: 08:06:08 INFO    topic_pool.pool | 话题池一轮：{'directions': ['weird', 'film', 'ai'], 'candidates': 219, 'new_candidates': 51, 'world_hooks': 1, 'external_topics': 0, 'shared_topics': 0, 'expired': 0, 'pool': {'expired': 1, 'open': 9}}
+
+== 候选缓存（48h 滚动窗口）==
+总共 522 条
+抓取时间范围：2026-08-31T11:29 ~ 2026-09-01T00:05 UTC
+
+按来源：
+  googlenews: 466
+  hackernews: 44
+  github: 12
+
+按方向：
+  ai: 142
+  art: 108
+  film: 95
+  books: 52
+  music: 42
+  design: 41
+  opensource: 27
+  weird: 15
+
+== 池子 topics（全部状态）==
+共 10 条
+[expired|shared|film|rel=0.8] 一起看了《痴迷.mkv》（27 分钟），中途放下，也许还想接着看。
+    来源：《痴迷.mkv》
+    进池：2026-08-28T16:34Z  过期：2026-08-30T16:34Z
+[open|external|ai|rel=0.9] 有人做了个12MB的二进制文件，号称能直接替换掉你现在的AI框架，评论区在吵它到底省了什么才这么小。
+    来源：Show HN: Axe – A 12MB binary that replaces your AI framework
+    进池：2026-08-31T11:34Z  过期：2026-09-01T23:34Z
+[open|external|ai|rel=0.9] 开源社区搞了个Cursor和Copilot的替代品Void，HN上347个人在讨论它能不能真撬动商业编辑器。
+    来源：Show HN: Void, an open-source Cursor/GitHub Copilot alternative
+    进池：2026-08-31T11:34Z  过期：2026-09-01T23:34Z
+[open|external|ai|rel=0.85] 纽约时报和Perplexity、Anthropic正在打‘大模型吃语料算不算合理使用’的官司，这个边界要是划清了，AI训练方式都得跟着变。
+    来源：大模型“吃”了全网的语料“合理使用”与侵权的边界如何划清？|Perplexity|Anthropic|ChatGPT|OpenAI|纽约时报 - finance.sina.com.cn
+    进池：2026-08-31T11:34Z  过期：2026-09-01T23:34Z
+[open|external|design|rel=0.9] Claude 写了个 15KB 的排版引擎，把网页渲染提速 1200 倍，连马里奥都能在文字里跑起来。
+    来源：前端圈沸腾！Claude造出15KB引擎，渲染狂飙1200倍：文字里能跑马里奥 - 智源社区
+    进池：2026-08-31T12:04Z  过期：2026-09-07T12:04Z
+[open|external|design|rel=0.85] GPT Image 2 实测下来能精准渲染文字和 UI 了，但细节处理还是有明显短板。
+    来源：GPT Images 2.0实测：文生图模型能力断层领先，细节处理仍有局限 - thepaper.cn
+    进池：2026-08-31T12:04Z  过期：2026-09-07T12:04Z
+[open|external|design|rel=0.75] 有人从多语言文字排印的角度拆了《崩坏：星穹铁道》的界面，发现游戏里的字体设计其实很讲究。
+    来源：星间字景：多语言文字排印视角下的《崩坏：星穹铁道》界面设计观察（一） - 机核GCORES
+    进池：2026-08-31T12:04Z  过期：2026-09-07T12:04Z
+[open|external|books|rel=0.9] 莫言的新书叫大家像刷短视频一样刷他的短篇小说，他这是在主动跟注意力经济抢人。
+    来源：作家莫言出新书：请像刷短视频一样，“刷”我的短小说！ - QQ News
+    进池：2026-08-31T18:04Z  过期：2026-09-07T18:04Z
+[open|external|books|rel=0.8] 西蒙与舒斯特率先取消了新书宣传文案，名人推荐那一套正在从出版业撤下来。
+    来源：放弃名人推荐？大型出版商西蒙与舒斯特率先取消新书宣传文案 - bjnews.com.cn
+    进池：2026-08-31T18:04Z  过期：2026-09-07T18:04Z
+[open|external|weird|rel=0.85] 比尔·盖茨、正经作家和勒索犯都在同一个书评网站里写评论，各干各的。
+    来源：「美国版豆瓣」？全球最有影响力的书评网站，吸引比尔·盖茨、作家、勒索犯 - 36 Kr
+    进池：2026-08-31T18:04Z  过期：2026-09-02T06:04Z
+
+== 候选抽样（每方向最新 6 条标题）==
+
+[ai]
+  · (googlenews) 介绍《“人工智能+教育”行动计划》有关情况- 新闻发布会 - moe.gov.cn
+  · (googlenews) 简报丨2026世界人工智能大会进入倒计时 - sh.people.com.cn
+  · (googlenews) 六部门：发展“人工智能+电商” 引导电商企业加强人工智能大模型等技术研发应用 - 东方财富
+  · (googlenews) AI驱动儿童个性化学习 斑马儿童科教大模型通过备案 - 新华网
+  · (googlenews) “磐石100” 模型体系正式亮相 - 中国科学院
+  · (googlenews) 科大讯飞等研发的智能化工大模型3.0 Pro发布 - 富途牛牛
+
+[art]
+  · (googlenews) 藏着知识与艺术，光谷双馆开门迎客，看书看展一站抵达 - wuhan.gov.cn
+  · (googlenews) 京彩展览｜北京画院美术馆“灿然天地——关广志艺术展”启幕！ - 环球网
+  · (googlenews) 全国中青年创新艺术展在北京展出 - 新华网
+  · (googlenews) 九位艺术家在美术馆里“造园” “归园·当代艺术展”在年代美术馆展出 - 温州新闻网
+  · (googlenews) “回家”！李以泰从艺七十年上海特展在徐汇艺术馆开幕 - 腾讯新闻
+  · (googlenews) 苏州金鸡湖畔新添园林式人文地标，开馆四展连看 - 上观新闻
+
+[books]
+  · (googlenews) 一周文化讲座｜我们应该如何告别 - thepaper.cn
+  · (googlenews) 大口吃大蘋果 鄭麗園新書面世 - 大纪元
+  · (googlenews) 【CDT报告汇】王天成采访黎安友：如果习近平出问题，中共的制度韧性可能结束（外二篇） - China Digital Times
+  · (googlenews) 中外评毛和张戎新书 - 美国之音
+  · (googlenews) “千古第一才女”是如何炼成的？在清照泉城追寻李清照 - 腾讯新闻
+  · (googlenews) 嬰靈在看著我們——馬建談新書《陰之道》 - 大纪元
+
+[design]
+  · (googlenews) IG 最新功能懒人包！Instagram 界面大改版、Reels 新功能悄悄上线还能打造专属于你的「旅行日记」？！ - GirlStyle 女生日常
+  · (googlenews) 新时代新潮流WebOS 【21】WebKit，为了布局，忙并美丽 - 爱范儿
+  · (googlenews) iOS 7 扁平化设计诞生原由 - 极客公园
+  · (googlenews) 苹果新推出的 Apple News，简直就是在教国内各大新闻客户端怎么做人 - 品玩
+  · (googlenews) MiniMax H3实测：物理动态稳、音频 SOTA级，5大场景全面解析 - 302.AI
+  · (googlenews) 想知道那朵花的名字？试试用这三款 App 扫一扫 - 36 Kr
+
+[film]
+  · (googlenews) 诺兰导演，生涯所有电影，烂番茄评分排名。 - QQ News
+  · (googlenews) 韩片《燃烧》斩获国际影评人奖 无缘戛纳金棕榈 - 韩联社
+  · (googlenews) 影评人HarperDie为何批评《夜之寓言》把心理惊悚拍成了滑稽闹剧？ - 手机新浪网
+  · (googlenews) 继侯孝贤、陈凯歌之后，杭州导演顾晓刚获东京电影节黑泽明奖 - 潮新闻客户端
+  · (googlenews) 冯小刚新片《抓特务》票房低迷，第五代导演商业解释权转移 - 虎嗅
+  · (googlenews) 接下来，可能是05后导演的时代了 - 后室 - douban
+
+[music]
+  · (googlenews) “难听”上热搜 全网掀起周杰伦新歌讨伐大会 - 万维读者网
+  · (googlenews) 徐誉滕被指音乐机器 新歌《爱若去了》再受好评 - Sohu
+  · (googlenews) 鹿晗吴亦凡新歌《咖啡》登顶QQ音乐各大榜单首位 - 360娱乐
+  · (googlenews) 汪峰新歌《存在》微博首发反响好 被赞时代歌者 - music.yule.sohu.com
+  · (googlenews) 林俊杰 JJ Lin【幸存者 • 如你】 线上听歌会 | Wayne、培永被邀请当乐评！ - my.com.my
+  · (googlenews) 梁晓雪携手吴青峰 为何韵诗量身打造国语新歌 - music.yule.sohu.com
+
+[opensource]
+  · (hackernews) Show HN: Jmail – Google Suite for Epstein files
+  · (hackernews) Show HN: I got laid off from Meta and created a minor hit on Steam
+  · (hackernews) Show HN: I made a site where you practice typing by retyping entire novels
+  · (hackernews) Show HN: Web Design in 4 minutes
+  · (hackernews) Show HN: Elevators
+  · (hackernews) Show HN: I 3D scanned the interior of the Great Pyramid at Giza
+
+[weird]
+  · (hackernews) How I cut GTA Online loading times by 70%
+  · (hackernews) Replit used legal threats to kill my open-source project
+  · (hackernews) GPT-4
+  · (hackernews) Google’s copying of the Java SE API was fair use [pdf]
+  · (hackernews) Reflecting on one very, very strange year at Uber
+  · (hackernews) Don't post generated/AI-edited comments. HN is for conversation between humans

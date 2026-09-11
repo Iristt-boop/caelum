@@ -1,0 +1,12 @@
+共读共听共影进 world model——三块孤岛终于记进同一本账
+
+SharedActivitiesSource 挂在 Attention 心跳上，poll() 恒返回 None：
+只记账，不开口。共读记 reading_progress（key 立在 lastReadAt 上，
+读完 complete:true）、共影记 watching_session（一场结束才记，
+≥10 分钟）、共听记 listening_together（只算 Nox 点播她听完的）。
+幂等全靠 dedup_key，source 自身零状态；TTL 各 4 天/2 小时/36 小时，
+「正在看」过期自动 stale，不用谁去清。
+
+规格在 Topic_Pool §3.1.2；与规格的偏差（dedup 不立在日期上）及
+理由写在文档里。三块服务没配哪个就跳哪个，cfg 缺字段用 getattr
+兜底，不许记账的事把 Attention 装配带崩。

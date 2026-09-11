@@ -1,0 +1,13 @@
+DeepSeek 第三个官方型号进切换列表——切到它还能原生看图
+
+config.models 加 v4-flash-vision（deepseek-v4-flash-vision-exp）。
+它其实早就在系统里：是专职的眼睛（vision.describe 的模型），
+只是没进可切换列表。顺手把 supports_vision 的按名黑名单修正：
+「带 vision 的一律放行」——describe 从 8-21 起就在生产里给它发
+image_url，之前黑名单把它一起冤枉了。所以主线切到它 = 发图
+不再绕「先转文字」那一跳，直接原生看图。
+
+附带修 test_project_shared 的时钟依赖：project_shared 现在把
+周期时间传进 world.query——不传的话查询锚在真实时钟上，测试
+冻着的 NOW 随日期滚动就凭空查不到（同 test_far_future 的病，
+仓库规矩本来就是 now 传到位）。

@@ -1,0 +1,8 @@
+话题的寿命从进池子那刻算——上线头一轮三条全灭的教训
+
+observed_at 拿了文章发布时间，Google News 三天窗口里的旧文
++48h TTL，一轮还没跑完就被 expire 收走。改成进池子的时刻，
+pubDate 只留在候选缓存里。附带补上 TopicStore 的跨线程锁
+（check_same_thread=False + WAL，照 world_model 的方子）——
+头一轮在 to_thread 里碰库直接 ProgrammingError，本地测试
+同线程跑所以没拦住，现在有跨线程回归测试盯着。

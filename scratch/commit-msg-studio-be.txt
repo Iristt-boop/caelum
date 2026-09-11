@@ -1,0 +1,9 @@
+Studio 两间房的后端——工具墙和插口面板的数据源
+
+GET /api/nox/tools：把 loop 里注册的 ToolSpec（名字+给模型看的
+描述）全量吐出去，None 槽位跳过，分组让前端按前缀认。
+GET /api/nox/integrations：cfg 里的 11 个插口逐个探活，语义是
+「对方应一声就算连着」——urllib 会把 404/405 抛成 HTTPError，
+必须单独接住算通，不然 MCP 端点全被冤枉成断线（首版上线当场
+栽在这）。结果缓存 60 秒，探活 8 线程并发。bridge 照逐路由代理
+的规矩补两条。

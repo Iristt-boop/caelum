@@ -1,0 +1,9 @@
+[Mood:大写] 泄漏修掉——剥标记链路改大小写不敏感
+
+- 生产库实锤：两周内漏过 3 次全是大写变体（08-20 [Mood: 平静]、
+  08-21 [Mood:平静]、08-26 整条只有 [Mood: 撒娇]），她屏幕上就是裸文字。
+- llm.py MoodTagFilter：比较用 buf.lower()（放行仍吐原始文本）；
+  mood.py _MOOD_TAG 正则加 re.IGNORECASE——两处都漏则都修。
+- 回归测试：test_stream.py 加大写/带空格/混合用例，
+  test_mood.py 加 extract 大写变体用例。本地 33 个测试全过。
+- 诊断记录在 scratch/mood-tag-leak-diagnosis.md。

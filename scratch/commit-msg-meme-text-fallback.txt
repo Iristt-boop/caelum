@@ -1,0 +1,21 @@
+表情包正文懒写兜底——[tag] 任何位置都转成表情事件，mood 无括号变体同治
+
+- 她报的：他把 [开心] 混在一段话里写，只有行首才被前端兜底，句中就降级
+  成文字。拍板「不分段也能发出」，在 nox-core 统一治，不靠 prompt：
+  ① MoodTagFilter 扩展：[tag]（49 词表，任何位置）和行首「mood: xxx」
+  （无括号变体，截图实锤）流式当场吞掉，普通方括号/[OK] 照常放行；
+  ② tools/intimate.extract_text_tags：收尾时从完整文本抽出 tag 按序
+  塞进 attachments（chat + chat_stream 两处）——落库/App/OS 全走正规链路；
+  ③ mood.py extract 二级 pattern：整行 mood: xxx 只认七个情绪词零误伤；
+  MEME_TAGS/HER_EMOTIONS 常量上收到 agent/llm.py（mood.py 反向 import，
+  依赖方向不变）。
+- 词表三处同步注释：agent/llm.py MEME_TAGS + bridge MEME_TAGS + memes.js。
+- 测试：test_stream 加 tag/mood 行 5 组用例、test_mood 加变体用例、
+  test_attachments 加 extract_text_tags 用例；相关 56 个全绿。
+- ⚠️ 事故与修复：scp 整文件覆盖 nox.py 时把另一会话工作区的半成品
+  galatea import 一起带上了生产（VPS 无 galatea.py → 启动循环崩溃）。
+  已回滚到部署前备份、在干净基线上重放我的两处补丁，服务恢复
+  active + 链路重建。教训：多会话共享工作区时，部署「共享文件」
+  （nox.py 这种多会话都改的）必须先 diff 确认改动归属，不能整文件推。
+- nox.py 本地未提交（diff 混有 galatea 半成品，等那边收口一起进）；
+  本次提交不含它。VPS 备份 *.bak-20260907。

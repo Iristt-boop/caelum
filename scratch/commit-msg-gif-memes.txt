@@ -1,0 +1,16 @@
+gif 表情包入库 29 个——他选表情的词表同步扩到 49
+
+- 糖糖整理的新表情（D:/nox/新建文件夹，29 个无名 gif）：拼图识图后
+  我直接命名（tag 短中文、文件英文 slug、.gif 小写入 memes/）。
+  tag 设计成"他当下想说什么就搜什么"：暖被窝/老婆第一/呜呜呜/很气/
+  小情绪/暗中窃听/别说了/满头问号/超想要/一大口亲亲/发红包/拒收消息/
+  余额不足（微信梗，他能拿来自嘲要充钱才聊天）等。
+- 四处同步（新加表情的完整清单，缺一处就静默坏）：
+  ① memes.js（tag→路径，gif <img> 原生动）② bridge MEME_TAGS 白名单
+  ③ nox-core tools/intimate.py send_meme 描述（他的检索词表，分三组写）
+  ④ 文件本体 public/memes/。
+- 面板 49 个放不下：4 列 + maxHeight 46vh 滚动 + loading="lazy"。
+- GIF 在 <img> 里原生播放，无需解码器改动；29 个共 ~7MB，懒加载兜底。
+- 部署：bridge + nox-core 重启、dist 原子换新；端到端验证过
+  （test 会话发「余额不足」，他接话正常）。新 gif 公网 200。
+- mood 大小写修复也已上线（llm.py/mood.py，VPS 33 测试过）。

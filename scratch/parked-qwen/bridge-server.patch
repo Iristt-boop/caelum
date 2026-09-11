@@ -1,0 +1,234 @@
+diff --git a/bridge/server.js b/bridge/server.js
+index df01ce7..7ecd953 100644
+--- a/bridge/server.js
++++ b/bridge/server.js
+@@ -22,6 +22,7 @@ import { Readable } from "node:stream";
+ import path from "node:path";
+ import { fileURLToPath } from "node:url";
+ import { WebSocketServer, WebSocket } from "ws";
++import { pickChain } from "./lib/tts-chain.js";
+ import Database from "better-sqlite3";
+ import multer from "multer";
+ import { lookupMovie, longEnough } from "./lib/movie-meta.js";
+@@ -1495,7 +1496,7 @@ async function qwenTts(text, { voice, instructions } = {}) {
+ }
+ 
+ app.post("/api/tts", async (req, res) => {
+-  const { text, engine, voice, instructions } = req.body;
++  const { text, engine, voice, instructions, profile } = req.body;
+   if (!text) return res.status(400).json({ error: "text required" });
+ 
+   const raw = text.trim();
+@@ -1506,95 +1507,77 @@ app.post("/api/tts", async (req, res) => {
+   // 剥情绪标签的版本，给不认标签的降级模型用
+   const clean = raw.replace(VOICE_TAG_RE, "").replace(/\s{2,}/g, " ").trim().slice(0, TTS_MAX_CHARS);
+ 
+-  /* 引擎顺序。`engine` 是前端回传的「上一句用的是谁」——
+-   * 一轮之内粘住它，别在一段话中间换声音（见上面那段注释）。
+-   * 认不出的值一律忽略，走默认顺序。 */
+-  const ORDER = ["qwen", "eleven-v3", "eleven-turbo", "edge"];
+-  const from = ORDER.indexOf(String(engine || ""));
+-  const chain = from > 0 ? ORDER.slice(from) : ORDER;
++  /* 引擎顺序 —— **按端分，不是全局一个默认**。
++   *
++   * 🔴 我第一版把 `["qwen", ...]` 写成了全局默认，结果**手机也被一起切走了**：
++   * 手机通话的第一句不带 `engine`，聊天里的语音条（`Chat.jsx` 的播放按钮）
++   * 更是从来不带 —— 全都落到 qwen 上。糖糖当场问「手机端也降级成 qwen3 了？」
++   *
++   * 更糟的是英语陪练：这个端点给降级模型传的是 `clean`（剥掉情绪标签的版本），
++   * 于是英文句子会被一个中文优先的模型念，而且 `[whining]` 那套全丢 ——
++   * 和 2026-08-15 修掉的「edge-tts 用中文发音人念英文」是同一种错，
++   * 隔了三周我自己又犯了一遍。
++   *
++   * 现在由前端明说自己是哪一端：
++   *   desktop  口述指令、几乎全中文 → 阿里打头（她要的就是这个）
++   *   phone    陪伴 + 英语陪练     → v3 打头，情绪标签是它的命根子
++   *
++   * **不带 `profile` 一律按 phone 算** —— 语音条那条老路径不传这个字段，
++   * 默认必须是「和今天之前一模一样」，不能因为我加了个新厂商就偷偷换掉她的声音。
++   */
++  const chain = pickChain(profile, engine);
+ 
+   const sendEngine = (name) => {
+     //: ⚠️ 一定要在写 body 之前设。设完头再降级是不行的 ——
+-    //: 头已经发出去了，改不回来（下面每一档都先查 headersSent 就是这个道理）
++    //: 头已经发出去了，改不回来（下面每一档失败后都查 headersSent 就是这个道理）
+     if (!res.headersSent) res.setHeader("X-TTS-Engine", name);
+   };
+   //: 让前端读得到这个头。跨域时不显式暴露的话，浏览器**看得见也拿不到**
+   res.setHeader("Access-Control-Expose-Headers", "X-TTS-Engine");
+ 
+-  // 中文优先走阿里（她的原话：ele 的中文不好）
+-  if (chain.includes("qwen")) {
++  // 阿里 qwen3-tts。中文原生，`instructions` 吃中文语气指令
++  async function tryQwen() {
+     const upstream = await qwenTts(clean, { voice, instructions });
+-    if (upstream) {
+-      sendEngine("qwen");
+-      //: 阿里回的是 wav，不是 mp3 —— **Content-Type 要如实转发**。
+-      //: 前端拿它建 Blob / MediaSource，写死 audio/mpeg 的话是一段静音
+-      const ct = upstream.headers.get("content-type") || "audio/wav";
+-      if (!res.headersSent) res.setHeader("Content-Type", ct);
+-      const t0 = Date.now();
+-      const bytes = await pipeTts(upstream, res);
+-      console.log(`[TTS] qwen3-tts ${bytes}B / ${Date.now() - t0}ms`);
+-      return;
++    if (!upstream) {
++      console.error("[TTS] qwen3-tts 不可用，往下降级");
++      return false;
+     }
+-    console.error("[TTS] qwen3-tts 不可用，降级到 ElevenLabs");
+-    if (res.headersSent) return res.end();
++    sendEngine("qwen");
++    //: 阿里回的是 wav，不是 mp3 —— **Content-Type 要如实转发**。
++    //: 前端拿它建 Blob / MediaSource，写死 audio/mpeg 的话是一段静音
++    const ct = upstream.headers.get("content-type") || "audio/wav";
++    if (!res.headersSent) res.setHeader("Content-Type", ct);
++    const t0 = Date.now();
++    const bytes = await pipeTts(upstream, res);
++    console.log(`[TTS] qwen3-tts ${bytes}B / ${Date.now() - t0}ms`);
++    return true;
+   }
+ 
+-  // ElevenLabs v3 — 保留情绪标签，走 /stream 边合成边下发。
+-  // 英文陪练还留着它：那套情绪标签是 8-15 才修好真正生效的，英文上确实好听
+-  if (chain.includes("eleven-v3")) {
++  /** ElevenLabs 两档共用。v3 保留情绪标签（英语陪练的命根子），turbo 用剥净的文本。 */
++  async function tryEleven(name, modelId, body, timeout) {
+     try {
+       const r = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${ELEVEN_VOICE}/stream`, {
+         method: "POST",
+         headers: { "Content-Type": "application/json", "xi-api-key": ELEVEN_KEY },
+         body: JSON.stringify({
+-          text: withTags,
+-          model_id: "eleven_v3",
++          text: body,
++          model_id: modelId,
+           voice_settings: { stability: 0.34, style: 0.84 },
+         }),
+-        signal: AbortSignal.timeout(30000),
++        signal: AbortSignal.timeout(timeout),
+       });
+       if (r.ok && r.body) {
+-        sendEngine("eleven-v3");
++        sendEngine(name);
+         const t0 = Date.now();
+         const bytes = await pipeTts(r, res);
+-        console.log(`[TTS] v3 流式 ${bytes}B / ${Date.now() - t0}ms`);
+-        return;
+-      }
+-      console.error("[TTS] ElevenLabs v3 failed:", r.status, "- trying turbo fallback");
+-    } catch (e) {
+-      console.error("[TTS] ElevenLabs v3 error:", e.message, "- trying turbo fallback");
+-    }
+-
+-    // 一旦开始写响应就不能再降级了 —— 前面已经吐了半截音频出去，
+-    // 再拼上另一个模型的音频会是两个声音接在一起
+-    if (res.headersSent) return res.end();
+-  }
+-
+-  // 降级: turbo 模型，剥掉情绪标签
+-  if (chain.includes("eleven-turbo")) {
+-    try {
+-      const r = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${ELEVEN_VOICE}/stream`, {
+-        method: "POST",
+-        headers: { "Content-Type": "application/json", "xi-api-key": ELEVEN_KEY },
+-        body: JSON.stringify({
+-          text: clean,
+-          model_id: "eleven_turbo_v2_5",
+-          voice_settings: { stability: 0.34, style: 0.84 },
+-        }),
+-        signal: AbortSignal.timeout(15000),
+-      });
+-      if (r.ok && r.body) {
+-        sendEngine("eleven-turbo");
+-        await pipeTts(r, res);
+-        console.log("[TTS] turbo 流式降级");
+-        return;
++        console.log(`[TTS] ${name} 流式 ${bytes}B / ${Date.now() - t0}ms`);
++        return true;
+       }
+-      console.error("[TTS] ElevenLabs turbo also failed:", r.status);
++      console.error(`[TTS] ${name} failed:`, r.status);
+     } catch (e) {
+-      console.error("[TTS] ElevenLabs turbo error:", e.message);
++      console.error(`[TTS] ${name} error:`, e.message);
+     }
+-
+-    if (res.headersSent) return res.end();
++    return false;
+   }
+ 
+   // 最终降级: Edge TTS
+@@ -1604,26 +1587,51 @@ app.post("/api/tts", async (req, res) => {
+   // ——等于一个中文发音人在念英文。而且 ElevenLabs 那把 key 一直是坏的
+   // （配的是 key ID 不是 key），所以**每一次通话都走到了这里**，
+   // 这个降级路径实际是主路径，藏了很久（2026-08-15 查出来）。
+-  const enRatio = clean.length
+-    ? (clean.match(/[A-Za-z]/g) || []).length / clean.length
+-    : 0;
+-  // 中文一个字顶一个字符，英文一个词好几个字母，所以阈值不用很高就能分开
+-  const edgeVoice = enRatio > 0.5 ? "en-US-ChristopherNeural" : "zh-CN-YunxiNeural";
+-  console.log(`[TTS] 降级到 edge-tts（${edgeVoice}，英文字母占比 ${(enRatio * 100).toFixed(0)}%）`);
+-  try {
+-    const proc = spawn("edge-tts", ["--voice", edgeVoice, "--text", clean, "--write-media", "-"], {
+-      stdio: ["ignore", "pipe", "pipe"],
+-      timeout: 15000,
+-    });
+-    sendEngine("edge");
+-    res.setHeader("Content-Type", "audio/mpeg");
+-    proc.stdout.on("data", chunk => res.write(Buffer.from(chunk)));
+-    proc.on("close", () => res.end());
+-    proc.on("error", e => {
+-      console.error("[TTS] edge-tts error:", e.message);
+-      if (!res.headersSent) res.status(500).json({ error: e.message }); else res.end();
+-    });
+-  } catch (e) { try { res.status(500).json({ error: e.message }); } catch { res.end(); } }
++  function tryEdge() {
++    const enRatio = clean.length
++      ? (clean.match(/[A-Za-z]/g) || []).length / clean.length
++      : 0;
++    // 中文一个字顶一个字符，英文一个词好几个字母，所以阈值不用很高就能分开
++    const edgeVoice = enRatio > 0.5 ? "en-US-ChristopherNeural" : "zh-CN-YunxiNeural";
++    console.log(`[TTS] 降级到 edge-tts（${edgeVoice}，英文字母占比 ${(enRatio * 100).toFixed(0)}%）`);
++    try {
++      const proc = spawn("edge-tts", ["--voice", edgeVoice, "--text", clean, "--write-media", "-"], {
++        stdio: ["ignore", "pipe", "pipe"],
++        timeout: 15000,
++      });
++      sendEngine("edge");
++      res.setHeader("Content-Type", "audio/mpeg");
++      proc.stdout.on("data", chunk => res.write(Buffer.from(chunk)));
++      proc.on("close", () => res.end());
++      proc.on("error", e => {
++        console.error("[TTS] edge-tts error:", e.message);
++        if (!res.headersSent) res.status(500).json({ error: e.message }); else res.end();
++      });
++    } catch (e) { try { res.status(500).json({ error: e.message }); } catch { res.end(); } }
++  }
++
++  /* 🔴 **按 chain 的顺序一档一档试**。
++   *
++   * 上一版是三个独立的 `if (chain.includes(...))` —— 那等于顺序写死在代码结构里，
++   * chain 只能决定「跳过谁」，决定不了「谁先来」。手机那条链把 v3 排在前面
++   * 也没用，qwen 那个 if 写在最上面就永远先跑。 */
++  for (const name of chain) {
++    if (name === "edge") { tryEdge(); return; }
++
++    let ok = false;
++    if (name === "qwen") ok = await tryQwen();
++    else if (name === "eleven-v3") ok = await tryEleven("eleven-v3", "eleven_v3", withTags, 30000);
++    else if (name === "eleven-turbo") ok = await tryEleven("eleven-turbo", "eleven_turbo_v2_5", clean, 15000);
++    if (ok) return;
++
++    // 一旦开始写响应就不能再降级了 —— 前面已经吐了半截音频出去，
++    // 再拼上另一个模型的音频会是两个声音接在一起
++    if (res.headersSent) return res.end();
++  }
++
++  //: 整条链都没成。**说出来**，别回一个 200 的空 body（那是静默失败）
++  console.error("[TTS] 整条降级链都失败了");
++  if (!res.headersSent) res.status(502).json({ error: "tts_all_failed" });
+ });
+ 
+ // ==============================================================

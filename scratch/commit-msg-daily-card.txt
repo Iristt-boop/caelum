@@ -1,0 +1,21 @@
+知识小课堂上线——每天一张卡，下午随机时刻他讲给你
+
+独立通道：不吃每日 3 条关心额度、不吃一小时新链冷却（糖糖 09-06 问的
+「会不会抵消掉其他的主动开口」——不会）。账本照记 source=card，
+晨检和周报自动带上它。
+
+- planner/daily_card.py 生成器：weekday 主题轮换（周一四哲学、周二五语言、
+  周三六 coding、周日自由联动），信号=她的学习待办+在读的书，
+  utility flash 一天约 0.005 元；解析失败当天不出卡，不编不退主模型
+- attention/sources/daily_card.py Care 源：06 点后备卡，14–21 点窗口内
+  随机择时（not_before 押后），讲完 mark_delivered 当天翻篇
+- service.py：card 交付分支 _speak_card（无 SKIP，生成时已过筛）+
+  care_tick 轮询 + 策略（两道闸都不吃，一步就收）
+- config.py：NOX_DAILY_CARD_DISABLED / NOX_DAILY_CARD_GEN_HOUR=6
+- server.py：装配 card_source（utility 计量挂 daily-card 名下）；
+  顺手修掉 nox_models 里 getattr(config,...) 坏兜底（假 cfg 会 NameError）
+- 12 个单测：解析宁缺毋滥/同天幂等/时刻押在窗口内/讲过翻篇/夜里不打
+  utility/跨天重开/独立通道不吃闸
+
+线上冒烟已过：真实生成「喝汤 vs eat soup」（周二语言日），质量对味。
+交付窗口的真实验证明早再看账本。

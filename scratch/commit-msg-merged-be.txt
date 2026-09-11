@@ -1,0 +1,5 @@
+聊天接口认 merged 标记——合并发图落库的一半
+
+/api/chat 的请求体多收一个 merged，勾了合并发图就写进用户消息
+的 metadata（images 本来就逐张落相册）。前端按 metadata.merged
+还原折叠卡；没这个标记的老消息行为不变。

@@ -1,0 +1,12 @@
+入口 A 通了——池子喂料，开口的决策还是 Care 一个脑子
+
+TopicSource 成了第七个 Care 源：3~8 小时翻一次池子，有 open
+的话题才产念头（urgency 0.3，不比惦记急），要不要说、现在
+说不说全归 Orchestrator——吃 DailyGate、抢同一份「一小时一条
+新链」额度、每笔进 CareLedger。surfaced 在 _speak_topic 真说
+出口后才记，[SKIP] 和 dry-run 都不算被选用；空池子不产念头，
+那不是「想了想说不出」，是没什么可想。
+
+ topics_browse 只读工具给他自己翻池子用——翻过不记账，
+文档里那句「他也会自己主动去翻翻」的工具化。注册排在
+record 之后 remind 之前，缓存前缀只废这一次。

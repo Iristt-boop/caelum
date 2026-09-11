@@ -1,0 +1,14 @@
+主动消息的 mood 标记裸露——extract 加任意位置三级 pattern
+
+- 她截图实锤：care 关心闸的主动消息「[mood:开心]18:34了…」正文带标记。
+  根因：speaker 走 core.chat()（非流式，无 MoodTagFilter），而非流式
+  mood.extract 的 _MOOD_TAG 只认**行尾**；模型把标记写在行首跟正文就不匹配。
+- 修法：mood.py 加三级 _MOOD_TAG_ANY（任意位置、词不限七个、连前导空白
+  一起吃），extract 按行尾→无括号行→任意位置三级匹配。正常聊天非流式
+  路径同样受益。speaker/waker 无需改（都过 core.chat）。
+- 表情 [tag] 在主动消息里 chat() 收尾已剥（attachments 被 speaker 丢弃，
+  锁屏推送本来就是纯文本——主动消息不发表情，可接受）。
+- 「温柔」不在七个情绪词里也照剥（任意位置 pattern 词不限）；Mood.update
+  对未知词的行为未查，若日志出现可再收。
+- mood.py 独立文件无共享半成品风险，部署干净。测试 59 全过
+  （含行首/句中/大小写「温柔」3 个新用例），生产冒烟 OK。
