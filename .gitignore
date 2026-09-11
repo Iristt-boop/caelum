@@ -148,23 +148,23 @@ scratch/z_*.json
 scratch/zt_*.json
 scratch/zc_*.json
 
-# ============ ���òֿ⣨2026-09-11 ���ң�============
-#: VPS �� systemd unit / drop-in / Caddyfile Ŀ��̬ / crontab ���� �����ǰ������
-#: ����**������ git �ֿ�**���� Ombre-Brain / nox-app һ����Ƕ�ײֿ⣩��
-#: ������������ŵ������� git add -A �ᱨ "does not have a commit checked out"��
-#: ?? ����**��������Կ**����Կ�� VPS �� /etc/nox/*.env��600���������汾���ơ�
+# ============ 配置仓库（2026-09-11 起，乙）============
+#: VPS 的 systemd unit / drop-in / Caddyfile 目标态 / crontab —— 配置那半个部署。
+#: 它是**独立的 git 仓库**（和 Ombre-Brain / nox-app 一样是嵌套仓库），
+#: 所以这里必须排掉：否则 git add -A 会报 "does not have a commit checked out"。
+#: ?? 里面**不许有密钥**：密钥在 VPS 的 /etc/nox/*.env（600），不进版本控制。
 deploy-config/
 
-# ============ scratch ��Ķ��������ⲿ��¡��2026-09-11 ����============
-#: ?? �� 6 ����**������Ŀ�Ŀ�¡**�����Դ� .git��������ͨ�ļ��ӽ�ȥ����
-#: ������ gitlink/submodule ���� ���� 2026-09-11 �����ύ��һ�Σ��ѻع���
+# ============ scratch 里的二进制与外部克隆（2026-09-11 补）============
+#: ?? 这 6 个是**别人项目的克隆**（各自带 .git）。当普通文件加进去会变成
+#: 坏掉的 gitlink/submodule 引用 —— 2026-09-11 我误提交过一次，已回滚。
 scratch/books-3d-ref/
 scratch/commonplace-book/
 scratch/react-pageflip/
 scratch/ref-bookfolio/
 scratch/ref-bookopen/
 scratch/ref-nootbook/
-#: ͼƬ / ������������ƣ��� git ֻ���òֿ���֣������ܴ�Դ�ؽ���
+#: 图片 / 字体这类二进制：进 git 只会让仓库变胖，而且能从源重建。
 scratch/*.png
 scratch/*.jpg
 scratch/*.jpeg
@@ -177,8 +177,26 @@ scratch/limezu-frames/
 scratch/limezu-peek/
 scratch/diary-preview/
 
-# ============ һ����̽�� / ���߲��� / �������أ�2026-09-11 ����============
+# ============ 一次性探针 / 工具产物 / 机器本地（2026-09-11 补）============
 tsdown-probe/
 pnpm-shim/
 .zcode/
 .last-dsh-backup.txt
+
+# ============ 共听的歌：分析输入，不是成果（2026-09-11 晚）============
+# ob-tools/audio/ 是共听第 ④ 层「Music Intelligence」的工作目录，**跑在糖糖电脑上**
+# （VPS 没装 librosa —— 那台机器已经跑着 bridge/nox-core/ombre-brain/eryu/…，
+# 再塞个吃满 CPU 的音频分析会拖累对话）。流程见 PROJECT.md 第 3570 行起：
+#     fetch_playlist.py 下歌 → batch_analyze.py 本地并行分析 → 回传 + sync_analyzed.py
+#
+# 这个目录里有两类东西，必须分清：
+#     *.mp3                下回来的**分析输入**，49 个 176.5MB，能重新下
+#     *_preanalysis.json   算出来的**成果**，49 个 41KB，**Nox 真正读的就是它**
+#
+# 176.5MB 占了仓库 97% 的体积，而 git 存二进制既压不掉也不 diff ——
+# 每次 clone、每次异地备份都要把它搬一遍。这是「中间产物不该进版本控制」的
+# 标准案例。json 和 5 个脚本留着（小，而且是数据/工具，不是产物）。
+#
+# ⚠️ 已用 git filter-repo 把 mp3 从**全部历史**里清掉（2026-09-11 第二次重写）。
+#    磁盘上的 49 个一个没少；动手前做过 176.5MB 的逐字节备份 + SHA256 清单。
+ob-tools/audio/*.mp3
