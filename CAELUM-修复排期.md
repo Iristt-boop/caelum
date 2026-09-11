@@ -56,7 +56,7 @@
 
 | 条目 | 现在的性质 |
 |---|---|
-| `0.5` 5 个路径暗号轮换 | **卫生**（值没在任何仓库里）。做的时候要改 claude.ai 网页连接器 + `.mcp.json` |
+| ~~`0.5` 5 个路径暗号轮换~~ | ✅ **2026-09-12 做完**：ombre / tracker / toy-mcp / ha-mcp / touch 五个值全换，长度不变。验证「新路径通、旧路径落到 App 外壳」。本机 `.mcp.json`、`nox-core\.env`、`scratch\Caddyfile` 同步更新。**她要做的**：去 claude.ai 更新那几条网页连接器的 URL（新 URL 在 `/root/mcp-urls.txt`，600） |
 | `NOX_TOKEN` 轮换 | **卫生**（不在任何仓库里、不在公网）。要同步 bridge.env + nox-core/.env + App 重新登录 |
 | `0.5b` `morning-check.sh` 别再 grep unit 拿 token | 本机 `ps` 可见，低 |
 | `0.6` 绑定收口（剩 8 个） | **潜在**（实测外面全连不上，安全组挡着）—— 纵深防御 |
@@ -831,7 +831,9 @@ touch-server 现在要 token 了。**没更新 `wifi_secrets.h` 就刷固件，�
   - [x] `scratch/Caddyfile` 加进 `.gitignore` —— 它未跟踪但躺在工作区，一次 `git add -A` 就会把暗号扫回仓库
   - [x] 删掉 `vps-scripts/update-caddy.py`（跑一次就会写入无前缀无鉴权的 Caddyfile，**等于把记忆库的门拆掉**）
   - [ ] **还没做 —— 需要你来**（都是账号操作或要动线上）：
-    - [ ] 轮换那五个路径暗号（旧值已在 git 历史里）：`ombre / tracker / toy-mcp / ha-mcp / touch`
+    - [x] 轮换那五个路径暗号（2026-09-12 完成）：`ombre / tracker / toy-mcp / ha-mcp / touch`
+  → 实际理由**不是**「旧值在 git 历史里」（那是错的，实测它们不在任何仓库里），而是「做过一次彻底的卫生」。
+  → 没动的两个：`/watch/`（客户端凭据，轮换无效，要换机制）· `/agent/`（消费者查不到，盲换会弄断它）。
     - [x] 脱敏 4 类仍在跟踪文件里的明文密钥：
           `vps-scripts/update-bridge-env.py:46`（OpenRouter）、`scratch/tmp_check_ha*.sh` 等 5 个（HA JWT）、
           `fsr402-wifi/fsr402-wifi.ino:15` + `fsr402-test/fsr_wifi.py:26`（家庭 WiFi）——
@@ -1209,3 +1211,46 @@ git 那栏红了 → 先测这个凭据还活不活着：活着就【吊销】�
                改历史是次要的，而且要做就得删库重建
 两栏都绿     → 它只在应该待的地方
 ```
+
+---
+
+### 第十二批（2026-09-12 凌晨）：轮换那 5 个路径暗号
+
+**做了什么**
+
+`ombre / tracker / toy-mcp / ha-mcp / touch` 五个暗号全换（长度不变，仍是 48/48/48/48/32 位随机 hex）。
+写入 `/etc/nox/caddy.env` → `caddy adapt` 校验 → `systemctl reload caddy`（不断线）。
+
+**动之前先查清了「谁在用」**（这一步是关键，不然会静默弄断东西）：
+
+```
+VPS 上唯一用这些暗号的就是 caddy.env 自己（加一张便签 mcp-urls.txt）
+Nox 调所有自建服务都走回环：
+  NOX_OB_URL=http://127.0.0.1:8002/mcp     NOX_HA_URL=http://127.0.0.1:8004/mcp
+  NOX_TRACKER_URL=http://127.0.0.1:8000/mcp  …
+→ 所以轮换对 Nox **零影响**
+消费者全在客户端：claude.ai 网页连接器 + 本机 .mcp.json
+```
+
+**验证（判据是「新的不是 App 外壳、旧的是 App 外壳」）**
+
+| 暗号 | 新路径 | 旧路径 |
+|---|---|---|
+| ombre | 307（后端重定向） | 200 App 外壳 → 已废 |
+| tracker / toy-mcp / ha-mcp | 404 Not Found（**后端**回的） | 200 App 外壳 → 已废 |
+| touch | 200 `{"ok":true…}` | 200 App 外壳 → 已废 |
+
+> ⚠️ 「404 是后端回的」和「落到 App 外壳」的区别就是这里的关键 ——
+> 这扇门不是"锁着的"，是"看不见的"：路径不对时它**不报错**，而是把你送到 App 页面。
+> 所以验证必须看**内容**，不能只看状态码。
+
+**同步更新**：本机 `.mcp.json` / `nox-core\.env` / `scratch\Caddyfile`（后两个都 gitignore）。
+`/root/mcp-urls.txt` 重写（600）。
+
+**故意没动的两个**
+
+- **`/watch/`** —— 客户端凭据（打进 Electron 包），轮换无效，要换机制（短时效票）
+- **`/agent/`** —— 消费者在磁盘上查不到（你那台电脑的 Caelum 本地执行端配置），盲换会弄断它
+
+**⚠️ 一个副作用要告诉她**：新 URL 出现在这次对话记录里了。
+本地文件本来就是明文，所以这不是新增暴露面，但**如果她想更干净，可以再轮一次并把新值只写进 `/root/mcp-urls.txt`**。
