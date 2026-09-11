@@ -34,7 +34,7 @@ import observer
 import vision
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse, FileResponse
+from fastapi.responses import StreamingResponse, FileResponse, JSONResponse
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("co-watching")
@@ -53,6 +53,27 @@ app.add_middleware(
 
 COOKIES = "/root/watch/cookies.txt"
 DATA_DIR = "/root/co-watching/data"
+
+
+@app.get("/health")
+def health():
+    """部署健康检查（也顺手当一次数据目录自检）。
+
+    2026-09-11 铺 release 布局时加的。`deploy-remote.sh` 要求它返回 200，
+    否则**自动回滚**。
+
+    ⚠️ 这里查的是**数据目录在不在**，不是「服务活着吗」—— 因为服务器活着
+    恰恰是那个陷阱最难查的地方：数据路径一旦莫名其妙指到新目录，
+    服务照常起、照常 200，只是数据看起来全没了。
+    co-watching 现在所有数据路径都是绝对路径（DATA_DIR / COOKIES / LEDGER /
+    /tmp/watching-*），所以这条正常情况下永远绿；它防的是**以后**有人加一个
+    相对路径。
+    """
+    ok = os.path.isdir(DATA_DIR)
+    return JSONResponse(
+        {"ok": ok, "data_dir": DATA_DIR, "data_dir_exists": ok},
+        status_code=200 if ok else 503,
+    )
 # 字幕语言优先级：B站/YouTube 中文优先，fallback 英文
 SUB_LANGS = ["zh-Hans", "zh-CN", "zh", "ai-zh", "en"]
 # 直链有时效（yt-dlp 拿到的流地址几分钟过期），缓存 90 秒后重新解析

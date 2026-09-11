@@ -30,11 +30,13 @@ check() {
 check nox-core     /root/nox-core/code     nox-core     http://127.0.0.1:8100/health
 check bridge       /root/bridge/code       bridge       http://127.0.0.1:3003/api/health
 check touch-server /root/touch-server/code touch-server http://127.0.0.1:9333/health
+check co-watching  /root/co-watching/code  co-watching  http://127.0.0.1:3200/health
+check touch-mcp    /root/touch-mcp/code    touch-mcp    http://127.0.0.1:9336/health
 
 echo
 echo "── release 目录（新的在上）────────────────────────────────"
 if compgen -G "/root/releases/*/*/" > /dev/null; then
-  ls -1dt /root/releases/*/*/ 2>/dev/null | awk 'NR<=20 {printf "  %s\n", $0}'
+  ls -1dt /root/releases/*/*/ 2>/dev/null | awk 'NR<=25 {printf "  %s\n", $0}'
 else
   echo "  （还没有任何 release）"
 fi
@@ -42,10 +44,11 @@ fi
 echo
 echo "── 最近一次部署日志 ──────────────────────────────────────"
 for f in /root/releases/nox-core.deploy.log /root/releases/bridge.deploy.log \
-         /root/releases/touch-server.deploy.log; do
+         /root/releases/touch-server.deploy.log /root/releases/co-watching.deploy.log \
+         /root/releases/touch-mcp.deploy.log; do
   [ -f "$f" ] || continue
   echo "  [$f]"
-  tail -n 4 "$f" | sed 's/^/    /'
+  tail -n 3 "$f" | sed 's/^/    /'
 done
 
 echo

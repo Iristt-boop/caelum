@@ -37,6 +37,8 @@ $Services = @{
   "nox-core"     = "nox-core"
   "bridge"       = "bridge"
   "touch-server" = "fsr402-touch-server"
+  "co-watching"  = "co-watching"
+  "touch-mcp"    = "touch-mcp"
 }
 
 function Invoke-Remote([string]$Script) {

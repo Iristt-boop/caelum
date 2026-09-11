@@ -141,4 +141,23 @@ if __name__ == "__main__":
     )
     print(f"touch-mcp listening on 0.0.0.0:{PORT}")
     print(f"data -> {DATA_FILE}")
+
+    # 部署健康检查（2026-09-11 铺 release 布局时加的）。
+    # deploy-remote.sh 要求它返回 200，否则自动回滚。
+    #
+    # ⚠️ 查的是**数据目录在不在**，不是「服务活着吗」—— 真出问题的地方是
+    #    数据路径指到别处，那时服务照常起、照常 200，只有数据不见了。
+    #    （特意不查文件本身：数据文件要等她摸过娃娃才有，查它会让全新安装永远不健康。）
+    from starlette.responses import JSONResponse
+
+    async def _health(_request):
+        d = os.path.dirname(DATA_FILE)
+        ok = os.path.isdir(d)
+        return JSONResponse(
+            {"ok": ok, "data_file": DATA_FILE, "data_dir": d, "data_dir_exists": ok},
+            status_code=200 if ok else 503,
+        )
+
+    _app.add_route("/health", _health, methods=["GET"])
+
     uvicorn.run(_app, host="0.0.0.0", port=PORT)

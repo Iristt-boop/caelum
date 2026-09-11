@@ -51,6 +51,26 @@ case "$SVC" in
     #: 否则表现是「服务起来了、健康检查 200、但数据看起来全没了」—— noc-core
     #: 当初栽的就是这个，而且它不报错。
     ;;
+  co-watching)
+    LINK=/root/co-watching/code
+    UNIT=co-watching
+    HEALTH=http://127.0.0.1:3200/health
+    KEEP=5
+    #: ⚠️ **它的 WorkingDirectory 故意留在 /root/co-watching**，不指向 release 目录。
+    #: 这个服务目前所有数据路径都是绝对的（DATA_DIR / COOKIES / LEDGER /
+    #: /tmp/watching-*），所以 CWD 指哪都一样；但把 CWD 留在稳定目录，
+    #: 以后有人加一个相对路径（`./data` 那种）也不会跟着 release 跑掉。
+    #: **改 unit 时别顺手把 WorkingDirectory 也指到 code。**
+    ;;
+  touch-mcp)
+    LINK=/root/touch-mcp/code
+    UNIT=touch-mcp
+    HEALTH=http://127.0.0.1:9336/health
+    KEEP=5
+    #: 它自己不存数据 —— 读的是 touch-server 那份 jsonl
+    #: （TOUCH_DATA_FILE，绝对路径）。所以换代没有数据风险，
+    #: 但 /health 里仍然查了那个目录在不在（防的是"路径指到别处"）。
+    ;;
   *)
     echo "❌ 不认识的服务: $SVC（见 deploy-remote.sh 的 case 表）"
     exit 2
@@ -120,6 +140,20 @@ case "$SVC" in
     if ! python3 -m py_compile "$NEW/touch_server.py" >/dev/null 2>&1; then
       log "❌ [2] py_compile touch_server.py 失败 —— 不翻软链，直接退出"
       python3 -m py_compile "$NEW/touch_server.py" 2>&1 | tail -3 | tee -a "$LOG"
+      exit 1
+    fi
+    ;;
+  co-watching)
+    if ! python3 -m py_compile "$NEW/app.py" >/dev/null 2>&1; then
+      log "❌ [2] py_compile app.py 失败 —— 不翻软链，直接退出"
+      python3 -m py_compile "$NEW/app.py" 2>&1 | tail -3 | tee -a "$LOG"
+      exit 1
+    fi
+    ;;
+  touch-mcp)
+    if ! python3 -m py_compile "$NEW/server.py" >/dev/null 2>&1; then
+      log "❌ [2] py_compile server.py 失败 —— 不翻软链，直接退出"
+      python3 -m py_compile "$NEW/server.py" 2>&1 | tail -3 | tee -a "$LOG"
       exit 1
     fi
     ;;
