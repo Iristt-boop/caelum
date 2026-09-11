@@ -26,27 +26,163 @@
 $ErrorActionPreference = "Continue"
 $Vps = "root@43.133.211.140"
 
-Write-Host "═══ 1/4  从 VPS 取凭据清单（只留名字和值，值不外显）═══" -ForegroundColor Cyan
+Write-Host "═══ 1/4  从 VPS 取凭据清单（按形状找，不按名字找）═══" -ForegroundColor Cyan
+# ⚠️ 2026-09-12 修掉五个**结构性**盲区。上一版是"漏一个补一个"，
+#    结果就是糖糖那句"怎么每次藏一个就漏一个"。根因是清单来源本身有洞：
+#      ① 文件清单手写 → 新接的服务 .env 永远收不进来。改成 glob。
+#      ② 只认键名里带 TOKEN/SECRET 的 → 叫 FOO 的凭据看不见。改成"名字 **或** 形状"。
+#      ③ 值短于 16 字符直接丢 → 12 位的密码看不见。floor 降到 8，短的标"(弱形状)"。
+#      ④ **配置里硬写的路径暗号**完全不可见 —— panel.noxtang.com 那两条订阅 hex
+#         就写在 Caddyfile 里，env 里根本没有，所以旧版结构上看不见它们。
+#         新增来源 B：扫 Caddyfile / systemd unit 的每一段路径。
+#      ⑤ 新增来源 C：高熵兜底 —— 长得像密钥的，不管它叫什么。
+#    ⚠️ 仍然只报告，不改任何东西。
 $py = @'
-import glob, os, re
-files = glob.glob('/etc/nox/*.env') + ['/root/nox-core/.env','/root/co-reading-mcp/.env',
-  '/root/health-mcp/.env','/root/netease-music-mcp/.env','/root/eryu/server/.secret',
-  '/root/eryu/server/.netease_cred','/root/watch/cookies.txt','/root/.backup-pass']
-KEY = re.compile(r'TOKEN|KEY|SECRET|PASSWORD|COOKIE|PASS', re.I)
+import glob, os, re, sys
+
+BORING = re.compile(r'^(true|false|yes|no|on|off|none|null|nil|debug|info|warn|warning|error|trace|critical|\d+)$', re.I)
+NAMISH = re.compile(r'(?i)(token|key|secret|password|passwd|pwd|cookie|cred|auth|sign|salt|bearer|apikey|access|refresh|client|session|jwt|hmac|vapid|private)')
+TOKENY = re.compile(r'^[A-Za-z0-9_\-+/=.:]{8,}$')
+
+def has_entropy(v):
+    u = any(c.isupper() for c in v); l = any(c.islower() for c in v); d = any(c.isdigit() for c in v)
+    return (u and l) or (d and (u or l))
+
+def looks_secret(v):
+    if len(v) < 8 or BORING.match(v): return False
+    if not TOKENY.match(v): return False          # 有中文/空格 → 是句子，不是凭据
+    if UNITISH.search(v): return False            # 文件名 / unit 名
+    if v.startswith('/'):
+        # ⚠️ 纯文件系统路径不是凭据。`len(v) >= 24` 那条曾经把
+        #    `/root/co-reading-mcp/data`（25 位）这种路径也算成凭据。
+        #    路径只有在**含有一段长得像暗号的成分**时才算。
+        return bool([s for s in PATHSEG.findall(v) if seg_is_secret(s)])
+    # ⚠️ 2026-09-12 第二轮收误报：光看"字符类别混着来"是不够的 ——
+    #    域名、仓库名、模型名同样是大写小写+数字混着，于是
+    #    `devapi.qweather.com` / `Iristt-boop/Claude` / `claude-3-5-sonnet-20241022`
+    #    全被算成凭据，git 那一栏红了 7 条假的，真东西被淹。
+    #    下面四条按**结构**排掉人类可读的名字，只留下真正像密钥的串。
+    if HOSTNAME.match(v): return False            # devapi.qweather.com
+    if REPOSLUG.match(v): return False            # Iristt-boop/Claude
+    if SLUGISH.match(v): return False             # claude-3-5-sonnet-20241022
+    if v.endswith('.'): return False
+    # 走到这里还剩下的：要么是"长度 ≥24 且不含分隔符"（hex/base64 暗号，
+    # 如 234afcf0…（24 位 hex）），要么是大小写数字混排的紧凑串。
+    # ⚠️ 这里**只写指纹不写值** —— 第一版我把完整值抄进注释里当例子，
+    #    结果被自己的工具抓出来（这脚本是跟踪文件），等于换个地方重新泄一次。
+    return has_entropy(v) or (len(v) >= 24 and '-' not in v and '.' not in v)
+
+def seg_is_secret(s):
+    # 路径暗号：≥16 位，且不是纯小写字母。
+    # ⚠️ 上一版判据是「≥20 位」**或**「混合大小写」，于是 panel.noxtang.com 那两条
+    #    **16 位纯小写 hex**（0b1dccd1… / 99b2bead…）两条都不满足 ——
+    #    我加这个来源就是为了抓它们，结果自己把它们漏了。判据改成「字母+数字就算」，
+    #    只排除纯小写无数字的（multi-user / site-packages 这种正常路径名）。
+    if len(s) < 16: return False
+    if re.fullmatch(r'[a-z]+', s): return False
+    if UNITISH.search(s): return False
+    if HOSTNAME.match(s) or SLUGISH.match(s) or REPOSLUG.match(s): return False
+    if any(c.isdigit() for c in s) and any(c.isalpha() for c in s): return True
+    return any(c.isupper() for c in s) and any(c.islower() for c in s)
+
+PATHSEG = re.compile(r'/([A-Za-z0-9_\-]{12,})(?=[/\s*{]|$)')
+ENTROPY = re.compile(r'[A-Za-z0-9_\-]{28,}')
+URL = re.compile(r'^[a-z][a-z0-9+.\-]*://', re.I)
+# 文件名 / systemd unit 名不是凭据。高熵兜底误抓过
+# `dbus-org.freedesktop.resolve1.service` 这类，必须在判据里排掉。
+UNITISH = re.compile(r'\.(service|socket|target|timer|mount|path|conf|cfg|json|ya?ml|py|sh|js|mjs|ts|md|txt|log|env|example|bak|old|png|jpg|gif|ttf|woff2?)$', re.I)
+# 人类可读的**名字**不是凭据 —— 按结构排掉（第二轮收误报）
+HOSTNAME = re.compile(r'^[a-z0-9][a-z0-9.\-]*\.[a-z]{2,}$', re.I)   # devapi.qweather.com
+REPOSLUG = re.compile(r'^[A-Za-z0-9._\-]+/[A-Za-z0-9._\-]+$')        # Iristt-boop/Claude
+SLUGISH  = re.compile(r'^[a-z0-9]+(?:-[a-z0-9]{1,12}){2,}$')       # claude-3-5-sonnet-20241022
+#   ⚠️ SLUGISH 刻意要求「每一段都 ≤12 位」：真实的 `sk-ant-api03-<很长的随机段>`
+#      最后一段远超 12 位，所以不会被误排掉。收紧前它会把真实 API key 也吃掉。
+
+rows = []; skipped = 0; n_shape = 0; n_path = 0; n_ent = 0
+
+# ── 来源 A：所有 env 形状的文件（glob，不再手写清单）──
+files = []
+for pat in ['/etc/nox/*.env','/etc/nox/*/*.env','/etc/**/*.env','/root/*/.env','/root/*/*.env',
+            '/root/*/.secret','/root/*/.netease_cred','/root/watch/cookies.txt','/root/.backup-pass']:
+    files += glob.glob(pat, recursive=True)
+files = sorted(set(f for f in files if os.path.isfile(f) and os.path.getsize(f) < 2_000_000))
+
 for f in files:
+    base = os.path.basename(f)
+    try: lines = open(f, encoding='utf-8', errors='replace').read().splitlines()
+    except Exception: continue
+    for ln in lines:
+        s = ln.strip()
+        if not s or s.startswith('#') or '=' not in s: continue
+        k, v = s.split('=', 1); k = k.strip(); v = v.strip().strip('"').strip("'")
+        if not v or '\t' in v: continue
+        name_hit = bool(NAMISH.search(k)) or bool(NAMISH.search(base))
+        if URL.match(v):
+            # ⚠️ 2026-09-12：URL **整体**不是凭据 —— 第一版把整个 URL 当凭据，
+            #    于是 `NOX_OB_URL=http://127.0.0.1:8002/mcp` 这种回环地址全被算成"凭据"，
+            #    git 那栏一下子红了 20 条（PROJECT.md 里就写着这些 URL），
+            #    真东西被淹掉。只取它**路径段**和**查询参数**里长得像暗号的部分。
+            found = 0
+            for seg in set(PATHSEG.findall(v)):
+                if seg_is_secret(seg):
+                    rows.append(('%s:%s(URL路径段)' % (base, k), seg)); n_path += 1; found += 1
+            for q in re.findall(r'[?&][A-Za-z0-9_\-]{3,}=([A-Za-z0-9_\-+/=.]{16,})', v):
+                if looks_secret(q):
+                    rows.append(('%s:%s(URL查询参数)' % (base, k), q)); n_path += 1; found += 1
+            if not found: skipped += 1
+            continue
+        if len(v) >= 8 and not BORING.match(v) and name_hit:
+            mark = '' if looks_secret(v) else '(弱形状)'
+            rows.append(('%s:%s%s' % (base, k, mark), v))
+            if mark: n_shape += 1
+        elif looks_secret(v):
+            rows.append(('%s:%s(形状命中)' % (base, k), v))
+            n_shape += 1
+        else:
+            skipped += 1
+        for seg in set(PATHSEG.findall(v)):
+            if seg_is_secret(seg):
+                rows.append(('%s:%s(URL里的暗号)' % (base, k), seg)); n_path += 1
+
+# ── 来源 B：配置文件里**硬写**的路径暗号 ──
+cfgs = ['/etc/caddy/Caddyfile'] + glob.glob('/etc/caddy/*') + glob.glob('/etc/systemd/system/*.service')
+for f in sorted(set(cfgs)):
     if not os.path.isfile(f): continue
-    for line in open(f, encoding='utf-8', errors='replace'):
-        line = line.strip()
-        if not line or line.startswith('#') or '=' not in line: continue
-        k, v = line.split('=', 1); v = v.strip().strip('"').strip("'")
-        if len(v) < 16 or '\t' in v: continue
-        if KEY.search(k) or KEY.search(os.path.basename(f)):
-            print('%s\t%s' % (os.path.basename(f) + ':' + k, v))
+    try: text = open(f, encoding='utf-8', errors='replace').read()
+    except Exception: continue
+    for seg in set(PATHSEG.findall(text)):
+        if seg_is_secret(seg):
+            rows.append(('路径暗号:%s' % os.path.basename(f), seg)); n_path += 1
+
+# ── 来源 C：高熵兜底（长得像密钥的，不管叫什么）──
+for f in sorted(set(['/etc/caddy/Caddyfile'] + glob.glob('/etc/systemd/system/*.service'))):
+    if not os.path.isfile(f): continue
+    try: text = open(f, encoding='utf-8', errors='replace').read()
+    except Exception: continue
+    for s in set(ENTROPY.findall(text)):
+        if looks_secret(s):
+            rows.append(('高熵兜底:%s' % os.path.basename(f), s)); n_ent += 1
+
+seen = set()
+for n, v in rows:
+    if v in seen or '\t' in v: continue
+    seen.add(v)
+    # 路径暗号 / 高熵 / 形状命中这几类，把「名字 + 前 4 位 + 长度」打出来当指纹 ——
+    # 这样"工具到底覆盖到了哪些"本身可审计，而值不外显（4 位前缀单独无用）。
+    if n.startswith('路径暗号') or n.startswith('高熵兜底') or '(形状' in n:
+        print('###HIT %s = %s…(%d位)' % (n.split(':')[0], v[:4], len(v)))
+    print('%s\t%s' % (n, v))
+print('###STAT 文件 %d 个 / 形状命中 %d / 路径暗号 %d / 高熵兜底 %d / 判定为非凭据跳过 %d'
+      % (len(files), n_shape, n_path, n_ent, skipped))
 '@
 $b64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($py))
 $raw = & ssh -o BatchMode=yes -o ConnectTimeout=20 $Vps "echo '$b64' | base64 -d > /tmp/sweep.py && python3 /tmp/sweep.py; rm -f /tmp/sweep.py"
 $creds = @()
-foreach ($l in $raw) { $p = $l -split "`t", 2; if ($p.Count -eq 2) { $creds += [pscustomobject]@{ Name = $p[0]; Val = $p[1] } } }
+foreach ($l in $raw) {
+  if ($l -like '###*') { Write-Host ("  " + $l.Substring(3)) -ForegroundColor DarkGray; continue }
+  $p = $l -split "`t", 2
+  if ($p.Count -eq 2) { $creds += [pscustomobject]@{ Name = $p[0]; Val = $p[1] } }
+}
 Write-Host "  $($creds.Count) 个凭据" -ForegroundColor Green
 if ($creds.Count -eq 0) { Write-Host "  ⚠ 一个都没取到，先查 ssh 和 /etc/nox/*.env" -ForegroundColor Red; exit 1 }
 

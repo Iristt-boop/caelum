@@ -2,7 +2,9 @@
 """Add a VLESS + Reality inbound to 3x-ui v3.7 via panel API (localhost only)."""
 import json, re, sys, urllib.request, urllib.parse, http.cookiejar
 
-BASE = "http://127.0.0.1:41729/234afcf0c1de6d2cc9237599/"
+# ⚠️ 面板的随机 basepath 是**凭据**（面板的第二道门），不能写死在仓库里。
+# 2026-09-12：这里原本明写着 `/234afcf0…/`，被凭据普查抓到（当时它在 HEAD 上、被 git 跟踪），
+# 现在改成从 3x-ui 的 install-result.env 读。本脚本本来就只在 VPS 回环上跑。
 IN_PORT = 56218
 HDRS = {"X-Requested-With": "XMLHttpRequest"}
 
@@ -16,6 +18,10 @@ def read_kv(path):
     return kv
 
 
+_bp = read_kv("/etc/x-ui/install-result.env").get("XUI_WEB_BASE_PATH", "")
+if not _bp:
+    sys.exit("读不到 XUI_WEB_BASE_PATH（在 /etc/x-ui/install-result.env 里）—— 停止，不再有写死的兜底值")
+BASE = "http://127.0.0.1:41729/%s/" % _bp
 creds = read_kv("/root/xui-credentials.txt")
 rk_txt = open("/root/reality-keys.txt").read()
 PRIV = re.search(r"^PrivateKey: (\S+)", rk_txt, re.M).group(1)
