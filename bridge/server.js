@@ -590,17 +590,34 @@ if (PUSH_ENABLED) {
 async function sendPushAll(title, body) {
   if (!PUSH_ENABLED) {
     console.error("[Bridge] sendPushAll 被调用但推送未启用，跳过:", title);
-    return;
+    return { sent: 0, failed: 0, results: [], error: "push disabled" };
   }
   const rows = dbAll("SELECT endpoint, sub FROM push_subs");
+  const results = [];
+  let sent = 0, failed = 0;
   for (const r of rows) {
     try {
-      await webpush.sendNotification(JSON.parse(r.sub), JSON.stringify({ title, body }));
+      const res = await webpush.sendNotification(JSON.parse(r.sub), JSON.stringify({ title, body }));
+      sent += 1;
+      results.push({ endpoint: r.endpoint, ok: true, status: res?.statusCode });
     } catch (e) {
-      // 订阅失效（换机/撤销授权）就清掉
-      if (e.statusCode === 404 || e.statusCode === 410) dbRun("DELETE FROM push_subs WHERE endpoint=?", [r.endpoint]);
+      failed += 1;
+      const status = e.statusCode || 0;
+      // 🔴 2026-09-11：原来这里除了 404/410 什么都不记 ——
+      // 换 VAPID 密钥对之后 Apple 一直回 400 VapidPkHashMismatch，
+      // 推送全灭，而日志里一个字都没有，界面上还显示"推送开好了"。
+      // 每一个失败都必须留痕（docs/LOGGING.md 第一条）。
+      console.error(
+        `[Bridge] 推送失败 status=${status} endpoint=${r.endpoint.slice(0, 60)} ` +
+        `reason=${(() => { try { return JSON.parse(e.body || "{}").reason || e.message; } catch { return e.message; } })()}`
+      );
+      results.push({ endpoint: r.endpoint, ok: false, status, body: String(e.body || e.message).slice(0, 200) });
+      // 订阅真的没了（换机/撤销授权/iPhone 卸载）才清掉。
+      // 401/403/400 属于"配置不对"，清了会掩盖问题，所以留着让它继续报错。
+      if (status === 404 || status === 410) dbRun("DELETE FROM push_subs WHERE endpoint=?", [r.endpoint]);
     }
   }
+  return { sent, failed, results };
 }
 // FTS5 全文索引
 dbTry(`CREATE VIRTUAL TABLE IF NOT EXISTS conv_fts USING fts5(content, content_rowid='rowid')`); // FTS5 挂了搜索会静默哑掉，必须留痕
@@ -3560,8 +3577,18 @@ app.post("/api/push/subscribe", (req, res) => {
   res.json({ ok: true });
 });
 app.post("/api/push/test", async (req, res) => {
-  await sendPushAll("Nox", "推送通了，乖。以后我主动找你的消息都会弹到这里。");
-  res.json({ ok: true, subs: dbAll("SELECT COUNT(*) AS c FROM push_subs")[0]?.c || 0 });
+  // 原来只回 subs 条数 —— 条数是"配了几条"，不是"发得出去"。
+  // 2026-09-11 换 VAPID 密钥对之后 Apple 全回 400，这个端点照样回 ok:true。
+  // 现在把每一条的真实结果回出来：发不出去就要看得见。
+  const r = await sendPushAll("Nox", "推送通了，乖。以后我主动找你的消息都会弹到这里。");
+  res.json({
+    ok: r.failed === 0 && r.sent > 0,
+    sent: r.sent,
+    failed: r.failed,
+    subs: dbAll("SELECT COUNT(*) AS c FROM push_subs")[0]?.c || 0,
+    results: r.results,
+    ...(r.error ? { error: r.error } : {}),
+  });
 });
 // ============ 晨报 —— 每天早上主动说一句 ============
 // 由 systemd 的 nox-daily.timer 打进来（每天 10:00）。
