@@ -14,7 +14,9 @@ echo "════════ Caelum 体检 $(date '+%F %T') ══════
 
 # ── 1) systemd 服务 ──────────────────────────────
 echo "-- 服务 --"
-for s in bridge nox-core ombre-brain co-reading co-watching eryu netease-mcp; do
+# ⚠️ caddy 2026-09-11 才补进这个清单：它是整套系统**唯一的入口**，
+# 它挂了 = App / MCP / touch / 所有域名全挂。原来这里居然一直没查它。
+for s in caddy bridge nox-core ombre-brain co-reading co-watching eryu netease-mcp; do
   st=$(systemctl is-active "$s" 2>/dev/null)
   if [ "$st" = "active" ]; then good "$s running"; else bad "$s = $st"; fi
 done
@@ -126,6 +128,58 @@ if git -C /root/ombre-brain ls-files --error-unmatch config.yaml >/dev/null 2>&1
 else
   good "OB config.yaml 未被追踪"
 fi
+
+# ── 8) Caddy 路径暗号（空值是最难查的坏法）────────
+#
+# 2026-09-11：9 个路径暗号从 Caddyfile 搬进 /etc/nox/caddy.env（0600），
+# systemd 通过 drop-in 注入给 ExecStart 和 ExecReload。
+#
+# ⚠️ 这个改动有一种**极难查**的坏法：env 文件丢了 / 变量名打错了 / 权限不对，
+#    {$CADDY_TOKEN_*} 会解析成**空串** —— 路径变成 /ombre//。而 Caddy 照常启动、
+#    照常 reload，日志里一个字都没有，只有那几条路径**静默变成 404**。
+#    所以这里查两件事：env 文件本身，以及**运行中配置里有没有空值**。
+echo "-- Caddy 暗号 --"
+if [ ! -f /etc/nox/caddy.env ]; then
+  bad "/etc/nox/caddy.env 不存在 —— Caddyfile 里的 {\$CADDY_TOKEN_*} 会解析成空串"
+else
+  CPERM=$(stat -c %a /etc/nox/caddy.env)
+  if [ "$CPERM" = "600" ]; then good "caddy.env 权限 600"; else bad "caddy.env 权限是 $CPERM，应为 600"; fi
+  # ⚠️ 这里不能用 `|| echo 0`：`grep -c` 在**没有匹配时也会打印 0**，只是退出码为 1。
+  #    加上 `|| echo 0` 就变成两行 "0\n0"，`[ "$CEMPTY" = "0" ]` 永远不成立 ——
+  #    第一版就踩了，doctor 一直误报「有 2 处要注意」。用 `|| true` 只吞退出码。
+  CEMPTY=$(grep -cE '^[A-Za-z_][A-Za-z0-9_]*=$' /etc/nox/caddy.env 2>/dev/null || true)
+  CFILLED=$(grep -cE '^CADDY_TOKEN_[A-Za-z0-9_]+=.+' /etc/nox/caddy.env 2>/dev/null || true)
+  if [ "$CEMPTY" = "0" ]; then good "caddy.env 里 $CFILLED 个暗号都已填值"
+  else bad "caddy.env 里有 $CEMPTY 个空值 —— 对应的路径会静默 404"; fi
+fi
+CCFG=$(curl -s --max-time 5 http://localhost:2019/config/ 2>/dev/null || true)
+if [ -z "$CCFG" ]; then
+  warn "拿不到 Caddy 管理接口（localhost:2019），跳过运行时空值检查"
+elif printf '%s' "$CCFG" | python3 -c '
+import json, re, sys
+cfg = json.load(sys.stdin)
+paths = []
+def w(o):
+    if isinstance(o, dict):
+        for k, v in o.items():
+            if k == "path" and isinstance(v, list): paths.extend(v)
+            w(v)
+    elif isinstance(o, list):
+        for i in o: w(i)
+w(cfg)
+uniq = set(paths)
+bad = sorted(p for p in uniq if "//" in p or "{$" in p)
+if bad:
+    print("BAD " + " | ".join(bad[:5]))
+    sys.exit(1)
+n = len([p for p in uniq if re.search(r"/[0-9a-f]{16,}|/[A-Za-z0-9]{24}", p)])
+print("OK %d" % n)
+' > /tmp/.caddy-chk 2>/dev/null; then
+  good "Caddy 运行时 $(cut -d' ' -f2 < /tmp/.caddy-chk) 条受保护路径解析正常"
+else
+  bad "Caddy 运行时有空变量/未解析占位符：$(cut -c1-110 < /tmp/.caddy-chk 2>/dev/null) —— 那几条路径正在静默 404"
+fi
+rm -f /tmp/.caddy-chk
 
 echo "════════"
 if [ "$ISSUES" -eq 0 ]; then

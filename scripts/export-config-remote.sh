@@ -39,9 +39,19 @@ echo "  $(grep -cv '^\s*#\|^\s*$' "$OUT/cron/crontab.txt") 条有效行"
 
 echo "== [4] Caddyfile 脱敏 → caddy/Caddyfile.target =="
 # 真实暗号换成 Caddy 的 {$VAR} 占位符（解析期从环境变量取值）
-sed -E 's|(/[a-z][a-z-]*/)[0-9a-f]{16,}|\1{$TOKEN_PATH}|g; s|(/agent/)[A-Za-z0-9]{16,}|\1{$TOKEN_AGENT}|g' \
-  /etc/caddy/Caddyfile > "$OUT/caddy/Caddyfile.target"
-left=$(grep -cE '/[a-z-]+/[0-9a-f]{16,}|/agent/[A-Za-z0-9]{16,}' "$OUT/caddy/Caddyfile.target" || true)
+# ⚠️ 2026-09-11 补：原来只脱敏 `/<服务>/<hex>/` 和 `/agent/<token>/` **两种形状**，
+#    漏了 panel 那种 `handle /<16位hex>/`。而且**残留检查用的正则和脱敏用的
+#    一样窄** —— 所以它报「残留 0」的时候，那两个 panel 暗号正明晃晃躺在
+#    导出物里。**检查的正则比要查的东西窄，等于没查。** 现在两边都按全部形状写。
+#
+# 另：Caddyfile 本身已经模板化（`{$CADDY_TOKEN_*}` 从 /etc/nox/caddy.env 来），
+#     所以下面这几条 sed 现在是**第二道网**，不是唯一那道。
+sed -E '
+  s|(/[a-z][a-z-]*/)[0-9a-f]{16,}|\1{$TOKEN_PATH}|g;
+  s|(/agent/)[A-Za-z0-9]{16,}|\1{$TOKEN_AGENT}|g;
+  s|(handle[[:space:]]+/)[0-9a-f]{16}/|\1{$TOKEN_PANEL}/|g
+' /etc/caddy/Caddyfile > "$OUT/caddy/Caddyfile.target"
+left=$(grep -cE '/[a-z][a-z-]*/[0-9a-f]{16,}|/agent/[A-Za-z0-9]{16,}|handle[[:space:]]+/[0-9a-f]{16}/' "$OUT/caddy/Caddyfile.target" || true)
 echo "  脱敏后残留的长令牌: $left  $([ "$left" = 0 ] && echo ✅ || echo 🔴)"
 echo "  -- 脱敏后的 handle 行 --"
 grep -nE 'handle_path|handle /' "$OUT/caddy/Caddyfile.target" | head -8 | sed 's/^/    /'
@@ -50,7 +60,11 @@ echo "== [5] env 模板（只有变量名，值全部替换）=="
 for f in /etc/nox/*.env; do
   [ -f "$f" ] || continue
   b=$(basename "$f")
-  sed -E 's/^([A-Z_]+)=.*/\1=<填值>/' "$f" > "$OUT/env-templates/$b.example"
+  # ⚠️ 2026-09-11：原来是 `s/^([A-Z_]+)=.*/\1=<填值>/` —— `[A-Z_]+`
+  #    **不匹配数字**，而变量名里带数字很常见（`CADDY_TOKEN_PANEL_SUB_B64`、
+  #    `QWEN_ASR_API_KEY`…）。所以那个 B64 的值原样导出了，靠第 [6] 步的
+  #    指纹扫描才抓回来。变量名一律按 `[A-Za-z_][A-Za-z0-9_]*` 认。
+  sed -E 's/^([A-Za-z_][A-Za-z0-9_]*)=.*/\1=<填值>/' "$f" > "$OUT/env-templates/$b.example"
   echo "  $b.example: $(grep -c '=<填值>' "$OUT/env-templates/$b.example") 个变量"
 done
 # 光有 /etc/nox 还不够：还有几个服务用自己的 .env
