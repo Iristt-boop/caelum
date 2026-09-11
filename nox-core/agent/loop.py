@@ -317,7 +317,16 @@ class AgentLoop:
                 return
 
             messages.append(_assistant_message(turn))
-            outcomes = [self._execute(c, tracker, ctx) for c in turn.tool_calls]
+            # 🔴 一件一件跑，每件前后各发一帧 —— **不要写回列表推导**。
+            # 推导式会把这一批工具整个跑完才回到调用方，中间没有任何输出：
+            # 语音通话那边就是十几秒的死寂，她分不清他在干活还是卡死了。
+            # （非流式那条 `run()` 没有这个问题 —— 那边本来就是等全部做完才回。）
+            outcomes = []
+            for c in turn.tool_calls:
+                yield StreamEvent("tool_start", tool=c.name)
+                outcome = self._execute(c, tracker, ctx)
+                outcomes.append(outcome)
+                yield StreamEvent("tool_end", tool=c.name, ok=not outcome.failed)
             messages.append(
                 Message(role="tool_results", tool_results=[o.result for o in outcomes])
             )
