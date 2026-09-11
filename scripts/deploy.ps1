@@ -32,9 +32,11 @@ $SshOpts = @("-i", $Key, "-o", "BatchMode=yes", "-o", "ConnectTimeout=20")
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 
 #: 服务 → 仓库里的子目录
+#: 加服务要同时改三处：这里、deploy-remote.sh 的 case 表、deploy-status.sh 的 check 列表。
 $Services = @{
-  "nox-core" = "nox-core"
-  "bridge"   = "bridge"
+  "nox-core"     = "nox-core"
+  "bridge"       = "bridge"
+  "touch-server" = "fsr402-touch-server"
 }
 
 function Invoke-Remote([string]$Script) {

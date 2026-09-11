@@ -38,6 +38,19 @@ case "$SVC" in
     #: 所以每个 release 里都要建一个 node_modules 软链（磁盘几乎不花）。
     NODE_MODULES=/root/bridge/node_modules
     ;;
+  touch-server)
+    LINK=/root/touch-server/code
+    UNIT=touch-server
+    HEALTH=http://127.0.0.1:9333/health
+    KEEP=5
+    #: ⚠️ 它为啥**能**安全铺 release 布局：数据目录是 unit 里**显式**指定的
+    #: （`TOUCH_DATA_DIR=/root/touch-server/data`），在 release 目录**外面** ——
+    #: 所以换代不会跑到新目录里新建一份空的记录文件。
+    #:
+    #: 反过来，靠 `__file__` 找数据的服务（比如 co-watching）必须先补一个显式路径，
+    #: 否则表现是「服务起来了、健康检查 200、但数据看起来全没了」—— noc-core
+    #: 当初栽的就是这个，而且它不报错。
+    ;;
   *)
     echo "❌ 不认识的服务: $SVC（见 deploy-remote.sh 的 case 表）"
     exit 2
@@ -100,6 +113,13 @@ case "$SVC" in
     if ! node --check "$NEW/server.js" >/dev/null 2>&1; then
       log "❌ [2] node --check server.js 失败 —— 不翻软链，直接退出"
       node --check "$NEW/server.js" 2>&1 | tail -3 | tee -a "$LOG"
+      exit 1
+    fi
+    ;;
+  touch-server)
+    if ! python3 -m py_compile "$NEW/touch_server.py" >/dev/null 2>&1; then
+      log "❌ [2] py_compile touch_server.py 失败 —— 不翻软链，直接退出"
+      python3 -m py_compile "$NEW/touch_server.py" 2>&1 | tail -3 | tee -a "$LOG"
       exit 1
     fi
     ;;

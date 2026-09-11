@@ -9,6 +9,7 @@ FSR402 触摸数据接收服务（touch-server）
 """
 import json
 import os
+import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from datetime import datetime
 
@@ -16,9 +17,33 @@ PORT = int(os.environ.get("TOUCH_PORT", "9333"))
 DATA_DIR = os.environ.get("TOUCH_DATA_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "data"))
 DATA_FILE = os.path.join(DATA_DIR, "touch_moments.jsonl")
 
-# 可选：给 /touch 加一段暗号做门禁。留空则不加鉴权。
-# 设了之后 ESP32 要 POST 到 /touch/<TOKEN>，或用 X-Touch-Token 头。
+# 给 /touch 和 /latest 加一段暗号做门禁。
+# 设了之后 ESP32 要 POST 到 `/touch/<TOKEN>`，或用 `X-Touch-Token` 头；
+# 读 `/latest` 同样要带（头或 `?token=`）。
 TOUCH_TOKEN = os.environ.get("TOUCH_TOKEN", "")
+
+# 🔴 没配 TOUCH_TOKEN 就**拒绝启动**（2026-09-11 改）。
+#
+# 原来留空 = 不加鉴权 —— 下面 `if TOUCH_TOKEN:` 会整段跳过校验。
+# 审计把这条列为 **Critical**：unit 里那行被注释掉之后，
+# **她身体接触的记录在公网可读可写**（9333 当时还是直连暴露的）。
+#
+# 「漏配一个变量」不该由「静默把鉴权关掉」来兜底 —— 那是 fail-open，
+# 而且是**没有任何痕迹**的那种：服务照常起来、照常 200、日志里一个字不提。
+# 跟 bridge 的 NOX_TOKEN 一个道理（那边也是缺失即 exit 1）。
+#
+# ⚠️ 这跟本机跑测试的用法冲突（test_local.py 不需要 token），
+#    所以留一个**显式**的逃生门，而不是靠"忘了设"：
+#        TOUCH_ALLOW_NO_AUTH=1 python3 touch_server.py
+if not TOUCH_TOKEN and os.environ.get("TOUCH_ALLOW_NO_AUTH") != "1":
+    print(
+        "[touch-server] 🔴 TOUCH_TOKEN 未配置 —— 拒绝启动。\n"
+        "    这是故意的：留空曾经等于「鉴权关闭」，而这份日志是她的身体接触记录。\n"
+        "    线上从 /etc/nox/touch-server.env 取（systemd EnvironmentFile）。\n"
+        "    本机测试请显式设 TOUCH_ALLOW_NO_AUTH=1。",
+        file=sys.stderr,
+    )
+    sys.exit(1)
 
 
 class TouchHandler(BaseHTTPRequestHandler):
