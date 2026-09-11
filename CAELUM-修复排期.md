@@ -71,10 +71,11 @@ init 静默失败，于是后面的 `git add -A` 一路向上跑进了**父仓�
 2. 我在 README 里把真实的 `/agent/<token>/` 当例子写进去 → 提交前扫描抓住
 
 **⑤ 还没做的**
-- **线上 Caddyfile 还是明文暗号**（6 个 hex + 1 个 agent token）。`Caddyfile.target` 是目标态，
-  迁移要先拆成 5 个变量、再用 `systemctl reload caddy`（不是 restart）。README 里写了步骤。
-- `deploy-config` 还**没有 remote**（要你建一个私有仓库）
-- 其余 11 个服务还没铺 release 布局
+- ~~**线上 Caddyfile 还是明文暗号**（6 个 hex + 1 个 agent token）~~
+  → **已完成（见第七批 ①）**：实际是 9 个暗号，全部外置到 `/etc/nox/caddy.env`
+- ~~`deploy-config` 还**没有 remote**（要你建一个私有仓库）~~
+  → **已建并推送**：<https://github.com/Iristt-boop/caelum-deploy-config>
+- 其余 11 个服务还没铺 release 布局（普查结论见第七批 ⑥）
 
 ### 第五批（2026-09-11 夜：174 项入库 + 全历史密钥清除 + VAPID 搬出源码）
 
@@ -412,7 +413,9 @@ app-tracker` + `co-reading-mcp` 的代码），其中包含**糖糖的接触记�
 **⑦ 还没做的**
 - **其余 10 个服务还没铺 release 布局**（普查已做完，见 ① 的清单；
   `mcp-trends`/`mcp-train` 走 npx 无源码目录，`nox-daily`/`caddy` 不适用）
-- `caelum-deploy-config` 等糖糖删库重建后重推（本地已备好：`6e58378`，42 文件，零明文）
+- ~~`caelum-deploy-config` 等糖糖删库重建后重推（本地已备好：`6e58378`，42 文件，零明文）~~
+  → **已完成**：删库重建后推到 `b7ebaa7`（42 文件，零明文）；
+  旧根提交 `af4f092` **复验「拉不到」**，对照组当前 master 拉得到（说明测试本身有效）
 - nox-app 历史清理（可选，值已作废）
 - 网易云凭据 35 天了（doctor 在提醒）
 - WiFi 密码没换（她的选择）
