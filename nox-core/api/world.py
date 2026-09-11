@@ -225,9 +225,20 @@ def collect_activity(current: tuple | None, link_ready: bool) -> dict:
 
 
 def ha_state_getter(api_url: str, token: str) -> Callable[[str], dict]:
-    """打 HA REST 拿单个实体状态。Core 和 HA 同机，走 localhost。"""
+    """打 HA REST 拿单个实体状态。
+
+    ⚠️ 2026-09-11 更正：HA **不再和 Core 同机** —— 2026-09-10 搬到了家里的 HAOS，
+    前面是 Cloudflare Tunnel。旧注释「走 localhost」已经作废。
+
+    另外必须带 User-Agent：Cloudflare 会把 urllib 的默认 UA 挡成 403，
+    而 403 在这里会被上层当成「拿不到状态」→ 静默降级。
+    """
     base = (api_url or "").rstrip("/")
-    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    headers = {
+        "User-Agent": "caelum-noxcore/1.0",
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+    }
 
     def get(entity_id: str) -> dict:
         req = urllib.request.Request(f"{base}/api/states/{entity_id}", headers=headers)

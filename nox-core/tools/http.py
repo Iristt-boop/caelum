@@ -57,6 +57,20 @@ class RestClient:
         for k, v in self.headers.items():
             req.add_header(k, v)
 
+        # ⚠️ 没显式给 UA 的话，补一个（2026-09-11 加）。
+        #
+        # 原因：HA 在 2026-09-10 搬到了家里的 HAOS，前面是 Cloudflare Tunnel。
+        # Cloudflare 会把 urllib 的默认 UA（`Python-urllib/3.x`）挡成 **403**。
+        # 而 403 在这里被上层当成「这个源没数据」→ **静默降级**。
+        #
+        # 症状：`PresenceSource`（她出门了/她到家了）整条主动关心线悄无声息地断了，
+        # 日志里只有一句「所有数据源都没有位置数据」，指不到 UA 上。
+        #
+        # 这里加在 `_request` 内部而不是 dataclass 默认值 —— 因为调用方传的
+        # `headers=...` 会整个替换默认值，那样补不上。只有调用方**没给**才补。
+        if not any(k.lower() == "user-agent" for k in self.headers):
+            req.add_header("User-Agent", "caelum-noxcore/1.0")
+
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                 body = resp.read()

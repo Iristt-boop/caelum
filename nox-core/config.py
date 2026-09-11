@@ -256,7 +256,21 @@ class Config:
     # ---- Home Assistant REST API（Location Provider 的 HA Tracker Source）----
     # 直连 HA 的 REST API（不是 ha-mcp 的 MCP 端点），查 person/device_tracker 实体。
     # 和 ha-mcp 共用同一把 HA_TOKEN，不额外申请。
-    ha_api_url: str = field(default_factory=lambda: _env("NOX_HA_API_URL", "http://localhost:8123"))
+    #
+    # ⚠️ 2026-09-11 改：默认值原来是 `http://localhost:8123` —— 那是 HA 还在
+    # 这台 VPS 上时的地址。2026-09-10 HA 搬到家里的 HAOS、走 Cloudflare Tunnel 之后，
+    # 那个默认值就成了**一个静默失效的死地址**：连不上 → 位置数据为空 →
+    # 「她出门了 / 她到家了」整条主动关心线不报错地断掉，日志只留一句
+    # 「所有数据源都没有位置数据」，完全指不到地址上。
+    # 现在默认留空，走「留空即不启用」的惯例，启动时日志会明说这条线不跑
+    # （api/server.py: `没配 HA（NOX_HA_API_URL/TOKEN），出门追问这条线不跑`）。
+    # 线上设成 `https://ha.noxtang.com`。
+    #
+    # ⚠️ 还有第二个坑：HA 现在在 Cloudflare 后面，而 Cloudflare 会把 urllib 的
+    # 默认 UA（`Python-urllib/3.x`）挡成 403。所以凡是打这个地址的 urllib 调用
+    # 都必须带 User-Agent —— 见 context/providers/location.py、
+    # api/world.py(ha_state_getter)、tools/http.py(RestClient)。
+    ha_api_url: str = field(default_factory=lambda: _env("NOX_HA_API_URL", ""))
     ha_api_token: str = field(default_factory=lambda: _env("NOX_HA_API_TOKEN", ""))
 
     # ---- 高德地图（Location Provider 逆地理编码）----

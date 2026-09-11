@@ -537,8 +537,12 @@ def _build_attention(core: Nox, sessions: "Sessions", db: Store) -> AttentionSer
         # 位置：她出门 / 到家。HA 那条**本来就是自动的**（GPS，5 米精度），
         #   缺的从来不是数据，是「有人盯着跃迁」+「能把他叫醒」。
         fast_sources = [ThinkingSource(astore, db)]
-        ha_url = os.getenv("NOX_HA_API_URL") or os.getenv("NOX_HA_URL") or ""
-        ha_token = os.getenv("NOX_HA_API_TOKEN") or os.getenv("NOX_HA_TOKEN") or ""
+        # ⚠️ 2026-09-11：这里原来还 `or os.getenv("NOX_HA_URL")` —— 但 NOX_HA_URL 是
+        # **ha-mcp 的 MCP 端点**（http://127.0.0.1:8004/mcp），拿它当 REST base 会拼出
+        # `.../mcp/api/states/person.nox` 这种必然 404 的地址，而且失败是静默的。
+        # 去掉这个 fallback：没配 NOX_HA_API_URL 就走下面的分支，明说这条线不跑。
+        ha_url = os.getenv("NOX_HA_API_URL") or ""
+        ha_token = os.getenv("NOX_HA_API_TOKEN") or ""
         if ha_url and ha_token:
             from tools.http import RestClient
             fast_sources.append(PresenceSource(

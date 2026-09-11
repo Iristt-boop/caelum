@@ -67,6 +67,21 @@ class HATrackerSource:
                  timeout: float = 6.0) -> None:
         self._url = api_url.rstrip("/")
         self._headers = {
+            # ⚠️ **User-Agent 不能删**（2026-09-11 补）。
+            #
+            # HA 在 2026-09-10 搬到了家里的 HAOS，前面挂了 Cloudflare Tunnel。
+            # Cloudflare 会把 urllib 的默认 UA（`Python-urllib/3.x`）挡成 **403**，
+            # 而 403 在这一层会被当成「没有位置数据」→ 静默降级成旧值/无数据。
+            #
+            # 实测（改之前）：
+            #   默认 UA        → HTTP 403
+            #   caelum-noxcore → HTTP 200 state='home'
+            #   旧的 localhost:8123 → Connection refused（VPS 上那台 HA 已经关了）
+            #
+            # 症状是「她出门了 / 她到家了」整条主动关心线静默断掉，
+            # 而日志只留一句「所有数据源都没有位置数据」——看不出是 UA 的问题。
+            # 注意 httpx 的默认 UA 不受影响（ha-mcp 一直正常），只有 urllib 会被挡。
+            "User-Agent": "caelum-noxcore/1.0",
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
         }
