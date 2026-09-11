@@ -780,7 +780,7 @@ touch-server 现在要 token 了。**没更新 `wifi_secrets.h` 就刷固件，�
   | `netease-music-mcp` | 删掉 `netease-mcp.noxtang.com` 站点块，或加 basic auth（它零鉴权还持有她的网易云 Cookie） |
   | `co-reading` | 设 `MCP_AUTH_TOKEN` —— 它是 **fail-open**（`server-sse.js:51` `if (!authToken) return true`） |
   | `app-tracker` / `toy-mcp` | 恢复 DNS-rebinding 防护（`main.py:11` / `:16`）+ 加 token 头校验 |
-  | `co-watching` | `VITE_WATCH_URL` 的 hex 改短时效票并轮换 —— 它**已经被 Vite 内联进 `dist/assets/index-*.js` 了**，拿到安装包的人就有全部权限 |
+  | `co-watching` | **改短时效票** —— 它**已经被 Vite 内联进 `dist/assets/index-*.js` 了**，拿到安装包的人就有全部权限。<br>⚠️ 2026-09-12 修正：**光轮换 hex 没用**，因为这个 token 按设计就必须在客户端里（Movies 房要带着它调 URL），新 token 照样会被打进下一个包。真正的修法是让客户端向 bridge 换一张**带签名、会过期**的票（同 `musicSig` / scribe-token 模式） |
   | `ha-mcp` | 加 token；顺手修 `hass_set_state`（`main.py:168-176` 不校验 `DEVICES`） |
   **判据**：拿掉 token 之后，这些端点全部 401/403。
 
