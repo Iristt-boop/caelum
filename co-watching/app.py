@@ -995,4 +995,17 @@ def session_info(sid: str):
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="0.0.0.0", port=3200)
+    # 🔴 绑回环，不绑 0.0.0.0（2026-09-12 改，审计 0.6「绑定收口」）。
+    #
+    # 原来是 0.0.0.0 —— 这个服务**自己零鉴权**，唯一的门禁是 Caddy 那条
+    # `/watch/<token>/` 路径。绑 0.0.0.0 等于「安全组一旦被改宽，门就没了」：
+    # 绕过 Caddy 直连 3200 就完全不需要 token。
+    #
+    # 为什么现在改是安全的（改之前逐条查过）：
+    #   · Caddy 反代的是 localhost:3200            → 不受影响
+    #   · bridge 的健康探针用的是 127.0.0.1:3200（`WATCH_URL` 的默认值）→ 不受影响
+    #   · 查的时候到 3200 没有任何活动连接
+    #
+    # 留 WATCH_HOST 是为了万一要临时放开（比如本机外面调试），
+    # 但**默认值必须是回环** —— 安全的那一侧当默认，要放开得显式说。
+    uvicorn.run(app, host=os.environ.get("WATCH_HOST", "127.0.0.1"), port=3200)
