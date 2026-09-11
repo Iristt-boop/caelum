@@ -91,7 +91,21 @@ else
   if [ "$d" -lt 26 ]; then good "最新备份 $(( d )) 小时前：$(basename "$LATEST") ($(du -h "$LATEST" | cut -f1))"
   else warn "最新备份已经 $(( d / 24 )) 天了——cron 死了？"; fi
   n=$(ls -1 /root/backups/auto/caelum-*.tar.gz.enc 2>/dev/null | wc -l)
-  good "本机保留 $n 份（异地副本在你 Windows 的 D:\\claude-code\\backups\\vps\\）"
+  good "本机保留 $n 份"
+  # ── 异地副本（2026-09-11 新增）─────────────────────────────
+  # 盲区就在这儿：原来只报"本机保留 n 份"，**异地那一跳死没死没人管**。
+  # 2026-09-06 起 scp 连续 5 天失败（引号 bug），异地副本一直停在 09-05，
+  # 而 doctor.sh 全绿、晨检卡也全绿 —— 因为没人检查最后那一公里。
+  # 心跳由 scripts/pull-vps-backup.cmd 在拉成功后回写 /root/.offsite-ok。
+  # 容忍 30 小时：漏一次还能忍（她那台 Windows 可能休眠/关机），
+  # 连着两次不成功就该有人知道。
+  if [ -f /root/.offsite-ok ]; then
+    od=$(( (NOW - $(stat -c %Y /root/.offsite-ok)) / 3600 ))
+    if [ "$od" -lt 30 ]; then good "异地副本心跳 $(( od )) 小时前（Windows → D:\\claude-code\\backups\\vps\\）"
+    else warn "异地副本已经 $(( od / 24 )) 天没拉走了——去 Windows 看 backups\\vps\\pull.log"; fi
+  else
+    warn "从没见过异地副本心跳（/root/.offsite-ok 不存在）——Windows 那个 12:30 的任务成功过吗？"
+  fi
 fi
 
 # ── 6) 系统资源 ─────────────────────────────────
