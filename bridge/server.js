@@ -39,6 +39,32 @@ app.use(express.json({ limit: "30mb" }));
 const AUTH_TOKEN = process.env.NOX_TOKEN || "";
 const LOGIN_PASSWORD = process.env.NOX_LOGIN_PASSWORD || AUTH_TOKEN;
 
+// 🔴 缺失即拒绝启动（2026-09-11 修）。
+//
+// 原来 ensureApiAuth 的兜底是 `if (!AUTH_TOKEN) return next();` —— **一次配置疏漏
+// 就让整个 /api/* 裸奔**：她的聊天记录、健康数据、待办、记忆，还有那条
+// 真的会下单的 /api/nox/orders/{id}/confirm，全部无鉴权可达；而且不打日志、
+// 表面上服务一切正常。
+//
+// 这个项目历史上真的发生过一次「钥匙在公网裸奔」（PROJECT.md「凭证：NOX_TOKEN
+// 曾在公网裸奔」，2026-08-25 清理），所以这里选 fail-closed 而不是 fail-open。
+// 照 ha-mcp 的做法：缺关键凭据就起不来，比「起得来但没锁门」安全。
+//
+// ⚠️ bridge/test/helpers.js 会显式传 NOX_TOKEN，所以测试不受影响。
+// ⚠️ 部署前确认 unit 里真的有 NOX_TOKEN —— 仓库里那份 bridge.service **没有**
+//    （"仓库与线上漂移"的又一例）。建议改成 EnvironmentFile=/etc/nox/bridge.env（600）。
+if (!AUTH_TOKEN) {
+  console.error("[Bridge] 致命：NOX_TOKEN 未设置，拒绝以无鉴权状态启动。");
+  process.exit(1);
+}
+
+// ⚠️ 形状提醒（不改行为，只留痕）：LOGIN_PASSWORD 缺省等于 AUTH_TOKEN，
+//    也就是「登录密码」和「万能钥匙」是同一个字符串 —— 改密码等于全设备重新登录。
+//    想分开就显式设 NOX_LOGIN_PASSWORD。
+if (!process.env.NOX_LOGIN_PASSWORD) {
+  console.warn("[Bridge] 未设 NOX_LOGIN_PASSWORD，登录密码正在复用 NOX_TOKEN 本身。");
+}
+
 function readAuthToken(req) {
   try {
     const url = new URL(req.url || "/", "http://127.0.0.1");
@@ -115,7 +141,9 @@ function ensureApiAuth(req, res, next) {
   }
   // 书封公开直出：文件名是不可猜的 UUID，图也不敏感 —— img 标签带不了 token
   if (req.path.startsWith("/library/covers/")) return next();
-  if (!AUTH_TOKEN) return next();
+  // ⚠️ 这里原来有一行 `if (!AUTH_TOKEN) return next();`（fail-open）。
+  // 2026-09-11 移除了：NOX_TOKEN 现在在启动时校验，缺失就直接 exit 1，
+  // 所以「没配 token 就全放行」这条路径已经不可达。留着它只会误导下一个人。
   if (readAuthToken(req) === AUTH_TOKEN) return next();
   res.status(403).json({ error: "forbidden" });
 }
@@ -553,16 +581,65 @@ dbTry(`CREATE VIRTUAL TABLE IF NOT EXISTS conv_fts USING fts5(content, content_r
 // 文件上传
 const uploadDir = path.join(DATA_DIR, "uploads");
 if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
+
+// ── 启动清扫：残留的 STT 临时录音（2026-09-11 加）──────────────
+//
+// `/api/stt` 把**整段录音**写进 uploads，再把公网 URL 交给 DashScope 去取，
+// 靠一个 60 秒的 `cleanupSoon()` 删掉（见 /api/stt 那段）。
+// 进程在那 60 秒里重启 / 崩溃 → 文件永久留下，而 `/uploads` 是公开静态托管
+// 而且带 30 天 immutable 缓存 —— **等于她的一段录音一直躺在公网上**。
+// 这里在启动时把陈年的 stt-* 清掉。1 小时阈值远大于任何一次转写窗口。
+//
+// ⚠️ 这只解决"积累"，没解决"窗口期内谁都能下"。彻底的办法是给这个 URL 加
+// 短时效签名（照 `musicSig` 那套），排期 0.8。
+try {
+  const cutoff = Date.now() - 60 * 60 * 1000;
+  let swept = 0;
+  for (const f of fs.readdirSync(uploadDir)) {
+    if (!f.startsWith("stt-")) continue;
+    const p = path.join(uploadDir, f);
+    try {
+      if (fs.statSync(p).mtimeMs < cutoff) { fs.unlinkSync(p); swept += 1; }
+    } catch { /* 单个文件失败不影响其余，也不该拦住启动 */ }
+  }
+  if (swept) console.log(`[Bridge] 启动清扫：删掉 ${swept} 个残留的 STT 临时录音`);
+} catch (e) {
+  console.warn("[Bridge] STT 临时文件清扫失败（不影响启动）:", e.message);
+}
+
 // multer 的 originalname 是 latin1 编码，中文名需要转回 utf8
 function decodeUploadName(name) {
   try { return Buffer.from(name, "latin1").toString("utf8"); } catch { return name; }
+}
+
+// ── 上传扩展名白名单（2026-09-11 修）────────────────────────────
+//
+// 🔴 原来只做 `replace(/[^.\w]/g, "")`，`.html` / `.svg` 都能留在文件名里，
+//    而 `/uploads` 是**同源静态托管**（`app.use("/uploads", express.static(...))`）。
+//    传一个 .html 上去，浏览器按 text/html 打开它 —— 那段脚本就能读走
+//    localStorage 里的主令牌（`nox-auth-token`）——**一次上传 = 全系统接管**，
+//    包括那条真的会下单的 confirm 端点。
+//
+// 做法：**只认白名单**。名字里的扩展名不在白名单（.html/.svg/.js…）就用 MIME 猜，
+// 再猜不出来给一个不会被浏览器解析的 `.bin`。不拒绝请求 —— 少一条错误路径，
+// 少一个能搞坏上传的地方，但**保证落到磁盘上的永远是一个图片/二进制后缀**。
+const MIME_EXT = {
+  "image/jpeg": ".jpg", "image/pjpeg": ".jpg", "image/png": ".png",
+  "image/gif": ".gif", "image/webp": ".webp", "image/heic": ".heic",
+  "image/heif": ".heif", "image/bmp": ".bmp", "image/avif": ".avif",
+};
+const ALLOWED_IMAGE_EXT = new Set(Object.values(MIME_EXT));
+
+function safeImageExt(file) {
+  const fromName = path.extname(decodeUploadName(file.originalname || "")).toLowerCase();
+  if (ALLOWED_IMAGE_EXT.has(fromName)) return fromName;
+  return MIME_EXT[String(file.mimetype || "").toLowerCase()] || ".bin";
 }
 const storage = multer.diskStorage({
   destination: uploadDir,
   // 不使用 originalname 作为文件名，避免路径穿越和特殊字符问题，只保留扩展名
   filename: (req, file, cb) => {
-    const ext = path.extname(decodeUploadName(file.originalname)).replace(/[^.\w]/g, "").slice(0, 10);
-    cb(null, `${Date.now()}-${randomUUID().slice(0, 6)}${ext}`);
+    cb(null, `${Date.now()}-${randomUUID().slice(0, 6)}${safeImageExt(file)}`);
   },
 });
 const upload = multer({ storage, limits: { fileSize: 50 * 1024 * 1024 } }); // 50MB
@@ -1819,7 +1896,25 @@ app.delete("/api/gallery/:id", (req, res) => {
 });
 
 // 静态文件服务（上传的图片）— 文件名随机且不复用，可长缓存（修相册反复重载慢）
-app.use("/uploads", express.static(uploadDir, { maxAge: "30d", immutable: true }));
+//
+// 🔴 2026-09-11 加固：这是**唯一一条挂在 `/api` 鉴权之外、又直接回她数据的路由**。
+//    原来它对任何人开放（只要知道文件名），而且没有任何响应头约束。
+//    两层防线：
+//      ① 扩展名白名单（见 safeImageExt）—— 保证落盘的永远不是 .html/.svg
+//      ② 这里的响应头 —— 万一哪天有非图片混进来，浏览器也不许把它当文档执行：
+//         nosniff 禁掉 MIME 嗅探，CSP sandbox + default-src 'none' 让脚本跑不起来
+//    ⚠️ **不加 `Content-Disposition: attachment`** —— 那会让聊天里的图片
+//       不能内联显示（`<img src>` 会变成下载）。
+//    ⚠️ 仍然建议后续按 0.8 的计划把它挪进鉴权路由或改签名 URL：
+//       目前"一旦 URL 从别处漏出就永久可读"（30 天 immutable + 无吊销）。
+app.use("/uploads", express.static(uploadDir, {
+  maxAge: "30d",
+  immutable: true,
+  setHeaders(res) {
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader("Content-Security-Policy", "default-src 'none'; sandbox");
+  },
+}));
 // 也 serve 前端构建产物
 // 默认是 `../frontend/dist`（线上 /root/frontend/dist）。
 // ⚠️ 允许环境变量覆盖**只是为了能测** —— 这条兜底路由出过一次

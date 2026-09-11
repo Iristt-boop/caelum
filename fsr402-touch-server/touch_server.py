@@ -66,14 +66,33 @@ class TouchHandler(BaseHTTPRequestHandler):
         self.wfile.write(b'{"ok":true}')
 
     def do_GET(self):
-        # 健康检查 / 看最后几行
-        if self.path.rstrip("/") == "/health":
+        path = self.path.split("?")[0].rstrip("/")
+        query = self.path.split("?", 1)[1] if "?" in self.path else ""
+
+        # 健康检查：不含任何数据，保持公开（探活用）
+        if path == "/health":
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
             self.wfile.write(b'{"ok":true}')
             return
-        if self.path.rstrip("/") == "/latest":
+
+        if path == "/latest":
+            # 🔴 读取也要门禁（2026-09-11 补）。
+            # 原来只有 do_POST 查 TOUCH_TOKEN，而 GET /latest **谁都能读** ——
+            # 被漏掉的恰恰是隐私那一条：她的身体接触记录。
+            # 2026-09-06 日志里已经能看到陌生 IP（193.176.31.253）在敲这个端口。
+            # 支持两种带法：`X-Touch-Token` 头，或 `?token=<TOK>` 查询串。
+            if TOUCH_TOKEN:
+                qtok = ""
+                for part in query.split("&"):
+                    if part.startswith("token="):
+                        qtok = part[6:]
+                if (self.headers.get("X-Touch-Token") != TOUCH_TOKEN
+                        and qtok != TOUCH_TOKEN):
+                    self.send_error(403, "forbidden")
+                    return
+
             lines = []
             if os.path.exists(DATA_FILE):
                 with open(DATA_FILE, "r", encoding="utf-8") as f:
