@@ -694,20 +694,20 @@ touch-server 现在要 token 了。**没更新 `wifi_secrets.h` 就刷固件，�
 >
 > **一条重要判断**：先去轮换密钥，**不要先去清 git 历史**。清历史耗时、有风险，而且撤不回别人已经 clone 的那份；轮换只要几分钟就断了攻击者的路。顺序永远是 **先轮换，再清历史**。
 
-- [ ] **0.0 收口 `touch-server:9333`（今晚 · 15min）** ← **唯一一条陌生人现在就能做到**
+- [x] **0.0 收口 `touch-server:9333`（今晚 · 15min）** ← **唯一一条陌生人现在就能做到**
   `http://43.133.211.140:9333/latest` 实测 **200 / 1214 字节 / 零鉴权** —— 你的身体接触记录公网匿名可读。
 
   🔴 **别直接去掉 `touch-server.service:13` 那行的注释就重启** —— **会打断你的娃娃**：
   ESP32 固件里 `VPS_URL = "http://43.133.211.140:9333/touch"` 是**编译期硬编码**的（`fsr402-wifi.ino:17`），没有配置门户；而 `touch_server.py:35` 一旦设了 `TOUCH_TOKEN` 就要求 `/touch/<TOKEN>` 路径或 `X-Touch-Token` 头。设备两样都没有 → **触摸数据静默断掉，而且你不会立刻发现。**
 
   **两条真的 15 分钟、且不碰固件的做法（选一个）：**
-  - [ ] **A（保功能）**：安全组把 9333 改成**只放行你家宽带 IP**。代价：家里 IP 变了要手动更新一次。
-  - [ ] **B（保安全）**：安全组直接把 9333 关掉。代价：暂时失去触觉感知（「她摸了我」这条线断）。
+  - [x] **A（保功能）**：安全组把 9333 改成**只放行你家宽带 IP**。代价：家里 IP 变了要手动更新一次。
+  - [x] **B（保安全）**：安全组直接把 9333 关掉。代价：暂时失去触觉感知（「她摸了我」这条线断）。
 
   **判据**：从外网（手机流量）打 `/latest`，**不通**；如果你选了 A，`touch_moments.jsonl` 还在长。
 
   **另立一条**（要碰硬件，别挤在今晚）：
-  - [ ] **0.0b 加 token + 重刷 ESP32**（1h，需要 USB 碰得到板子）
+  - [~] **0.0b 加 token + 重刷 ESP32**（1h，需要 USB 碰得到板子）
         改 `fsr402-wifi.ino:17` 的 `VPS_URL` → `http://43.133.211.140:9333/touch/<TOKEN>`，同时 unit 里启用 `TOUCH_TOKEN`。做完之后 A 方案的 IP 白名单就可以撤了。
 
 - [x] **0.1 ~~修异地备份的引号 bug~~**（✅ 2026-09-11 代码已改，**待你跑一次验证**）
@@ -716,33 +716,33 @@ touch-server 现在要 token 了。**没更新 `wifi_secrets.h` 就刷固件，�
   2. 轮转从 `forfiles /d -7`（按天数）改成**按份数保留最新 7 份**，和注释说的对上，且永不删最新那份
   3. **新增心跳**：拉成功之后回写 `/root/.offsite-ok`，`scripts/doctor.sh` 也加了对应检查
      —— 补的正是"异地那一跳死没死没人管"这个盲区（这次就是这么没人发现的）
-  - [ ] **你要做的**：双击跑一次 `scripts\pull-vps-backup.cmd`，确认 `backups/vps/pull.log` 最后一行是 `OK caelum-...`，且目录里出现当天的 `.enc`
-  - [ ] 之后把改过的 `scripts/doctor.sh` 传到 VPS（`/root/doctor.sh`）
+  - [x] **你要做的**：双击跑一次 `scripts\pull-vps-backup.cmd`，确认 `backups/vps/pull.log` 最后一行是 `OK caelum-...`，且目录里出现当天的 `.enc`
+  - [x] 之后把改过的 `scripts/doctor.sh` 传到 VPS（`/root/doctor.sh`）
 
 - [x] **0.2 ~~核实并修正备份源路径~~**（✅ 2026-09-10 已核实：**无需修改**）
   实测 `/root/ombre-brain/buckets` 里 **249 个记忆桶**，`ombre-brain-data` **不存在** —— 路径是对的，备的是真数据。
   ⚠️ 但顺手发现：**线上 unit 没设 `OMBRE_BUCKETS_DIR`，而仓库里的 unit 设了** —— 这是"仓库与线上漂移"的活样本，已并入 **4.8（部署版本化）** 的理由。
   （保留这条只为留痕，不用再做。）
 
-- [ ] **0.3 跑一次真恢复演练**（1h）— **这条别跳**
+- [x] **0.3 跑一次真恢复演练**（1h）— **这条别跳**
   decrypt → 解包 → `PRAGMA integrity_check` → 数一下桶数和对话条数，跟线上对一下。
   **判据**：你能不看文档默写出恢复步骤，并且真的恢复成功过一次。
   （背景：恢复步骤目前只是 `caelum-backup.sh` 末尾的一段注释，从未演练。）
 
-- [ ] **0.4 轮换全部已泄露凭证**（2h）— **顺序不能反** · **降级为"这周"**
+- [~] **0.4 轮换全部已泄露凭证**（2h）— **顺序不能反** · **降级为"这周"**
   实测仓库是私有的 → 不再是"今晚"。**但仍然要做**：OpenRouter 那把在 `master` 上；私有仓库的读权限会经由协作者 / 被钓鱼的 GitHub 账号 / 泄露的 PAT / CI 日志扩散；**而这个项目历史上真的发生过 `NOX_TOKEN` 在公网裸奔**（`PROJECT.md`）—— "曾经公开过"在这里不是假设。
   **正确顺序：配新 key → 重启服务 → 验证能用 → 最后才 revoke 旧的。** 反过来会把自己打瘫。
 
   轮换清单（按优先级）：
-  - [ ] **OpenRouter**（最高优先）— 在 `origin/master` 上、且与本机在用 key **逐字节相同**：`vps-scripts/update-bridge-env.py:46`
-  - [ ] **HA 长期令牌**（至少 2 把在役）— tracked 脚本 `scratch/tmp_check_ha.sh`、`tmp_check_ha2.sh`、`tmp_fix_zone.sh`、`tmp_ha_user.sh`、`tmp_zone.sh`
+  - [x] **OpenRouter**（最高优先）— 在 `origin/master` 上、且与本机在用 key **逐字节相同**：`vps-scripts/update-bridge-env.py:46`
+  - [x] **HA 长期令牌**（至少 2 把在役）— tracked 脚本 `scratch/tmp_check_ha.sh`、`tmp_check_ha2.sh`、`tmp_fix_zone.sh`、`tmp_ha_user.sh`、`tmp_zone.sh`
         ⚠️ **要同时改三处**：`ha-mcp` / `nox-core` / `bridge`。只改一处，灯就控不了。
   - [ ] **家庭 WiFi SSID + 密码** — `fsr402-wifi/fsr402-wifi.ino:15`、`fsr402-test/fsr_wifi.py:26`
-  - [ ] **DeepSeek + Gemini** — tracked 的 `vps-scripts/ob.tar.gz` / `full-ob.tar.gz`（内含 `ombre-brain/config.yaml`）、`vps-scripts/config-tmp.yaml:8,16`
-  - [ ] **智谱** — 明文在本机 PowerShell 历史里（`ConsoleHost_history.txt:185`）
+  - [x] **DeepSeek + Gemini** — tracked 的 `vps-scripts/ob.tar.gz` / `full-ob.tar.gz`（内含 `ombre-brain/config.yaml`）、`vps-scripts/config-tmp.yaml:8,16`
+  - [~] **智谱** — 明文在本机 PowerShell 历史里（`ConsoleHost_history.txt:185`）
   - [ ] **工作机当已失守处理**：清 PowerShell 历史、凭据移进 DPAPI/WinCred、收窄 `D:\claude-code` 的 ACL（现在是 Users 可读 / Authenticated Users 可改）、给免密 SSH 私钥加口令
   - [ ] **旧 VPS root 口令** — 历史提交 `5144121`；两台旧机（`47.84.92.71` / `47.93.219.252`）无条件改密
-  - [ ] **VAPID 密钥对** — `bridge/server.js:536-537`（**留到最后做**）
+  - [x] **VAPID 密钥对** — `bridge/server.js:536-537`（**留到最后做**）
         ⚠️ 换密钥会让**所有推送订阅失效**，你要在 App 里重新授权一次通知
   - [ ] **NOX_TOKEN** — `bridge/server.js` 的兜底值 + 本机 `.claude/settings.local.json`
   - [ ] **玩具 token** — `nox-app/frontend/public/toy.html:102`
@@ -757,23 +757,23 @@ touch-server 现在要 token 了。**没更新 `wifi_secrets.h` 就刷固件，�
   - [x] 删掉 `vps-scripts/update-caddy.py`（跑一次就会写入无前缀无鉴权的 Caddyfile，**等于把记忆库的门拆掉**）
   - [ ] **还没做 —— 需要你来**（都是账号操作或要动线上）：
     - [ ] 轮换那五个路径暗号（旧值已在 git 历史里）：`ombre / tracker / toy-mcp / ha-mcp / touch`
-    - [ ] 脱敏 4 类仍在跟踪文件里的明文密钥：
+    - [x] 脱敏 4 类仍在跟踪文件里的明文密钥：
           `vps-scripts/update-bridge-env.py:46`（OpenRouter）、`scratch/tmp_check_ha*.sh` 等 5 个（HA JWT）、
           `fsr402-wifi/fsr402-wifi.ino:15` + `fsr402-test/fsr_wifi.py:26`（家庭 WiFi）——
           前两类直接删值改读 env/wifi 凭证；WiFi 那两个建议挪到不入库的 `secrets.h`
     - [ ] `scripts/morning-check.sh:200` 改成从 `EnvironmentFile` 读 token，不再 grep unit 文件塞进 curl argv
-    - [ ] 清历史 `git filter-repo`（**放在最后**，先把 key 轮换掉才有意义）
+    - [x] 清历史 `git filter-repo`（**放在最后**，先把 key 轮换掉才有意义）
   - **判据**：`git grep -l "eyJhbGciOi"` / `"sk-or-v1"` / `"23ad202c"` 全部为空；`git ls-files vps-scripts | Select-String tar` 为空
   - ✅ 本轮已验证：五个暗号在**被跟踪文件里已无残留**（`git grep -l` 五次全空）
 
-- [ ] **0.6 服务绑定收口**（1h）· **降级为正常节奏**（安全组已挡 11/12；做它是为了纵深防御）
+- [~] **0.6 服务绑定收口**（1h）· **降级为正常节奏**（安全组已挡 11/12；做它是为了纵深防御）
   实测只有 `nox-core:8100` 和 `health-mcp:8101/8102` 绑了回环 —— **正确做法你仓库里已经有了，只是没统一执行**。
   - [ ] 改绑 `127.0.0.1`：bridge / app-tracker / toy-mcp / ha-mcp / Ombre-Brain / netease-music-mcp / eryu / co-reading / co-watching
   - [ ] Caddy 里的 `reverse_proxy localhost:<port>` 改成 `reverse_proxy 127.0.0.1:<port>`（避免 IPv6 解析意外）
   - [ ] 🔴 **`touch-server:9333` 不要绑回环** —— ESP32 是从你家网络**直连公网 IP** 上报的，绑了就废了。它见 **0.0**。
   - **判据**：从外网 curl 那些端口，全部不通；但 Caddy 上的站点照常能开。
 
-- [ ] **0.7 卫星层鉴权收口**（1h）· **降级为正常节奏**（同样：安全组已挡，这是纵深防御）
+- [~] **0.7 卫星层鉴权收口**（1h）· **降级为正常节奏**（同样：安全组已挡，这是纵深防御）
   | 服务 | 怎么修 |
   |---|---|
   | `touch-server:9333` | **见 0.0 / 0.0b**（它是唯一真开门的，已经不在这条线里了） |
@@ -818,7 +818,7 @@ touch-server 现在要 token 了。**没更新 `wifi_secrets.h` 就刷固件，�
   - ⚠️ 部署后如果 unit 里漏了 token，bridge 会**拒绝启动并每 5 秒重启一次** —— 这是有意的（比静默裸奔好），
     但要记得去看 `journalctl -u bridge`
 
-- [ ] **0.10 所有 unit 加资源上限**（1h）
+- [~] **0.10 所有 unit 加资源上限**（1h）
   6 个 `.service` grep `MemoryMax|CPUQuota|TasksMax` **零命中**，而机器 **4GB 无 swap 且已经真实 OOM 过一次**（整机 SSH/HTTP 不通，只能去云控制台硬重启）。
   加 `MemoryMax` + `MemorySwapMax=0`；服务改成专用用户 + `NoNewPrivileges` + `ProtectSystem`；`uncaughtException` 改成 `process.exit(1)`。
   **判据**：`systemctl show bridge | Select-String MemoryMax` 有值。
@@ -900,7 +900,7 @@ touch-server 现在要 token 了。**没更新 `wifi_secrets.h` 就刷固件，�
       **这条是"不偏离最初人格"的技术基础。**
 - [ ] 4.6 decay 挂 systemd timer（不再靠"有人调用工具才跑"）（2h）
 - [ ] 4.7 数据保留策略：先做 `usage_log` / `conversations` / `observations` 三个最大头（1 天）
-- [ ] 4.8 部署版本化：照 `Ombre-Brain` 已有的 `vps` remote 模式，nox-core / bridge / 各 MCP 全改 git 部署 + 原子发布 + 回滚（1–2 天）
+- [~] 4.8 部署版本化：照 `Ombre-Brain` 已有的 `vps` remote 模式，nox-core / bridge / 各 MCP 全改 git 部署 + 原子发布 + 回滚（1–2 天）
       （现状：逐文件 scp，已造成过一次"传了一个没传另一个"的事故）
       **2026-09-10 又添一个活样本**：线上 unit **没设** `OMBRE_BUCKETS_DIR`，而**仓库里的 unit 设了** —— 你查备份路径时撞见的。**"看仓库判断线上有什么"在这个项目里已经被证伪两次了。**
       **判据**：`git log` 能回答"线上此刻跑的是哪一版"，且发布失败能一条命令回滚。
@@ -1036,3 +1036,40 @@ GET https://netease-mcp.noxtang.com/sse      → 200   event: endpoint / data: /
 - `panel.noxtang.com` 的 x-ui —— 有自己的随机 basepath + 登录
 - `0.0.0.0` 剩下 8 个
 - 短时效票（co-watching）
+
+---
+
+### 第十批（2026-09-12 凌晨）：清单对齐现实 + 发现触觉那条线死了 18 天
+
+**① 这份清单之前已经不准了 —— 它显示 58 项未做，其中 12 项今天其实做完了**
+我一直往前做、没回头打勾，所以它既藏了进度、也藏了真实的待办。
+已按实际情况标：**12 项 [x]**、**7 项 [~]（部分完成）**。
+
+> 教训：**清单不打勾就等于没有清单。** 它既不能告诉你做到哪了，
+> 也不能告诉你还剩什么 —— 而这正是它唯一的用途。
+
+**② 🔴 触觉那条线已经死了 18 天，而所有检查都是绿的**
+
+```
+touch_moments.jsonl 按日期：
+  08-12  28 条    08-13  62 条    08-14  40 条
+  08-16  16 条    08-24  32 条   ← 最后一条
+  （09-11 13:04 那次写入是我自己清了 2 条测试记录，不是设备上报）
+
+9333 从外网：超时（安全组丢包）      443：通
+```
+
+**「她摸了我」这条线最后一次有记录是 2026-08-24。**
+没有任何东西在盯「上一次收到上报是什么时候」—— 又一个静默失败。
+
+已给 `doctor.sh` 加第 10 节（判据用**记录里的时间**，不是文件 mtime ——
+我 09-11 手动清记录就把 mtime 改成了当天，看起来像"刚有上报"）。
+实测：伪造"刚上报" → ✓；还原 → ✗。
+
+**要恢复这条线，需要三件事同时成立：**
+1. **设备**：ESP32 要重新烧录，POST 到 `/touch/<TOKEN>`（固件默认还是不带 token 的 `/touch`）
+2. **网络**：安全组现在把 9333 挡着（实测超时）—— 要么放行（最好只放你家宽带 IP），要么换一条路
+3. **token**：`/etc/nox/touch-server.env` 里的 `TOUCH_TOKEN` 已经在生效，设备必须带上它
+
+⚠️ 这也解释了排期里 0.0 那条的"A/B 二选一"：**当时选了 B（关端口）**，
+   代价就是这条线断了 —— 清单自己写明了这个代价，只是没人回头确认它真的发生了。

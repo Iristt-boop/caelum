@@ -206,6 +206,52 @@ for pair in nox-core:/root/nox-core/code \
 done
 [ "$BROKEN" = "0" ] && good "release 布局的服务软链都有效"
 
+# ── 10) 触觉那条线还活着吗 ────────────────────────
+#
+# 2026-09-12 发现：`touch_moments.jsonl` 最后一条记录是 **2026-08-24** ——
+# 「她摸了我」这条线已经死了约 2.5 周，而当时所有检查都是绿的。
+# 没有任何东西在盯「上一次收到上报是什么时候」。又一个静默失败。
+#
+# ⚠️ 判据用**最后一条记录里的时间**，不是文件 mtime：
+#    mtime 会被编辑动到（2026-09-11 我手动清过两条测试记录，
+#    mtime 变成当天，看起来像"刚刚有上报"）。
+echo "-- 触觉上报 --"
+TCHF=/root/touch-server/data/touch_moments.jsonl
+if [ ! -f "$TCHF" ]; then
+  warn "找不到 $TCHF"
+else
+  TCHLAST=$(python3 -c "
+import json
+last = ''
+for line in open('$TCHF', encoding='utf-8'):
+    line = line.strip()
+    if not line:
+        continue
+    try:
+        o = json.loads(line)
+    except Exception:
+        continue
+    t = o.get('received_at') or o.get('at') or ''
+    if t > last:
+        last = t
+print(last)
+" 2>/dev/null)
+  if [ -z "$TCHLAST" ]; then
+    warn "触觉记录里没有带时间的条目"
+  else
+    TCHDAYS=$(python3 -c "
+import datetime
+t = datetime.datetime.fromisoformat('$TCHLAST')
+print(int((datetime.datetime.now() - t).total_seconds() // 86400))
+" 2>/dev/null)
+    if [ "${TCHDAYS:-0}" -gt 7 ]; then
+      bad "最后一次触觉上报是 ${TCHLAST}（${TCHDAYS} 天前）—— 这条线可能已经断了（设备 / WiFi / 安全组 / token）"
+    else
+      good "触觉上报正常（最后 ${TCHLAST}）"
+    fi
+  fi
+fi
+
 echo "════════"
 if [ "$ISSUES" -eq 0 ]; then
   echo "全部正常 ✓"
