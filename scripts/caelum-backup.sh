@@ -75,6 +75,47 @@ for f in /root/nox-core/.env \
   [ -f "$f" ] && cp "$f" "$WORK/config/"
 done
 
+# 🔴 2026-09-11 补：/etc/nox/*.env **必须**在配置包里。
+#
+# 今天把 15 条凭据从 systemd unit 搬进 /etc/nox/*.env，又把 9 个 Caddy 路径暗号
+# 从 Caddyfile 搬进 /etc/nox/caddy.env，而那份 Caddyfile **是**被备份的、
+# /etc/nox/ **不是** —— 也就是说搬完之后，VPS 一没，恢复出来的是一份
+# 没有暗号的 Caddyfile 模板，加一堆指向空变量的 unit。
+#
+# **「把密钥挪到更安全的地方」和「备份跟着改」是同一件事的两半。**
+# 只做前一半，等于给自己挖了个更深的坑 —— 而且比原来更难发现，
+# 因为原来的密钥至少还躺在一个被备份的文件里。
+mkdir -p "$WORK/config/nox-env"
+if compgen -G "/etc/nox/*.env" > /dev/null; then
+  cp /etc/nox/*.env "$WORK/config/nox-env/"
+  echo "$LOG_TAG config: /etc/nox/ 下 $(ls -1 /etc/nox/*.env | wc -l) 个 env 已收"
+else
+  echo "$LOG_TAG WARN: /etc/nox/ 下没有 .env —— 凭据可能还在别处，检查一下"
+fi
+
+# ---------- 3b) 只存在于 VPS 上的源码 ----------
+#
+# 下面这些服务的代码**不在任何 git 仓库里**（审计 4.8 的发现）：
+#   co-watching / ha-mcp / toy-mcp / touch-mcp / touch-server / health-mcp / app-tracker
+# 加上 co-reading-mcp 的代码（它的 data/ 已在上面单独收过）。
+#
+# 全加起来不到 5MB。相对于「VPS 一坏就永久丢失」，这点体积不值一提。
+# 正确的长期修法是把它们纳入版本控制（排期 4.8）；在那之前，
+# **至少别让它们只存在于一个地方**。
+mkdir -p "$WORK/code"
+for d in /root/co-watching /root/co-reading-mcp /root/ha-mcp /root/toy-mcp \
+         /root/touch-mcp /root/touch-server /root/health-mcp /root/app-tracker; do
+  [ -d "$d" ] || continue
+  n=$(basename "$d")
+  mkdir -p "$WORK/code/$n"
+  tar cf - -C "$d" \
+      --exclude=node_modules --exclude=.venv --exclude=venv \
+      --exclude=__pycache__ --exclude='*.pyc' --exclude=.git \
+      --exclude=.pytest_cache --exclude='*.log' \
+      . 2>/dev/null | tar xf - -C "$WORK/code/$n" || true
+done
+echo "$LOG_TAG code: 收了 $(ls -1 "$WORK/code" 2>/dev/null | wc -l) 个只存在于 VPS 的服务源码"
+
 # ---------- 4) 打包 + 加密 + 轮转 ----------
 OUT="$DEST/caelum-$STAMP.tar.gz.enc"
 tar czf - -C "$WORK" . \
@@ -98,4 +139,7 @@ echo "$LOG_TAG 完成：$OUT ($SIZE)"
 #   cat BACKUP-PASS.txt | openssl enc -d -aes-256-cbc -pbkdf2 -pass stdin \
 #     -in caelum-XXXX.tar.gz.enc | tar xzf - -C /tmp/restore
 # sqlite: 直接放回原路径；文件：放回对应目录；config：对照 config/ 里的清单归位。
+#   config/nox-env/  → 放回 /etc/nox/，目录 700、文件 600。**没有它服务起不来**：
+#                      systemd 的 EnvironmentFile 全指这儿，包括 Caddy 的 9 个路径暗号。
+#   code/            → 只存在于 VPS 的那几个服务源码，放回各自目录（见 3b）。
 # 密码另有一份在糖糖的 Windows（D:\claude-code\backups\BACKUP-PASS.txt），VPS 被删时用它。
