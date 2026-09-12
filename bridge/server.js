@@ -109,6 +109,93 @@ function verifyMusicSig(q) {
   } catch { return false; }
 }
 
+// ── /uploads 的短时效签名（2026-09-12，排期 0.8）────────────────
+//
+// 🔴 在这之前，`/uploads/<文件名>` 是**匿名公开**的：不带任何凭据
+//    HTTP 200，实测下回来 306KB。她发过的每一张照片、每一段录音，
+//    只要知道文件名就能拿走，而且带 30 天 immutable 缓存。
+//
+// 为什么不能直接要求带 token：`<img src>` 带不了请求头，而把主令牌塞进
+// URL 查询串是审计点名过的坏做法（会进 Caddy/journald 访问日志、浏览器
+// 历史、Referer）。所以照 `musicSig` 那套：**一个签名只授权一个文件**。
+//
+// ⚠️ **库里存的仍然是裸路径**（`/uploads/x.jpg`），签名只在**响应出口**现加。
+//    这一条很重要：
+//      · 历史图片不会因为改了规则就全变成裂图
+//      · `gallery` 表的 url 是主键用途（`UPDATE ... WHERE url=?`），带上
+//        签名就再也对不上了
+//      · 签名过期只影响"那一份拿到手的链接"，下次拉列表会重新签
+const UPLOAD_SIG_TTL_MS = 7 * 24 * 3600 * 1000;
+
+function uploadSig(name, exp) {
+  return crypto.createHmac("sha256", AUTH_TOKEN || "nox-uploads")
+    .update(`upload:${name}:${exp}`).digest("hex").slice(0, 24);
+}
+
+/** 给一个 `/uploads/xxx` 路径加签。不是 uploads 路径就原样返回。
+ *
+ * ⚠️ **只认"整个字符串就是一个 uploads URL"**，不做"字符串里包含"的匹配。
+ * 一开始写的是 `u.includes("/uploads/")`，那样会把 `metadata` 那一列
+ * （一整段 JSON 字符串，里面嵌着图片路径）当成一个 URL，直接在整段 JSON
+ * 屁股后面拼上 `?exp=&sig=` —— **JSON 当场坏掉，而且是静默的**。
+ * 带 uploads 的富文本要签，走 `signUploadsInJson`。
+ */
+function signUpload(u, ttl = UPLOAD_SIG_TTL_MS) {
+  if (typeof u !== "string") return u;
+  const isUploadUrl = u.startsWith("/uploads/")
+    || (/^https?:\/\//.test(u) && u.includes("/uploads/"));
+  if (!isUploadUrl) return u;
+  if (u.includes("sig=")) return u;                 // 已经签过，别叠加
+  const name = u.split("/uploads/")[1].split("?")[0];
+  if (!name) return u;
+  const exp = Date.now() + ttl;
+  const sep = u.includes("?") ? "&" : "?";
+  return `${u}${sep}exp=${exp}&sig=${uploadSig(decodeURIComponent(name), exp)}`;
+}
+
+/** 给一段 **JSON 字符串**里的 uploads 路径加签，返回新的 JSON 字符串。
+ *
+ * `conversations.metadata` 是这个形状：图片路径嵌在里面，而整列是字符串。
+ * 解析失败就原样返回 —— 宁可这一条消息的图片是裂的，也不能让一条坏 JSON
+ * 把整个消息列表接口打挂。
+ */
+function signUploadsInJson(s) {
+  if (typeof s !== "string" || !s.includes("/uploads/")) return s;
+  try {
+    return JSON.stringify(signUploadsDeep(JSON.parse(s)));
+  } catch {
+    return s;
+  }
+}
+
+/** 递归地给一坨响应数据里所有 uploads 路径加签。
+ *
+ *  用递归而不是逐个字段手写，是因为图片 URL 散在好几种形状里：
+ *  相册行的 `url`/`thumbnail`、聊天消息 `meta` 里的数组、SSE 事件对象。
+ *  手写一定会漏一处 —— 而漏一处的表现是**一张裂图**，很难发现是这里漏的。
+ */
+function signUploadsDeep(v) {
+  if (typeof v === "string") return signUpload(v);
+  if (Array.isArray(v)) return v.map(signUploadsDeep);
+  if (v && typeof v === "object") {
+    const out = {};
+    for (const [k, val] of Object.entries(v)) out[k] = signUploadsDeep(val);
+    return out;
+  }
+  return v;
+}
+
+function verifyUploadSig(name, q) {
+  const exp = q?.exp, sig = q?.sig;
+  if (!exp || !sig) return false;
+  if (!/^\d+$/.test(String(exp)) || Number(exp) < Date.now()) return false;
+  const expected = uploadSig(name, String(exp));
+  if (String(sig).length !== expected.length) return false;
+  try {
+    return crypto.timingSafeEqual(Buffer.from(String(sig)), Buffer.from(expected));
+  } catch { return false; }
+}
+
 // ── 玩具中继页的专用钥匙 ────────────────────────────────────
 //
 // 🔴 **这个东西的来历：2026-08-26 发现 NOX_TOKEN 在公网上裸奔。**
@@ -1046,8 +1133,13 @@ async function coreMode(req, res, requestId) {
           // Core 是独立进程，够不着这条 SSE 连接，所以把意图传出来由这里发。
           // kind 才是具体类型；外层 type 恒为 attachment
           if (ev.kind === "image" && ev.url) {
+            // ⚠️ **发给前端的那份要签，落库的那份不签**（0.8）。
+            // 库里存裸路径是故意的：`gallery` 的 url 当键用
+            // （`UPDATE ... WHERE url=?`），带签名就再也对不上；
+            // 而且签名会过期，存进去的链接几天后就是死的。
+            // 读消息列表时 `/api/messages` 会现签一份新的。
             res.write(`data: ${JSON.stringify({
-              type: "image", url: ev.url,
+              type: "image", url: signUpload(ev.url),
               album: ev.album || "", favorited: !!ev.favorited,
             })}\n\n`);
             saveMessage(sessionId, "assistant", "", {
@@ -1397,7 +1489,14 @@ app.post("/api/stt", sttUpload.single("audio"), async (req, res) => {
     const tempName = `stt-${Date.now()}-${randomUUID()}${ext}`;
     const tempPath = path.join(uploadDir, tempName);
     fs.writeFileSync(tempPath, req.file.buffer);
-    const publicAudioUrl = `${publicBaseUrl}/uploads/${encodeURIComponent(tempName)}`;
+    // 🔴 这是**她的整段录音**，要交给阿里云去取。0.8 之前这个链接是
+    // 匿名公开的 —— 随机文件名是唯一的遮蔽，而它同时被交给了第三方。
+    // 现在带签名，而且只给 15 分钟：转写窗口用不了那么久，
+    // 文件本身也会在 60 秒后被 `cleanupSoon()` 删掉。
+    const publicAudioUrl = signUpload(
+      `${publicBaseUrl}/uploads/${encodeURIComponent(tempName)}`,
+      15 * 60 * 1000,
+    );
 
     const submitResponse = await fetch(DASHSCOPE_FILETRANS_URL, {
       method: "POST",
@@ -1864,7 +1963,12 @@ async function autoDescribeImage(url) {
     const r = await fetch(`${NOX_CORE_URL}/api/describe-image`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ url }),
+      // ⚠️ Core 拿到这个路径之后是**用 HTTP 回头来取图的**
+      //（`api/server.py`: `bridge_base + req.url`），所以必须带签名，
+      // 否则 0.8 上线当天识图会静默全挂 —— 相册描述再也不更新，
+      // 而"没有描述"看起来就只是"还没识别"，不会有人发现。
+      // 只给它 10 分钟：识一张图用不了那么久，链接也不该活着到处跑。
+      body: JSON.stringify({ url: signUpload(url, 10 * 60 * 1000) }),
       signal: AbortSignal.timeout(45000),
     });
     const jd = await r.json();
@@ -1898,7 +2002,8 @@ app.get("/api/gallery/list", (req, res) => {
   let sql = "SELECT * FROM gallery";
   if (conds.length) sql += " WHERE " + conds.join(" AND ");
   sql += " ORDER BY created_at DESC LIMIT 100";
-  res.json(dbAll(sql, params));
+  // 出口签名（0.8）——库里存裸路径，这里现签。
+  res.json(signUploadsDeep(dbAll(sql, params)));
 });
 
 // 给相册图片加/改描述。Nox 选图就靠这个字段知道每张是什么。
@@ -1915,7 +2020,7 @@ app.post("/api/images/upload", upload.single("file"), (req, res) => {
   const id = randomUUID();
   dbRun(`INSERT INTO gallery (id, url, thumbnail, favorited, album, created_at) VALUES (?,?,?,?,?,?)`, [id, url, url, 0, "", new Date().toISOString()]);
   autoDescribeImage(url);  // 上传即识图写描述
-  res.json({ url, id });
+  res.json({ url: signUpload(url), id });
 });
 
 app.post("/api/gallery/save", (req, res) => {
@@ -1951,6 +2056,21 @@ app.delete("/api/gallery/:id", (req, res) => {
 //       不能内联显示（`<img src>` 会变成下载）。
 //    ⚠️ 仍然建议后续按 0.8 的计划把它挪进鉴权路由或改签名 URL：
 //       目前"一旦 URL 从别处漏出就永久可读"（30 天 immutable + 无吊销）。
+// 🔴 没有有效签名一律 403（2026-09-12，排期 0.8）。
+//
+// 这一层挂在 express.static **前面** —— 校验不过就根本走不到读文件那一步。
+// 见上面 `signUpload` 那段为什么用签名而不是 token。
+app.use("/uploads", (req, res, next) => {
+  // req.path 形如 "/1788…-ab12cd.jpg"
+  const name = decodeURIComponent(req.path.replace(/^\/+/, ""));
+  if (!name) return res.status(404).end();
+  if (verifyUploadSig(name, req.query)) return next();
+  // ⚠️ 故意不说"签名过期"还是"签名不对" —— 对着乱猜的人，
+  // 这两句话的区别就是一条免费的提示。日志里留全，回给外面的只有 403。
+  console.warn(`[Bridge] /uploads 未签名或签名无效: ${name}`);
+  return res.status(403).json({ error: "forbidden" });
+});
+
 app.use("/uploads", express.static(uploadDir, {
   maxAge: "30d",
   immutable: true,
@@ -3536,17 +3656,22 @@ app.get("/api/search", (req, res) => {
 });
 
 // 消息存储（兼容旧 Nox 前端调用）— rowid 作为消息唯一 id，id 列是 sessionId
+//: 消息行里的图片签名（0.8）。metadata 是 JSON 字符串，要用 JSON 版。
+function signMsgRows(rows) {
+  return rows.map((r) => ({ ...r, metadata: signUploadsInJson(r.metadata) }));
+}
+
 app.get("/api/messages", (req, res) => {
   // 带 sessionId 时只返回该会话（Recents 点开某条会话用），按时间正序
   const sid = req.query.sessionId;
   if (sid) {
-    return res.json(dbAll(
+    return res.json(signMsgRows(dbAll(
       "SELECT rowid AS id, id AS sessionId, role, content, timestamp, metadata FROM conversations WHERE id = ? ORDER BY rowid DESC LIMIT 500",
       [sid]
-    ).reverse());
+    ).reverse()));
   }
   // test- 前缀 = 小克(CC)的测试专用频道，不进糖糖的时间线
-  res.json(dbAll("SELECT rowid AS id, id AS sessionId, role, content, timestamp, metadata FROM conversations WHERE id NOT LIKE 'test-%' ORDER BY rowid DESC LIMIT 200").reverse());
+  res.json(signMsgRows(dbAll("SELECT rowid AS id, id AS sessionId, role, content, timestamp, metadata FROM conversations WHERE id NOT LIKE 'test-%' ORDER BY rowid DESC LIMIT 200").reverse()));
 });
 
 // 设置 KV（头像等）
