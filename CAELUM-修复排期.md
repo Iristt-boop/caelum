@@ -82,7 +82,7 @@
 | 顺序 | 条目 | 为什么它影响聊天 |
 |---|---|---|
 | ~~1~~ | ~~`2.3` 写路径挂 `invalidate()`~~ ✅ **2026-09-12 做完**（见第十五批） | 原表把它和「经期/待办/音乐/**体重**」并列 —— **体重那条是照抄审计的措辞，是错的**：Provider 列表里没有任何一条读饮食/体重。真正的窗口是 `health`（经期）**6 小时**、`todo` 30 分钟、`memory` 5 分钟、`music` 3 分钟 |
-| 2 | `2.1` session id 进 `ToolContext` | 现在是进程级全局属性，并发下会串 |
+| ~~2~~ | ~~`2.1` session id 进 `ToolContext`~~ ✅ **2026-09-12 做完**（见第十六批） | 原来是 `Nox.current_session_id` 一个进程级属性 —— 并发下 A 轮留的纸条、建的订单会挂到 B 会话上，**不报错**。现在按轮隔离 |
 | 3 | `1.1` `/chat` 加 deadline + `limit_concurrency` | 聊到一半卡死 |
 | 4 | `4.4` pinned 纳入 token 预算 + `split_breath` 的 bug | 记忆挤爆预算 → 回复被截 |
 | 5 | `3.1` / `3.2` 副作用分类 + `spend`/`irreversible` 拦截 | 花钱 / 不可逆的动作没有统一闸门 |
@@ -940,7 +940,8 @@ touch-server 现在要 token 了。**没更新 `wifi_secrets.h` 就刷固件，�
 
 ## 第 2 条线：状态正确性（第 4–5 周）
 
-- [ ] 2.1 session id 进 `ToolContext`，删掉 `core.current_session_id` 这个进程级实例属性（1 天）
+- [x] ~~2.1 session id 进 `ToolContext`，删掉 `core.current_session_id` 这个进程级实例属性（1 天）~~
+      ✅ **2026-09-12 做完**，见第十六批
       （现状：请求线程和后台 Care 线程都会改写它 → 主动消息挂到别的会话上，静默）
       **判据**：手机和桌面同时聊，纸条/订单不会挂错会话。
 - [ ] 2.2 `Sessions._cache`（`api/server.py:341`）+ `AttentionRegistry._items`（`registry.py:162`）加锁（半天）
@@ -1547,3 +1548,83 @@ MCP token 缓存在用）。
 > 她让他记一条待办，日志里应该出现「这一轮写过 todo → 打掉它的缓存」。
 > 这个我没法用零副作用的方式自己造，因为**所有接了线的工具都有真实副作用**
 > （改待办、改设备、写记忆）。所以这一条留给她顺手验，或者我下次看她聊天时从日志里确认。
+
+---
+
+### 第十六批（2026-09-12）：会话 id 按轮隔离 —— 审计 `2.1` 那条并发隐患
+
+#### 那条隐患长什么样
+
+`Nox.current_session_id` / `current_session_started` 是**进程级实例属性**：
+`api/server.py` 的 `_turn_starts()` 每轮开跑前写它们，而工具在**别的时间点**读。
+两个并发请求就会互串 —— 而这不是理论：
+
+```
+她正在聊天（A 轮）→ _turn_starts(A) 写进去
+关注链/唤醒链自己开口（B 轮）→ _turn_starts(B) 覆盖掉
+A 轮的工具这才真的跑 → 读到的是 B
+```
+
+后果：A 轮里 `remind_myself` 留的纸条、`luckin_order` 建的订单
+（`store.create` 记的 session_id）全挂到 **B 会话**上 —— 而 App 那边按会话找订单
+会找不到。**不报错，只是挂错地方。**
+
+#### 改法
+
+会话 id 进 `ToolContext`（按轮隔离：loop 每次 run 造一个新的，contextvar 只在
+一次工具调用那一小段里 bind —— 就是第十四批给 `dirty` 用的同一套机制）。
+
+| 改了什么 | 说明 |
+|---|---|
+| `ToolContext.session_id` + 模块级 `context.session_id()` | 取值函数**本身**当注册项传下去 |
+| `AgentLoop.run` / `run_stream` **两个入口** | 都收 `session_id` 并放进本轮 ctx（附件那次漏过一个入口，这次两边都测） |
+| `Nox.chat` / `chat_stream` 收 `session_id` / `session_started` | `_dynamic()` 与 `_session_span()` 改成**收参数**，不再读实例属性 |
+| `Router.handle` / `_light` | 透传 |
+| 两个注册点 | `lambda: core.current_session_id` → `session_id_ref=context.session_id`。前者在**注册时**建、**调用时**求值，中间隔着任意多个请求 —— 取到的是「最近一次开跑的那轮」 |
+| 显式带上会话 id 的调用方 | `/chat`、`/chat/stream`、早报、`attention/speaker`、`attention/waker` |
+| 删掉那两个属性 | `_turn_starts()` 改成**返回** started_at（顺带少一次查库） |
+
+> **waker 那个以前根本没带** —— 唤醒链自己开口时用的是残留的会话 id，
+> 她正好在聊天时就挂到她的会话上。这类"顺手修掉"是重构的额外收益。
+
+⚠️ **顺带发现的额外问题**：早报那条路**从来没调过 `_turn_starts`**，
+所以它的「这段对话聊了几天」和「你说卡发了但没发」的纠正，
+用的一直是**上一个请求残留的会话 id**。现在显式传 `sid`。
+
+#### 测试（含一次探针验证）
+
+新增 `tests/test_tool_context.py`（6 条）。核心那条是**真交错**：
+
+1. 把 A 轮推进到 `tool_start`（`loop.py` 是在 `_execute` **之前** yield 它的，
+   所以那一刻工具还没跑 —— 这就是交错的缝隙）
+2. **让 B 轮完整跑完**（旧实现里这一步就把进程级的会话 id 覆盖了）
+3. 再让 A 跑完 —— A 的工具必须还读到 `sess-A`
+
+🔴 **我验证过这条测试有能力失败**：临时把 `session_id` 从 ctx 里丢掉 →
+它当场红（`assert [None] == ['s-1']`），还原后 6 条全绿。
+不做这一步的话，它可能只是个空测试 —— 和第十三批那个对照组是同一个道理。
+
+另加两条**接线**测试：源码里必须是 `session_id_ref=context.session_id`、
+不许再出现 `session_id_ref=lambda`；以及用 `tokenize` 去掉注释与字符串后，
+生产代码里不许再出现那两个属性名（**只看代码，不看文档** —— 注释里留旧名字
+是为了说明来历，直接 `not in 源码` 会被自己的说明绊倒，这条也是测试先红了我才写对）。
+
+另有 7 处测试里的假 core 加了 `**kw`（接口变了，替身要跟上）。
+
+#### 部署与线上验证
+
+tag `2026-09-12-10532c842d79`，健康检查 `/health` 200。零副作用验证：
+
+| 检查 | 结果 |
+|---|---|
+| 生产代码里的注册点 | `api/server.py:650`、`nox.py:336` 都是 `session_id_ref=context.session_id` ✓ |
+| `session_id_ref=lambda` 残留 | 生产代码 **0 处**（6 处在 `tests/` 里，是测试自己注入假取值器，正当） |
+| 代码里 `current_session_id` / `_started`（tokenize 去注释） | 四个文件**全部 0** ✓ |
+| 启动日志 | 「待办读写走 bridge 本地清单」「remind_myself 已注册」，无 Traceback/ERROR |
+| **线上 release 里跑新增测试** | **16 passed** |
+
+#### 这一批的教训
+
+- **测试写完要问一句「它有能力失败吗」** —— 探针（临时把修复撤掉）是唯一可信的答案
+- **文档里留旧名字是为了说明来历**，所以"源码里不许出现 X"这种守卫必须
+  先剥掉注释与字符串 —— 直接 `not in` 会被自己的说明绊倒（这条是**测试先红**才发现的）
