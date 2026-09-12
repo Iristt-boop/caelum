@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -292,6 +293,61 @@ def test_stream_usage_accumulates():
     loop.register(spec("t"), lambda a: "ok")
     _, r = collect(loop, "算账")
     assert r.usage.input_tokens == 250 and r.usage.output_tokens == 30
+
+
+# ---------------------------------------------------------------------------
+# 墙钟 deadline 的流式版（审计 1.1）
+#
+# 流式这边比非流式多一件必须守的事：**超时前已经吐给她的字不能吞掉**。
+# 吞了的话她屏幕上会留半句没有下文的话，比报个错更糟。
+# ---------------------------------------------------------------------------
+
+
+class SlowStreamAdapter:
+    """每轮先吐一小段字，然后慢慢地、永远不收尾。"""
+
+    name = "slow"
+
+    def __init__(self, per_call_s: float = 0.05) -> None:
+        self.per_call_s = per_call_s
+        self.calls = 0
+
+    def complete(self, *a, **kw):
+        raise AssertionError("流式测试不该走 complete")
+
+    def stream(self, messages, tools, **kw):
+        self.calls += 1
+        time.sleep(self.per_call_s)
+        yield StreamEvent("text", text=f"第{self.calls}段。")
+        yield StreamEvent(
+            "done",
+            turn=Turn(
+                stop_reason="tool_use",
+                tool_calls=[ToolCall(id=f"c{self.calls}", name="t", arguments={})],
+            ),
+        )
+
+
+def test_stream_deadline_stops_and_keeps_what_was_said():
+    adapter = SlowStreamAdapter()
+    loop = AgentLoop(adapter=adapter, max_iterations=50, deadline_s=0.12)
+    loop.register(spec("t"), lambda a: "ok")
+
+    text, r = collect(loop, "在吗")
+
+    assert r.outcome == "timeout"
+    assert adapter.calls < 50                      # 被时间拦下，不是被轮数
+    # 🔴 超时前说出去的话必须还在 —— 这是流式独有的那条
+    assert "第1段。" in text
+
+
+def test_stream_without_deadline_unchanged():
+    loop = AgentLoop(
+        adapter=FakeStreamAdapter([(["在", "的"], Turn(stop_reason="end_turn", text="在的"))]),
+        deadline_s=None,
+    )
+    text, r = collect(loop, "在吗")
+    assert r.outcome == "answered" and text == "在的"
 
 
 if __name__ == "__main__":

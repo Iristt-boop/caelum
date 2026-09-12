@@ -108,6 +108,49 @@
 
 ---
 
+### 第十七批（2026-09-12：`1.1` 超时与并发 —— 让「慢」变成一个有下场的结局）
+
+**做了什么**
+
+| 改动 | 位置 |
+|---|---|
+| `AgentLoop` 加墙钟 `deadline_s`，新增第 7 种结局 `timeout` | `agent/loop.py` |
+| `chat_deadline_s`（默认 180s，`NOX_CHAT_DEADLINE_S` 可调） | `config.py` |
+| `max_retries` **4 → 2** | `config.py:153` |
+| `limit_concurrency` 上线 | `api/server.py` uvicorn |
+| `_OUTCOME_TEXT["timeout"]` —— 超时也要有人话 | `api/server.py` |
+
+**⚠️ 我没照抄排期里的 `limit_concurrency=8`，改成了默认 16（可调）**
+
+理由是审计和排期**都没算长连接**：`limit_concurrency` 把 WebSocket 和 SSE
+一起算进去，而 nox-core 有
+
+- `/agent/local` —— 她电脑那条反向 WS，**常驻**
+- `/api/nox/pulse/stream` —— 每个开着的界面一条 SSE
+- `/chat/stream` —— 说话时一条
+
+稳态就占掉 3~4 个。给 8 的话，客户端异常断开留下的僵尸连接还没回收，
+就可能把**她自己**挡在门外（503）——**那是拿一种卡死换另一种**。
+16 一样把最坏情况压成有界，同时留 4 倍余量。要改就 `NOX_MAX_CONCURRENCY`。
+
+**⚠️ deadline 的真实边界（写清楚，免得以后被读成"180 秒一定返回"）**
+
+它**只在轮次之间检查**，插不进正在进行的那次 SDK 调用（那层自己在重试）。
+所以真实最坏时长是 `deadline + 一次调用的最坏值` ——
+`90s × 3 次尝试 ≈ 270s`。这也是 `max_retries` 必须一起降到 2 的原因：
+光加 deadline 不降重试，等于给一个拦不住的东西立了个牌子。
+我专门写了一条测试 `test_deadline_does_not_cut_into_a_call_in_flight` 把这条钉死。
+
+**`timeout` 和 `exhausted` 没有合并**，这是故意的：
+`exhausted` = 他在打转（该去看提示词），`timeout` = 上游在拖（该去看 provider）。
+合成一个就等于把这两条线索同时丢掉。给她看的那句话也分开写了 ——
+超时那句明说「不是你的问题」，免得她以为是自己没讲清楚。
+
+**验证**：`nox-core` 全套 **1543 passed / 1 skipped**；`check-boundaries.sh` 七条全过。
+**未部署** —— 线上还是旧的，等她发话。
+
+---
+
 ## 本轮进度（2026-09-11）
 
 > ⚠️ **本轮在线上做了实事。** 全部有备份、可回滚；备份后缀都带日期。
@@ -915,9 +958,12 @@ touch-server 现在要 token 了。**没更新 `wifi_secrets.h` 就刷固件，�
 > **收益最大的一条**：它同时消掉一大片 High，而且是后面所有事的信任基础。
 > （背景：utility 401 跑了 30+ 小时没人发现，因为"表面上他好好的"。）
 
-- [ ] 1.1 `/chat` 加请求级 deadline（180s）+ `limit_concurrency=8`；`max_retries` 4→2（半天）
+- [x] ~~1.1 `/chat` 加请求级 deadline（180s）+ `limit_concurrency=8`；`max_retries` 4→2（半天）~~
+      ✅ **2026-09-12 做完**，见第十七批
       （现状：单请求最坏 90 分钟、无并发上限，一个半死 provider 能让 Core 整体不响应）
       **判据**：打一个假死的上游，Core 不会整体卡住。
+      → 已用真会 sleep 的假 adapter 覆盖（非流式 + 流式各一条），并做了变异验证：
+      把 `_overdue` 改成永远 False，3 条测试立刻红，整套从 1.2s 变 18s。
 - [ ] 1.2 `agent/loop.py` 加结构化 turn 日志（outcome / iterations / tools / model / tokens）（半天）
       （现状：整个 agent loop **只有 1 行 logger**）
 - [ ] 1.3 `attention/engine.py:93` 的 DEBUG 提成 INFO；加 `NOX_LOG_LEVEL`（1h）

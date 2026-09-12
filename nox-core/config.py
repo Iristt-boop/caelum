@@ -51,6 +51,16 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _env_float(name: str, default: float) -> float:
+    raw = _env(name)
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
 def _build_llm(
     *,
     backend: str,
@@ -149,8 +159,14 @@ class LLMConfig:
 
     # 网络抖动时重试几次。两家 SDK 都内建了带指数退避的重试，
     # 而且会读 retry-after 头，比自己写一层可靠。
-    # 默认值只有 2，对糖糖这边不太稳的网络偏少。
-    max_retries: int = 4
+    #
+    # 🔴 2026-09-12 从 4 调回 2（审计 1.1）。原来写 4 的理由是"她这边网络不稳"，
+    # 那个理由本身没错，错的是**它和 `timeout=90` 相乘之后没有上界**：
+    #   90s × 5 次尝试 × 12 轮循环 ≈ **90 分钟**，而她看到的只是"一直在转"。
+    # 现在上层有 180s 的 deadline（`chat_deadline_s`），但 deadline 只在
+    # **轮次之间**检查 —— 一次 SDK 调用自己重试时，上层是插不进去的。
+    # 所以这个数字必须自己压住：90s × 3 次 ≈ 270s 是单次调用的真实最坏值。
+    max_retries: int = 2
     # 单次请求超时（秒）。不设的话默认很长，实测遇到过一句"晚安"卡 33 秒 ——
     # 与其干等，不如早点失败让上层退回或重试。
     timeout: float = 90.0
@@ -445,9 +461,36 @@ class Config:
     # 循环硬上限。跑满不等于答完 —— loop 会明确区分这两种结局
     max_iterations: int = field(default_factory=lambda: _env_int("NOX_MAX_ITERATIONS", 12))
 
+    #: 一整轮对话的墙钟预算（秒）。超了就收尾，**不再开下一轮**。
+    #:
+    #: 为什么需要它：`max_iterations` 只数轮数，数不了时间。一个半死的上游
+    #: 每轮都慢慢吐、每轮都不报错，12 轮跑下来可以是几十分钟，而她那边
+    #: 只看到"一直在转"—— 这正是审计 1.1 那条。
+    #:
+    #: ⚠️ **它只在轮次之间生效**，插不进正在进行的 SDK 调用（那层自己在重试）。
+    #: 所以真正的最坏时长是 `deadline + 一次调用的最坏值`，而不是 deadline 本身。
+    #: 想收紧就同时压 `max_retries` / `timeout`。设 0 或负数 = 关掉。
+    chat_deadline_s: float = field(
+        default_factory=lambda: _env_float("NOX_CHAT_DEADLINE_S", 180.0))
+
     # ---- 服务 ----
     host: str = field(default_factory=lambda: _env("NOX_HOST", "127.0.0.1"))
     port: int = field(default_factory=lambda: _env_int("NOX_PORT", 8100))
+
+    #: 同时在飞的请求上限，超了 uvicorn 直接回 503。
+    #:
+    #: 治的是"一个半死的 provider 把线程池全吃光 → Core 整体不响应"。
+    #:
+    #: 🔴 审计和排期里写的是 8，我没照抄，理由是**它们没算长连接**：
+    #: `limit_concurrency` 把 WebSocket 和 SSE 一起算进去，而我们有
+    #:   · `/agent/local` —— 她电脑那条反向 WS，**常驻**
+    #:   · `/api/nox/pulse/stream` —— 每个开着的界面一条 SSE
+    #:   · `/chat/stream` —— 说话时一条
+    #: 稳态就要占掉 3~4 个。给 8 的话，客户端异常断开留下的僵尸连接
+    #: 还没回收就可能把她自己挡在门外（503），**那是拿一种卡死换另一种**。
+    #: 16 仍然把最坏情况压成有界，同时留出 4 倍余量。
+    max_concurrency: int = field(
+        default_factory=lambda: _env_int("NOX_MAX_CONCURRENCY", 16))
 
     # ---- 会话持久化 ----
     # 默认落在 nox-core/data/sessions.db（已在 .gitignore 里）

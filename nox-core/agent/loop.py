@@ -2,7 +2,7 @@
 
 模型无关：只跟 LLMAdapter 说话，不认识任何一家的参数名。
 
-四个关键设计，每个都对应一个具体的坑：
+五个关键设计，每个都对应一个具体的坑：
   1. 硬上限 + 区分结局 —— 跑满循环和答完是两回事，混在一起就永远不知道
      他是答完了还是在原地打转
   2. refusal / max_tokens 单独处理 —— max_tokens 是截断不是完成，当成完成
@@ -10,11 +10,16 @@
   3. 所有 tool_result 装进同一条消息 —— 拆开不报错，但会让模型逐渐放弃
      并行调用工具
   4. 工具失败原样回传 —— 见 guard.py 开头那段
+  5. **墙钟 deadline**（2026-09-12 加，审计 1.1）—— `max_iterations` 数的是
+     轮数，数不了时间。一个每轮都慢、每轮都不报错的上游能把 12 轮拖成几十
+     分钟，而糖糖那边只看到"一直在转"。deadline 让"慢"变成一个**有下场的
+     结局**（`timeout`），而不是一段无声的等待。
 """
 
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from typing import Any
@@ -57,7 +62,12 @@ class LoopResult:
       truncated     输出被 max_tokens 截断（**不是**完成）
       tool_stuck    同一工具连续失败，主动收手
       exhausted     跑满循环上限还没结束
+      timeout       超过这一轮的墙钟预算，主动收尾
       error         调用链本身出错
+
+    ⚠️ `timeout` 和 `exhausted` 是两回事，别合并：
+    `exhausted` 是**他在打转**（轮数用光），`timeout` 是**上游在拖**（时间用光）。
+    一个该去看提示词，一个该去看 provider —— 合成一个就等于把这两条线索都丢了。
     """
 
     outcome: str
@@ -95,6 +105,24 @@ class AgentLoop:
     depth: Depth = "low"
     # 同一个工具连续失败几次就收手
     failure_limit: int = 2
+    #: 一整轮的墙钟预算（秒）。None / ≤0 = 不限（默认，保持老调用方的行为不变）。
+    #: 由 `nox.py` 从 `config.chat_deadline_s` 传进来。
+    deadline_s: float | None = None
+
+    def _deadline(self) -> float | None:
+        """算出这一轮的截止时刻。用 monotonic —— 系统时钟被改也不受影响。"""
+        if not self.deadline_s or self.deadline_s <= 0:
+            return None
+        return time.monotonic() + self.deadline_s
+
+    def _overdue(self, deadline: float | None) -> bool:
+        return deadline is not None and time.monotonic() >= deadline
+
+    def _timeout_detail(self, iterations: int) -> str:
+        return (
+            f"这一轮超过 {self.deadline_s:.0f} 秒的预算，在第 {iterations} 轮收尾。"
+            "通常是上游变慢，不是他在打转"
+        )
 
     def register(self, spec: ToolSpec, handler: ToolHandler) -> None:
         self.tools[spec.name] = Tool(spec=spec, handler=handler)
@@ -142,8 +170,18 @@ class AgentLoop:
         tracker = guard.FailureTracker(limit=self.failure_limit)
         total = Usage()
         iterations = 0
+        deadline = self._deadline()
 
         for iterations in range(1, self.max_iterations + 1):
+            # ⚠️ 检查点在**开下一轮之前**，不是在调用中间 ——
+            # 正在进行的 SDK 调用（它自己带重试）这里插不进去。
+            # 所以这个 deadline 保证的是"不会再往下滚"，不是"180 秒必回"。
+            if self._overdue(deadline):
+                return LoopResult(
+                    "timeout", None, iterations - 1, total, messages,
+                    self._timeout_detail(iterations - 1),
+                )
+
             turn = llm.complete(
                 messages,
                 specs,
@@ -295,7 +333,20 @@ class AgentLoop:
                 if rest:
                     yield StreamEvent("text", text=rest)
 
+        deadline = self._deadline()
+
         for iterations in range(1, self.max_iterations + 1):
+            # 同非流式那条：只拦"开下一轮"，拦不住正在进行的那一次调用。
+            # 流式这边额外要紧的是 —— 超时前已经吐出去的文本**不能吞掉**，
+            # 所以先 drain 再报 timeout，否则她屏幕上会留半句没有下文的话。
+            if self._overdue(deadline):
+                yield from drain()
+                yield _done(
+                    "timeout", None, iterations - 1, total, messages,
+                    self._timeout_detail(iterations - 1),
+                )
+                return
+
             turn: Turn | None = None
             for ev in llm.stream(
                 messages, specs,

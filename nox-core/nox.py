@@ -111,6 +111,9 @@ class Nox:
         self.loop = AgentLoop(
             adapter=make_adapter(self.cfg.primary),
             max_iterations=self.cfg.max_iterations,
+            # 墙钟预算。max_iterations 数轮数，它数时间 —— 缺了它，
+            # 一个"每轮都慢但不报错"的上游可以把一轮聊天拖成几十分钟
+            deadline_s=self.cfg.chat_deadline_s,
         )
         memory_tools.register_all(self.loop, self.ob)
         misc_tools.register_all(self.loop)

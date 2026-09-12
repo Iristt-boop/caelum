@@ -118,6 +118,10 @@ _OUTCOME_TEXT = {
     "truncated": "话说到一半被截断了，我再说一遍短一点的。",
     "tool_stuck": "试了两次都没成，先停下了——不想瞎折腾给你看假结果。",
     "exhausted": "我绕进去了，一直没绕出来。你把要做的事说得再具体点？",
+    # 超时和 exhausted 说的不是同一件事，所以话也不一样：
+    # exhausted 是他自己绕不出来（该让她换个说法），timeout 是外面在拖
+    # （不是她的问题，别让她以为是自己没说清楚）。
+    "timeout": "这次等太久了，我先停下——不是你的问题，是我这边慢了。再跟我说一次？",
     "error": "我这会儿连不上，等一下再跟我说一次。",
 }
 
@@ -2367,6 +2371,14 @@ def main() -> int:
         # 那期间的工具调用会等到自己的超时。比起每几小时断一次，这个更划算。
         ws_ping_interval=20.0,
         ws_ping_timeout=60.0,
+        # 同时在飞的请求上限（审计 1.1）。超了 uvicorn 直接回 503 ——
+        # **503 是故意的**：比起把线程池坐满然后整个 Core 不响应（她看到
+        # "一直在转"、日志里什么都没有），一个明确的错误好得多。
+        #
+        # ⚠️ 这个数把 WebSocket 和 SSE 一起算进去，而我们有常驻的
+        # `/agent/local` 和每个界面一条的 pulse 流 —— 详见 config.py 里
+        # `max_concurrency` 那段为什么不是审计写的 8。
+        limit_concurrency=config.max_concurrency,
     )
     return 0
 

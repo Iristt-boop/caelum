@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -225,6 +226,113 @@ def test_usage_accumulates_across_iterations():
     r = loop.run("算账")
     assert r.usage.input_tokens == 250
     assert r.usage.output_tokens == 50
+
+
+# ---------------------------------------------------------------------------
+# 墙钟 deadline（审计 1.1）
+#
+# 判据原文是「打一个假死的上游，Core 不会整体卡住」。所以这里的假 adapter
+# **真的会慢**（每轮 sleep），而不是我直接把时钟改掉 —— 后者测的是我的
+# mock 写对没有，不是超时到底拦不拦得住。
+# 慢多少：每轮 0.05s，预算 0.12s，所以第 3 轮之前必然被拦下。
+# ---------------------------------------------------------------------------
+
+
+class SlowAdapter:
+    """每轮都要花点时间、而且**永远不结束**的上游 —— 模拟半死的 provider。"""
+
+    name = "slow"
+
+    def __init__(self, per_call_s: float = 0.05) -> None:
+        self.per_call_s = per_call_s
+        self.calls = 0
+
+    def complete(self, messages, tools, **kw):
+        self.calls += 1
+        time.sleep(self.per_call_s)
+        # 一直要调工具 = 一直不收尾，把循环喂满
+        return Turn(
+            stop_reason="tool_use",
+            tool_calls=[ToolCall(id=f"c{self.calls}", name="t", arguments={})],
+        )
+
+
+def _slow_loop(**kw) -> tuple[AgentLoop, SlowAdapter]:
+    adapter = SlowAdapter()
+    loop = AgentLoop(adapter=adapter, max_iterations=50, **kw)
+    loop.register(spec("t"), lambda a: "ok")
+    return loop, adapter
+
+
+def test_deadline_stops_a_slow_upstream():
+    """🔴 这条是 1.1 的判据：上游一直慢，循环必须自己收尾。"""
+    loop, adapter = _slow_loop(deadline_s=0.12)
+    r = loop.run("在吗")
+
+    assert r.outcome == "timeout"
+    # 没有跑满 50 轮 —— 是被时间拦下的，不是被轮数
+    assert adapter.calls < 50
+    assert r.detail and "预算" in r.detail
+
+
+def test_timeout_is_not_exhausted():
+    """🔴 两种结局不许混：一个是他在打转，一个是上游在拖。
+
+    合并了就等于把"该去看提示词"和"该去看 provider"这两条线索都丢掉。
+    """
+    slow, _ = _slow_loop(deadline_s=0.12)
+    assert slow.run("嗯").outcome == "timeout"
+
+    # 同样跑不完，但这次是**轮数**用光的：上游很快，只是一直要调工具
+    fast = AgentLoop(
+        adapter=FakeAdapter([
+            Turn(stop_reason="tool_use", tool_calls=[ToolCall(id="c", name="t", arguments={})])
+            for _ in range(3)
+        ]),
+        max_iterations=3,
+    )
+    fast.register(spec("t"), lambda a: "ok")
+    assert fast.run("嗯").outcome == "exhausted"
+
+
+@pytest.mark.parametrize("deadline", [None, 0, -1])
+def test_no_deadline_keeps_old_behaviour(deadline):
+    """不配 deadline 的调用方（后台任务、测试）行为一个字都不能变。"""
+    loop = AgentLoop(
+        adapter=FakeAdapter([Turn(stop_reason="end_turn", text="在的")]),
+        deadline_s=deadline,
+    )
+    assert loop.run("在吗").outcome == "answered"
+
+
+def test_deadline_does_not_cut_into_a_call_in_flight():
+    """⚠️ 把 deadline 的**真实边界**钉死：它只拦"开下一轮"。
+
+    正在进行的那次调用（SDK 自己在重试）是插不进去的。所以最坏时长是
+    `deadline + 一次调用的最坏值`。这条测试存在的意义是：以后谁把它读成
+    "180 秒一定返回"，这里会告诉他不是。
+    """
+    adapter = SlowAdapter(per_call_s=0.25)
+    loop = AgentLoop(adapter=adapter, max_iterations=50, deadline_s=0.01)
+    loop.register(spec("t"), lambda a: "ok")
+
+    started = time.monotonic()
+    r = loop.run("在吗")
+    elapsed = time.monotonic() - started
+
+    assert r.outcome == "timeout"
+    # 预算只有 0.01s，但第一次调用是完整跑完的 —— 所以实际耗时 ≥ 0.25s
+    assert elapsed >= 0.25
+    assert adapter.calls == 1
+
+
+def test_her_message_exists_for_timeout():
+    """结局必须有对应的人话，否则超时那次她屏幕上是空的。"""
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from api.server import _OUTCOME_TEXT  # noqa: PLC0415
+
+    assert "timeout" in _OUTCOME_TEXT
+    assert _OUTCOME_TEXT["timeout"] != _OUTCOME_TEXT["exhausted"]
 
 
 if __name__ == "__main__":
