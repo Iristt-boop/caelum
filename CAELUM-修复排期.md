@@ -108,6 +108,58 @@
 
 ---
 
+### 第十八批（2026-09-12：`4.4` 记忆预算 —— 他上场时不该只带着「他是谁」）
+
+**先量后修，量出来的东西比排期写的严重**
+
+修之前打线上一次只读 breath（`touch=False drift=False`）：
+
+```
+=== 核心准则 ===   约 40 条
+=== 浮现记忆 ===   ❌ 一条都没有
+```
+
+顺着去翻，发现**两处**一样的写法，不是排期以为的一处：
+
+| 位置 | 影响 |
+|---|---|
+| `Ombre-Brain/server.py` `breath()` | 工具调用少给记忆 |
+| `Ombre-Brain/server.py` `/breath-hook` | 🔴 **会话启动的浮现口** —— 他上场时只带核心准则 |
+
+两处都是「有多少钉选就脱水多少」→ 固定预算逐条减 → **减成负数** →
+下面动态浮现第一次 `if token_budget <= 0` 就 break。
+渐进、静默：钉选越攒越多，他越只会背诵「他一直是谁」，
+越答不出「她刚才说了什么」。
+
+**「他好像越来越记不住最近的事」—— 如果有过这个感觉，就是这两处。**
+
+**改了什么**
+
+- `PINNED_BUDGET_RATIO = 0.7` —— 钉选最多吃 70%，**动态永远至少留 30%**
+- 被挡掉的钉选打 WARNING（截断核心准则不许静默）
+- `token_budget = 预算 - pinned_used`，不会再是负数
+- `nox-core/memory/ob_client.py`：`core_principles()` 不再 `core or dynamic`
+  —— 没有核心准则头时返回空 + WARNING。原来那行会把**随机浮现冻成
+  静态前缀里的自我指令**（审计 3.2 链 3b）
+- 新增 `tests/test_ob_client.py`（8 条）—— 审计 8.4 点名的第一个硬缺口，
+  R4 那条记忆咽喉此前**零测试**
+
+**两处变异验证**（免得又是假绿）
+
+| 把什么改坏 | 结果 |
+|---|---|
+| `_overdue` → 永远 False（第十七批） | 3 条红，整套 1.2s → 18s |
+| `core_principles` → 改回 `core or dynamic` | 当场抓住泄漏内容 |
+
+⚠️ **Ombre-Brain 本地跑不了测试**（没 venv，缺 `frontmatter`），
+所以它那半只有 `py_compile` + **部署后真实 breath 前后对比**。后者才是判据。
+
+⚠️ Ombre-Brain 是独立仓库、不在会话的隔离工作区里，编辑工具硬拦主目录文件。
+改动写成 `scratch/apply-ob-pinned-budget{,-2}.py` 由她执行 —— 脚本带三道保险：
+已打过就退出、锚点必须正好出现 1 次否则中止（不猜）、改完 `git diff` 可审。
+
+---
+
 ### 第十七批（2026-09-12：`1.1` 超时与并发 —— 让「慢」变成一个有下场的结局）
 
 **做了什么**
@@ -1027,7 +1079,10 @@ touch-server 现在要 token 了。**没更新 `wifi_secrets.h` 就刷固件，�
 - [ ] 4.2 桶文件改 `tmp + os.replace`；写路径收归 `BucketManager`（1 天）
       （现状：`open(path,"w")` 原地截断写 + 6 个进程写者零文件锁 → 崩一次记忆静默消失）
 - [ ] 4.3 加 unarchive；修 `trace` 谎报"已激活"（半天）
-- [ ] 4.4 pinned 纳入 token 预算；修 `split_breath` 无头时把 dynamic 当 core 的 bug（半天）
+- [x] ~~4.4 pinned 纳入 token 预算；修 `split_breath` 无头时把 dynamic 当 core 的 bug（半天）~~
+      ✅ **2026-09-12 做完**，见第十八批。**实际影响比这条写的大** ——
+      量线上才发现 `/breath-hook`（会话启动的浮现口）有同一个 bug，
+      修之前 `breath("")` 回 40 条核心准则、**0 条浮现记忆**。
 - [ ] 4.5 记忆加来源标记（user / model / external / inferred）+ evidence 标注"这是他的推断"（1 天）
       **这条是"不偏离最初人格"的技术基础。**
 - [ ] 4.6 decay 挂 systemd timer（不再靠"有人调用工具才跑"）（2h）
