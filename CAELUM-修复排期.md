@@ -81,7 +81,7 @@
 
 | 顺序 | 条目 | 为什么它影响聊天 |
 |---|---|---|
-| 1 | `2.3` 写路径挂 `invalidate()`（经期/待办/音乐/体重） | **直接决定「他记不记得」** —— 写完了不失效，他看到的还是旧的 |
+| ~~1~~ | ~~`2.3` 写路径挂 `invalidate()`~~ ✅ **2026-09-12 做完**（见第十五批） | 原表把它和「经期/待办/音乐/**体重**」并列 —— **体重那条是照抄审计的措辞，是错的**：Provider 列表里没有任何一条读饮食/体重。真正的窗口是 `health`（经期）**6 小时**、`todo` 30 分钟、`memory` 5 分钟、`music` 3 分钟 |
 | 2 | `2.1` session id 进 `ToolContext` | 现在是进程级全局属性，并发下会串 |
 | 3 | `1.1` `/chat` 加 deadline + `limit_concurrency` | 聊到一半卡死 |
 | 4 | `4.4` pinned 纳入 token 预算 + `split_breath` 的 bug | 记忆挤爆预算 → 回复被截 |
@@ -1419,3 +1419,112 @@ WATCH 只在历史里、HEAD 已打码，**这个是 HEAD 现役**。
 
 **⑤ 幂等性**：这一轮工具改了三遍，每一遍都用「绝对不存在的字符串」做对照组验过方法可信。
 `grep` / `git log -S` 这类调用**一律**用参数数组传值，不用 `-S$var` 内插。
+
+---
+
+### 第十五批（2026-09-12）：待办退役收尾 + 写路径挂 `invalidate()` —— 「他记不记得」
+
+#### 她一句话纠正了我一处判断
+
+我在讲 `2.3` 时说「待办工具写的是 GitHub 的 todo.md，而 Provider 读的是 bridge 的本地
+清单，中间还有一道同步」。她直接说：
+
+> 「待办的，github那条todo.md我早都不要了。现在的todo不应该是存到了自己的SQlite吗？」
+
+**她是对的。** 实测：`bridge/server.js:278` `CREATE TABLE IF NOT EXISTS todos`、
+`:286`「前端 todo 成为唯一活清单，**GitHub todo.md 退役为只读存档**」、
+`:2997`「原来有 `todoSync()`…**不再有任何代码写它**」。读（`/api/todo/list`）、
+写（`/api/today`）、完成（`/api/todo/complete`）**全在 bridge 的 SQLite**，
+**根本没有"中间一道同步"**。
+
+**我为什么错**：我读了 `tools/todo.py` **顶部那段 docstring**（整段还在讲"往 GitHub 的
+todo.md 里写"、"两个 Claude 同时改一个文件会冲突"），就拿它当现实了 —— 而同一个文件
+往下 60~73 行就写着「这里不注册任何工具了」。**一段过期四个版本的说明，比没有说明更危险**：
+它不报错，但会让人（和 AI）对系统产生错误的认知。这一轮我被它带偏了两次。
+
+#### 第一步 · 补完 GitHub 退役的最后一段
+
+那次"退役"只做了一半 —— **写 GitHub 的代码还活着，只是没人调**。全仓实测零调用者后删掉：
+
+| 删了什么 | 为什么 |
+|---|---|
+| `api/server.py` 的 3 个端点（`GET /todo`、`POST /todo/add`、`POST /todo/complete`）+ `_todo_writer` + 2 个请求模型 | 留着它的坏处不是多几十行，是**它真能写 GitHub** —— 哪天被谁接回去，「两个孤岛」就重新长出来，而且不报错 |
+| `tools/todo.py` 整个文件 + `tests/test_todo_writer.py` | `TodoWriter` / `read_open_items` 已经没有调用者 |
+| `providers/todo.py` 的 `_fetch_github` 与整套 GitHub 解析 | 收成只有本地清单一条路；没 bridge 时**明确报错**，不再回退读退役存档 |
+| `config.py` 的 `todo_repo`/`todo_path`、`nox.py` 的回退分支 | 留一个「指向退役存档的配置项」只会让人以为它还有用 |
+| 线上 `/root/nox-core/.env` 那两行 + config-export 模板 | 同上（94→92 行，只少那两行，其余原样；**nox-core 没重启**） |
+
+**删兜底的理由值得单独说**：那条路读的是一份**已退役的存档**，真触发时他会拿旧清单
+当她的待办讲出去，而且是**静默的**（不报错，只是内容过期）—— 正是「两个孤岛」的形状。
+**没有源就不该有这一栏**，而不是端上一份假的。
+
+`tests/test_todo_provider.py` 也重写了：它原来有一半在测 **GitHub 那条不在跑的路**，
+`test_render_is_within_budget` 因此一直是绿的 —— 与此同时线上本地清单那条路正把
+800 字预算吃光（48 小时 61 次「略过: todo」）。
+**测试覆盖的是没在跑的那条路，正在跑的那条一条没测。**
+现在把共享的渲染测试（条数上限/只取标题/预算）移植到活路径上。
+
+#### 第二步 · 写路径挂 `invalidate()`（「他记不记得」的正身）
+
+实测：**生产代码里 `invalidate()` 一次都没被调用过**（只有 `_client.py` 那个同名的
+MCP token 缓存在用）。
+
+机制：`Nox` 不是"回想"，是每一轮被**递**一份当下的快照（World State），按 Provider 缓存 ——
+`health` **6 小时**、`todo` 30 分钟、`memory` 5 分钟、`music` 3 分钟。于是：
+
+```
+她：我来例假了              → 他调 record_period，真写进 World Model 了
+他：记下了                  → 这句是真的
+（之后最多 6 小时内的任何一轮）
+她：我今天是不是来例假了？    → 他读旧快照 → 说「没有记录」
+```
+
+**全程不报错。** TTL 实际上成了「**你刚告诉他的事，他最长能多久当作没听见**」。
+
+接的链路 —— **三个环节，任何一环没接上表现都一样（静悄悄地记不住）**：
+
+```
+工具 → ToolContext.wrote() → LoopResult.dirty_providers
+     → Nox._flush_dirty() → registry.invalidate()
+```
+
+接上的 11 处写路径：`daily.add_todo/complete_todo` → todo；`record.record_period` → health；
+`eryu.play` → music；`memory.remember/archive/edit/merge` → memory；
+`ha.switch/set_light/set_climate` → home。
+
+- **为什么只清「这一轮真写过」的那几个，不是每轮全清**：`health` 那个 6 小时 TTL 是
+  **故意的**（睡眠/经期一天变几次），每轮全清等于每轮真打一次 health-mcp，慢且贵
+- **为什么收口在 `nox.py`**：那里是唯一同时握着「这一轮的产物」和「Provider registry」
+  的地方。工具那侧够不着 registry，也不该为了清缓存去 import 全局单例（审计点名的老毛病）
+- `context.wrote()` 做成**模块级**便捷函数、不在轮次里自动静默跳过 —— 调用方不用判空，
+  少一处「忘了判空」的机会；而这行代码的意义恰恰是「**别漏**」
+
+**⚠️ 刻意没接「体重」**：Provider 列表里没有任何一条读饮食/体重
+（`health._fetch` 只有睡眠/步数/心率/经期）。审计和排期里那句「经期/体重/待办」
+是我照抄的措辞 —— **它不是快照过期的问题，别照着那句话去挂 invalidate**。
+
+#### 顺手抓到一个真会炸的漏代理
+
+`RouteResult` 没代理 `attachments`，而 `nox.py` 的 `chat()` 在「**模型把 `[tag]` 写进正文、
+没调 `send_meme`**」那条兜底里调 `result.attachments.extend(...)` —— **一调就 `AttributeError`**。
+而那条兜底正是 **2026-09-06 她报的降级场景**。流式那条路拿到的是 `LoopResult` 本身，
+所以一直没暴露。新加的测试按**字段名**对齐，以后 `LoopResult` 加字段会自动红。
+
+#### 这一轮我踩的坑（都记着，别再犯）
+
+| 坑 | 后果 |
+|---|---|
+| `Get-Content` 不加 `-Encoding UTF8` | 把 UTF-8 当 GBK，行数对不上，按行号取值就取歪（审计文档 775 vs 1138、bridge 读成别的端点）—— **同一个坑一晚犯两次** |
+| 只显示文件名、不显示相对路径 | `nox-core/tools/daily.py` 和 `nox-core/planner/daily.py` 撞在一起，我把注释位置认错了 |
+| `"$n:"` | PowerShell 当成驱动器限定变量 → 整个脚本解析失败、一行没跑。要写 `${n}` |
+| `bash` 指向 WSL，而 WSL 里没有 `/bin/bash` | 边界检查跑不了；要用 `D:\应用\Git\bin\bash.exe` |
+| 提交信息文件放 `scratch/`（被跟踪）+ `git add -A` | 把提交信息本身提交进去了；改成放 `$env:TEMP` |
+| **拿笔记当基线**（上一批，见审计 §12.3） | 差点误报「轮换从未生效」 |
+
+#### 结果
+
+`1529 tests passed`（新增 11 条）、`check-boundaries.sh` 7 条全过。
+提交 `c850ff5`（退役收尾）、`66ce0ba`（invalidate），均已在 origin。
+
+**⚠️ 还没生效**：nox-core 跑在 release 布局里（`/root/nox-core/code → /root/releases/...`），
+所以这两笔要**部署**才上线 —— 见下一批。
