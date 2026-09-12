@@ -35,6 +35,7 @@ from personality import scenes
 from router.intent import _NEED_MUSIC, classify, classify_context
 from router.router import RouteResult, Router
 from tools import amap as amap_tools
+from tools import context
 from tools import daily as daily_tools
 from tools import didi as didi_tools
 from tools import diet as diet_tools
@@ -93,13 +94,18 @@ class Nox:
         # 按需建的备用模型 adapter，建一次留着（见 adapter_for）
         self._adapters: dict[str, LLMAdapter] = {}
 
-        #: 这轮是哪个会话。`remind_myself` 要用它把纸条挂到对的对话上。
-        #: 由 `api/server.py` 的 `_turn_starts()` 在开跑前设。
-        self.current_session_id: str | None = None
-        #: 这个会话是什么时候开始的。同样由 `_turn_starts()` 设。
-        #: 用来在 dynamic_system 里告诉他「这段对话已经聊了几天」——
-        #: 他心里没有"现在"，时间差必须算好了递给他。
-        self.current_session_started: datetime | None = None
+        # ⚠️ **2026-09-12：「这轮是哪个会话 / 什么时候开始的」不再放在实例上。**
+        #
+        # 原来这里是 `self.current_session_id` + `self.current_session_started`
+        # 两个进程级属性：`api/server.py` 的 `_turn_starts()` 在每轮开跑前写它们，
+        # 而工具在**别的时间点**读 —— 两个并发请求（她的实时聊天 + 关注链/唤醒链
+        # 自己开口）就会互串：A 轮跑到一半被写成 B，于是 A 轮里 `remind_myself`
+        # 留的纸条、`luckin_order` 建的订单都挂到了 **B 会话**上，**不报错**。
+        #
+        # 现在走两条明确的路，都不经过实例属性：
+        #   · 工具的：`ToolContext.session_id`（按轮隔离，见 tools/context.py）
+        #   · 提示里的：`chat()` / `chat_stream()` 的入参，一路传到 `_dynamic()`
+        # 所以这类隐患从"靠没人并发"变成"结构上不可能"。
 
         self.ob = OmbreBrain(self.cfg.ob_url, timeout=self.cfg.ob_timeout)
         self.loop = AgentLoop(
@@ -323,7 +329,11 @@ class Nox:
                 # 传取值函数：orders store 在 `api/server.py` 才造出来，
                 # 那时候这里早注册完了（同 ResonanceProvider 的 attention_ref）
                 store_ref=lambda: getattr(self, "orders", None),
-                session_id_ref=lambda: self.current_session_id,
+                # 取值函数，不是值：它每次调用去 ToolContext 里拿**当下这一轮**的
+                # 会话 id。别写回 `lambda: self.current_session_id` —— 那个取的是
+                # 「最近一次开跑的那轮」，并发下会把订单挂到别人的会话上，
+                # 而 App 那边按会话找单会找不到（见 __init__ 里那段）。
+                session_id_ref=context.session_id,
             )
             logger.info("luckin 瑞幸工具已注册（下单走确认卡）")
         else:
@@ -579,7 +589,9 @@ class Nox:
         return (f"{text}\n\n{block}" if text else block), None
 
     def _dynamic(self, text: str, voice: bool, scene: str | None = None,
-                 has_images: bool = False) -> str:
+                 has_images: bool = False,
+                 session_id: str | None = None,
+                 session_started: datetime | None = None) -> str:
         """组装每轮可变的提示：情绪 +（语音模式下）该情景的通话指令。
 
         两者都走 dynamic_system，跟在缓存断点之后 —— 静态前缀一个字都不能变。
@@ -609,12 +621,12 @@ class Nox:
         # 这段对话聊了多久。**天级**，所以一天之内不变、不冲缓存
         # （分钟级会让 dynamic_system 每分钟都变，理由见 providers/time.py:78）。
         # 只在跨天时才说 —— 当天开的会话说「已经 0 天」是废话
-        span = self._session_span()
+        span = self._session_span(session_started)
         if span:
             parts.append(span)
         # 上一轮他说卡发了但没发。**当面点破**，否则他会照着自己的
         # 历史继续只说不做（见 __init__ 里 card_debt 那段）
-        if self.current_session_id in self.card_debt:
+        if session_id in self.card_debt:
             parts.append(
                 "【纠正】你上一轮说了「卡发你了」之类的话，"
                 "**但你并没有调用 luckin_order，她那边什么都没收到**。\n"
@@ -623,13 +635,15 @@ class Nox:
             )
         return "\n\n".join(parts)
 
-    def _session_span(self) -> str:
+    def _session_span(self, started: datetime | None) -> str:
         """「这段对话是 X 天前开始的」。
 
         历史里的日期分隔线已经写了开始日期，这里再给一个**算好的差值** ——
         糖糖 2026-08-11 定的原则：换算不交给模型，他心里没有"现在"。
+
+        ⚠️ 入参而不是读 `self.current_session_started`：那是进程级属性，
+        并发下会把**别人的**会话开始时间算给他（见 `__init__` 里那段）。
         """
-        started = self.current_session_started
         if started is None:
             return ""
         if started.tzinfo is None:
@@ -693,14 +707,19 @@ class Nox:
         voice: bool = False,
         scene: str | None = None,
         model: str | None = None,
+        session_id: str | None = None,
+        session_started: datetime | None = None,
     ) -> RouteResult:
         text, images = self._see(text, images, model)
         # 三层情绪渲染成一段动态提示，跟在缓存断点之后发 ——
         # 每轮都变，绝不能混进静态前缀（见 personality/mood.py 开头）
-        dynamic = self._dynamic(text, voice, scene, has_images=bool(images))
+        dynamic = self._dynamic(text, voice, scene, has_images=bool(images),
+                                session_id=session_id,
+                                session_started=session_started)
         result = self.router.handle(
             text, history, dynamic_system=dynamic, images=images,
             voice=voice, scene=scene, adapter=self.adapter_for(model),
+            session_id=session_id,
         )
         # 这一轮写过什么状态 → 把对应 Provider 的缓存打掉。
         # 放在最前面：后面几步都是文本后处理，不该影响清缓存这件事。
@@ -732,6 +751,8 @@ class Nox:
         voice: bool = False,
         scene: str | None = None,
         model: str | None = None,
+        session_id: str | None = None,
+        session_started: datetime | None = None,
     ):
         """流式版 chat。
 
@@ -743,7 +764,9 @@ class Nox:
         文本里取一次情绪，更新累积状态。
         """
         text, images = self._see(text, images, model)
-        dynamic = self._dynamic(text, voice, scene, has_images=bool(images))
+        dynamic = self._dynamic(text, voice, scene, has_images=bool(images),
+                                session_id=session_id,
+                                session_started=session_started)
         for ev in self.loop.run_stream(
             text,
             # 语音走精简的英文/中文前缀，不带那 11.5K 中文核心准则 ——
@@ -754,6 +777,7 @@ class Nox:
             # 语音模式关掉分段：||| 会被 TTS 当成正文念出来
             split=not voice,
             adapter=self.adapter_for(model),
+            session_id=session_id,
         ):
             if ev.type == "done":
                 result = getattr(ev, "result", None)

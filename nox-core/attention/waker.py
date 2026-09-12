@@ -198,7 +198,11 @@ def build_waker(core: Any, sessions: Any, store: Any, *,
             prompt = build_prompt(w, _last_said(sessions, w.session_id), gap_s, now)
 
             try:
-                r = core.chat(prompt, sessions.get(w.session_id))
+                # 显式带上 w.session_id：这是**这条唤醒链自己的会话**。
+                # 原来不带，靠 `core.current_session_id` 那个进程级属性 ——
+                # 她正好在聊天时就被覆盖成她的会话了（见 nox.py __init__ 那段）。
+                r = core.chat(prompt, sessions.get(w.session_id),
+                              session_id=w.session_id)
             except Exception:  # noqa: BLE001
                 # 叫醒失败不该让整个 tick 挂掉，也不该让链断掉 ——
                 # 原地推迟一轮，下次心跳再试

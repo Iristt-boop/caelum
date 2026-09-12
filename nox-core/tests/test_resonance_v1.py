@@ -136,7 +136,7 @@ class ChatNox:
     def model_name(self, model=None):
         return model or "fake-model"
 
-    def chat(self, text, history=None, images=None, voice=False, scene=None, model=None):
+    def chat(self, text, history=None, images=None, voice=False, scene=None, model=None, **kw):
         history = list(history or [])
         return RouteResult(
             LoopResult(

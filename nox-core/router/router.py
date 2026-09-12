@@ -121,6 +121,7 @@ class Router:
         voice: bool = False,
         scene: str | None = None,
         adapter: LLMAdapter | None = None,
+        session_id: str | None = None,
     ) -> RouteResult:
         decision = classify(text, has_images=bool(images))
         logger.info("路由：%s（%s）", decision.intent.value, decision.reason)
@@ -129,7 +130,8 @@ class Router:
             # 轻量路径**不跟着换模型**：它的存在意义就是用便宜模型答一句招呼，
             # 换成 opus 去说"晚安"是把省下的钱又花回去。
             return RouteResult(
-                self._light(text, history, dynamic_system, voice, scene), decision
+                self._light(text, history, dynamic_system, voice, scene,
+                        session_id=session_id), decision
             )
         return RouteResult(
             self.full_loop.run(
@@ -141,6 +143,7 @@ class Router:
                 history=history,
                 images=images,
                 adapter=adapter,
+                session_id=session_id,
             ),
             decision,
         )
@@ -158,6 +161,7 @@ class Router:
         dynamic_system: str | None = None,
         voice: bool = False,
         scene: str | None = None,
+        session_id: str | None = None,
     ) -> LoopResult:
         """轻量路径：一次调用，无工具，无循环。
 
@@ -195,6 +199,7 @@ class Router:
                 system=self.system_prompt,
                 dynamic_system=dynamic_system,
                 history=history,
+                session_id=session_id,
             )
 
         # 返回的 history 是**完整的**，不是裁剪过的那份 ——

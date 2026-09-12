@@ -208,7 +208,7 @@ class FakeCore:
         self.bridge = FakeBridge()
         self.prompts: list[str] = []
 
-    def chat(self, text: str, history: list):
+    def chat(self, text: str, history: list, **kw):
         self.prompts.append(text)
         return FakeReply(self._reply)
 
@@ -323,7 +323,7 @@ def test_chat_failure_retries_instead_of_dropping():
     """叫醒他的时候出错 → 推迟重试，**不能让链断掉**。"""
 
     class Boom(FakeCore):
-        def chat(self, text, history):
+        def chat(self, text, history, **kw):
             raise RuntimeError("模型挂了")
 
     run = build_waker(Boom(""), FakeSessions(), FakeStore(), dry_run=True)

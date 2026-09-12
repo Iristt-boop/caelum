@@ -89,7 +89,7 @@ class FakeCore:
         self.bridge = bridge if bridge is not None else FakeBridge()
         self.prompts: list[str] = []
 
-    def chat(self, text: str, history: list):
+    def chat(self, text: str, history: list, **kw):
         self.prompts.append(text)
         return self.reply
 

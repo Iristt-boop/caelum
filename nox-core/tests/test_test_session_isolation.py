@@ -101,7 +101,7 @@ class ChatNox:
     def model_name(self, model=None):
         return model or "fake-model"
 
-    def chat(self, text, history=None, images=None, voice=False, scene=None, model=None):
+    def chat(self, text, history=None, images=None, voice=False, scene=None, model=None, **kw):
         from agent.llm import Message, Usage
         from agent.loop import LoopResult
         from router.intent import Decision, Intent

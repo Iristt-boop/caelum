@@ -108,10 +108,11 @@ class AgentLoop:
         history: list[Message] | None = None,
         images: list[str] | None = None,
         adapter: LLMAdapter | None = None,
+        session_id: str | None = None,
     ) -> LoopResult:
         # 上下文当局部变量持有，不用 contextvar 包整轮 ——
         # 那样在流式路径下会炸（见 tools/context.py 开头）
-        ctx = tool_context.ToolContext()
+        ctx = tool_context.ToolContext(session_id=session_id)
         result = self._run_inner(
             user_text, ctx, system=system, dynamic_system=dynamic_system,
             history=history, images=images, adapter=adapter,
@@ -217,6 +218,7 @@ class AgentLoop:
         images: list[str] | None = None,
         split: bool = True,
         adapter: LLMAdapter | None = None,
+        session_id: str | None = None,
     ) -> Iterator[StreamEvent]:
         """流式版的 run。
 
@@ -228,7 +230,7 @@ class AgentLoop:
         """
         # 局部变量，不是 contextvar —— 生成器帧天然按调用隔离，并发不会串，
         # 而 contextvar 跨 yield 在这里必炸（见 tools/context.py 开头）
-        ctx = tool_context.ToolContext()
+        ctx = tool_context.ToolContext(session_id=session_id)
         for ev in self._stream_inner(
             user_text, ctx, system=system, dynamic_system=dynamic_system,
             history=history, images=images, split=split, adapter=adapter,

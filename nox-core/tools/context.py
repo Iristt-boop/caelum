@@ -37,6 +37,19 @@ from typing import Any, Iterator
 class ToolContext:
     """一次对话轮次里，工具产生的附带产物。"""
 
+    #: 这一轮属于哪个会话。
+    #:
+    #: ⚠️ **2026-09-12 从进程级属性搬到这里。** 原来它是 `Nox.current_session_id`
+    #: 一个实例属性：每个请求开跑前写一次（`api/server.py` 的 `_turn_starts`），
+    #: 而工具在**别的时间点**读它。两个并发请求（她的实时聊天 + 关注链/唤醒链
+    #: 自己开口）就会互串 —— A 轮跑到一半被写成 B，于是 A 轮里
+    #: `remind_myself` 留的纸条、`luckin_order` 建的订单都挂到了 **B 会话**上。
+    #: **不报错，只是挂错地方**，而且 App 那边按会话找订单会找不到。
+    #:
+    #: 放在这里天然按轮隔离：loop 每次 run 造一个新 ToolContext，
+    #: contextvar 只在一次工具调用那一小段里 bind（见本文件开头那个坑）。
+    session_id: str | None = None
+
     attachments: list[dict[str, Any]] = field(default_factory=list)
 
     #: 这一轮里**写过的状态** → 管着它的 Context Provider 名字。
@@ -133,6 +146,24 @@ def current() -> ToolContext | None:
     """取当前轮次的上下文。不在轮次里时返回 None ——
     工具要能容忍这种情况（比如被单元测试直接调用）。"""
     return _current.get()
+
+
+def session_id() -> str | None:
+    """取当前轮次的会话 id。不在轮次里返回 None。
+
+    工具注册时传**这个函数本身**当取值器：
+
+        session_id_ref=context.session_id
+
+    它每次被调用都去 contextvar 里拿**当下那一轮**的值 —— 而不是闭包捕获一个
+    会变的进程级属性。这一字之差就是 `2.1` 那条并发隐患的修法。
+
+    ⚠️ 别写回 `lambda: core.current_session_id` 那种形式。那个 lambda 在
+    **注册时**建好、在**工具调用时**才求值，中间隔着任意多个请求 ——
+    它取到的是"最近一次开跑的那轮"，不是"我正在跑的这一轮"。
+    """
+    ctx = _current.get()
+    return ctx.session_id if ctx is not None else None
 
 
 def wrote(*providers: str) -> None:

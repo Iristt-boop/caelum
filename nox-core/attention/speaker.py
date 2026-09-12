@@ -217,7 +217,10 @@ def build_speaker(core: _Core, sessions: _Sessions, store: Any,
         prompt = prompt or build_prompt(intent, decision, spoken, last_at, now)
 
         history = sessions.get(sid)
-        r = core.chat(prompt, history)
+        # 显式带上 sid：这句话属于**它自己那条对话**。原来靠 `core.current_session_id`
+        # 那个进程级属性，而她正在聊天时那条链路会把它覆盖成她的会话 ——
+        # 于是主动说的一句话、以及它调工具留的纸条，全挂到了她的会话上（不报错）。
+        r = core.chat(prompt, history, session_id=sid)
 
         # 存进他的会话 —— 这一步就是「留在上下文里」的落点。
         # 放在推送**之前**：宁可存了没推出去（她少收一条），

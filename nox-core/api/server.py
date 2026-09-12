@@ -87,6 +87,7 @@ from attention.sources.thinking import ThinkingSource
 from attention.sources.times import TimeWakeSource
 from attention.sources.todo_due import TodoDueSource
 from tools import record as record_tools
+from tools import context
 from tools import remind as remind_tools
 from world_model import WorldModel
 from config import BACKENDS, is_test_session
@@ -643,7 +644,10 @@ def _build_attention(core: Nox, sessions: "Sessions", db: Store) -> AttentionSer
             core.loop,
             book_ref=lambda: svc.wakeups,
             save=astore.save_wakeups,
-            session_id_ref=lambda: core.current_session_id,
+            # 取值函数，不是值：每次调用去 ToolContext 拿**当下这一轮**的会话 id。
+            # 别写回 `lambda: core.current_session_id` —— 那个取的是「最近一次开跑
+            # 的那轮」，并发下纸条会挂到别人的会话上（见 nox.py __init__ 那段）。
+            session_id_ref=context.session_id,
         )
         logger.info("remind_myself 已注册（唤醒链%s）",
                     "会真的说话" if (live and wake_live) else " DRY-RUN")
@@ -801,13 +805,21 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
                 # 等它们真的收摊，否则关机日志会跟 CancelledError 缠在一起
                 await asyncio.gather(*tasks, return_exceptions=True)
 
-    def _turn_starts(sid: str) -> None:
-        """一轮对话开始时做两件事，都和唤醒链有关。
+    def _turn_starts(sid: str) -> datetime | None:
+        """一轮对话开始时的唤醒链动作，并返回这个会话是什么时候开始的。
 
-        1. **告诉 core 这轮是哪个会话** —— `remind_myself` 要用它把纸条
-           挂到对的对话上。用普通实例属性，不用 contextvars：
-           后者跨同步生成器我们栽过（`context/base.py:25`）。
-        2. **撤掉这个会话上挂着的旧纸条** —— 她开口了，就没什么可追的了。
+        **撤掉这个会话上挂着的旧纸条** —— 她开口了，就没什么可追的了。
+
+        ⚠️ **2026-09-12：不再往 core 上写「这轮是哪个会话」。** 原来它设
+        `core.current_session_id` / `core.current_session_started` 两个进程级属性，
+        而工具在**别的时间点**读 —— 两个并发请求（她的实时聊天 + 关注链/唤醒链
+        自己开口）就会互串：A 轮留的纸条、建的订单挂到 B 会话上，**不报错**。
+        详见 `nox.py` 的 `__init__` 那段。
+
+        现在改成**随调用显式传**：`core.chat(..., session_id=sid,
+        session_started=started)`，工具那侧走 `ToolContext.session_id`
+        （`tools/context.py`）。`started_at` 由本函数返回，调用方拿走 ——
+        顺带少一处重复查库。
 
         顺序上必须在 `core.chat()` **之前**，但撤销必须在设置 sid 之后 ——
         他这一轮可能刚好又留一张新纸条（针对她刚说的话），那张是新的，
@@ -816,14 +828,13 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
         撤销只改内存，下次 tick 的 `_persist()` 写盘。中间崩了最坏的后果是
         多醒一次 —— 而醒来第一件事就是查「她回话了吗」，会自己收摊。
         """
-        core.current_session_id = sid
-        core.current_session_started = db.started_at(sid)
-        if attention is None:
-            return
-        try:
-            attention.wakeups.cancel_for(sid)
-        except Exception:  # noqa: BLE001
-            logger.exception("撤纸条失败，不影响这轮对话")
+        started = db.started_at(sid)
+        if attention is not None:
+            try:
+                attention.wakeups.cancel_for(sid)
+            except Exception:  # noqa: BLE001
+                logger.exception("撤纸条失败，不影响这轮对话")
+        return started
 
     def _for_voice(history: list[Message], voice: bool) -> list[Message]:
         """通话只带最近几轮历史。
@@ -2072,7 +2083,8 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
         sid = req.session_id or "api-daily"
         history = sessions.get(sid)
         try:
-            r = core.chat(prep.prompt, history)
+            r = core.chat(prep.prompt, history,
+                          session_id=sid, session_started=db.started_at(sid))
         except Exception as exc:  # noqa: BLE001
             logger.exception("早报生成异常")
             raise HTTPException(
@@ -2157,12 +2169,13 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
 
         sid = req.session_id or uuid.uuid4().hex
         history = sessions.get(sid)
-        _turn_starts(sid)
+        started = _turn_starts(sid)
         sent = _for_voice(history, req.voice)
 
         try:
             r = core.chat(req.text, sent, images=req.images or None, voice=req.voice,
-                          scene=req.scene, model=req.model)
+                          scene=req.scene, model=req.model,
+                          session_id=sid, session_started=started)
         except Exception as exc:  # noqa: BLE001
             logger.exception("对话处理异常")
             raise HTTPException(status_code=500, detail=f"内部错误: {type(exc).__name__}") from exc
@@ -2227,11 +2240,12 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
             final = None
             # ⚠️ 在生成器**体**里调，不在外面 —— 生成器体是被迭代的那个线程
             # 跑的，工具也在那个线程里跑。放外面的话两者可能不是同一轮
-            _turn_starts(sid)
+            started = _turn_starts(sid)
             try:
                 for ev in core.chat_stream(req.text, sent, images=req.images or None,
                                            voice=req.voice, scene=req.scene,
-                                           model=req.model):
+                                           model=req.model,
+                                           session_id=sid, session_started=started):
                     if ev.type == "text":
                         yield _sse({"type": "text", "text": ev.text})
                     elif ev.type == "split":

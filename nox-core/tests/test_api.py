@@ -85,7 +85,7 @@ class FakeNox:
             attachments=list(self.attachments),
         )
 
-    def chat(self, text, history=None, images=None, voice=False, scene=None, model=None):
+    def chat(self, text, history=None, images=None, voice=False, scene=None, model=None, **kw):
         history = list(history or [])
         self.seen_history_len.append(len(history))
         self.seen_images.append(list(images or []))
@@ -97,7 +97,7 @@ class FakeNox:
             Decision(Intent.SMALL_TALK if self.light else Intent.FULL, "测试"),
         )
 
-    def chat_stream(self, text, history=None, images=None, voice=False, scene=None, model=None):
+    def chat_stream(self, text, history=None, images=None, voice=False, scene=None, model=None, **kw):
         history = list(history or [])
         self.seen_history_len.append(len(history))
         self.seen_model.append(model)
