@@ -286,12 +286,11 @@ class Config:
     # 留空则不注册 WeatherProvider。
     qweather_host: str = field(default_factory=lambda: _env("QWEATHER_HOST", ""))
     qweather_key: str = field(default_factory=lambda: _env("QWEATHER_KEY", ""))
-    # ---- 待办清单（GitHub 上那份 todo.md）----
-    # Claude 的 routines 每天读它推晨报，糖糖随口说、routine 记一笔。
-    # **只读 main、只读不写**（她定的）：写入意味着两个 Claude 同时改一个文件。
-    # 留空则不注册 TodoProvider。
-    todo_repo: str = field(default_factory=lambda: _env("NOX_TODO_REPO", ""))
-    todo_path: str = field(default_factory=lambda: _env("NOX_TODO_PATH", "todo.md"))
+    # ⚠️ 2026-09-12：`todo_repo` / `todo_path`（`NOX_TODO_REPO` / `NOX_TODO_PATH`）
+    # 已删。待办的唯一源是 bridge 的 SQLite `todos` 表（见 `nox.py` 里 TodoProvider
+    # 那段），GitHub 那份 `todo.md` 2026-08-18 就退役为只读存档了 ——
+    # 留一个"指向退役存档的配置项"只会让人以为它还有用。
+    # `GITHUB_TOKEN` 保留：`tools/github_obsidian.py` 在读她的 Obsidian 库。
     github_token: str = field(default_factory=lambda: _env("GITHUB_TOKEN", ""))
 
     #: 城市 ID。101180101 = 郑州（她家）

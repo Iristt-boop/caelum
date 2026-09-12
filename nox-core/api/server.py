@@ -261,14 +261,8 @@ class DailySummaryRequest(BaseModel):
     include_memory: bool = True
 
 
-class TodoAddRequest(BaseModel):
-    text: str = Field(..., max_length=300)
-    #: 进行中 / 近期 / 定期。给不认识的值 TodoWriter 会退回「近期」
-    section: str = "近期"
-
-
-class TodoCompleteRequest(BaseModel):
-    keyword: str = Field(..., max_length=200)
+# ⚠️ 2026-09-12：`TodoAddRequest` / `TodoCompleteRequest` 随那 3 个写 GitHub 的
+# 端点一起删了（见文件下方「待办」那段的说明）。
 
 
 class DescribeImageRequest(BaseModel):
@@ -2116,62 +2110,21 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
         return out
 
     # ---------------------------------------------------------------- 待办
-    # 给 bridge 的 App「今天」页用。她在手机上记一条，得同时进 todo.md，
-    # 否则第二天晨报根本不知道有这件事 —— 这就是「两个孤岛」的那道桥。
+    # ⚠️ **2026-09-12 整段删除。** 这里原来有 3 个端点 —— `GET /todo`、
+    # `POST /todo/add`、`POST /todo/complete` —— 读写的都是 GitHub 上那份
+    # `todo.md`。而它 **2026-08-18 就已退役为只读存档**：bridge 的 SQLite
+    # `todos` 表（前端 todo）才是唯一活清单。
     #
-    # 走 HTTP 而不是让 bridge 直连 GitHub：token 只放 Core 一份。
-    # 也不走 core.chat()，这里没有话要说，纯数据操作。
-
-    def _todo_writer():
-        if not (core.cfg.todo_repo and core.cfg.github_token):
-            raise HTTPException(status_code=503, detail="未配置 todo 仓库或 GitHub token")
-        from tools.todo import TodoWriter
-
-        return TodoWriter(core.cfg.github_token, core.cfg.todo_repo, core.cfg.todo_path)
-
-    @app.get("/todo")
-    def todo_list() -> dict:
-        """todo.md 里所有未完成项，按区分组。App「今天」页拉这个。"""
-        from tools.todo import read_open_items
-
-        try:
-            return {"ok": True, "sections": read_open_items(_todo_writer())}
-        except HTTPException:
-            raise
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("读待办失败")
-            return {"ok": False, "error": str(exc), "sections": {}}
-
-    @app.post("/todo/add")
-    def todo_add(req: TodoAddRequest) -> dict:
-        text = req.text.strip()
-        if not text:
-            raise HTTPException(status_code=400, detail="text 不能为空")
-        try:
-            return {"ok": True, "message": _todo_writer().add(text, req.section)}
-        except HTTPException:
-            raise
-        except Exception as exc:  # noqa: BLE001
-            # 如实返回失败 —— App 那边要能提示她「没同步上」，不能假装记好了
-            logger.exception("写待办失败")
-            return {"ok": False, "error": str(exc)}
-
-    @app.post("/todo/complete")
-    def todo_complete(req: TodoCompleteRequest) -> dict:
-        kw = req.keyword.strip()
-        if not kw:
-            raise HTTPException(status_code=400, detail="keyword 不能为空")
-        try:
-            # ok 跟着「真的改了没」走 —— 没找到那条时返回 True 等于骗 bridge，
-            # App 里勾掉了、todo.md 没动，谁都不知道
-            out = _todo_writer().complete(kw)
-            return {"ok": out.changed, "message": out.message,
-                    "error": "" if out.changed else out.message}
-        except HTTPException:
-            raise
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("划待办失败")
-            return {"ok": False, "error": str(exc)}
+    # bridge 侧早就不调它们了（`bridge/server.js:2279`「GitHub 退役了」、
+    # `:2997`「原来有 todoSync()…不再有任何代码写它」），全仓实测
+    # （bridge / 手机端 / 桌面端 / nox-core）**零调用者**。
+    #
+    # 留着它的坏处不是"多几十行"，而是**它真能写 GitHub** —— 哪天被谁接回去，
+    # 「两个孤岛」就重新长出来，而且不报错。她 2026-09-12 明确说"早都不要了"。
+    #
+    # 现在的活路径（读写同源，都在 bridge 的 SQLite）：
+    #   `tools/daily.py` 的 add_todo / complete_todo → bridge → `todos` 表
+    #   `context/providers/todo.py` 经 `/api/todo/list` 读同一张表
 
     @app.post("/api/describe-image")
     def describe_image(req: DescribeImageRequest) -> dict:

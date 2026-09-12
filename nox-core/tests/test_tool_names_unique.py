@@ -21,7 +21,6 @@ from tools import mcd as mcd_tools
 from tools import taobao as taobao_tools
 from tools import train as train_tools
 from tools import kd100 as kd100_tools
-from tools import todo as todo_tools
 
 
 def _spec_names(module) -> list[str]:
@@ -36,7 +35,7 @@ def _spec_names(module) -> list[str]:
 def test_no_duplicate_tool_names_across_modules():
     names: list[str] = []
     for mod in (amap_tools, daily_tools, didi_tools, intimate_tools,
-                kd100_tools, luckin_tools, mcd_tools, taobao_tools, todo_tools, train_tools):
+                kd100_tools, luckin_tools, mcd_tools, taobao_tools, train_tools):
         names += _spec_names(mod)
 
     dupes = [n for n, c in Counter(names).items() if c > 1]
@@ -46,12 +45,16 @@ def test_no_duplicate_tool_names_across_modules():
 def test_待办工具全在daily里():
     """2026-08-18：GitHub todo.md 退役，读写都走 bridge 的本地清单。
 
-    `tools/todo.py` 只剩纯函数（给 api/server.py 的存档端点用），
-    **不许再定义 ToolSpec** —— 和 daily.py 重名会静默覆盖。
+    2026-09-12：`tools/todo.py` **整个删掉了** —— 那个往 GitHub 写的
+    写入器、以及给 `api/server.py` 存档端点用的纯函数，都没有调用者了
+    （连端点一起删的）。所以「那个模块不许定义 ToolSpec」这条断言无从评估。
+
+    这条测试守住的是剩下那半句、也是真正值钱的那半句：
+    **待办的工具只许在 `daily.py` 里** —— 别处再定义一个同名 ToolSpec
+    会静默覆盖，结果是他反而没法往清单里记东西（2026-08-05 真发生过）。
     """
     assert "add_todo" in _spec_names(daily_tools)
     assert "complete_todo" in _spec_names(daily_tools)
-    assert _spec_names(todo_tools) == []
 
 
 def test_add_todo_能传时间模型():

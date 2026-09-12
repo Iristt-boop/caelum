@@ -393,7 +393,10 @@ systemd 里**确实没有** `VAPID_PUB` / `VAPID_PRIV`，但代码里有硬编�
 `NOX_GAODE_KEY`（**2026-08-06 新增**，高德逆地理编码，坐标→语义）
 `NOX_HA_API_URL` `NOX_HA_API_TOKEN`（**2026-08-06 新增**，HA Tracker Source，WiFi 探知在不在家）
 `NOX_WEATHER_LOCATION` `QWEATHER_HOST` `QWEATHER_KEY`
-`NOX_TODO_REPO` `NOX_TODO_PATH` `GITHUB_TOKEN` `GITHUB_OBSIDIAN_REPO`
+`GITHUB_TOKEN` `GITHUB_OBSIDIAN_REPO`
+（⚠️ **2026-09-12 删了 `NOX_TODO_REPO` / `NOX_TODO_PATH`**：待办的真源是 bridge 的
+SQLite `todos` 表，GitHub 那份 `todo.md` 2026-08-18 就退役为只读存档了，
+留一个指向退役存档的配置项只会让人以为它还有用）
 `NOX_ERYU_URL` `NOX_ERYU_TOKEN` `NOX_NETEASE_URL`
 `NOX_HEALTH_URL`
 
@@ -1552,21 +1555,32 @@ CONFIG_SEND_WAKE_WORD_DATA=y
 下表**按 `nox.py` 里的实际注册顺序排**，`planner` 永远在最后。
 每组都能单独缺席：对应的配置留空就跳过注册，不影响别的（他只是少一样本事）。
 
+> ⚠️ **2026-09-12 实测：这张表不完整，而且好几行是过期的。别当权威用。**
+>
+> - `nox.py` 里 `register_all` 的组比下表多 —— `room` / `watching` / `search` /
+>   `amap` / `didi` / `kd100` / `train` / `galatea` / `mcd` / `luckin` **都没列**
+> - 个别行的「个数」也过期了：`tools/diet.py` 实际 **8** 个（漏了 `delete_meal_item`）、
+>   `tools/eryu.py` 实际 **13** 个（漏了 `eryu_daily` / `eryu_experience` /
+>   `eryu_pick_by_mood` / `eryu_recent`）
+>
+> 这次只修了因「删掉 `tools/todo.py`」**直接受影响**的那两处（第 4 行 + 原第 8 行），
+> 顺手把 diet/eryu 的个数按实测改了。**整表重生成是独立的一件事，已记进排期** ——
+> 在那之前，要数工具请用下面那条命令，要看注册顺序请看 `nox.py` 里的 `register_all` 调用。
+
 | # | 组 | 文件 | 个数 | 工具 | 走哪条路 | 配置 |
 |---|---|---|---|---|---|---|
 | 1 | 记忆 | `memory/tools.py` | 7 | `recall_memory` `remember` `archive_memory` `memory_status` `review_memory` `edit_memory` `merge_memory` | Ombre Brain MCP | `NOX_OB_URL` |
 | 2 | 杂项 | `tools/misc.py` | 1 | `get_current_time` | 本地 | — |
 | 3 | 家居 | `tools/ha.py` | 5 | `ha_list_devices` `ha_get_state` `ha_switch` `ha_set_climate` `ha_set_light` | ha-mcp MCP | `NOX_HA_URL` |
-| 4 | 日常 | `tools/daily.py` | 5 | `send_gallery_image` `favorite_image` `add_todo` `get_todos` `write_diary` | bridge REST | `NOX_BRIDGE_URL` `NOX_BRIDGE_TOKEN` |
+| 4 | 日常 | `tools/daily.py` | 6 | `send_gallery_image` `favorite_image` `add_todo` `complete_todo` `get_todos` `write_diary` | bridge REST | `NOX_BRIDGE_URL` `NOX_BRIDGE_TOKEN` |
 | 5 | 亲密/设备/笔记 | `tools/intimate.py` | 8 | `send_meme` `send_voice_message` `toy_set` `toy_stop` `toy_status` `save_github_note` `append_github_note` `read_github_note` | bridge REST + GitHub | 同上 + `GITHUB_OBSIDIAN_REPO` |
 | 6 | Notion | `tools/notion.py` | 2 | `notion_search` `notion_read_page` | 直连 api.notion.com | `NOTION_TOKEN` |
 | 7 | 共读 | `tools/reading.py` | 4 | `reading_list_notes` `reading_reply_note` `reading_current` `reading_continue` | co-reading REST :3100 | `NOX_READING_URL` `CO_READING_TOKEN` |
-| 8 | 待办写入 | `tools/todo.py` | 1 | `complete_todo` | GitHub todo.md | `NOX_TODO_REPO` `GITHUB_TOKEN` |
-| 9 | 饮食 | `tools/diet.py` | 7 | `search_food` `add_food` `add_meal` `check_budget` `today_diet` `add_exercise` `log_weight` | bridge REST | **永远注册**（bridge 是必经之路）|
-| 10 | App | `tools/tracker.py` | 1 | `get_today_apps` | app-tracker MCP :8000 | `NOX_TRACKER_URL` |
-| 11 | 共听·播放 | `tools/eryu.py` | 9 | `eryu_search` `eryu_play` `eryu_get_lyric` `eryu_analyze` `eryu_get_memory` `eryu_save_memory` `eryu_roam` `eryu_similar` `eryu_remote_poll` | eryu REST :9090 | `NOX_ERYU_URL` `NOX_ERYU_TOKEN` |
-| 12 | 共听·账号 | `tools/netease.py` | 8 | `netease_playlists` `netease_playlist_songs` `netease_create_playlist` `netease_add_to_playlist` `netease_remove_from_playlist` `netease_like_song` `netease_recommend` `netease_history` | netease-music-mcp MCP :3456 | `NOX_NETEASE_URL` |
-| 13 | Daily Planner | `tools/planner.py` | 1 | `daily_summary` | 拿 `ContextProviderRegistry` 取全套 | 无（永远最后注册）|
+| 8 | 饮食 | `tools/diet.py` | 8 | `search_food` `add_meal` `check_budget` `today_diet` `delete_meal_item` `add_exercise` `log_weight` `add_food` | bridge REST | **永远注册**（bridge 是必经之路）|
+| 9 | App | `tools/tracker.py` | 1 | `get_today_apps` | app-tracker MCP :8000 | `NOX_TRACKER_URL` |
+| 10 | 共听·播放 | `tools/eryu.py` | 13 | `eryu_search` `eryu_play` `eryu_get_lyric` `eryu_analyze` `eryu_get_memory` `eryu_save_memory` `eryu_roam` `eryu_daily` `eryu_similar` `eryu_remote_poll` `eryu_experience` `eryu_pick_by_mood` `eryu_recent` | eryu REST :9090 | `NOX_ERYU_URL` `NOX_ERYU_TOKEN` |
+| 11 | 共听·账号 | `tools/netease.py` | 8 | `netease_playlists` `netease_playlist_songs` `netease_create_playlist` `netease_add_to_playlist` `netease_remove_from_playlist` `netease_like_song` `netease_recommend` `netease_history` | netease-music-mcp MCP :3456 | `NOX_NETEASE_URL` |
+| 12 | Daily Planner | `tools/planner.py` | 1 | `daily_summary` | 拿 `ContextProviderRegistry` 取全套 | 无（永远最后注册）|
 
 ⚠️ **`obsidian_create` / `obsidian_append` 这两个名字已经不存在了**，现在叫
 `save_github_note` / `append_github_note`，并且多了一个 `read_github_note`。
@@ -5246,6 +5260,23 @@ Morning ───────────┼────────────
 （bridge 的 add/complete/patch）全改本地表，`todoSync()` 删除；
 Core 侧 `tools/todo.py` 不再注册任何工具，`complete_todo` 搬去 `tools/daily.py`
 走 bridge（**工具名不变**，他不用重新学）。todo.md 留作只读存档。
+
+> **2026-09-12 补齐退役的最后一段**：`tools/todo.py` **整个删掉了** ——
+> 那个往 GitHub 写的 `TodoWriter`、和给 `api/server.py` 存档端点用的
+> `read_open_items`，都没有调用者了。同时删掉的还有：
+> Core 那 3 个端点（`GET /todo`、`POST /todo/add`、`POST /todo/complete`，
+> 全仓实测零调用者）、`config.py` 的 `todo_repo`/`todo_path`、
+> `nox.py` 里「没配 bridge 就回退读 GitHub」那条兜底分支、以及它们的测试。
+>
+> 删兜底的理由：那条路读的是一份**已退役的存档**，真触发时他会拿旧清单当她的
+> 待办讲出去，而且是静默的（不报错，只是内容过期）—— 正是「两个孤岛」的形状。
+> **没有源就不该有这一栏**，而不是端上一份假的。
+> 现在没配 bridge 就不注册这个 Provider，早报会把它列进「没注册的项」。
+>
+> 顺带订正一处描述错误：`tools/todo.py` 的模块 docstring 一直写着「往 GitHub 的
+> `todo.md` 里写」，而同一个文件后半段早就写着「这里不注册任何工具了」——
+> **一段过期四个版本的说明，比没有说明更危险**，它不报错，但会让人（和 AI）
+> 对系统产生错误认知。本轮的实际排查就是被它带偏过一次。
 
 **第三步（已部署 2026-08-18 20:10）**：Care 快循环 + 惦记 + 出门追问。
 732 测试。回滚：`*.bak-20260818-fast`。

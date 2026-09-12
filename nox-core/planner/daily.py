@@ -64,7 +64,7 @@ class DailyBrief:
     clock: str
     text: str
     states: dict[str, dict[str, Any]] = field(default_factory=dict)
-    #: Router 要了但根本没注册的（配置问题，比如没配 NOX_TODO_REPO）
+    #: Router 要了但根本没注册的（配置问题，比如没配 bridge / NOX_ERYU_URL）
     missing: list[str] = field(default_factory=list)
     #: 注册了但这次没拿到数据的（服务挂了 / 网络问题）
     unavailable: list[str] = field(default_factory=list)
@@ -115,7 +115,7 @@ def build_brief(
 
     known, missing = registry.resolve(names)
     if missing:
-        # 不是错误 —— 没配 NOX_TODO_REPO 就是没有待办这一栏，
+        # 不是错误 —— 没配 bridge 就是没有待办这一栏，
         # 但要说出来，不然「他为什么不知道我今天要干嘛」没法排查
         logger.info("早报里这几项没注册，跳过: %s", "、".join(missing))
 

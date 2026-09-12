@@ -432,19 +432,20 @@ class Nox:
                 eryu_tools.make_client(self.cfg.eryu_url, self.cfg.eryu_token)))
         else:
             logger.info("未配置 NOX_ERYU_URL，跳过 MusicProvider")
-        # 待办。**2026-08-18 起读 bridge 的本地清单**（前端 todo 是唯一活清单，
-        # GitHub todo.md 退役为只读存档，见 Todo-Daily-Planner-设计.md）。
-        # 没配 bridge 才回退去读 GitHub —— 留着兜底，不删代码。
+        # 待办。**2026-08-18 起只有一个源：bridge 的本地清单**（前端 todo 是
+        # 唯一活清单，GitHub 那份 `todo.md` 退役为只读存档）。
+        #
+        # ⚠️ 2026-09-12 删掉了「没配 bridge 就回退读 GitHub」那条分支。理由：
+        # 那条兜底读的是一份**已退役的存档**，真触发时他会拿一份旧清单当她的
+        # 待办讲出去 —— 这正是 2026-08-05 那个「两个孤岛」bug 的形状，只是更隐蔽
+        # （不报错，只是内容过期）。**没有源就不该有这一栏**，而不是端上一份假的。
+        # 现在：没配 bridge → 跳过，日志说明原因，早报会把它列进「没注册的项」
+        # （`planner/daily.py` 的 `missing`，她会看见）。
         if self.bridge is not None:
             self.context.register(TodoProvider(bridge=self.bridge))
             logger.info("TodoProvider 读本地清单（bridge）")
-        elif self.cfg.todo_repo:
-            self.context.register(TodoProvider(
-                repo=self.cfg.todo_repo, path=self.cfg.todo_path,
-                token=self.cfg.github_token))
-            logger.info("TodoProvider 回退读 GitHub todo.md（没配 bridge）")
         else:
-            logger.info("既没有 bridge 也没有 NOX_TODO_REPO，跳过 TodoProvider")
+            logger.info("没配 bridge，跳过 TodoProvider（GitHub todo.md 已退役，不再回退）")
         # 位置。双数据源按优先级仲裁：
         #   1. HA Tracker（person/device_tracker，WiFi 探知，可靠且不耗电）
         #   2. Caelum PWA（Geolocation → Bridge，GPS 精确但需主动上报）
