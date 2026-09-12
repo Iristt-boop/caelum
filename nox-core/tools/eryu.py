@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 # ------------------------------------------------------------------ 搜索
 
 SEARCH_SPEC = ToolSpec(
+    side_effect="read",
     name="eryu_search",
     description=(
         "在网易云音乐搜歌。返回歌名、歌手、专辑和 song_id。\n"
@@ -42,6 +43,7 @@ SEARCH_SPEC = ToolSpec(
 # ------------------------------------------------------------------ 播放
 
 PLAY_SPEC = ToolSpec(
+    side_effect="write",
     name="eryu_play",
     description=(
         "直接点播一首歌到糖糖的共听页面 —— 她那边最多 5 秒就会自动开始放。\n"
@@ -124,6 +126,7 @@ PLAY_SPEC = ToolSpec(
 # ------------------------------------------------------------------ 歌词
 
 LYRIC_SPEC = ToolSpec(
+    side_effect="read",
     name="eryu_get_lyric",
     description=(
         "拿一首歌的歌词。song_id 从 eryu_search 拿。\n"
@@ -142,6 +145,7 @@ LYRIC_SPEC = ToolSpec(
 # ------------------------------------------------------------------ 频谱分析
 
 ANALYZE_SPEC = ToolSpec(
+    side_effect="read",
     name="eryu_analyze",
     description=(
         "对一首歌做 AI 频谱分析，拿 BPM、调性、能量曲线等音乐特征。\n"
@@ -162,6 +166,7 @@ ANALYZE_SPEC = ToolSpec(
 # ------------------------------------------------------------------ 歌曲记忆（读）
 
 MEMORY_GET_SPEC = ToolSpec(
+    side_effect="read",
     name="eryu_get_memory",
     description=(
         "读一首歌的笔记——之前听这首歌时糖糖说了什么、你有什么感受。\n"
@@ -180,6 +185,7 @@ MEMORY_GET_SPEC = ToolSpec(
 # ------------------------------------------------------------------ 歌曲记忆（写）
 
 MEMORY_SAVE_SPEC = ToolSpec(
+    side_effect="write",
     name="eryu_save_memory",
     description=(
         "给一首歌写笔记——记下糖糖听到这首歌时的感受，或者你想记住的任何事。\n"
@@ -201,6 +207,7 @@ MEMORY_SAVE_SPEC = ToolSpec(
 # ------------------------------------------------------------------ 漫游
 
 ROAM_SPEC = ToolSpec(
+    side_effect="read",
     name="eryu_roam",
     description=(
         "随机漫游发现歌曲 —— **一次给一首**，完全随机。\n"
@@ -221,6 +228,7 @@ ROAM_SPEC = ToolSpec(
 
 
 DAILY_SPEC = ToolSpec(
+    side_effect="read",
     name="eryu_daily",
     description=(
         "拿共听页面「Liked」歌单里的歌当种子，找相似的。\n"
@@ -244,6 +252,7 @@ DAILY_SPEC = ToolSpec(
 # ------------------------------------------------------------------ 相似歌曲
 
 SIMILAR_SPEC = ToolSpec(
+    side_effect="read",
     name="eryu_similar",
     description=(
         "找和一首歌风格相似的歌曲。song_id 从 eryu_search 拿。\n"
@@ -273,6 +282,7 @@ SIMILAR_SPEC = ToolSpec(
 # 「推给 Nox」这个按钮（`grep -rn remote client/` 零匹配）。
 # 真要做「她推歌给小克」，得后端另开一个反向队列 + 前端加按钮。
 REMOTE_SPEC = ToolSpec(
+    side_effect="read",
     name="eryu_remote_poll",
     description=(
         "看看糖糖那边有没有通过 eryu 网页推歌过来。\n"
@@ -286,6 +296,7 @@ REMOTE_SPEC = ToolSpec(
 
 
 EXPERIENCE_SPEC = ToolSpec(
+    side_effect="read",
     name="eryu_experience",
     description=(
         "**音乐这件事上，你和她之间发生过什么。**\n"
@@ -308,6 +319,7 @@ EXPERIENCE_SPEC = ToolSpec(
 )
 
 MOOD_PICK_SPEC = ToolSpec(
+    side_effect="read",
     name="eryu_pick_by_mood",
     description=(
         "**按气质挑歌** —— 她说「放点治愈的」「睡前来点安静的」"
@@ -341,6 +353,7 @@ MOOD_PICK_SPEC = ToolSpec(
 )
 
 RECENT_SPEC = ToolSpec(
+    side_effect="read",
     name="eryu_recent",
     description=(
         "看糖糖最近在共听页面听了什么歌，最新的在最前面。\n"

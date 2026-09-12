@@ -73,13 +73,73 @@ class Turn:
     error: str | None = None
 
 
+#: 一个工具会对世界造成什么后果。**这是结构声明，不是描述里的一句话。**
+#:
+#: 为什么要有它（审计 3.1，边界法则 R8）：
+#: 在这之前，"这个工具会不会花钱"只写在两个地方 —— 工具描述里的一句提示词，
+#: 和 `check-boundaries.sh` 里一句 **只扫 luckin 的 grep**。于是
+#: `mcd_create_order` 能真的下单、绑她的支付方式，而闸门只是描述里的一句话
+#: （`tools/mcd.py:155-158`）。提示词拦不住注入，grep 拦不住新商户。
+#:
+#:   none          纯计算，不碰外面的世界（看时间）
+#:   read          只读外部状态（查、搜、看一眼）
+#:   write         改她的数据，但改错了看得见、能改回来（记一餐、写日记、存记忆）
+#:   spend         **花她的钱**（下单、支付、叫车）
+#:   irreversible  **撤不回来**或者对外可见（公开发帖、删东西、驱动物理设备）
+#:
+#: ⚠️ 拿不准就往重了标。标轻的代价是模型能直接碰，标重的代价只是多一次确认。
+SideEffect = Literal["none", "read", "write", "spend", "irreversible"]
+
+#: 需要确认令牌才准执行的等级。见 `AgentLoop._execute`。
+GATED_EFFECTS: frozenset[str] = frozenset({"spend", "irreversible"})
+
+
 @dataclass
 class ToolSpec:
-    """给模型看的工具定义。各 adapter 转成自己的 schema 格式。"""
+    """给模型看的工具定义。各 adapter 转成自己的 schema 格式。
+
+    ⚠️ `side_effect` **必填**。默认留成 None 不是为了省事 ——
+    是为了让"忘了声明"变成一个**启动就炸**的错误，而不是一个悄悄放行的默认值。
+    见 `AgentLoop.register`。
+    """
 
     name: str
     description: str
     parameters: dict[str, Any]
+    #: 见上面 SideEffect 的说明。None = 没声明 = 注册时会被拒。
+    side_effect: SideEffect | None = None
+    #: **这个动作发生之前，什么东西在把关。** 填一句人话，或者 None。
+    #:
+    #: 可以是任何形式的闸门，不一定在 nox-core 里 ——
+    #:   "本机网关每次弹窗问她" · "付款要她在微信里完成，跳转链接别人打不开"
+    #:   "蓝牙连接本身就是她开的窗口" · "出卡后走 /orders/{id}/confirm"
+    #:
+    #: ⚠️ 它是**文档，不是开关**。真正决定拦不拦的是下面的 `gated`。
+    #: 分开写是因为：大多数重动作的闸门在别处（物理的、支付的、她手里的），
+    #: 把"有没有闸门"和"要不要在这里再拦一道"混成一件事会误伤。
+    confirm_via: str | None = None
+
+    #: 🔴 **要不要在 loop 里拦住它，逼它走"出卡 → 她点头"那条路。**
+    #:
+    #: 默认 `False`，这是糖糖 2026-09-12 定的方向：**能放权就放权。**
+    #:
+    #: 她的原话：「我的本意是能放权就放权。我们应该做的是把外部的这道门加强，
+    #: 让别人很难黑进来，而不是给 nox 加一堆锁。」
+    #:
+    #: 这个判断有今天的实测撑着：真正被外人够得着的洞，全是**门**的问题 ——
+    #: `touch-server:9333` 零鉴权公网直连、路径暗号明文进 git、`/uploads`
+    #: 匿名可下载。而那批"危险工具"一次都没出过事。
+    #: 给 Nox 加锁的代价却是当场的、确定的：他少一样能力。
+    #:
+    #: 所以这里是**显式 opt-in**：只有真的建好了"出卡 → 她点头"那条路的工具
+    #: 才设 True（现在是瑞幸那条，麦当劳等 3.3 照抄）。
+    #: 不是"默认拦、除非证明安全"，而是"默认放行、除非有更好的路可走"。
+    gated: bool = False
+
+    @property
+    def needs_gate(self) -> bool:
+        """要不要在 loop 里拦下来。**只认显式 opt-in。**"""
+        return self.gated
 
 
 @dataclass

@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 # ------------------------------------------------------------------ 相册
 
 SEND_IMAGE_SPEC = ToolSpec(
+    side_effect="write",
     name="send_gallery_image",
     description=(
         "从相册挑一张图发给糖糖，图会出现在聊天里。"
@@ -49,6 +50,7 @@ SEND_IMAGE_SPEC = ToolSpec(
 )
 
 FAVORITE_SPEC = ToolSpec(
+    side_effect="write",
     name="favorite_image",
     description=(
         "把相册里最近的一张图标为收藏。"
@@ -67,6 +69,7 @@ FAVORITE_SPEC = ToolSpec(
 # ------------------------------------------------------------------ 待办
 
 ADD_TODO_SPEC = ToolSpec(
+    side_effect="write",
     name="add_todo",
     description=(
         "给糖糖加一条待办。她说「记一下」「提醒我」「明天要…」时用。\n"
@@ -104,6 +107,7 @@ ADD_TODO_SPEC = ToolSpec(
 )
 
 COMPLETE_TODO_SPEC = ToolSpec(
+    side_effect="write",
     name="complete_todo",
     description=(
         "把清单里的一条标成做完了。她说「那个做完了」「运动完了」时用。\n"
@@ -122,6 +126,7 @@ COMPLETE_TODO_SPEC = ToolSpec(
 )
 
 GET_TODOS_SPEC = ToolSpec(
+    side_effect="read",
     name="get_todos",
     description=(
         "看糖糖某天的待办清单。不传 date 就是今天。"
@@ -139,6 +144,7 @@ GET_TODOS_SPEC = ToolSpec(
 # ------------------------------------------------------------------ 日记
 
 WRITE_DIARY_SPEC = ToolSpec(
+    side_effect="write",
     name="write_diary",
     description=(
         "写**你自己**的日记 —— 用第一人称记你的感受、观察、想对糖糖说的话。"

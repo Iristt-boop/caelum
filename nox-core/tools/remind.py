@@ -33,6 +33,7 @@ logger = logging.getLogger(__name__)
 
 
 SPEC = ToolSpec(
+    side_effect="write",
     name="remind_myself",
     description=(
         "给自己留张纸条，过一会儿自己醒来看看她。**这不是给她的提醒，是给你自己的。**\n"

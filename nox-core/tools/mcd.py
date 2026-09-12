@@ -39,8 +39,37 @@ SERVER_TOOLS = {
 ACTION_TOOLS = ("mcd_create_order", "mcd_draw_lottery", "mcd_bind_coupons", "mcd_create_address")
 
 
+#: 每个工具的副作用声明（审计 3.1）。**新加工具必须在这里登记**，
+#: 否则 `_spec()` 直接抛 —— 炸在启动，好过某天悄悄下了一单。
+_EFFECTS: dict[str, tuple[str, str | None]] = {
+    "mcd_nearby_stores": ("read", None),
+    "mcd_menu": ("read", None),
+    "mcd_meal_detail": ("read", None),
+    "mcd_price": ("read", None),
+    "mcd_order": ("read", None),
+    "mcd_orders": ("read", None),
+    "mcd_my_coupons": ("read", None),
+    "mcd_available_coupons": ("read", None),
+    "mcd_campaign": ("read", None),
+    "mcd_create_order": ("spend", None),
+    "mcd_draw_lottery": ("spend", None),
+    "mcd_bind_coupons": ("write", None),
+    "mcd_create_address": ("write", None),
+}
+
+
 def _spec(name: str, description: str, params: dict) -> ToolSpec:
-    return ToolSpec(name=name, description=description, parameters=params)
+    try:
+        effect, via = _EFFECTS[name]
+    except KeyError:  # noqa: PERF203
+        raise ValueError(
+            f"{name} 没有在 mcd._EFFECTS 里声明副作用。"
+            "拿不准就往重了标：花钱填 spend，撤不回来填 irreversible。"
+        ) from None
+    return ToolSpec(
+        name=name, description=description, parameters=params,
+        side_effect=effect, confirm_via=via,
+    )
 
 
 NEARBY = _spec(

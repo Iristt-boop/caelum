@@ -25,8 +25,27 @@ SERVER_TOOLS = {
 }
 
 
+#: 每个工具的副作用声明（审计 3.1）。**新加工具必须在这里登记**，
+#: 否则 `_spec()` 直接抛 —— 炸在启动，好过某天悄悄下了一单。
+_EFFECTS: dict[str, tuple[str, str | None]] = {
+    "didi_estimate": ("read", None),
+    "didi_ride_link": ("write", "链接/卡片发给她，她自己在对方 App 里点确认"),
+    "didi_order_status": ("read", None),
+}
+
+
 def _spec(name: str, description: str, params: dict) -> ToolSpec:
-    return ToolSpec(name=name, description=description, parameters=params)
+    try:
+        effect, via = _EFFECTS[name]
+    except KeyError:  # noqa: PERF203
+        raise ValueError(
+            f"{name} 没有在 didi._EFFECTS 里声明副作用。"
+            "拿不准就往重了标：花钱填 spend，撤不回来填 irreversible。"
+        ) from None
+    return ToolSpec(
+        name=name, description=description, parameters=params,
+        side_effect=effect, confirm_via=via,
+    )
 
 
 ESTIMATE = _spec(

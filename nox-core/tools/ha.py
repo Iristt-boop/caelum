@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 
 
 LIST_SPEC = ToolSpec(
+    side_effect="read",
     name="ha_list_devices",
     description=(
         "列出糖糖家里所有可控设备和它们的 entity_id。"
@@ -30,6 +31,7 @@ LIST_SPEC = ToolSpec(
 )
 
 GET_SPEC = ToolSpec(
+    side_effect="read",
     name="ha_get_state",
     description=(
         "查某个设备当前状态。空调会带室温和设定温度，灯会带亮度。"
@@ -45,6 +47,7 @@ GET_SPEC = ToolSpec(
 )
 
 SWITCH_SPEC = ToolSpec(
+    side_effect="write",
     name="ha_switch",
     description=(
         "开关设备：风扇、风扇摆风、电热毯、电视、**蒸蛋器**。"
@@ -64,6 +67,7 @@ SWITCH_SPEC = ToolSpec(
 )
 
 CLIMATE_SPEC = ToolSpec(
+    side_effect="write",
     name="ha_set_climate",
     description=(
         "控制空调。家里有三台（主卧 / 客厅 / 电竞房），"
@@ -86,6 +90,7 @@ CLIMATE_SPEC = ToolSpec(
 )
 
 LIGHT_SPEC = ToolSpec(
+    side_effect="write",
     name="ha_set_light",
     description=(
         "控制灯（主卧床头灯）。state 填 on/off；"

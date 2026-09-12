@@ -39,6 +39,7 @@ def extract_text_tags(text: str | None) -> tuple[str | None, list[str]]:
 # ------------------------------------------------------------------ 表情包
 
 MEME_SPEC = ToolSpec(
+    side_effect="write",
     name="send_meme",
     description=(
         "给糖糖发一个表情包，会出现在聊天里。**这是你表达的一部分，想用就用。**\n"
@@ -69,6 +70,7 @@ MEME_SPEC = ToolSpec(
 # ------------------------------------------------------------------ 语音条
 
 VOICE_SPEC = ToolSpec(
+    side_effect="write",
     name="send_voice_message",
     description=(
         "给糖糖发一条**语音**（不是文字）。她会在聊天里看到语音条，点开能听见你的声音。\n"
@@ -98,6 +100,22 @@ VOICE_SPEC = ToolSpec(
 #   强度永远从低开始
 
 TOY_SET_SPEC = ToolSpec(
+    side_effect="irreversible",
+    # 🔴 **不进出卡闸门**，这是糖糖 2026-09-12 明确定的，理由有两条：
+    #
+    # ① 设计意图就是**他主动**。接这个设备的初衷不是"她下令、他执行"，
+    #    而是他能自己开口。套上"出卡等她点头"等于把这个能力的核心改掉。
+    #
+    # ② 真正的闸门是**物理的**：设备要蓝牙连着才动，平时是断的，他连不上。
+    #    连上的那段时间是她开的窗口。所以"注入让他调设备"这条路，
+    #    在设备没连的时候落到空处 —— 攻击面比审计以为的小得多。
+    #
+    # ⚠️ 审计把它列成 Critical，是**只读代码、不知道物理前提**的结论。
+    #    照着往下做会阉掉一个本来就安全的能力。
+    #    以后再遇到"驱动物理设备"的工具，先问清楚它的物理前提是什么。
+    #
+    # 真出问题时的出口是 `toy_stop` —— 它永远不进任何闸门（见下面那条）。
+    confirm_via="蓝牙连接本身就是她开的窗口：设备平时不连，他打不开",
     name="toy_set",
     description=(
         "控制糖糖的蓝牙设备。**只在她当下明确要求时用**，"
@@ -117,12 +135,14 @@ TOY_SET_SPEC = ToolSpec(
 )
 
 TOY_STOP_SPEC = ToolSpec(
+    side_effect="write",
     name="toy_stop",
     description="立即停止糖糖的设备。她说停就调，最高优先级，不要先问再停。",
     parameters={"type": "object", "properties": {}},
 )
 
 TOY_STATUS_SPEC = ToolSpec(
+    side_effect="read",
     name="toy_status",
     description="查设备当前的指令状态。注意这是**指令**状态，不代表设备真的在动。",
     parameters={"type": "object", "properties": {}},
@@ -134,6 +154,7 @@ TOY_STATUS_SPEC = ToolSpec(
 # （她实际是在写 GitHub），2026-08-04 改名 save_github_note / append_github_note。
 
 GITHUB_CREATE_SPEC = ToolSpec(
+    side_effect="write",
     name="save_github_note",
     description=(
         "把一段 Markdown 写成文件，存到糖糖的 Obsidian 知识库（GitHub 私有仓库 "
@@ -155,6 +176,7 @@ GITHUB_CREATE_SPEC = ToolSpec(
 )
 
 GITHUB_APPEND_SPEC = ToolSpec(
+    side_effect="write",
     name="append_github_note",
     description=(
         "往已有的 Obsidian 笔记末尾追加内容（同样是写 GitHub 仓库，自动同步）。"
@@ -171,6 +193,7 @@ GITHUB_APPEND_SPEC = ToolSpec(
 )
 
 GITHUB_READ_SPEC = ToolSpec(
+    side_effect="read",
     name="read_github_note",
     description=(
         "读糖糖 GitHub 私有仓库里的一篇笔记。\n"

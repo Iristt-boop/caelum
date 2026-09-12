@@ -26,8 +26,28 @@ SERVER_TOOLS = {
 }
 
 
+#: 每个工具的副作用声明（审计 3.1）。**新加工具必须在这里登记**，
+#: 否则 `_spec()` 直接抛 —— 炸在启动，好过某天悄悄下了一单。
+_EFFECTS: dict[str, tuple[str, str | None]] = {
+    "kd100_track": ("read", None),
+    "kd100_auto_number": ("read", None),
+    "kd100_timeliness": ("read", None),
+    "kd100_price": ("read", None),
+}
+
+
 def _spec(name: str, description: str, params: dict) -> ToolSpec:
-    return ToolSpec(name=name, description=description, parameters=params)
+    try:
+        effect, via = _EFFECTS[name]
+    except KeyError:  # noqa: PERF203
+        raise ValueError(
+            f"{name} 没有在 kd100._EFFECTS 里声明副作用。"
+            "拿不准就往重了标：花钱填 spend，撤不回来填 irreversible。"
+        ) from None
+    return ToolSpec(
+        name=name, description=description, parameters=params,
+        side_effect=effect, confirm_via=via,
+    )
 
 
 TRACK = _spec(

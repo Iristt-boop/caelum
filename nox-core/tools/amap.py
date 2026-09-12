@@ -28,12 +28,33 @@ SERVER_TOOLS = {
 }
 
 
+#: 副作用声明（审计 3.1）。地图这一整组都只是查 —— 查坐标、算路线、看天气，
+#: 一个字都不往外写。**新加工具必须在这里登记**，否则 `_spec()` 直接抛。
+_EFFECTS: dict[str, tuple[str, str | None]] = {
+    "amap_search_poi": ("read", None),
+    "amap_search_nearby": ("read", None),
+    "amap_route_driving": ("read", None),
+    "amap_route_transit": ("read", None),
+    "amap_weather": ("read", None),
+}
+
+
 def _spec(name: str, description: str, params: dict) -> ToolSpec:
     # ⚠️ params 是**完整 parameters schema**（含 type/properties/required）。
     # 第一版在这里又包了一层 properties，把整个 schema 塞进了 properties.type
     # —— DeepSeek 的 strict 校验直接 400 拒绝整个请求，**所有对话全灭**
     #（2026-09-05 20:19-23:29，"object" is not of types "boolean", "object"）。
-    return ToolSpec(name=name, description=description, parameters=params)
+    try:
+        effect, via = _EFFECTS[name]
+    except KeyError:
+        raise ValueError(
+            f"{name} 没有在 amap._EFFECTS 里声明副作用。"
+            "拿不准就往重了标：花钱填 spend，撤不回来填 irreversible。"
+        ) from None
+    return ToolSpec(
+        name=name, description=description, parameters=params,
+        side_effect=effect, confirm_via=via,
+    )
 
 
 SEARCH_POI = _spec(

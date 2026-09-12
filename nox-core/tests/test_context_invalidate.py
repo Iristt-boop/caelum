@@ -93,7 +93,7 @@ class _StubNox:
 
 
 MARK_SPEC = ToolSpec(name="mark", description="登记写过 todo",
-                     parameters={"type": "object", "properties": {}})
+                     parameters={"type": "object", "properties": {}}, side_effect="read")
 
 
 def _mark_tool(_args: dict) -> str:
@@ -113,7 +113,7 @@ def _make_write_tool(store: dict):
 def _loop(tool_name: str, handler) -> AgentLoop:
     loop = AgentLoop(adapter=_FakeAdapter(tool_name))
     loop.register(ToolSpec(name=tool_name, description="x",
-                           parameters={"type": "object", "properties": {}}), handler)
+                           parameters={"type": "object", "properties": {}}, side_effect="read"), handler)
     return loop
 
 

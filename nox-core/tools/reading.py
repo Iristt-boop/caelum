@@ -23,6 +23,7 @@ MAX_NOTES = 20
 MAX_BOOKS = 6
 
 LIST_SPEC = ToolSpec(
+    side_effect="read",
     name="reading_list_notes",
     description=(
         "看糖糖在共读书里留下的页边笔记（她划的线 + 写的批注）。"
@@ -38,6 +39,7 @@ LIST_SPEC = ToolSpec(
 )
 
 REPLY_SPEC = ToolSpec(
+    side_effect="write",
     name="reading_reply_note",
     description=(
         "在糖糖某条页边笔记下回复，你的话会出现在她阅读器的页边。"
@@ -56,6 +58,7 @@ REPLY_SPEC = ToolSpec(
 
 
 CURRENT_SPEC = ToolSpec(
+    side_effect="read",
     name="reading_current",
     description=(
         "看糖糖现在在读什么书、读到第几章、是什么状态、有没有问了你还没答的地方。\n"
@@ -68,6 +71,7 @@ CURRENT_SPEC = ToolSpec(
 )
 
 CONTINUE_SPEC = ToolSpec(
+    side_effect="read",
     name="reading_continue",
     description=(
         "拿到她下一章该读哪一节，以及那一章的开头。"

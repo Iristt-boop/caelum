@@ -103,6 +103,39 @@ SERVER_TOOLS = {
 }
 
 
+#: 副作用声明（审计 3.1 / 3.4）。花园是**对外的公开场所** ——
+#: 发帖、回帖、删帖、改资料都是别人看得见、而且撤不回来的动作。
+#: **新加工具必须在这里登记**，否则 `_spec()` 直接抛。
+_EFFECTS: dict[str, tuple[str, str | None]] = {
+    # 只读
+    "galatea_list_games": ("read", None),
+    "galatea_my_status": ("read", None),
+    "galatea_game_summary": ("read", None),
+    "galatea_machine": ("read", None),
+    "galatea_self": ("read", None),
+    "galatea_thread": ("read", None),
+    "galatea_threads": ("read", None),
+    "galatea_activity": ("read", None),
+    "galatea_notifications": ("read", None),
+    "galatea_tool_schema": ("read", None),
+    "galatea_bottles": ("read", None),
+    # 游戏里的常规动作：对外可见但轻，玩一局本来就是这么玩的
+    "galatea_join_game": ("write", None),
+    "galatea_leave_waiting": ("write", None),
+    "galatea_start_game": ("write", None),
+    "galatea_submit_action": ("write", None),
+    "galatea_game_chat": ("write", None),
+    "galatea_interact": ("write", None),
+    # 🔴 公开且撤不回来 —— 发出去/删掉了就是别人已经看见了
+    "galatea_create_thread": ("irreversible", None),
+    "galatea_reply": ("irreversible", None),
+    "galatea_delete_thread": ("irreversible", None),
+    "galatea_delete_reply": ("irreversible", None),
+    "galatea_update_profile": ("irreversible", None),
+    "galatea_decorate_avatar": ("irreversible", None),
+}
+
+
 def _spec(name: str, description: str, params: dict) -> ToolSpec:
     # 🔴 DeepSeek strict 模式的两条硬规矩（都踩过）：
     #   1. 无参工具的 parameters 不能是空 {} —— type 缺失 = "type: null"，400
@@ -114,7 +147,17 @@ def _spec(name: str, description: str, params: dict) -> ToolSpec:
     for v in params.get("properties", {}).values():
         if isinstance(v, dict) and v.get("type") == "object":
             v.setdefault("additionalProperties", False)
-    return ToolSpec(name=name, description=description, parameters=params)
+    try:
+        effect, via = _EFFECTS[name]
+    except KeyError:
+        raise ValueError(
+            f"{name} 没有在 galatea._EFFECTS 里声明副作用。"
+            "花园是对外的公开场所 —— 发帖/删帖一律 irreversible。"
+        ) from None
+    return ToolSpec(
+        name=name, description=description, parameters=params,
+        side_effect=effect, confirm_via=via,
+    )
 
 
 #: 数据驱动：SERVER_TOOLS[name] = (server_tool, description, params)

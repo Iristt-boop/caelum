@@ -42,6 +42,7 @@ logger = logging.getLogger(__name__)
 
 
 STATE_SPEC = ToolSpec(
+    side_effect="read",
     name="room_get_state",
     description=(
         "看一眼我们家里现在什么样：她在哪、我在哪、各自在做什么。"
@@ -59,6 +60,7 @@ STATE_SPEC = ToolSpec(
 )
 
 MOVE_SPEC = ToolSpec(
+    side_effect="write",
     name="room_move",
     description=(
         "在房间里走到某处。三种去处：某个格子（tile，给 x/y）、某件家具旁边"
@@ -85,6 +87,7 @@ MOVE_SPEC = ToolSpec(
 )
 
 USE_SPEC = ToolSpec(
+    side_effect="write",
     name="room_use_furniture",
     description=(
         "用一件家具：坐到沙发上、躺到床上、开电视、在电脑前坐下。"
@@ -103,6 +106,7 @@ USE_SPEC = ToolSpec(
 )
 
 STOP_SPEC = ToolSpec(
+    side_effect="write",
     name="room_stop",
     description="停下来：取消正在走的路和正在用的家具，把位置让出来，回到空闲。",
     parameters={"type": "object", "properties": {}},

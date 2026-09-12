@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 # ---- ToolSpec ----
 
 SEARCH_FOOD = ToolSpec(
+    side_effect="read",
     name="search_food",
     description=(
         "在糖糖的食物库里搜。她说「回锅肉多少卡」「米饭热量」时，"
@@ -36,6 +37,7 @@ SEARCH_FOOD = ToolSpec(
 )
 
 ADD_MEAL = ToolSpec(
+    side_effect="write",
     name="add_meal",
     description=(
         "记一餐。糖糖说「中午吃了半盘回锅肉+一碗米饭」时——\n"
@@ -78,6 +80,7 @@ ADD_MEAL = ToolSpec(
 )
 
 CHECK_BUDGET = ToolSpec(
+    side_effect="read",
     name="check_budget",
     description=(
         "查糖糖今天的饮食预算还剩多少。1250 kcal 上限。"
@@ -93,6 +96,7 @@ CHECK_BUDGET = ToolSpec(
 )
 
 TODAY_DIET = ToolSpec(
+    side_effect="read",
     name="today_diet",
     description=(
         "今日饮食小结。返回吃了什么、各餐明细、总热量、碳蛋脂、运动、体重。"
@@ -107,6 +111,7 @@ TODAY_DIET = ToolSpec(
 )
 
 DELETE_MEAL_ITEM = ToolSpec(
+    side_effect="write",
     name="delete_meal_item",
     description=(
         "删掉一条已经记下的食物。\n"
@@ -132,6 +137,7 @@ DELETE_MEAL_ITEM = ToolSpec(
 )
 
 ADD_EXERCISE = ToolSpec(
+    side_effect="write",
     name="add_exercise",
     description=(
         "记一笔运动。糖糖说「跑了30分钟」「今天走了8000步」时用。"
@@ -151,6 +157,7 @@ ADD_EXERCISE = ToolSpec(
 )
 
 LOG_WEIGHT = ToolSpec(
+    side_effect="write",
     name="log_weight",
     description=(
         "记一笔体重。糖糖说「今天称了」「体重XX公斤」时用。"
@@ -168,6 +175,7 @@ LOG_WEIGHT = ToolSpec(
 )
 
 ADD_FOOD = ToolSpec(
+    side_effect="write",
     name="add_food",
     description=(
         "往食物库里加新食材/菜品。糖糖说「帮我录一个新食物」「这个菜库里没有」时用——\n"

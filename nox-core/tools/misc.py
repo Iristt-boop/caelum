@@ -12,6 +12,7 @@ _WEEKDAY = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"
 
 
 TIME_SPEC = ToolSpec(
+    side_effect="none",
     name="get_current_time",
     description=(
         "获取当前的北京时间。"

@@ -27,6 +27,7 @@ from agent.llm import ToolSpec
 logger = logging.getLogger(__name__)
 
 BROWSE_SPEC = ToolSpec(
+    side_effect="read",
     name="topics_browse",
     description=(
         "翻翻话题池：Scout 从外面捞回来、还没人聊过的东西（AI / 科学 / "

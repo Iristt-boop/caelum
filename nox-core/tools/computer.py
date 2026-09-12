@@ -111,6 +111,7 @@ _ON_HER_PC = "在**糖糖的电脑上**（不是服务器）"
 
 
 READ_SPEC = ToolSpec(
+    side_effect="read",
     name="computer_read_file",
     description=(
         f"读一个文件的内容，{_ON_HER_PC}。"
@@ -130,6 +131,7 @@ READ_SPEC = ToolSpec(
 )
 
 FIND_SPEC = ToolSpec(
+    side_effect="read",
     name="computer_find_files",
     description=(
         f"按文件名找文件，{_ON_HER_PC}。"
@@ -148,6 +150,7 @@ FIND_SPEC = ToolSpec(
 )
 
 SEARCH_SPEC = ToolSpec(
+    side_effect="read",
     name="computer_search_files",
     description=(
         f"按内容搜文件，{_ON_HER_PC}。pattern 是正则（ripgrep 语法）。"
@@ -165,6 +168,8 @@ SEARCH_SPEC = ToolSpec(
 )
 
 WRITE_SPEC = ToolSpec(
+    side_effect="write",
+    confirm_via="本机网关按 Work Grant 授权（computer_start_work 时她点过一次头）",
     name="computer_write_file",
     description=(
         f"新建或整体覆盖一个文件，{_ON_HER_PC}。"
@@ -184,6 +189,8 @@ WRITE_SPEC = ToolSpec(
 )
 
 EDIT_SPEC = ToolSpec(
+    side_effect="write",
+    confirm_via="本机网关按 Work Grant 授权（computer_start_work 时她点过一次头）",
     name="computer_edit_file",
     description=(
         f"改一个已有文件里的一段文字，{_ON_HER_PC}。"
@@ -206,6 +213,8 @@ EDIT_SPEC = ToolSpec(
 
 
 RUN_SPEC = ToolSpec(
+    side_effect="irreversible",
+    confirm_via="本机网关每次弹窗问她",
     name="computer_run_command",
     description=(
         f"在**糖糖的电脑上**跑一条 PowerShell 命令，工作目录默认是 D:/claude-code。"
@@ -237,6 +246,7 @@ RUN_SPEC = ToolSpec(
 
 
 GIT_STATUS_SPEC = ToolSpec(
+    side_effect="read",
     name="computer_git_status",
     description=(
         f"看 D:/claude-code 这个仓库现在有哪些改动（改了 / 加了 / 删了 / 没跟踪），"
@@ -248,6 +258,7 @@ GIT_STATUS_SPEC = ToolSpec(
 )
 
 GIT_DIFF_SPEC = ToolSpec(
+    side_effect="read",
     name="computer_git_diff",
     description=(
         f"看还没提交的改动具体是什么，{_ON_HER_PC}。**不用她点头。**"
@@ -267,6 +278,7 @@ GIT_DIFF_SPEC = ToolSpec(
 )
 
 GIT_LOG_SPEC = ToolSpec(
+    side_effect="read",
     name="computer_git_log",
     description=(
         f"看最近的提交记录，{_ON_HER_PC}。**不用她点头。**"
@@ -283,6 +295,7 @@ GIT_LOG_SPEC = ToolSpec(
 
 
 BROWSE_SPEC = ToolSpec(
+    side_effect="read",
     name="computer_browse",
     description=(
         "打开一个网址，把页面正文读回来。**不用她点头。**"
@@ -304,6 +317,7 @@ BROWSE_SPEC = ToolSpec(
 
 
 READ_IMAGE_SPEC = ToolSpec(
+    side_effect="read",
     name="computer_read_image",
     description=(
         "看她电脑上的一张图。**不用她点头。**"
@@ -332,6 +346,8 @@ READ_IMAGE_SPEC = ToolSpec(
 
 
 TERMINAL_OPEN_SPEC = ToolSpec(
+    side_effect="write",
+    confirm_via="本机网关按 Work Grant 授权（computer_start_work 时她点过一次头）",
     name="computer_terminal_open",
     description=(
         "在她电脑上开一个**常驻的 shell**。命令跑完它还在，变量、当前目录都留着。"
@@ -354,6 +370,8 @@ TERMINAL_OPEN_SPEC = ToolSpec(
 
 
 TERMINAL_SEND_SPEC = ToolSpec(
+    side_effect="irreversible",
+    confirm_via="本机网关每次弹窗问她",
     name="computer_terminal_send",
     description=(
         "在常驻 shell 里跑一条命令。**每一次都要糖糖点头。**"
@@ -376,6 +394,7 @@ TERMINAL_SEND_SPEC = ToolSpec(
 
 
 TERMINAL_READ_SPEC = ToolSpec(
+    side_effect="read",
     name="computer_terminal_read",
     description=(
         "读常驻 shell 的输出。**不用她点头。**"
@@ -393,6 +412,7 @@ TERMINAL_READ_SPEC = ToolSpec(
 
 
 TERMINAL_LIST_SPEC = ToolSpec(
+    side_effect="read",
     name="computer_terminal_list",
     description="列出他自己开着的常驻 shell。**不用她点头。**",
     parameters={"type": "object", "properties": {}},
@@ -400,6 +420,7 @@ TERMINAL_LIST_SPEC = ToolSpec(
 
 
 TERMINAL_CLOSE_SPEC = ToolSpec(
+    side_effect="write",
     name="computer_terminal_close",
     description=(
         "关掉一个常驻 shell，**里面在跑的东西一起结束**。不用她点头。"
@@ -415,6 +436,8 @@ TERMINAL_CLOSE_SPEC = ToolSpec(
 
 
 START_WORK_SPEC = ToolSpec(
+    side_effect="write",
+    confirm_via="本机网关每次弹窗问她",
     name="computer_start_work",
     description=(
         "开一段连着做的活儿。**糖糖点一次头，之后范围内的改文件就不再问她了。**"
@@ -445,6 +468,7 @@ START_WORK_SPEC = ToolSpec(
 )
 
 END_WORK_SPEC = ToolSpec(
+    side_effect="write",
     name="computer_end_work",
     description=(
         "这段活儿做完了，把授权交还。"

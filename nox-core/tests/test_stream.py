@@ -138,7 +138,7 @@ class FakeStreamAdapter:
 
 
 def spec(name: str) -> ToolSpec:
-    return ToolSpec(name=name, description="测试", parameters={"type": "object", "properties": {}})
+    return ToolSpec(name=name, description="测试", parameters={"type": "object", "properties": {}}, side_effect="read")
 
 
 def collect(loop: AgentLoop, text: str):

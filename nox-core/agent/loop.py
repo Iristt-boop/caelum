@@ -27,6 +27,7 @@ from typing import Any
 from agent import guard
 from tools import context as tool_context
 from agent.llm import (
+    GATED_EFFECTS,
     Depth,
     LLMAdapter,
     Message,
@@ -118,6 +119,15 @@ class AgentLoop:
     def _overdue(self, deadline: float | None) -> bool:
         return deadline is not None and time.monotonic() >= deadline
 
+    @staticmethod
+    def _confirmed(ctx: tool_context.ToolContext | None, call: ToolCall) -> bool:
+        """糖糖这一轮点过头没有。
+
+        ⚠️ 只认 `ctx.confirmed` 这个集合，**不认参数里带的任何字段**。
+        模型能写出 `{"confirmed": true}`，所以"确认"绝不能是模型自己填的东西。
+        """
+        return ctx is not None and call.name in ctx.confirmed
+
     def _timeout_detail(self, iterations: int) -> str:
         return (
             f"这一轮超过 {self.deadline_s:.0f} 秒的预算，在第 {iterations} 轮收尾。"
@@ -125,6 +135,21 @@ class AgentLoop:
         )
 
     def register(self, spec: ToolSpec, handler: ToolHandler) -> None:
+        """登记一个工具。**没声明副作用的一律拒收。**
+
+        🔴 这里抛异常而不是给个默认值，是整条闸门的地基（审计 3.1）：
+        如果未声明默认成 `read`，那么"忘了标"和"确实只读"在代码里长得一模一样，
+        闸门就变成了一个**只能挡住老实人**的东西 —— 而注入和幻觉都不老实。
+
+        代价是新加工具时会在启动阶段炸。那正是我们要的：
+        **炸在启动，好过某天悄悄下了一单。**
+        """
+        if spec.side_effect is None:
+            raise ValueError(
+                f"工具 {spec.name!r} 没有声明 side_effect。"
+                f"必须从 {', '.join(sorted(GATED_EFFECTS | {'none', 'read', 'write'}))} 里选一个。"
+                "拿不准就往重了标 —— 标轻了模型能直接碰，标重了只是多一次确认。"
+            )
         self.tools[spec.name] = Tool(spec=spec, handler=handler)
 
     def run(
@@ -419,6 +444,28 @@ class AgentLoop:
         tool = self.tools.get(call.name)
         if tool is None:
             outcome = guard.unknown_tool(call, list(self.tools))
+            tracker.record(outcome, call.name)
+            return outcome
+
+        # 🔴 花钱的、撤不回来的，模型不许直接碰（审计 3.2，边界法则 R8）。
+        #
+        # 这一层拦的不是"模型会不会想干坏事"，而是**它没有能力分辨自己是不是
+        # 被骗了**：搜索结果里的一句注入、一次幻觉，跟糖糖真的说"帮我点一杯"
+        # 在模型眼里长得一样。所以判断权不能留在模型那一侧。
+        #
+        # 正确的路是瑞幸那条：工具只负责**出卡**（preview），真正下单走
+        # `/api/nox/orders/{id}/confirm` —— 她点头才发生（`api/server.py:1609`）。
+        #
+        # ⚠️ 这里只认「有没有令牌」，不认工具描述里写了什么。
+        # 描述是提示词，提示词是可以被绕过的；令牌是结构。
+        if tool.spec.needs_gate and not self._confirmed(ctx, call):
+            logger.warning(
+                "拦下未确认的 %s 工具: %s", tool.spec.side_effect, call.name,
+            )
+            outcome = guard.failure(call, PermissionError(
+                f"{call.name} 会{'花钱' if tool.spec.side_effect == 'spend' else '产生撤不回来的后果'}，"
+                "不能直接调用。先把方案出成一张卡给糖糖看，她点头之后走确认端点。"
+            ))
             tracker.record(outcome, call.name)
             return outcome
 

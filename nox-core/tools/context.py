@@ -56,6 +56,18 @@ class ToolContext:
     #: 由工具经 `wrote()` 登记，调用方（`nox.py`）在轮次结束时拿去清缓存。
     dirty: set[str] = field(default_factory=set)
 
+    #: 这一轮里**糖糖已经点过头**的工具名（审计 3.2）。
+    #:
+    #: 🔴 **默认空集，而且正常聊天这条路永远不会往里加东西。**
+    #: 这不是漏了实现 —— 花钱/不可逆的动作本来就不该从对话循环里直接发生。
+    #: 正确的路是瑞幸那条：工具只出卡（preview），真下单走
+    #: `/api/nox/orders/{id}/confirm`，那个端点不经过 AgentLoop。
+    #:
+    #: 留这个字段是给两种情况用的：以后某个确认端点想复用 loop 跑
+    #: 「她已经批准的那一件事」；以及测试里构造「已确认」的场景。
+    #: 谁往里加东西，谁就要能回答「她是在哪一次点击里同意的」。
+    confirmed: set[str] = field(default_factory=set)
+
     def wrote(self, *providers: str) -> None:
         """登记「我刚改了这些 Provider 管的状态」。
 

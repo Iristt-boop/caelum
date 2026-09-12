@@ -33,6 +33,7 @@ MAX_BLOCK_PAGES = 6
 CHAR_BUDGET = 6000
 
 SEARCH_SPEC = ToolSpec(
+    side_effect="read",
     name="notion_search",
     description=(
         "搜 Notion 长期记忆库，返回匹配**页面**的标题和 page_id。"
@@ -52,6 +53,7 @@ SEARCH_SPEC = ToolSpec(
 )
 
 READ_SPEC = ToolSpec(
+    side_effect="read",
     name="notion_read_page",
     description=(
         "读 Notion 页面正文。page_id 必须先用 notion_search 查，**不要自己编**。"

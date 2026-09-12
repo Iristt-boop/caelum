@@ -56,6 +56,7 @@ logger = logging.getLogger(__name__)
 
 
 SEARCH_SPEC = ToolSpec(
+    side_effect="read",
     name="web_search",
     description=(
         "联网搜索。你没有实时的世界知识，**凡是可能变过的事情都要先查**，"

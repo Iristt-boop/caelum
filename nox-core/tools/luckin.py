@@ -31,8 +31,31 @@ SERVER_TOOLS = {
 }
 
 
+#: 每个工具的副作用声明（审计 3.1）。**新加工具必须在这里登记**，
+#: 否则 `_spec()` 直接抛 —— 炸在启动，好过某天悄悄下了一单。
+_EFFECTS: dict[str, tuple[str, str | None]] = {
+    "luckin_shops": ("read", None),
+    "luckin_search": ("read", None),
+    "luckin_product": ("read", None),
+    "luckin_preview": ("read", None),
+    "luckin_order": ("spend", "出卡后走 /api/nox/orders/{id}/confirm，她点「确认下单」才真的下"),
+    "luckin_order_detail": ("read", None),
+    "luckin_cancel": ("write", None),
+}
+
+
 def _spec(name: str, description: str, params: dict) -> ToolSpec:
-    return ToolSpec(name=name, description=description, parameters=params)
+    try:
+        effect, via = _EFFECTS[name]
+    except KeyError:  # noqa: PERF203
+        raise ValueError(
+            f"{name} 没有在 luckin._EFFECTS 里声明副作用。"
+            "拿不准就往重了标：花钱填 spend，撤不回来填 irreversible。"
+        ) from None
+    return ToolSpec(
+        name=name, description=description, parameters=params,
+        side_effect=effect, confirm_via=via,
+    )
 
 
 SHOPS = _spec(

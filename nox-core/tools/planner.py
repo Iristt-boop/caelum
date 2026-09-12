@@ -30,6 +30,7 @@ logger = logging.getLogger(__name__)
 
 
 DAILY_SUMMARY_SPEC = ToolSpec(
+    side_effect="read",
     name="daily_summary",
     description=(
         "一次拿到今天的全部情况：现在几点、她昨晚睡得怎么样、今天有什么要做的、"

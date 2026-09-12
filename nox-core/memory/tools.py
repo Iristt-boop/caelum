@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 
 
 RECALL_SPEC = ToolSpec(
+    side_effect="read",
     name="recall_memory",
     description=(
         "从长期记忆里检索和糖糖有关的事。"
@@ -43,6 +44,7 @@ RECALL_SPEC = ToolSpec(
 
 
 REMEMBER_SPEC = ToolSpec(
+    side_effect="write",
     name="remember",
     description=(
         "把重要的事存进长期记忆。"
@@ -73,6 +75,7 @@ REMEMBER_SPEC = ToolSpec(
 
 
 GROW_SPEC = ToolSpec(
+    side_effect="write",
     name="archive_memory",
     description=(
         "把一段内容归档进长期记忆，OB 会自动拆成多个记忆桶。"
@@ -90,6 +93,7 @@ GROW_SPEC = ToolSpec(
 )
 
 PULSE_SPEC = ToolSpec(
+    side_effect="read",
     name="memory_status",
     description=(
         "看记忆系统的整体状态：有多少个记忆桶、占多大、衰减引擎在不在跑，"
@@ -109,6 +113,7 @@ PULSE_SPEC = ToolSpec(
 )
 
 DREAM_SPEC = ToolSpec(
+    side_effect="read",
     name="review_memory",
     description=(
         "读最近新增的记忆桶，用来回顾和自省。"
@@ -121,6 +126,7 @@ DREAM_SPEC = ToolSpec(
 )
 
 TRACE_SPEC = ToolSpec(
+    side_effect="irreversible",
     name="edit_memory",
     description=(
         "修改或删除一个记忆桶。bucket_id 从 review_memory 或 recall_memory 的结果里拿。"
@@ -149,6 +155,7 @@ TRACE_SPEC = ToolSpec(
 )
 
 MERGE_SPEC = ToolSpec(
+    side_effect="irreversible",
     name="merge_memory",
     description=(
         "把最多 5 个零碎的记忆桶合并进一个。"

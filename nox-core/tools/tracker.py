@@ -16,6 +16,7 @@ from tools.mcp_client import McpClient
 logger = logging.getLogger(__name__)
 
 TODAY_SPEC = ToolSpec(
+    side_effect="read",
     name="get_today_apps",
     description=(
         "看糖糖今天用了哪些 App、各用了多久。"

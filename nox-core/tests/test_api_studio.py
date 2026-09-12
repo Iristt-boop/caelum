@@ -29,8 +29,8 @@ class _Loop:
 
     def __init__(self):
         self.tools = {
-            "eryu_play": _Tool(ToolSpec("eryu_play", "放一首歌", {})),
-            "search_food": _Tool(ToolSpec("search_food", "查食物热量", {})),
+            "eryu_play": _Tool(ToolSpec("eryu_play", "放一首歌", {}, side_effect="read")),
+            "search_food": _Tool(ToolSpec("search_food", "查食物热量", {}, side_effect="read")),
         }
 
     def register(self, spec, handler):

@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 # ------------------------------------------------------------------ 歌单列表
 
 PLAYLISTS_SPEC = ToolSpec(
+    side_effect="read",
     name="netease_playlists",
     description=(
         "拿糖糖网易云账号的歌单列表（她自己创建的和收藏的都包括）。\n"
@@ -32,6 +33,7 @@ PLAYLISTS_SPEC = ToolSpec(
 # ------------------------------------------------------------------ 歌单内歌曲
 
 PLAYLIST_SONGS_SPEC = ToolSpec(
+    side_effect="read",
     name="netease_playlist_songs",
     description=(
         "拿某个歌单里的歌。playlist_id 从 netease_playlists 拿。\n"
@@ -52,6 +54,7 @@ PLAYLIST_SONGS_SPEC = ToolSpec(
 # ------------------------------------------------------------------ 创建歌单
 
 CREATE_PLAYLIST_SPEC = ToolSpec(
+    side_effect="write",
     name="netease_create_playlist",
     description=(
         "在糖糖的网易云账号里新建一个歌单。\n"
@@ -74,6 +77,7 @@ CREATE_PLAYLIST_SPEC = ToolSpec(
 # ------------------------------------------------------------------ 加歌到歌单
 
 ADD_TO_PLAYLIST_SPEC = ToolSpec(
+    side_effect="write",
     name="netease_add_to_playlist",
     description=(
         "往歌单里加歌。playlist_id 从 netease_playlists 拿。\n"
@@ -99,6 +103,7 @@ ADD_TO_PLAYLIST_SPEC = ToolSpec(
 # ------------------------------------------------------------------ 从歌单移除
 
 REMOVE_FROM_PLAYLIST_SPEC = ToolSpec(
+    side_effect="write",
     name="netease_remove_from_playlist",
     description=(
         "从歌单里删歌。playlist_id 从 netease_playlists 拿。\n"
@@ -124,6 +129,7 @@ REMOVE_FROM_PLAYLIST_SPEC = ToolSpec(
 # ------------------------------------------------------------------ 红心/取消
 
 LIKE_SONG_SPEC = ToolSpec(
+    side_effect="write",
     name="netease_like_song",
     description=(
         "红心（收藏）或取消红心一首歌。\n"
@@ -149,6 +155,7 @@ LIKE_SONG_SPEC = ToolSpec(
 # ------------------------------------------------------------------ 每日推荐
 
 RECOMMEND_SPEC = ToolSpec(
+    side_effect="read",
     name="netease_recommend",
     description=(
         "网易云每日推荐 —— **她想听歌时的第一选择**。\n"
@@ -170,6 +177,7 @@ RECOMMEND_SPEC = ToolSpec(
 # ------------------------------------------------------------------ 听歌历史
 
 HISTORY_SPEC = ToolSpec(
+    side_effect="read",
     name="netease_history",
     description=(
         "糖糖最近在网易云听了什么歌。\n"

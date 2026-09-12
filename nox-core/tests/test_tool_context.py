@@ -36,7 +36,7 @@ from tools import context  # noqa: E402
 ROOT = Path(__file__).resolve().parents[1]
 
 RECORD_SPEC = ToolSpec(name="record", description="记下这轮的会话 id",
-                       parameters={"type": "object", "properties": {}})
+                       parameters={"type": "object", "properties": {}}, side_effect="read")
 
 
 class _ToolCallingAdapter:

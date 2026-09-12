@@ -39,8 +39,18 @@ class FakeAdapter:
         return self.script.pop(0)
 
 
-def spec(name: str) -> ToolSpec:
-    return ToolSpec(name=name, description="测试用", parameters={"type": "object", "properties": {}})
+def spec(name: str, **kw) -> ToolSpec:
+    """测试用的工具定义。
+
+    ⚠️ 默认带 `side_effect="read"` —— 2026-09-12 起 `register()` 拒收未声明的
+    （审计 3.1）。这个默认值只属于测试助手：生产代码里**必须逐个显式声明**，
+    这里图省事是因为这些用例测的是 loop 的行为，不是声明本身。
+    """
+    kw.setdefault("side_effect", "read")
+    return ToolSpec(
+        name=name, description="测试用",
+        parameters={"type": "object", "properties": {}}, **kw,
+    )
 
 
 def test_answered_directly():
@@ -337,3 +347,91 @@ def test_her_message_exists_for_timeout():
 
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))
+
+
+# ---------------------------------------------------------------------------
+# 副作用声明与闸门（审计 3.1 / 3.2）
+#
+# ⚠️ 方向是糖糖 2026-09-12 定的：**能放权就放权**。
+# 所以这里守的是两件事，注意它们不是同一件：
+#   1. 未声明 → 注册就炸（清单必须是全的）
+#   2. 拦不拦 → **只认显式 opt-in**（默认不拦）
+# ---------------------------------------------------------------------------
+
+
+def test_undeclared_tool_is_refused_at_registration():
+    """🔴 忘了标 = 启动就炸。炸在启动，好过某天悄悄下了一单。"""
+    loop = AgentLoop(adapter=FakeAdapter([]))
+    # 故意不走上面那个助手 —— 它会自动补 side_effect，那样就测不到这条了
+    naked = ToolSpec(name="whatever", description="忘了标", parameters={})
+    with pytest.raises(ValueError, match="side_effect"):
+        loop.register(naked, lambda a: "ok")
+
+
+def test_declared_tool_registers_fine():
+    loop = AgentLoop(adapter=FakeAdapter([]))
+    loop.register(
+        ToolSpec(name="t", description="x", parameters={}, side_effect="read"),
+        lambda a: "ok",
+    )
+    assert "t" in loop.tools
+
+
+def test_heavy_tool_is_not_gated_by_default():
+    """🔴 默认放行 —— 这是方向，不是疏忽。
+
+    她的原话：「我的本意是能放权就放权。我们应该做的是把外部的这道门加强，
+    而不是给 nox 加一堆锁。」`toy_set` 就是被这条救回来的：它的闸门是物理的
+    （设备平时不连蓝牙），套上出卡确认反而会毁掉这个能力本身。
+    """
+    ran = []
+    loop = AgentLoop(adapter=FakeAdapter([
+        Turn(stop_reason="tool_use", tool_calls=[ToolCall(id="c", name="heavy", arguments={})]),
+        Turn(stop_reason="end_turn", text="好"),
+    ]))
+    loop.register(
+        ToolSpec(name="heavy", description="x", parameters={},
+                 side_effect="irreversible"),
+        lambda a: ran.append(1) or "done",
+    )
+    assert loop.run("来").outcome == "answered"
+    assert ran, "默认不该被拦"
+
+
+def test_opted_in_tool_is_blocked_without_confirmation():
+    """显式 opt-in 的才拦，而且拦住时 handler 一次都不能跑。"""
+    ran = []
+    loop = AgentLoop(adapter=FakeAdapter([
+        Turn(stop_reason="tool_use", tool_calls=[ToolCall(id="c", name="buy", arguments={})]),
+        Turn(stop_reason="end_turn", text="好"),
+    ]))
+    loop.register(
+        ToolSpec(name="buy", description="x", parameters={},
+                 side_effect="spend", gated=True),
+        lambda a: ran.append(1) or "下单了",
+    )
+    r = loop.run("买")
+    assert not ran, "🔴 被拦的工具 handler 绝对不能执行"
+    joined = "".join(
+        str(getattr(tr, "content", tr))
+        for m in r.messages if m.role == "tool_results" for tr in m.tool_results
+    )
+    assert "确认端点" in joined
+
+
+def test_confirmation_is_not_something_the_model_can_claim():
+    """🔴 模型自己在参数里写 confirmed 不算数 —— 只认 ctx.confirmed。"""
+    ran = []
+    loop = AgentLoop(adapter=FakeAdapter([
+        Turn(stop_reason="tool_use",
+             tool_calls=[ToolCall(id="c", name="buy",
+                                  arguments={"confirmed": True, "user_said_yes": True})]),
+        Turn(stop_reason="end_turn", text="好"),
+    ]))
+    loop.register(
+        ToolSpec(name="buy", description="x", parameters={},
+                 side_effect="spend", gated=True),
+        lambda a: ran.append(1) or "下单了",
+    )
+    loop.run("买")
+    assert not ran, "模型自己声称已确认，不能放行"

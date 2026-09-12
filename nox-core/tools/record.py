@@ -46,6 +46,7 @@ PERIOD = "menstrual"
 
 
 PERIOD_SPEC = ToolSpec(
+    side_effect="write",
     name="record_period",
     description=(
         "记录糖糖的生理期。她说「今天来了」「结束了」这类话时用。\n"

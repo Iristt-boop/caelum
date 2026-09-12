@@ -34,6 +34,7 @@ from context.media_title import clean as clean_title
 logger = logging.getLogger(__name__)
 
 HISTORY_SPEC = ToolSpec(
+    side_effect="read",
     name="watching_history",
     description=(
         "查你们一起看过什么片子，以及她现在是不是正在看。\n"

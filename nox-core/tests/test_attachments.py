@@ -22,7 +22,7 @@ from tools import context  # noqa: E402
 
 
 SPEC = ToolSpec(name="send_gallery_image", description="发图",
-                parameters={"type": "object", "properties": {}})
+                parameters={"type": "object", "properties": {}}, side_effect="read")
 
 
 def attach_tool(_args: dict) -> str:
