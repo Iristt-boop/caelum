@@ -545,6 +545,10 @@ def make_handlers(client: RestClient) -> dict[str, object]:
         ctx = tool_context.current()
         if ctx is not None:
             ctx.attach_music(song_id, name=name, artist=artist, cover=cover)
+        # 当前播放态变了 → 打掉 music Provider 的缓存（TTL 3 分钟）。
+        # nox.py 里那句注释说得最准：「缓存久了会出现『他说你在听 A，
+        # 其实早换成 B 了』，那比不知道更糟」。见 tools/context.py 的 `wrote()`。
+        tool_context.wrote("music")
 
         who = f"{name} - {artist}" if name and artist else (name or f"song_id={song_id}")
         tail = f"，后面还排了 {len(rest)} 首" if rest else ""

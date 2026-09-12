@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from typing import Any
 
 from agent.llm import LLMAdapter, Message, Usage
 from agent.loop import AgentLoop, LoopResult
@@ -76,6 +77,25 @@ class RouteResult:
     def light(self) -> bool:
         """这一轮是否走的轻量路径。"""
         return self.decision.light
+
+    @property
+    def attachments(self) -> list[dict[str, Any]]:
+        """工具这一轮产生的附带产物（要发到聊天里的图/语音/表情/卡片）。
+
+        ⚠️ **2026-09-12 补上。** 原来漏代理了这个 —— 而 `nox.py` 的 `chat()`
+        在「模型把 `[tag]` 写进正文」那条兜底里调
+        `result.attachments.extend(...)`，一调就 `AttributeError`。
+        也就是说：**那条兜底一被触发就崩**，而它正是 2026-09-06 她报的降级
+        场景（模型不调 `send_meme`，直接把 `[开心]` 写进正文）。
+        流式那条路没事，所以一直没被发现 —— 它走的是 LoopResult 本身。
+        `tests/test_router.py` 里那条按字段名对齐的测试现在盯着这件事。
+        """
+        return self.result.attachments
+
+    @property
+    def dirty_providers(self) -> list[str]:
+        """这一轮里**写过**的状态 → 管着它的 Provider 名字（见 tools/context.py）。"""
+        return self.result.dirty_providers
 
 
 class Router:

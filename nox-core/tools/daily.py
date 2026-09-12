@@ -255,6 +255,12 @@ def make_handlers(bridge: BridgeClient) -> dict[str, object]:
         if not r.ok:
             raise RuntimeError(f"添加待办失败: {r.error}")
 
+        # 清单变了 → 通知 loop 把 `todo` 那个 Provider 的缓存打掉。
+        # 不打的话下一轮递给他的还是**写之前**那份清单（TTL 30 分钟），
+        # 于是会出现「他刚说记好了，转头查了说没有这条」。
+        # 见 tools/context.py 里 `wrote()` 的完整说明。
+        context.wrote("todo")
+
         rep = (r.data or {}).get("repeat") or "anytime"
         if rep == "anytime":
             # **说清楚它不会提醒**。不说的话她以为记了就会被叫，
@@ -274,6 +280,9 @@ def make_handlers(bridge: BridgeClient) -> dict[str, object]:
         d = r.data or {}
         if not d.get("ok"):
             return d.get("error") or f"清单里没找到「{kw}」。"
+        # ⚠️ 只有**真改了**才登记。没找到那条时上面已经 return 了 ——
+        #    那种情况下清缓存是白清（而且会让他刚查到的清单又重拉一次）。
+        context.wrote("todo")
         # 循环任务不是永久划掉，要说清楚，否则他会以为这条没了、又给她加一条
         if d.get("closed") is False:
             n = d.get("doneThisWeek")

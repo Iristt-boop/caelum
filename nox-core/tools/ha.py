@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 
 from agent.llm import ToolSpec
+from tools import context
 from tools.mcp_client import McpClient
 
 logger = logging.getLogger(__name__)
@@ -153,6 +154,9 @@ def make_handlers(client: McpClient) -> dict[str, object]:
         if eid.startswith("light."):
             return "这是灯，请改用 ha_set_light（能调亮度）。"
         result = _call("hass_set_state", {"entity_id": eid, "state": state})
+        # 设备状态变了 → 打掉 home Provider 的缓存。它 TTL 只有 30 秒，
+        # 但 30 秒里他会照旧说「那盏灯是关的」。见 tools/context.py 的 wrote()。
+        context.wrote("home")
         extra = _readback(eid)
         return f"{result}\n（回读：{extra}）" if extra else result
 
@@ -168,6 +172,7 @@ def make_handlers(client: McpClient) -> dict[str, object]:
         if len(payload) == 1:
             return "没指定模式或温度，空调没动。"
         result = _call("hass_set_climate", payload)
+        context.wrote("home")     # 同上：空调状态也挂在 home 里
         extra = _readback(eid)
         return f"{result}\n（回读：{extra}）" if extra else result
 
@@ -179,6 +184,7 @@ def make_handlers(client: McpClient) -> dict[str, object]:
         if args.get("brightness"):
             payload["brightness"] = int(args["brightness"])
         result = _call("hass_set_light", payload)
+        context.wrote("home")     # 同上
         extra = _readback(eid)
         return f"{result}\n（回读：{extra}）" if extra else result
 

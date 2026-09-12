@@ -35,6 +35,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from agent.llm import ToolSpec
+from tools import context
 
 logger = logging.getLogger(__name__)
 
@@ -105,6 +106,11 @@ def make_handlers(world: Any) -> dict[str, Any]:
             return f"没记成：{exc}"
 
         logger.info("记下生理期：%s（%s）%s", event, day, flow)
+        # 写进 World Model 了 —— 但 **HealthProvider 的缓存是 6 小时**的。
+        # 不打掉的话他接下来大半天还会按「没有经期记录」说话：
+        # 她刚说「我来例假了」、他答「记下了」，然后照旧不当回事，
+        # 而且全程不报错。见 tools/context.py 里 `wrote()` 的说明。
+        context.wrote("health")
         word = "来了" if event == "start" else "结束了"
         when = "今天" if day == _today(None) else day
         return (f"（记下了：{when}{word}{('，' + flow) if flow else ''}。"

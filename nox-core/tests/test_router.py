@@ -55,5 +55,32 @@ def test_trailing_punctuation_stripped():
         assert classify(s).intent is Intent.SMALL_TALK, s
 
 
+# ------------------------------------------------- RouteResult 的透明代理
+
+def test_RouteResult_把_LoopResult_的每个字段都代理了():
+    """包一层只是为了多带「走了哪条路」，其余必须**逐字段**透传。
+
+    🔴 这条是补票的 —— 已经漏过两次，而且两次都是**静默的**：
+
+      1. 第一次端到端冒烟崩在 `outcome` 上（类自己的 docstring 记着）
+      2. 2026-09-12 发现漏了 `attachments`：`nox.py` 的 `chat()` 在
+         「模型把 `[tag]` 写进正文、没调 send_meme」那条兜底里调
+         `result.attachments.extend(...)` —— 一调就 `AttributeError`。
+         而那条兜底正是 2026-09-06 她报的降级场景。
+         流式那条路没事（它拿到的是 LoopResult 本身），所以一直没暴露。
+
+    所以按**字段名**对齐来测，而不是逐个 `assert`：以后 `LoopResult` 加字段，
+    这条会自动红，不需要谁记得回来补一行。
+    """
+    import dataclasses
+
+    from agent.loop import LoopResult
+    from router.router import RouteResult
+
+    missing = [f.name for f in dataclasses.fields(LoopResult)
+               if not hasattr(RouteResult, f.name)]
+    assert not missing, f"RouteResult 漏代理了这些字段: {missing}"
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))

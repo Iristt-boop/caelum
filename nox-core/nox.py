@@ -639,6 +639,52 @@ class Nox:
             return ""
         return f"【这段对话】从 {humanize(days)}开始，中间聊聊停停"
 
+    def _flush_dirty(self, result: RouteResult) -> None:
+        """把这一轮**写过**的状态对应的 Provider 缓存打掉。
+
+        ## 为什么必须有这一步
+
+        Provider 是按 TTL 缓存的（`health` 6 小时、`todo` 30 分钟、`music` 3 分钟），
+        而写路径（`record_period` / `add_todo` / `eryu_play` …）成功之后
+        **没有任何人通知缓存**。于是下一轮拼提示时递给他的还是**写之前**那份快照：
+
+            她：我来例假了       → 他调 record_period，真写进 World Model 了
+            他：记下了           → 这句是真的
+            （之后最多 6 小时内的任何一轮）
+            她：我今天是不是来例假了？ → 他读旧快照 → 说「没有记录」
+
+        **全程不报错。** 从她那头看就是「他不记得」——
+        TTL 实际上成了「你刚告诉他的事，他最长能多久当作没听见」。
+        （2026-09-12 实测：生产代码里 `invalidate()` **一次都没被调用过**，
+        只有 `_client.py` 那个同名的 MCP token 缓存在用。）
+
+        ## 为什么不「每轮全清」
+
+        全清代价太大：`health` 那个 6 小时 TTL 是**故意的**（睡眠/经期一天变几次），
+        每轮都清等于每轮都真打一次 health-mcp，慢且贵。
+        所以只清**这一轮真的写过**的那几个，由工具自己经
+        `ToolContext.wrote()` 登记 —— 见 `tools/context.py` 里的完整说明。
+
+        ## 为什么收口在这一层
+
+        `nox-core` 里只有这里同时握着「loop 这一轮的产物」和「Provider registry」
+        （`self.context`）。工具那侧够不着 registry，也不该为了清缓存去 import
+        一个全局单例 —— 那是审计点名的老毛病。
+        """
+        names = list(getattr(result, "dirty_providers", None) or ())
+        if not names:
+            return
+        registry = getattr(self, "context", None)
+        if registry is None:      # 假 core / 没启上下文时静默跳过
+            return
+        for name in names:
+            try:
+                cleared = registry.invalidate(name)
+            except Exception:  # noqa: BLE001 —— 清缓存失败不能拖垮这一轮对话
+                logger.exception("打掉 Provider 缓存失败: %s", name)
+                continue
+            logger.info("这一轮写过 %s → 打掉它的缓存（清掉 %d 条）", name, cleared)
+
     def chat(
         self,
         text: str,
@@ -656,6 +702,9 @@ class Nox:
             text, history, dynamic_system=dynamic, images=images,
             voice=voice, scene=scene, adapter=self.adapter_for(model),
         )
+        # 这一轮写过什么状态 → 把对应 Provider 的缓存打掉。
+        # 放在最前面：后面几步都是文本后处理，不该影响清缓存这件事。
+        self._flush_dirty(result)
 
         # 模型在回复末尾附了 [mood:xxx]，取出来更新状态并从正文剥掉。
         # 忘了附不算错 —— 保持上一轮的情绪即可，不要因此报错或重试。
@@ -709,6 +758,8 @@ class Nox:
             if ev.type == "done":
                 result = getattr(ev, "result", None)
                 if result is not None:
+                    # 这一轮写过什么状态 → 把对应 Provider 的缓存打掉（见 _flush_dirty）
+                    self._flush_dirty(result)
                     cleaned, detected = mood.extract(result.text)
                     # 正文里懒写的 [tag] 抽出来转成表情事件（同非流式那条）
                     cleaned, meme_tags = intimate_tools.extract_text_tags(cleaned)

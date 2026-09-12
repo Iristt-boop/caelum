@@ -15,6 +15,7 @@ import logging
 from agent.llm import ToolSpec
 from context.timeline import relativize
 from memory.ob_client import OmbreBrain
+from tools import context
 
 logger = logging.getLogger(__name__)
 
@@ -214,6 +215,11 @@ def make_handlers(ob: OmbreBrain) -> dict[str, object]:
         )
         if not r.ok:
             raise RuntimeError(f"记忆存储失败: {r.error}")
+        # 记忆变了 → 打掉 memory Provider 的缓存（TTL 5 分钟）。
+        # 不打的话她刚说「记住 X」、他答「记住了」，5 分钟内他去检索
+        # 拿到的还是写之前那份 —— 又是「他不记得」。
+        # 见 tools/context.py 里 `wrote()` 的完整说明。
+        context.wrote("memory")
         return r.text or "已存入长期记忆。"
 
     def archive(args: dict) -> str:
@@ -223,6 +229,7 @@ def make_handlers(ob: OmbreBrain) -> dict[str, object]:
         r = ob.grow(content)
         if not r.ok:
             raise RuntimeError(f"归档失败: {r.error}")
+        context.wrote("memory")       # 归档也改了 OB，见 remember 那段
         return r.text or "已归档。"
 
     def status(args: dict) -> str:
@@ -262,6 +269,7 @@ def make_handlers(ob: OmbreBrain) -> dict[str, object]:
         r = ob.trace(bucket_id, **passthrough)
         if not r.ok:
             raise RuntimeError(f"修改记忆失败: {r.error}")
+        context.wrote("memory")       # 改桶内容/标签/pinned 同样让缓存过期
         return r.text or "已修改。"
 
     def merge(args: dict) -> str:
@@ -278,6 +286,7 @@ def make_handlers(ob: OmbreBrain) -> dict[str, object]:
         r = ob.merge(target, sources)
         if not r.ok:
             raise RuntimeError(f"合并记忆失败: {r.error}")
+        context.wrote("memory")       # 合并后 source 桶没了、target 变了
         return r.text or "已合并。"
 
     return {

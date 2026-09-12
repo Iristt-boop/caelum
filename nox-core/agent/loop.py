@@ -70,6 +70,11 @@ class LoopResult:
     # 见 tools/context.py —— 有些工具的意义不在返回文本，在于产生副作用，
     # 而 Core 够不着 bridge 那条 SSE 连接，只能这样把意图传出去。
     attachments: list[dict[str, Any]] = field(default_factory=list)
+    #: 这一轮里**写过**的状态 → 管着它的 Context Provider 名字。
+    #: 由工具经 `ToolContext.wrote()` 登记；调用方（`nox.py`）在轮次结束时
+    #: 拿它去 `registry.invalidate()`，否则下一轮递给他的还是写之前那份快照。
+    #: 见 `tools/context.py` 里 `wrote()` 的完整说明。
+    dirty_providers: list[str] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
@@ -112,6 +117,7 @@ class AgentLoop:
             history=history, images=images, adapter=adapter,
         )
         result.attachments = ctx.attachments
+        result.dirty_providers = sorted(ctx.dirty)
         return result
 
     def _run_inner(
@@ -227,11 +233,13 @@ class AgentLoop:
             user_text, ctx, system=system, dynamic_system=dynamic_system,
             history=history, images=images, split=split, adapter=adapter,
         ):
-            # done 事件带上工具产生的附带产物（比如「要发的图片」）
+            # done 事件带上工具产生的附带产物（比如「要发的图片」），
+            # 以及「这一轮写过哪些状态」—— 后者由调用方拿去清 Provider 缓存
             if ev.type == "done":
                 result = getattr(ev, "result", None)
                 if result is not None:
                     result.attachments = ctx.attachments
+                    result.dirty_providers = sorted(ctx.dirty)
             yield ev
 
     def _stream_inner(

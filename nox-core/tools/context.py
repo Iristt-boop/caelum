@@ -39,6 +39,40 @@ class ToolContext:
 
     attachments: list[dict[str, Any]] = field(default_factory=list)
 
+    #: 这一轮里**写过的状态** → 管着它的 Context Provider 名字。
+    #: 由工具经 `wrote()` 登记，调用方（`nox.py`）在轮次结束时拿去清缓存。
+    dirty: set[str] = field(default_factory=set)
+
+    def wrote(self, *providers: str) -> None:
+        """登记「我刚改了这些 Provider 管的状态」。
+
+        ## 为什么必须有这个
+
+        Provider 是按 TTL 缓存的（`health` 6 小时、`todo` 30 分钟、`music` 3 分钟）。
+        写操作成功了，但**缓存里那份写之前的快照还在** —— 下一轮拼提示时
+        递给他的仍然是旧的。于是出现：
+
+            她：我来例假了        → 他调 record_period，真写进 World Model 了
+            他：记下了            → 这句是真的
+            （同一轮之后、或 6 小时内的任何一轮）
+            她：我今天是不是来例假了？ → 他读的是旧快照 → 说「没有记录」
+
+        **全程没有任何报错**。从她那头看，就是「他不记得」。
+        TTL 实际上成了「你刚告诉他的事，他最长能多久当作没听见」。
+
+        ## 为什么只登记、不在这里清缓存
+
+        工具够不着 `ContextProviderRegistry`，也不该为了清缓存去 import 一个
+        全局单例 —— 那正是审计点名过的老毛病（全局状态在并发下会串，
+        `tools/context.py` 开头那段 contextvar 的坑是同一类）。
+        真正 `invalidate()` 由**持有 registry 的那一层**（`nox.py`）在轮次结束时
+        统一做。这里只留一个名字集合，是数据不是行为。
+
+        ⚠️ **参数写 Provider 的名字**（`"todo"` / `"health"` / `"music"`），
+        不是工具名。拿不准就去看 `context/providers/` 里谁读了你写的那份数据。
+        """
+        self.dirty.update(providers)
+
     def attach_image(self, url: str, **meta: Any) -> None:
         """标记「这张图要发到聊天里」。
 
@@ -99,6 +133,27 @@ def current() -> ToolContext | None:
     """取当前轮次的上下文。不在轮次里时返回 None ——
     工具要能容忍这种情况（比如被单元测试直接调用）。"""
     return _current.get()
+
+
+def wrote(*providers: str) -> None:
+    """便捷写法：登记「我刚改了这些 Provider 管的状态」。
+
+    工具里直接一行：
+
+        from tools import context
+        ...
+        context.wrote("todo")        # 写成功之后
+
+    **不在轮次里时静默跳过**（工具被单元测试/脚本直接调用）—— 和 `current()`
+    一样要能容忍。所以调用方不需要判空，少一处忘记判空的机会。
+
+    为什么值得单独给个函数：写路径散在四五个模块里，每个都写
+    `ctx = current()` + `if ctx:` 就会有地方漏；而这行代码的意义
+    恰恰是「**别漏**，漏了就是他不记得，而且不报错」。
+    """
+    ctx = _current.get()
+    if ctx is not None:
+        ctx.dirty.update(providers)
 
 
 @contextmanager

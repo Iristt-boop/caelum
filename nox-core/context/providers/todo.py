@@ -56,9 +56,12 @@ class TodoProvider(BaseContextProvider):
     name = "todo"
     section = "user"
     #: 30 分钟。她随口说一句 App 就改，但也没必要每轮都去 bridge 拉。
-    #: ⚠️ 这个值就是「她刚记下的事，他最长能多久当作没听见」——
-    #:    所以**写路径必须挂 invalidate()**（经期/体重/待办都是），
+    #: ⚠️ 这个值同时就是「她刚记下的事，他最长能多久当作没听见」——
+    #:    所以写路径**必须**登记 `context.wrote("todo")`（见 `tools/context.py`），
     #:    否则一串「他记性不好」的现象其实全来自这里。
+    #:    同类：`health`（经期）6 小时、`memory` 5 分钟、`music` 3 分钟。
+    #:    **体重不在此列** —— 没有任何 Provider 读饮食/体重，
+    #:    所以它不是「快照过期」的问题，别照着这句话去挂 invalidate。
     ttl = timedelta(minutes=30)
 
     #: 「进行中」最多列几条。这段每轮都要付未命中价，不能让它无限长
