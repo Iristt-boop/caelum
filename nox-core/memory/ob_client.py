@@ -69,6 +69,11 @@ def split_breath(text: str) -> tuple[str, str]:
 
     OB 的输出格式若变了，这里退化成「全部当动态」——宁可多付点钱，
     也不要因为切分失败把记忆整个丢掉。
+
+    ⚠️ **这个退化只对 `recall()` 安全，对 `core_principles()` 不安全。**
+    把内容当动态浮现，最坏是多付一轮钱；把它当核心准则，会冻进静态前缀
+    变成永久自我指令。所以 `core_principles()` 不用这里的退化路径，
+    它自己查头、查不到就返回空 —— 见那边的长注释。
     """
     if _CORE_HEADER not in text:
         return "", text.strip()
@@ -223,9 +228,39 @@ class OmbreBrain:
         r = self.breath("", max_results=50, max_tokens=20000)
         if not r.ok:
             return r
-        core, dynamic = split_breath(r.text)
-        # 正常情况 dynamic 为空；万一 OB 改了输出格式，两段都留着别丢
-        return MemoryResult(True, text=core or dynamic)
+
+        # 🔴 **没有核心准则头的时候，必须返回空，不许退回 dynamic**
+        #    （2026-09-12 修，审计 3.2 链 3b）
+        #
+        # 这行原来写的是 `core or dynamic`，理由是"万一 OB 改了输出格式，
+        # 两段都留着别丢"。听起来稳，实际是这条链子的起点：
+        #
+        #   一个钉选桶都没有  →  OB 不输出 `=== 核心准则 ===` 头
+        #                     →  split_breath 把整段归给 dynamic
+        #                     →  `core or dynamic` 取到 dynamic
+        #                     →  **随机浮现的记忆被当成「核心准则」**
+        #                     →  冻进带缓存的静态前缀，渲染成
+        #                        「=== 关于你和糖糖的核心记忆 ===」
+        #                     →  此后每一轮都挂在 system prompt 里
+        #
+        # 也就是说：**模型自己某次随口浮现的东西，会变成他往后的自我指令。**
+        # 「半年后他会不会偏离最初人格」的机制，有一条就是这个。
+        #
+        # 权衡很清楚：格式真变了的话，这里返回空 = 前缀里没有核心准则，
+        # 缺失是**看得见**的（所以下面必须留一条 WARNING）；
+        # 而退回 dynamic 的坏处是**看不见**，还会自我强化。
+        # 宁可少一段，不可错一段。
+        if _CORE_HEADER not in r.text:
+            logger.warning(
+                "breath 返回里没有「%s」—— 这次不装核心准则。"
+                "要么一个钉选桶都没有，要么 OB 的输出格式变了；"
+                "**不退回动态浮现**，那会把随机记忆冻成永久自我指令",
+                _CORE_HEADER,
+            )
+            return MemoryResult(True, text="")
+
+        core, _dynamic = split_breath(r.text)
+        return MemoryResult(True, text=core)
 
     def recall(self, query: str, *, max_results: int = 6, max_tokens: int = 3000) -> MemoryResult:
         """按糖糖当下这句话检索相关记忆。**每轮调这个。**
