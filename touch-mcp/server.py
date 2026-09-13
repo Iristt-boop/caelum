@@ -139,7 +139,7 @@ if __name__ == "__main__":
         allow_headers=["*"],
         expose_headers=["*"],
     )
-    print(f"touch-mcp listening on 0.0.0.0:{PORT}")
+    print(f"touch-mcp listening on 127.0.0.1:{PORT}")
     print(f"data -> {DATA_FILE}")
 
     # 部署健康检查（2026-09-11 铺 release 布局时加的）。
@@ -160,4 +160,12 @@ if __name__ == "__main__":
 
     _app.add_route("/health", _health, methods=["GET"])
 
-    uvicorn.run(_app, host="0.0.0.0", port=PORT)
+    # 🔴 绑回环（2026-09-13，排期 0.6）。公网入口一直是 Caddy 反代
+    # localhost:9336，0.0.0.0 只是留了一个「安全组一旦被改就全裸」的口子。
+    #
+    # ⚠️ **只改这一行。上面 `FastMCP(..., host="0.0.0.0")` 那个不要动** ——
+    # 它喂的是 MCP 的 DNS-rebinding 防护白名单，不是监听地址。同一天在
+    # Ombre-Brain 上把两处一起改了，结果经 Caddy 来的请求全变成
+    # 421 Misdirected Request（`Host: noxtang.com` 不在白名单里了）。
+    # 同名参数不一定是同一件事。
+    uvicorn.run(_app, host="127.0.0.1", port=PORT)
