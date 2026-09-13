@@ -18,13 +18,29 @@ bad()  { say "$BAD" "$1"; ISSUES=$((ISSUES+1)); }
 #:    她明确说了触觉那条线不重要，所以它和"网易云凭据快过期"都归到这一级。
 note() { say "$NOTE" "$1"; NOTES=$((NOTES+1)); }
 
+#: 🔴 **服务清单只有这一份。**
+#:
+#: 审计点名过：原来 `monitor.sh` 自己抄了一份，两边慢慢走散 ——
+#: 它那份**漏了 nox-core**，还留着早就退役的 `cloudflared-*`。
+#: 于是"他本人挂了"这件事，监控从来看不见。
+#:
+#: 现在 `caelum-watch.sh` 用 `doctor.sh --list-services` 取这一份，
+#: 不再自己抄。加服务只改这一行，两边同时生效。
+#:
+#: ⚠️ caddy 2026-09-11 才补进来：它是整套系统**唯一的入口**，
+#: 它挂了 = App / MCP / touch / 所有域名全挂。原来这里居然一直没查它。
+CAELUM_SERVICES="caddy bridge nox-core ombre-brain co-reading co-watching eryu netease-mcp"
+
+if [ "${1:-}" = "--list-services" ]; then
+  echo "$CAELUM_SERVICES"
+  exit 0
+fi
+
 echo "════════ Caelum 体检 $(date '+%F %T') ════════"
 
 # ── 1) systemd 服务 ──────────────────────────────
 echo "-- 服务 --"
-# ⚠️ caddy 2026-09-11 才补进这个清单：它是整套系统**唯一的入口**，
-# 它挂了 = App / MCP / touch / 所有域名全挂。原来这里居然一直没查它。
-for s in caddy bridge nox-core ombre-brain co-reading co-watching eryu netease-mcp; do
+for s in $CAELUM_SERVICES; do
   st=$(systemctl is-active "$s" 2>/dev/null)
   if [ "$st" = "active" ]; then good "$s running"; else bad "$s = $st"; fi
 done
