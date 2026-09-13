@@ -174,8 +174,34 @@ uvicorn 自己那份**故意不跟着降**：DEBUG 下一条 SSE 能刷几百行
 | `done` 之后不标 `finished` | 红 2 条（正常收尾被误报成 abandoned） |
 | `routine` 不分档、全提 INFO | 红（常态忽略刷进 INFO） |
 
-**已部署**：`2026-09-13-ec37a5fc765d`，unit active / `/health` 200，软链和 `CURRENT` 都对上了。
-⚠️ 照 `docs/LOGGING.md` 规则 6，上线第一天要去 journalctl 确认这些 INFO 行**真的在出现**。
+**已部署**：`2026-09-13-4a2684fe5b62`，unit active / `/health` 200。
+线上实测（`test-` 会话，用完即删）：
+
+```
+turn | outcome=answered path=light iter=1 t=1.6s model=openai_compat:glm-5.3-flash stream=0 tools=- tok=in242/out19/cr0/cw0
+turn | outcome=answered path=full  iter=2 t=9.3s model=openai_compat:glm-5.3-flash stream=0 tools=get_current_time tok=in58589/out33/cr58496/cw0
+```
+
+#### 🔴 上线当天才看出来的两个缺口（都已修+已发）
+
+**① `model=` 打的是传输层，不是模型。** 第一版只取 `adapter.name`，
+线上第一行就是 `model=openai_compat` —— 而她随时在前端换模型，
+"这轮是哪个模型答的"恰恰是最常要查的。改成 `后端:模型`。
+两段都留：`anthropic` 原生和 `openai_compat` 是两条代码路径
+（`depth` 只在前者生效），那个区别咬过人。
+
+**② Router 的轻量路径根本不经过 loop —— 一句「在吗」在日志里完全是空的。**
+她的招呼本来就多，等于相当一部分轮次是暗的，而 1.2 要的正是
+"随便挑一个时刻都查得到"。加了 `path=full|light`。
+（`stream` 和 `path` 是两个轴，不合并：一个说传输，一个说路由。）
+
+> **这两条都不是推演出来的，是照 `docs/LOGGING.md` 规则 6 去 journalctl
+> 看了一眼才发现的。**「配上了 ≠ 用上了」这条规矩今天一次性还了两笔。
+
+⚠️ **顺带清了她生产库里 37 个陈年 `test-` 会话**（最早 2026-09-03，
+来自历次 e2e 测试，都没自清理）。她本人的 50 个会话 / 5316 条消息一条没动。
+今天 04:17 的加密备份早于这次删除，要找回去那里找。
+**这正是 `never-test-in-tangtang-prod` 那条的活样本 —— 测试会话必须自清理。**
 
 ---
 
@@ -197,10 +223,25 @@ uvicorn 自己那份**故意不跟着降**：DEBUG 下一条 SSE 能刷几百行
 成功 `exit 0`，ssh 原样带回来 —— **这个信号一直都在，只是没人用**。
 外加把 `Console.OutputEncoding` 设成 UTF-8（日志能读了）、条目数改问 `git ls-tree`。
 
-**两个分支都实测过**：
-- 失败分支 —— 重发同一个 commit，远端 `$NEW 已存在` → `exit 1`，
-  脚本红字 + 退出码 1。**这条路在翻软链之前就返回，不碰线上**
-- 成功分支 —— 发 `<下一个 commit>`（nox-core 内容逐字节未变，只换 tag），绿字 ✅ + 退出码 0
+**🔴 但第一版修法是错的，而我的验证也没抓住它。**
+
+换成退出码之后重测，**失败分支照样打绿字**。根因在 `Invoke-Remote` 里
+那个为吸收 CR 补的尾行 `: # end` —— **`:` 永远成功**，
+于是外层 shell 恒返回 0，把 `deploy-remote.sh` 的失败整个吞掉。
+（这等于把原来的 bug 照镜子翻了个面：从"永远失败"变成"永远成功"，更危险。）
+
+**我的验证之所以没抓住，是因为测的形状不对**：我送的是 `echo …; exit 1` ——
+`exit` 会**当场结束整个 shell**，补的那行根本没机会跑。
+而真实形状是 `bash deploy-remote.sh`：**子进程**退 1，外层若无其事地往下走。
+改送 `bash -c 'exit 1'` 之后一次复现。
+（同型错误第八批也犯过：`sed` 改的是默认值，而 unit 的显式 env 覆盖了它。）
+
+尾行改成**先接住 `$?` 再原样 `exit`**，CR 落进尾部注释，两边都成立。
+
+**两个分支最终都实测过**：
+- 失败分支 —— 重发同一个 commit，远端 `$NEW 已存在` → 红字 + 退出码 **1**。
+  **这条路在翻软链之前就返回，不碰线上**
+- 成功分支 —— 发下一个 commit（nox-core 内容逐字节未变，只换 tag）→ 绿字 ✅ + 退出码 **0**
 
 > **教训：写「判定成功」的代码时，别去匹配一段会经过编码转换的文本。**
 > 退出码、HTTP 状态码、文件是否存在 —— 挑一个不会在路上变形的东西当判据。
