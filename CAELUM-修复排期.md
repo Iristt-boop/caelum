@@ -204,12 +204,31 @@ token 进 argv、摘掉 `nox_background` —— **全部抓到**。
 |---|---|
 | `caelum-watch` + `doctor.sh --list-services` | ✅ **已上线**，5 分钟一轮，演习通过 |
 | `1.4` nox-core 那半（心跳台账） | ✅ **已上线**（`2026-09-13-c882a5023755`） |
-| `1.4` bridge 那半（`nox_background`） | ⏸ **代码好了没发** —— 发 bridge 没跟她说过，被权限挡下，等她一句话 |
+| `1.4` bridge 那半（`nox_background`） | ✅ **已上线**（`2026-09-13-4b700411f7e1`，18:04） |
 | `1.6` 重启策略 | ⏸ 脚本备好，她说先观察几天 |
 
-⚠️ 现在是个**无害的半截状态**：nox-core 的 `/health` 已经在报 `background_stale`，
-而线上那版 bridge 还不认识这个字段 —— 它只是被忽略。
-bridge 一发，看门狗当轮就能看见"后台停了"。
+**上线后的线上实测（18:05）**
+
+```
+活计                 节奏      跑过    停了   最后一次
+attention_tick       900s      10     False  2026-09-13T09:54:49Z
+care_tick             60s     157     False  2026-09-13T10:04:34Z
+topic_scout        21600s       1     False  2026-09-13T07:26:58Z
+停摆清单: []
+bridge /api/health → nox_background {"ok": true, "jobs": 3}
+```
+
+数字对得上（15:22 部署到 18:05 是 2.7 小时 ≈ 10 次心跳 / 157 次快循环 /
+1 次话题池），说明台账是真在记，不是摆样子。
+
+**「真停了会不会被念出来」也验了**：拿线上那份 `caelum-watch.sh` 里
+**原封不动**的解析段，喂一个 `nox_background.ok=false` 的假 health ——
+输出「探活不通过：nox_background」。✅
+
+⚠️ **没有去真停一条后台循环**：停 attention 心跳意味着他半小时不会主动找她。
+stale → 推送这条链是**分段验证**的（heartbeat 的 stale 判定有 9 条单测、
+bridge 的端出有 4 条带变异、推送路径 15:24 演习实跑过），不是端到端一次跑通。
+写清楚，免得以后把它记成"全链路演习过了"。
 
 #### 🔴 装的时候又栽了一次同样的跟头
 
