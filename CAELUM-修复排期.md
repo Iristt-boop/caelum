@@ -198,7 +198,34 @@ token 进 argv、摘掉 `nox_background` —— **全部抓到**。
 > 所以 `test-caelum-watch.sh` 开头加了一段**自证**：先跑一次必须有动静的检查，
 > 不过就整套中止。同族见第十九批的「空集不是通过」。
 
-**未部署** —— `caelum-watch` 和重启策略都要写线上 systemd，等她点头。
+**部署状态（她选的：只装看门狗，重启策略先放着）**
+
+| | 状态 |
+|---|---|
+| `caelum-watch` + `doctor.sh --list-services` | ✅ **已上线**，5 分钟一轮，演习通过 |
+| `1.4` nox-core 那半（心跳台账） | ✅ **已上线**（`2026-09-13-c882a5023755`） |
+| `1.4` bridge 那半（`nox_background`） | ⏸ **代码好了没发** —— 发 bridge 没跟她说过，被权限挡下，等她一句话 |
+| `1.6` 重启策略 | ⏸ 脚本备好，她说先观察几天 |
+
+⚠️ 现在是个**无害的半截状态**：nox-core 的 `/health` 已经在报 `background_stale`，
+而线上那版 bridge 还不认识这个字段 —— 它只是被忽略。
+bridge 一发，看门狗当轮就能看见"后台停了"。
+
+#### 🔴 装的时候又栽了一次同样的跟头
+
+第一次装完 systemd 报 `203/EXEC: Failed to locate executable /root/caelum-watch.sh`。
+看起来像"文件没拷过去"，其实是 unit 里的 **`ProtectHome=yes` 把 `/root` 整个藏掉了** ——
+而脚本本体和它要读的 `doctor.sh` 都在那儿。改成 `read-only` 就好了。
+
+**但真正该记的是第二件：安装脚本自己说了谎。**
+第 6 步写的是 `systemctl start … || true`，然后无条件打 `✅ 装好了` ——
+于是服务**根本起不来**的时候，它照样报成功。
+
+**这和今天上午刚修完的 `deploy.ps1` 是一模一样的毛病，我自己隔了几小时又犯了一遍。**
+现在改成读 `ExecMainStatus`，分辨"发现问题退 1"（正常）和"自己起不来 203"（没装成）。
+
+> 教训补一句：**别给一个会失败的步骤配一句无条件的成功。**
+> `|| true` 用在"失败了也无所谓"的地方是对的，用在判据上就是自欺。
 
 ---
 
@@ -1330,7 +1357,10 @@ touch-server 现在要 token 了。**没更新 `wifi_secrets.h` 就刷固件，�
       🔴 **这条的前提是错的**：`monitor.sh` **从来没部署过**（文件 / cron /
       它要写的日志文件全都不存在）—— 不是"漏掉 nox-core"，是**根本没有监控**。
       所以不是改它，是删掉重写成 `scripts/caelum-watch.sh`。
-      **判据**：`systemctl stop nox-core`，你手机收到推送。← **还没实测，等她授权装**
+      **判据**：`systemctl stop nox-core`，你手机收到推送。
+      → ✅ **2026-09-13 15:24 线上演习通过**（她要求实测的）：
+        停 nox-core → 第 1 轮只记账不推 → 第 2 轮推「nox-core 没在跑；探活不通过」
+        → 起回来 → 推「恢复了」→ 状态清空。**整场共 2 条推送，一条不多。**
 - [ ] 1.6 systemd 加 watchdog；`RestartSec` + `StartLimitBurst`（1h）
       **脚本写好了（`scratch/apply-restart-policy.sh`），未执行，等她授权。**
       实测现状比排期写的更细：
