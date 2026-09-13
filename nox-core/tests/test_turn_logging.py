@@ -194,6 +194,28 @@ def test_adapter_without_name_does_not_crash(caplog):
     assert "model=?" in only_turn(caplog).getMessage()
 
 
+def test_model_id_is_logged_not_just_the_transport(caplog):
+    """🔴 只打 `adapter.name` 的话，线上看到的是 `model=openai_compat` ——
+    那是传输层。她随时在前端换模型，**这轮是哪个模型答的**才是要查的东西。
+    （2026-09-13 上线当天实测撞出来的，不是想象。）"""
+
+    class Cfg:
+        model = "glm-5.3"
+
+    class Real:
+        name = "openai_compat"
+        cfg = Cfg()
+
+        def complete(self, *a, **kw):
+            return Turn(stop_reason="end_turn", text="在的")
+
+    loop = AgentLoop(adapter=Real())
+    with caplog.at_level(logging.INFO, logger="agent.loop"):
+        loop.run("在吗")
+
+    assert "model=openai_compat:glm-5.3" in only_turn(caplog).getMessage()
+
+
 # ─────────────────────────────────────────────── 1.2 流式
 
 def test_stream_logs_once_and_says_so(caplog):

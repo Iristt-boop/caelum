@@ -536,12 +536,22 @@ class AgentLoop:
 
 
 def _adapter_name(adapter: LLMAdapter) -> str:
-    """后端名。**拿不到也不许炸** —— 日志不值得把一轮对话搞挂。
+    """这一轮是谁答的，形如 `openai_compat:glm-5.3`。
 
-    `LLMAdapter` 协议里写了 `name: str`，但协议是给类型检查看的，
-    运行时谁都能塞个鸭子类型进来（测试里全是这种）。
+    🔴 **两段都要**，这是上线当天实测出来的（2026-09-13）：
+    第一版只打 `adapter.name`，线上看到的是 `model=openai_compat` ——
+    那是**传输层**，不是模型。而糖糖在前端随时换模型，
+    "他今天怪怪的"里有一大半就是"这轮是哪个模型答的"。
+
+    反过来只打模型也不行：`anthropic` 原生和 `openai_compat` 走的是两条
+    代码路径（`depth` 只在前者生效，见 `adapters.py`），那个区别咬过人。
+
+    ⚠️ **拿不到也不许炸** —— 日志不值得把一轮对话搞挂。协议里写了
+    `name: str`，但协议是给类型检查看的，运行时谁都能塞个鸭子类型进来。
     """
-    return str(getattr(adapter, "name", None) or "?")
+    name = str(getattr(adapter, "name", None) or "?")
+    model = getattr(getattr(adapter, "cfg", None), "model", None)
+    return f"{name}:{model}" if model else name
 
 
 #: turn 日志里最多列几个工具调用。超了截断并标出还有多少 ——
