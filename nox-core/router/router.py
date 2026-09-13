@@ -12,11 +12,12 @@
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass
 from typing import Any
 
 from agent.llm import LLMAdapter, Message, Usage
-from agent.loop import AgentLoop, LoopResult
+from agent.loop import AgentLoop, LoopResult, adapter_name, log_turn
 from personality import scenes
 from router.intent import Decision, Intent, classify
 
@@ -167,6 +168,7 @@ class Router:
 
         失败就退回完整路径 —— 省钱不能以答不上话为代价。
         """
+        started = time.monotonic()
         full_history = list(history or [])
 
         # 只取最后几条，且跳过 tool_calls / tool_results ——
@@ -205,7 +207,7 @@ class Router:
         # 返回的 history 是**完整的**，不是裁剪过的那份 ——
         # 裁剪只作用于这一次请求，不能把上下文真的截断掉，
         # 否则下一句正事就丢了前情。
-        return LoopResult(
+        result = LoopResult(
             outcome="answered",
             text=turn.text,
             iterations=1,
@@ -216,3 +218,19 @@ class Router:
                 Message(role="assistant", text=turn.text),
             ],
         )
+        # 🔴 这条路**不经过 AgentLoop**，所以 loop 那边的 turn 日志照不到它
+        #    —— 上线当天实测：一句"在吗"走完全程，journalctl 里一个字都没有
+        #    （2026-09-13）。她的招呼本来就多，等于有相当一部分轮次是暗的，
+        #    而 1.2 要的恰恰是"随便挑一个时刻都查得到"。
+        #
+        #    ⚠️ 只在**成功返回**这里打。上面失败回退那条会走
+        #    `full_loop.run()`，由 loop 自己落一行 `path=full` —— 不会重复。
+        log_turn(
+            result,
+            model=adapter_name(self.light_adapter),
+            elapsed_s=time.monotonic() - started,
+            history_len=len(full_history),
+            stream=False,
+            path="light",
+        )
+        return result

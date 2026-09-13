@@ -216,6 +216,50 @@ def test_model_id_is_logged_not_just_the_transport(caplog):
     assert "model=openai_compat:glm-5.3" in only_turn(caplog).getMessage()
 
 
+# ─────────────────────────────────────────────── 1.2 轻量路径
+
+def test_light_path_is_logged_too(caplog):
+    """🔴 Router 的轻量路径**不经过 AgentLoop** —— 上线当天实测，
+    一句"在吗"走完全程 journalctl 里一个字都没有。
+
+    她的招呼本来就多，等于相当一部分轮次是暗的，而 1.2 要的恰恰是
+    "随便挑一个时刻都查得到"。
+    """
+    from router.router import Router
+
+    class Light:
+        name = "utility"
+
+        class cfg:
+            model = "glm-5.3-flash"
+
+        def complete(self, messages, tools, **kw):
+            return Turn(stop_reason="end_turn", text="在。叫我干嘛，嗯？",
+                        usage=Usage(input_tokens=242, output_tokens=14))
+
+    full = AgentLoop(adapter=FakeAdapter([]))
+    router = Router(full, system_prompt="（长前缀）", light_adapter=Light())
+
+    with caplog.at_level(logging.INFO, logger="agent.loop"):
+        r = router.handle("在吗")
+
+    assert r.light, "这句话本来就该走轻量路径，否则这条测试测的不是它"
+    msg = only_turn(caplog).getMessage()
+    assert "path=light" in msg, f"轻量路径没标出来：{msg}"
+    assert "model=utility:glm-5.3-flash" in msg
+    assert "iter=1" in msg and "tools=-" in msg
+    assert "in242/out14" in msg
+
+
+def test_full_path_says_full(caplog):
+    """两条路要能在日志里分开 —— 否则 `tools=-` 到底是"没调工具"
+    还是"根本没有工具可调"就分不出来了。"""
+    loop = AgentLoop(adapter=FakeAdapter([Turn(stop_reason="end_turn", text="在的")]))
+    with caplog.at_level(logging.INFO, logger="agent.loop"):
+        loop.run("在吗")
+    assert "path=full" in only_turn(caplog).getMessage()
+
+
 # ─────────────────────────────────────────────── 1.2 流式
 
 def test_stream_logs_once_and_says_so(caplog):

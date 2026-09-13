@@ -14,7 +14,7 @@
      轮数，数不了时间。一个每轮都慢、每轮都不报错的上游能把 12 轮拖成几十
      分钟，而糖糖那边只看到"一直在转"。deadline 让"慢"变成一个**有下场的
      结局**（`timeout`），而不是一段无声的等待。
-  6. **每轮一行 turn 日志**（2026-09-13 加，审计 1.2）—— 见文件末尾 `_log_turn`。
+  6. **每轮一行 turn 日志**（2026-09-13 加，审计 1.2）—— 见文件末尾 `log_turn`。
 
 ## 日志（审计 1.2）
 
@@ -187,9 +187,9 @@ class AgentLoop:
         )
         result.attachments = ctx.attachments
         result.dirty_providers = sorted(ctx.dirty)
-        _log_turn(
+        log_turn(
             result,
-            model=_adapter_name(adapter or self.adapter),
+            model=adapter_name(adapter or self.adapter),
             elapsed_s=time.monotonic() - started,
             history_len=base,
             stream=False,
@@ -318,7 +318,7 @@ class AgentLoop:
         ctx = tool_context.ToolContext(session_id=session_id)
         started = time.monotonic()
         base = len(history or [])
-        model = _adapter_name(adapter or self.adapter)
+        model = adapter_name(adapter or self.adapter)
         finished = False
         try:
             for ev in self._stream_inner(
@@ -333,7 +333,7 @@ class AgentLoop:
                         result.attachments = ctx.attachments
                         result.dirty_providers = sorted(ctx.dirty)
                         finished = True
-                        _log_turn(
+                        log_turn(
                             result, model=model,
                             elapsed_s=time.monotonic() - started,
                             history_len=base, stream=True,
@@ -535,7 +535,7 @@ class AgentLoop:
         return outcome
 
 
-def _adapter_name(adapter: LLMAdapter) -> str:
+def adapter_name(adapter: LLMAdapter) -> str:
     """这一轮是谁答的，形如 `openai_compat:glm-5.3`。
 
     🔴 **两段都要**，这是上线当天实测出来的（2026-09-13）：
@@ -582,13 +582,14 @@ def _tools_used(messages: list[Message], history_len: int) -> list[str]:
     return names
 
 
-def _log_turn(
+def log_turn(
     result: LoopResult,
     *,
     model: str,
     elapsed_s: float,
     history_len: int,
     stream: bool,
+    path: str = "full",
 ) -> None:
     """一轮一行。**这是"他今天怪怪的"唯一能查的东西**（审计 1.2）。
 
@@ -602,6 +603,10 @@ def _log_turn(
     `answered` 走 INFO，其余全部 WARNING —— 因为其余每一种都是
     "她那边收到的东西不完整"：截断、拒答、超时、打转、工具卡住。
     这些不该跟正常轮次混在同一个级别里等人去筛。
+
+    `path=light` 是 Router 那条便宜路（`router/router.py`）——
+    它不走 loop，所以 `iter=1 tools=-` 是常态，不是异常。
+    **`stream` 和 `path` 是两个轴，别合并**：一个说传输，一个说路由。
     """
     tools = _tools_used(result.messages, history_len)
     shown = ",".join(tools[:_TOOLS_IN_LOG])
@@ -610,11 +615,11 @@ def _log_turn(
 
     u = result.usage
     line = (
-        "turn | outcome=%s iter=%d t=%.1fs model=%s stream=%d "
+        "turn | outcome=%s path=%s iter=%d t=%.1fs model=%s stream=%d "
         "tools=%s tok=in%d/out%d/cr%d/cw%d"
     )
     args = (
-        result.outcome, result.iterations, elapsed_s, model, int(stream),
+        result.outcome, path, result.iterations, elapsed_s, model, int(stream),
         shown or "-",
         u.input_tokens, u.output_tokens, u.cache_read_tokens, u.cache_write_tokens,
     )
