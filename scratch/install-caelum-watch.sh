@@ -44,7 +44,13 @@ ExecStart=/root/caelum-watch.sh
 StateDirectory=caelum-watch
 NoNewPrivileges=yes
 ProtectSystem=strict
-ProtectHome=yes
+# 🔴 **`ProtectHome=yes` 会让这个服务起不来。**
+#    它把 /root 整个藏掉，而脚本本体就在 /root/caelum-watch.sh，
+#    它还要读 /root/doctor.sh 拿服务清单。
+#    实测报的是 `203/EXEC: Failed to locate executable` ——
+#    看起来像"文件不存在"，其实是"被沙箱挡住了看不见"。
+#    read-only 保留了"不许写你的家目录"，同时让读和执行成立。
+ProtectHome=read-only
 PrivateTmp=yes
 # 要读 /etc/nox/bridge.env 拿推送用的 token（600 root）
 ReadOnlyPaths=/etc/nox
@@ -86,12 +92,28 @@ systemctl list-timers caelum-watch.timer --no-pager | sed -n '2p' | sed 's/^/  �
 
 echo
 echo "── [6] 立刻跑一次真的（会走推送判定，但要连坏两次才推）──"
-systemctl start caelum-watch.service || true
-sleep 2
+# 🔴 **这一步的结果要当判据看。**
+#    第一版这里写的是 `systemctl start ... || true`，然后无论如何打 ✅ ——
+#    于是 `ProtectHome=yes` 把脚本本身挡在沙箱外（203/EXEC）的时候，
+#    脚本照样说"装好了"。和今天上午修的 deploy.ps1 是同一个毛病，
+#    我自己又犯了一次：**别给会失败的一步配一句无条件的成功。**
+systemctl start caelum-watch.service
+RC=$?
 journalctl -u caelum-watch -n 20 --no-pager | sed 's/^/  /'
 
+# oneshot 退 1 = 发现了问题（正常）；203/EXEC 之类 = 它自己起不来（不正常）。
+# 用 systemctl show 拿真实的退出码来分辨，别靠 start 的返回值猜。
+STATUS=$(systemctl show caelum-watch.service -p ExecMainStatus --value)
+if [ "$STATUS" = "203" ] || [ "$STATUS" = "127" ] || [ "$STATUS" = "126" ]; then
+  echo
+  echo "🔴 看门狗自己起不来（ExecMainStatus=$STATUS）—— 多半是 unit 的沙箱选项挡住了它。"
+  echo "   没装成。上面的 journal 里有原因。"
+  exit 1
+fi
+[ "$RC" -ne 0 ] && echo "  （退出码 $RC = 这一轮发现了问题，这是它的正常结局之一）"
+
 echo
-echo "✅ 装好了。"
+echo "✅ 装好了，而且**真的跑起来过一次**。"
 echo "   查日志：journalctl -u caelum-watch -f"
 echo "   停掉它：systemctl disable --now caelum-watch.timer"
 echo "   ⚠️ 记得把 deploy-config 重新导一次，否则配置仓库和线上又漂移了"
