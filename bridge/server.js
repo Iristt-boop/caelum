@@ -4181,4 +4181,14 @@ app.use((err, req, res, next) => {
   res.status(500).json({ error: err?.message || "internal error" });
 });
 
-server.listen(PORT, () => console.log(`Bridge → http://0.0.0.0:${PORT}`));
+// 🔴 绑回环（2026-09-13，排期 0.6）。
+//
+// bridge 是**唯一**该暴露在公网的后端，但它暴露的方式一直是 Caddy 反代
+// localhost:3003 —— 直接监听 0.0.0.0 从来没有被用到，只留下一个
+// 「安全组一旦被改就全裸」的口子。而这后面是她的全部聊天记录、健康数据、
+// 相册，以及那条真的会下单的 confirm 端点。
+//
+// ⚠️ 允许用 BRIDGE_HOST 覆盖 —— 有些部署（容器、别的机器上的反代）需要。
+// 但默认必须是回环：**默认值要对，不该指望每个人都记得配。**
+const HOST = process.env.BRIDGE_HOST || "127.0.0.1";
+server.listen(PORT, HOST, () => console.log(`Bridge → http://${HOST}:${PORT}`));
