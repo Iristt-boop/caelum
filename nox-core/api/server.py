@@ -2347,12 +2347,20 @@ def main() -> int:
 
     from config import config
 
+    # 级别可调（审计 1.3）。`NOX_LOG_LEVEL=DEBUG` 就能看见
+    # 「他为什么没有开口」那一类判断，不用改代码重新部署。
+    level, complaint = config.logging_level()
     logging.basicConfig(
-        level=logging.INFO,
+        level=level,
         format="%(asctime)s %(levelname)-7s %(name)s | %(message)s",
         datefmt="%H:%M:%S",
     )
+    if complaint:
+        logger.warning(complaint)
     uvicorn.run(
+        # ⚠️ uvicorn 自己那份日志**故意不跟着降**：DEBUG 下它会把每条
+        # ASGI 事件都打出来，一条 SSE 就能刷几百行，真正要看的
+        # Attention / turn 日志会被埋掉。想看它单独调 uvicorn 的配置。
         create_app(), host=config.host, port=config.port, log_level="info",
         # 🔴 **反向链路（她电脑上的网关）断线的根因**（2026-09-06 查出来的）。
         #

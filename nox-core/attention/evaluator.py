@@ -67,16 +67,31 @@ class AttentionDecision:
     summary: str         # 存进 evidence 的一句话
     #: action="weaken" 时用：削到原来的百分之多少
     factor: float = 1.0
+    #: 🔴 **这次忽略是"常态"还是"有话要说"**（2026-09-13，审计 1.3）。
+    #:
+    #: 只影响日志级别，不影响任何行为。
+    #:
+    #: 为什么需要它：把忽略全部提到 INFO 的话，**她每说一句话就是一行**
+    #: —— `_evaluate_conversation` 的 docstring 自己写着「大多数话都该被忽略」。
+    #: 于是真正想看的那几条（她说过别问、开关被关掉、接线错了）会淹在
+    #: 几百行"这句话没有需要记挂的信号"里。这正是给 `doctor.sh` 加
+    #: `note` 那一级时说过的坏事：**已知的噪音会把新问题埋掉。**
+    #:
+    #: ⚠️ 默认 `False` = 默认说出来。忘了标的代价只是多一行日志，
+    #: 标错成 routine 的代价是一条线索永远看不见 —— 所以默认往吵了走。
+    routine: bool = False
 
     @property
     def should_apply(self) -> bool:
         return self.action != "ignore"
 
 
-def _ignore(subject: str, reason: str) -> AttentionDecision:
+def _ignore(subject: str, reason: str, *, routine: bool = False) -> AttentionDecision:
+    """不关心这件事。`routine=True` 表示"本来就该忽略"，见 `routine` 字段。"""
     return AttentionDecision(
         action="ignore", subject=subject, kind="concern",
         strength=0.0, decay="slow", reason=reason, summary="",
+        routine=routine,
     )
 
 
@@ -295,7 +310,9 @@ class AttentionEvaluator:
         text = (event.payload.get("text") or "").strip()
         appraisal = self.appraiser.appraise(text)
         if appraisal is None:
-            return _ignore(SUBJECT, "这句话没有需要记挂的信号")
+            #: routine —— 上面那段说了，这是**常态**，一天几十上百次。
+            #: 提到 INFO 会把整条日志淹掉
+            return _ignore(SUBJECT, "这句话没有需要记挂的信号", routine=True)
 
         return self._decide_from_appraisal(appraisal)
 
@@ -365,6 +382,8 @@ class AttentionEvaluator:
             return _ignore(
                 appraisal.subject,
                 f"她「{appraisal.cue}」—— 心情是好的，不用记挂",
+                #: routine —— 她心情好是常态，不是"他哑了"的线索
+                routine=True,
             )
 
         weight = self.relationship.care_weight(appraisal.topic)
@@ -430,7 +449,8 @@ class AttentionEvaluator:
 
         base = base_map.get(severity)
         if base is None:
-            return _ignore(subject, f"{severity!r} 不需要关心")
+            #: routine —— 指标正常就是这一条，每天都走
+            return _ignore(subject, f"{severity!r} 不需要关心", routine=True)
 
         weight = self.relationship.care_weight(topic)
         strength = min(1.0, base * (1.0 + (_MAX_BOOST - 1.0) * weight))
@@ -484,7 +504,8 @@ class AttentionEvaluator:
 
         base = _SLEEP_BASE.get(severity)
         if base is None:
-            return _ignore(subject, f"睡眠状态 {severity!r} 不需要关心")
+            #: routine —— 她睡够了就是这一条，每天都走
+            return _ignore(subject, f"睡眠状态 {severity!r} 不需要关心", routine=True)
 
         weight = self.relationship.care_weight("睡眠")
         strength = min(1.0, base * (1.0 + (_MAX_BOOST - 1.0) * weight))

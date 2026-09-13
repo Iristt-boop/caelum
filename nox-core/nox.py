@@ -824,11 +824,15 @@ def main() -> int:
     ap.add_argument("--new", action="store_true", help="开一段全新的对话，不接历史")
     args = ap.parse_args()
 
+    # 同 api/server.py：级别由 NOX_LOG_LEVEL 决定（审计 1.3）
+    level, complaint = default_config.logging_level()
     logging.basicConfig(
-        level=logging.INFO,
+        level=level,
         format="%(asctime)s %(levelname)-7s %(name)s | %(message)s",
         datefmt="%H:%M:%S",
     )
+    if complaint:
+        logger.warning(complaint)
     try:
         nox = Nox()
     except RuntimeError as exc:
