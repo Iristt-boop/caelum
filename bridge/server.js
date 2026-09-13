@@ -4149,9 +4149,26 @@ app.get("/api/health", async (req, res) => {
     probe(NETEASE_MCP, { method: "POST", headers: { "Content-Type": "application/json" } }),
   ]);
 
+  // 🔴 **「连得上」和「还在干活」是两回事**（审计 1.4）。
+  //
+  // 上面那一排 probe 只回答前者。而 nox-core 的三条后台循环
+  // （attention 心跳 / Care 快循环 / 话题池）每一条死掉的症状都不是报错，
+  // 是「他不再主动找她了」——那时候进程活着、端口通着、这里全绿。
+  //
+  // nox-core 自己记了一本心跳台账（`obs/heartbeat.py`），
+  // 这里只负责把结论端出来，不重新判断。
+  const staleJobs = Array.isArray(core.body?.background_stale)
+    ? core.body.background_stale : [];
+
   const checks = {
     bridge: { ok: true },
     nox_core: { ok: core.ok, ms: core.ms, http: core.http, error: core.error, model: core.body?.model },
+    // 单独一项，不跟 nox_core 的连通性混在一起 ——
+    // 混了的话「他挂了」和「他还在但不干活了」会给出同一个红点，
+    // 而这两件事下一步要做的完全不同
+    nox_background: staleJobs.length
+      ? { ok: false, stale: staleJobs, error: `后台活计停了：${staleJobs.join(", ")}` }
+      : { ok: core.ok, jobs: Object.keys(core.body?.background || {}).length },
     ombre: { ok: ombre.ok, ms: ombre.ms, http: ombre.http, error: ombre.error, buckets: ombre.body?.buckets, decay: ombre.body?.decay_engine },
     eryu: { ok: eryu.ok, ms: eryu.ms, http: eryu.http, error: eryu.error },
     co_reading: { ok: reading.ok, ms: reading.ms, http: reading.http, error: reading.error },

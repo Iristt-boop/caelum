@@ -41,6 +41,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Protocol
 
+from obs import heartbeat
 from attention.care import (
     COMPANY,
     FOLLOWUP,
@@ -986,6 +987,9 @@ async def run_care_loop(
         try:
             await asyncio.sleep(interval_s)
             await asyncio.to_thread(service.care_tick)
+            # 记在**成功之后**（审计 1.4）。下面那个 except 是故意兜住的
+            # —— 但它也让"连着失败一千次"和"一切正常"在外面长得一模一样。
+            heartbeat.beat("care_tick")
         except asyncio.CancelledError:
             logger.info("Care 快循环停止")
             raise
@@ -1012,6 +1016,9 @@ async def run_loop(
         try:
             await asyncio.sleep(interval_s)
             await asyncio.to_thread(service.tick)
+            # 同上。这条死掉的表现就是下面注释说的那句 ——
+            # 「他从此再也不主动说话了」，而且没有任何报错
+            heartbeat.beat("attention_tick")
         except asyncio.CancelledError:
             logger.info("Attention 心跳停止")
             raise

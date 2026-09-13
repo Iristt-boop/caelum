@@ -45,6 +45,7 @@ from attention.service import (
     run_care_loop,
     run_loop,
 )
+from obs import heartbeat
 from attention.care.watching import WatchingCheck
 from attention.events import ExperienceEvent
 from attention.dejection import looks_like_giving_up
@@ -784,13 +785,20 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
         （`attention/service.py` 开头的 async 边界）。
         """
         tasks = []
+        # 🔴 **先 declare 再起循环**（审计 1.4）。
+        #
+        # 顺序不能反：只在 beat 的时候才登记的话，一条**从没成功过**的循环
+        # 在台账里根本不存在 —— 而"它一次都没跑起来"正是最该看见的那种坏。
+        # 先声明，`/health` 就会显示一条 `count=0`，超过容忍窗口自动转 stale。
         if attention is not None:
             interval = int(os.getenv("NOX_ATTENTION_INTERVAL_S", DEFAULT_INTERVAL_S))
+            heartbeat.declare("attention_tick", every_s=interval)
             tasks.append(asyncio.create_task(run_loop(attention, interval)))
             # Care 快循环（2026-08-18）：位置跃迁和随机惦记要秒级粒度，
             # 挂在 15 分钟的心跳上会把「随机」量化成节拍、把 T+5 拖成 T+20
             if attention.fast_sources:
                 care_s = int(os.getenv("NOX_CARE_INTERVAL_S", CARE_INTERVAL_S))
+                heartbeat.declare("care_tick", every_s=care_s)
                 tasks.append(asyncio.create_task(run_care_loop(attention, care_s)))
         # 话题池：6 小时一轮 Scout → Filter（Topic_Pool §4.4）。池子跟着
         # attention 走（topics_browse 工具的注册顺序决定的）；它哪轮挂了
@@ -799,6 +807,7 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
         if _pool_for_loop is not None and os.getenv("NOX_TOPICS_DISABLED", "") not in ("1", "true"):
             scout_s = int(os.getenv("NOX_TOPIC_SCOUT_INTERVAL_S",
                                     str(DEFAULT_SCOUT_INTERVAL_S)))
+            heartbeat.declare("topic_scout", every_s=scout_s)
             tasks.append(asyncio.create_task(run_topic_loop(_pool_for_loop, scout_s)))
         try:
             yield
@@ -1217,6 +1226,15 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
             ),
             # 没开就是 None，看一眼就知道这套东西在不在跑
             "attention": attention.snapshot() if attention is not None else None,
+            # 后台活计的心跳台账（审计 1.4）。三条循环各自死掉的症状都
+            # **不是报错** —— 是"他不再主动找她了"、"位置跃迁没了"、
+            # "池子悄悄变空"。见 obs/heartbeat.py。
+            "background": heartbeat.snapshot(),
+            # 已经给出结论，不要让读的人自己去比对节奏。
+            # ⚠️ **故意不影响上面的 `ok`**：`ok` 是部署健康检查的判据
+            # （`deploy-remote.sh` 不过就自动回滚），而一条陈旧的话题池
+            # 不该把一次正常发布回滚掉。两件事，两个字段。
+            "background_stale": heartbeat.stale_jobs(),
         }
 
     @app.get("/api/nox/state")

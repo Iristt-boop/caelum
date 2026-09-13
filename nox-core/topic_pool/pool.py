@@ -24,6 +24,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from obs import heartbeat
 from context.media_title import clean as clean_title
 from topic_pool import scout
 from topic_pool.filter import run_filter
@@ -210,6 +211,8 @@ async def run_topic_loop(pool: TopicPool,
             await asyncio.sleep(FIRST_RUN_DELAY_S)
             stats = await asyncio.to_thread(pool.run_cycle)
             logger.info("话题池一轮：%s", stats)
+            # 审计 1.4：这条死掉的表现是"池子悄悄变空"，同样不报错
+            heartbeat.beat("topic_scout")
             await asyncio.sleep(max(60, interval_s - FIRST_RUN_DELAY_S))
         except asyncio.CancelledError:
             logger.info("话题池停止")
