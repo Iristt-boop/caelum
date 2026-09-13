@@ -49,17 +49,30 @@ $Services = @{
 }
 
 function Invoke-Remote([string]$Script) {
-  # 走 stdin 喂脚本。两个 PS 5.1 的坑都在这里处理掉：
+  # 走 stdin 喂脚本。三个 PS 5.1 / shell 的坑都在这里处理掉：
   #
   # 🔴 坑 1：**PowerShell 5.1 往 native 进程 stdin 写时，会给最后一行补 CRLF。**
   #    于是最后一个命令收不到干净的参数 —— `head -n 20` 会报
   #    `invalid number of lines: '20\r'`（2026-09-11 被这个坑了半天）。
-  #    解法：末尾补一行无害的 `: # end`，让那个 \r 落在它身上。
+  #    解法：末尾补一行，让那个 \r 落在它身上。
   #
-  # 🔴 坑 2：`$ErrorActionPreference = "Stop"` 时，native 命令往 stderr 写一行
+  # 🔴 坑 2（2026-09-13 修）：**补的那一行不能是 `: # end`。**
+  #    `:` 永远成功，于是**外层 shell 的退出码恒为 0**，把里面
+  #    `bash deploy-remote.sh` 的失败整个吃掉 —— 第 [4] 步就再也分不出成败。
+  #    解法：补的这一行**先接住上一条的 $?，再原样 exit 出去**，
+  #    那个 \r 落进尾部注释里，照样无害。
+  #
+  #    ⚠️ 我的第一版验证没抓到它，因为**测的形状不对**：
+  #    送的是 `echo …; exit 1` —— `exit` 会当场结束整个 shell，
+  #    补的那行根本没机会跑。而真实形状是 `bash deploy-remote.sh`：
+  #    **子进程**退 1，外层若无其事地继续往下走。
+  #    （同一类错误在第八批也犯过一次：sed 改的是默认值，而 unit 里的
+  #    显式 env 覆盖了它，于是"测试"什么都没测到。）
+  #
+  # 🔴 坑 3：`$ErrorActionPreference = "Stop"` 时，native 命令往 stderr 写一行
   #    会被 PS 当成**终止性错误**抛出来，把正常输出也一起打断。
   #    解法：调用期间临时切成 Continue，再把结果统一转成字符串。
-  $Script = ($Script -replace "`r", "") + "`n: # end"
+  $Script = ($Script -replace "`r", "") + "`n__rc=`$?`nexit `$__rc  # end"
   $prev = $ErrorActionPreference
   $ErrorActionPreference = "Continue"
   try {

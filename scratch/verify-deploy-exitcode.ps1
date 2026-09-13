@@ -1,11 +1,15 @@
-# Verify the new success check is wired to a real signal, without touching prod.
-# ASCII-only on purpose (a BOM-less .ps1 is decoded as GBK by PS 5.1).
+# Why the first version of this check was wrong, and what actually works.
 #
-# What it proves:
-#   1. a remote `exit 0` comes back as RemoteExit 0   -> deploy reported OK
-#   2. a remote `exit 1` comes back as RemoteExit 1   -> deploy reported FAIL
-# deploy-remote.sh already exits 0 on success and 1 on every failure path,
-# so this is the same signal the real deploy now reads.
+# Invoke-Remote appends "`n: # end" to absorb the CR that PS 5.1 tacks onto
+# the last line it writes to a native process's stdin.
+#
+# My first test sent `echo ...; exit 1` -- `exit` kills the shell, so the
+# appended `:` never ran and the code propagated. THAT IS NOT THE REAL SHAPE.
+# The real script is `bash deploy-remote.sh ...`: a CHILD exits 1, the outer
+# shell keeps going, runs `:` (exit 0), and ssh reports 0.
+# So every deploy looked successful -- the mirror image of the old bug.
+#
+# ASCII-only on purpose (a BOM-less .ps1 is decoded as GBK by PS 5.1).
 $ErrorActionPreference = "Stop"
 try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false } catch { }
 
@@ -13,28 +17,32 @@ $Key = "C:\Users\14372\.ssh\id_ed25519"
 $SshOpts = @("-i", $Key, "-o", "BatchMode=yes", "-o", "ConnectTimeout=20")
 $Vps = "root@43.133.211.140"
 
-function Try-Remote([string]$Script) {
-  $Script = ($Script -replace "`r", "") + "`n: # end"
+function Send([string]$Script, [string]$Tail) {
   $prev = $ErrorActionPreference
   $ErrorActionPreference = "Continue"
   try {
-    $out = $Script | ssh @SshOpts $Vps "bash -s" 2>&1
-    $code = $LASTEXITCODE
-    return @{ out = (($out | ForEach-Object { $_.ToString() }) -join "`n"); code = $code }
+    $null = (($Script -replace "`r", "") + $Tail) | ssh @SshOpts $Vps "bash -s" 2>&1
+    return $LASTEXITCODE
   }
   finally { $ErrorActionPreference = $prev }
 }
 
-$ok = Try-Remote "echo 'pretend success'; exit 0"
-Write-Host ("success path -> RemoteExit=" + $ok.code + "  (want 0)")
+$OLD = "`n: # end"
+$NEW = "`n__rc=`$?`nexit `$__rc  # end"
 
-$bad = Try-Remote "echo 'pretend rollback'; exit 1"
-Write-Host ("failure path -> RemoteExit=" + $bad.code + "  (want 1)")
+# The real shape: a CHILD script exits non-zero.
+$childFails = "bash -c 'exit 1'"
+$childOk    = "bash -c 'exit 0'"
 
-# And the old check, for the record: does the Chinese marker survive the pipe now?
-$cn = Try-Remote "printf '%s\n' '-- nox-core X --' | sed 's/X/\xe9\x83\xa8\xe7\xbd\xb2\xe5\xae\x8c\xe6\x88\x90/'"
-$marker = [string][char]0x90E8 + [char]0x7F72 + [char]0x5B8C + [char]0x6210
-Write-Host ("old string check now matches: " + ($cn.out -match $marker))
+Write-Host ("REAL SHAPE (child exits 1)  old tail -> " + (Send $childFails $OLD) + "   want 1")
+Write-Host ("REAL SHAPE (child exits 1)  new tail -> " + (Send $childFails $NEW) + "   want 1")
+Write-Host ("REAL SHAPE (child exits 0)  new tail -> " + (Send $childOk    $NEW) + "   want 0")
 
-if ($ok.code -eq 0 -and $bad.code -eq 1) { Write-Host "VERDICT: exit code is a real signal" }
+# And the CR really does need absorbing: prove the tail still protects the payload.
+$crProof = "printf 'ok\n' | head -n 1"
+Write-Host ("CR guard still holds        new tail -> " + (Send $crProof $NEW) + "   want 0")
+
+$a = Send $childFails $NEW
+$b = Send $childOk $NEW
+if ($a -eq 1 -and $b -eq 0) { Write-Host "VERDICT: new tail propagates the child's exit code" }
 else { Write-Host "VERDICT: BROKEN"; exit 1 }
