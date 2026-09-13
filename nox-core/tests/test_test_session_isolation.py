@@ -15,6 +15,8 @@ Registry——他可能据此主动问她根本没说过的事。2026-09-05 补�
 from __future__ import annotations
 
 import sys
+import threading
+import types
 from pathlib import Path
 
 import pytest
@@ -194,19 +196,31 @@ class _FakeAdapter:
         }, ensure_ascii=False))
 
 
-class _Inline:
+class _InlineThread:
+    def __init__(self, target=None, daemon=False, **kw):
+        self.target = target
+
+    def start(self):
+        self.target()
+
+
+def _inline_threading():
     """把后台线程改成当场跑完，让断言不依赖时序。
 
     ⚠️ 只替换 `api.server` 模块里的 `threading` —— `_maybe_compact_async`
     是函数内 `import threading`，拿到的还是真的那个，不受影响。
+
+    🔴 **其余属性必须透传给真的 threading**（2026-09-13）。
+    原来这里是一个只有 `Thread` 的裸类，于是 `Sessions` 一加
+    `threading.RLock()`（审计 2.2）就炸出
+    `type object '_Inline' has no attribute 'RLock'` —— **4 个测试全挂，
+    而被测代码是对的**。替身只替该替的那一件，别把整个模块换掉。
     """
-
-    class Thread:
-        def __init__(self, target=None, daemon=False, **kw):
-            self.target = target
-
-        def start(self):
-            self.target()
+    stub = types.SimpleNamespace(**{
+        k: getattr(threading, k) for k in dir(threading) if not k.startswith("__")
+    })
+    stub.Thread = _InlineThread
+    return stub
 
 
 @pytest.fixture
@@ -221,7 +235,7 @@ def appraising(monkeypatch, tmp_path):
     monkeypatch.setenv("NOX_ATTENTION", "1")
     monkeypatch.setenv("NOX_LLM_APPRAISAL", "on")
     monkeypatch.delenv("NOX_ATTENTION_LIVE", raising=False)
-    monkeypatch.setattr(server_mod, "threading", _Inline)
+    monkeypatch.setattr(server_mod, "threading", _inline_threading())
 
     events: list = []
     real = AttentionEngine.handle

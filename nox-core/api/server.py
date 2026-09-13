@@ -326,6 +326,19 @@ class Sessions:
 
     缓存未命中时从库里恢复，所以关掉再打开、甚至换个进程，
     只要 session_id 对得上，聊天就能接着上一句往下说。
+
+    ## 🔴 多线程（审计 2.2，2026-09-13 补锁）
+
+    FastAPI 的 `def` 端点跑在**线程池**里，Attention 的两条后台循环
+    也靠 `to_thread` 进来。所以手机和桌面同时聊、后台恰好在跑 ——
+    好几个线程会同时碰这个 `OrderedDict`。
+
+    `move_to_end` / `popitem` / `pop` 交错的后果不是报错，是**静默错乱**：
+    LRU 顺序乱掉、淘汰掉刚用过的那个、`_cache` 和 `_cached_on` 对不上。
+    她那边看到的是"他偶尔忘了刚说过的话"。
+
+    加了一把 `RLock`。**IO 放在锁外面** —— `_store.load()` / `sync()`
+    是读写盘，捏着锁做那些事会把所有会话串成一条队。
     """
 
     def __init__(
@@ -342,29 +355,44 @@ class Sessions:
         self._max = max_sessions
         #: 缓存是哪天建的。跨天要重读，理由见 get()
         self._cached_on: dict[str, date] = {}
+        #: 见类文档。**碰 `_cache` / `_cached_on` 都要在它下面。**
+        #: 用 RLock：`get()` 里会调 `_with_summary()`，留出重入的余地。
+        self._lock = threading.RLock()
 
     def get(self, sid: str) -> list[Message]:
         today = now_cst().date()
-        if sid in self._cache and self._cached_on.get(sid) == today:
-            self._cache.move_to_end(sid)
-            return self._with_summary(sid, self._cache[sid])
+        with self._lock:
+            if sid in self._cache and self._cached_on.get(sid) == today:
+                self._cache.move_to_end(sid)
+                cached = self._cache[sid]
+                stale = False
+            else:
+                # 跨天了就丢掉缓存重读。日期分隔线是 `store.load()` 算的，
+                # 缓存里那份是昨天算的 —— 不重读的话，今天的消息不会有
+                # 「（8月12日）」那一行，他又会以为昨天的事是今天的
+                if sid in self._cache:
+                    logger.info("会话 %s 跨天，重读历史以刷新日期分隔线", sid[:8])
+                    self._cache.pop(sid, None)
+                cached = None
+                stale = True
 
-        # 跨天了就丢掉缓存重读。日期分隔线是 `store.load()` 算的，
-        # 缓存里那份是昨天算的 —— 不重读的话，今天的消息不会有
-        # 「（8月12日）」那一行，他又会以为昨天的事是今天的
-        if sid in self._cache:
-            logger.info("会话 %s 跨天，重读历史以刷新日期分隔线", sid[:8])
-            self._cache.pop(sid, None)
+        if not stale:
+            return self._with_summary(sid, cached)
 
+        # ⚠️ **读盘放在锁外面。** 捏着锁读库会把所有会话串成一条队 ——
+        #    她手机上那一轮要等桌面那一轮读完。
+        #    代价是两个线程可能同时读同一个会话：多读一次而已，
+        #    结果一样，不会写坏东西。
         restored = self._store.load(
             sid, limit=self._limit,
             recent_window_tokens=self._recent_window_tokens,
         )
         if restored:
             logger.info("从库里恢复会话 %s，%d 条历史", sid[:8], len(restored))
-            self._cache[sid] = restored
-            self._cache.move_to_end(sid)
-            self._cached_on[sid] = today
+            with self._lock:
+                self._cache[sid] = restored
+                self._cache.move_to_end(sid)
+                self._cached_on[sid] = today
         return self._with_summary(sid, restored)
 
     def _with_summary(self, sid: str, window: list[Message]) -> list[Message]:
@@ -398,22 +426,31 @@ class Sessions:
             logger.debug("会话 %s 落盘 %d 条", sid[:8], written)
 
         window = [m for m in history if m.role != "system"]
-        self._cache[sid] = window[-_MAX_HISTORY:]
-        self._cache.move_to_end(sid)
-        self._cached_on[sid] = now_cst().date()
-        while len(self._cache) > self._max:
-            dropped, _ = self._cache.popitem(last=False)
-            self._cached_on.pop(dropped, None)
+        # 🔴 换出和写入必须在同一把锁里。分开的话，A 线程正在
+        #    `popitem` 淘汰最旧的，B 线程刚 `move_to_end` 把它变成最新的
+        #    —— 被淘汰的就是刚用过的那个。表现成"他偶尔忘了刚说过的话"。
+        dropped_sids: list[str] = []
+        with self._lock:
+            self._cache[sid] = window[-_MAX_HISTORY:]
+            self._cache.move_to_end(sid)
+            self._cached_on[sid] = now_cst().date()
+            while len(self._cache) > self._max:
+                dropped, _ = self._cache.popitem(last=False)
+                self._cached_on.pop(dropped, None)
+                dropped_sids.append(dropped)
+        for dropped in dropped_sids:
             # 只淘汰内存缓存，库里还在 —— 下次访问会自动恢复
             logger.info("缓存超上限，换出 %s（库里仍保留）", dropped[:8])
 
     def drop(self, sid: str) -> bool:
-        self._cache.pop(sid, None)
-        self._cached_on.pop(sid, None)
+        with self._lock:
+            self._cache.pop(sid, None)
+            self._cached_on.pop(sid, None)
         return self._store.drop(sid)
 
     def __len__(self) -> int:
-        return len(self._cache)
+        with self._lock:
+            return len(self._cache)
 
 
 def _build_attention(core: Nox, sessions: "Sessions", db: Store) -> AttentionService | None:
@@ -793,6 +830,11 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
         if attention is not None:
             interval = int(os.getenv("NOX_ATTENTION_INTERVAL_S", DEFAULT_INTERVAL_S))
             heartbeat.declare("attention_tick", every_s=interval)
+            # 落盘（审计 2.4）。`tick()` 每轮都会调 `_persist()`，所以节奏
+            # 跟心跳一样；连着写不进去就会在这里变成 stale → 她手机。
+            # ⚠️ 它和 `attention_tick` 是两回事：心跳在跳但盘上写不进去
+            # 完全可能 —— 而那正是"他会重复开口"的前夜。
+            heartbeat.declare("attention_persist", every_s=interval)
             tasks.append(asyncio.create_task(run_loop(attention, interval)))
             # Care 快循环（2026-08-18）：位置跃迁和随机惦记要秒级粒度，
             # 挂在 15 分钟的心跳上会把「随机」量化成节拍、把 T+5 拖成 T+20

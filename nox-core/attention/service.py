@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Protocol
 
@@ -282,6 +283,12 @@ class AttentionService:
         #: 一模一样的「所有待办都在各自的话题冷却里」—— 去重之后
         #: 真正有信息的那几行才不会被淹掉
         self._last_line = ""
+
+        #: 落盘连续失败了几次（审计 2.4）。0 = 上一次是成功的。
+        #: 一次抖动和"一直写不进去"在日志里分不出来，这个数分得出来。
+        self._persist_fails = 0
+        #: 最后一次**成功**落盘的时刻。None = 这个进程起来之后还没成功过。
+        self._persist_last_ok: datetime | None = None
 
     @property
     def dry_run(self) -> bool:
@@ -849,15 +856,70 @@ class AttentionService:
         return True
 
     def _persist(self) -> None:
-        try:
-            self.store.save_intents(self.intents)
-            self.store.save_wakeups(self.wakeups)
-            self.store.set_source_state(SCHED_KEY, self.scheduler.dump_state())
-            self.store.set_source_state(GATE_KEY, self.gate.dump_state())
-            self.store.set_source_state(THREADS_KEY, {"items": self.threads.to_list()})
-            self.store.set_source_state(LEDGER_KEY, self.ledger.to_dict())
-        except Exception:  # noqa: BLE001
-            logger.exception("Attention 状态落盘失败")
+        """把这一轮的状态写下去。**每次开口之后都会走到这里。**
+
+        ## 为什么这段值得写这么多字（审计 2.4）
+
+        原来这里是「try 一次，失败了 `logger.exception` 就算了」。
+        问题不在于吞异常（它确实留了痕），在于**失败之后没有任何人会知道**：
+
+            进程还活着、内存里的状态是对的、下一轮照常跑 —— 一切正常
+            但盘上那份停在了开口**之前**
+
+        于是一旦在这中间重启：
+          · `gate` 回到旧的 → **今天的开口额度静默归零**
+          · `ledger` / `threads` 回到旧的 → 他会**把刚说过的话再说一遍**
+
+        她那边看到的就是"他今天怎么翻来覆去说同一件事"，而日志里
+        只有一行几小时前的 exception，早就滚过去了。
+
+        ## 三件事
+
+        1. **有限重试。** SQLite 这种失败绝大多数是瞬时的锁竞争
+           （另一个线程正在写）。retry 一次就能把绝大部分吃掉。
+           **不做无限重试** —— 那会把一次 tick 卡死在这儿。
+        2. **成功记心跳。** 连着失败就会在 `/health` 上变成
+           `attention_persist` 陈旧 → bridge → 看门狗 → 她手机。
+           这是今天装的那条链（`obs/heartbeat.py`）。
+        3. **连续失败次数进 snapshot。** 一次抖动和"一直写不进去"
+           是两件事，日志里分不出来，这个数分得出来。
+
+        ⚠️ **残留风险，说清楚**：重试全败**且**在下一轮成功落盘之前进程就重启了，
+        那一次开口仍然会丢。要彻底根治得在开口**之前**先写一条意图记录
+        （write-ahead），那是更大的改动。现在的做法是把窗口从"一次失败就中招"
+        收到"失败且恰好在这几十秒内重启"，并且**让它看得见**。
+        """
+        last_exc: Exception | None = None
+        for attempt in (1, 2):
+            try:
+                self.store.save_intents(self.intents)
+                self.store.save_wakeups(self.wakeups)
+                self.store.set_source_state(SCHED_KEY, self.scheduler.dump_state())
+                self.store.set_source_state(GATE_KEY, self.gate.dump_state())
+                self.store.set_source_state(THREADS_KEY, {"items": self.threads.to_list()})
+                self.store.set_source_state(LEDGER_KEY, self.ledger.to_dict())
+            except Exception as exc:  # noqa: BLE001
+                last_exc = exc
+                if attempt == 1:
+                    # 只等 0.2 秒。等久了会把 tick 拖住，而拖住 tick
+                    # 本身就是另一种坏（审计 1.1 刚治过的那种）
+                    logger.warning("Attention 落盘失败（第 %d 次）：%s，马上重试", attempt, exc)
+                    time.sleep(0.2)
+                continue
+            # 成功
+            if self._persist_fails:
+                logger.info("Attention 落盘恢复了（之前连着失败 %d 次）", self._persist_fails)
+            self._persist_fails = 0
+            self._persist_last_ok = datetime.now(timezone.utc)
+            heartbeat.beat("attention_persist")
+            return
+
+        self._persist_fails += 1
+        logger.exception(
+            "🔴 Attention 状态落盘失败，连续第 %d 次 —— "
+            "盘上那份还停在开口之前，这时候重启会让他重复开口、额度归零",
+            self._persist_fails, exc_info=last_exc,
+        )
 
     def _log(self, decision: SchedulerDecision, pending: list[Intent]) -> None:
         """有待办但没开口 **要记 info** —— 那正是 dry-run 要观察的东西。
@@ -963,6 +1025,15 @@ class AttentionService:
             ],
             "scheduler": self.scheduler.dump_state(),
             "gate": self.gate.dump_state(),
+            #: 落盘健康（审计 2.4）。`fails>0` 意味着**盘上那份停在开口之前** ——
+            #: 这时候重启，他会把刚说过的话再说一遍，今天的额度也会归零。
+            #: 见 `_persist()` 的说明。
+            "persist": {
+                "consecutive_failures": self._persist_fails,
+                "last_ok": (
+                    self._persist_last_ok.isoformat() if self._persist_last_ok else None
+                ),
+            },
         }
 
 
