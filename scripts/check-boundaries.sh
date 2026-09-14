@@ -57,8 +57,8 @@ rule "R8" "花钱的动作只在确认端点后面" veto   "grep -n \"SERVER_TOO
 # 这正是它危险的地方：哪天要支持她出国、或者把「她的一天」从 00:00 挪到 04:00
 # （她凌晨才睡），得改八处，**漏一处不报错**。
 #
-# 只有 nox-core/temporal.py 能造它。别处再写就是 F1 长回来了。
-rule "R9" "UTC+8 只在 temporal.py 定义一次" veto   "$PYG -E 'timezone\(timedelta\(hours=8' nox-core | grep -v tests/ | grep -v 'nox-core/temporal.py' | $PYV"
+# 只有 nox-core/temporal/ 这个包能造它。别处再写就是 F1 长回来了。
+rule "R9" "UTC+8 只在 temporal 包里定义一次" veto   "$PYG -E 'timezone\(timedelta\(hours=8' nox-core | grep -v tests/ | grep -v 'nox-core/temporal/' | $PYV"
 
 echo "════════"
 if [ "$FAIL" -eq 0 ]; then echo "边界法则全部守住了 ✓"; else echo "有越界，见上 ✗"; exit 1; fi
