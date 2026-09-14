@@ -29,7 +29,7 @@
 | `intent.kind` | 关系的**形状**（day_offset / weekday_next / …） | 不是类型分类学，是**解析器的分派键** | LLM |
 | `slot` | 一天中的**时段**（上午/下午/晚上/深夜） | **不是具体几点**，见第五节 | LLM（可选） |
 | `deadline` | 「在……之前」，一个**上界** | 不是「在……发生」 | LLM（包住一个 intent） |
-| `resolved_*` | 解析出来的绝对值 | **LLM 永远不填** | **Resolver** |
+| `resolution` | 解析出来的绝对落点 | **和 `intent` 是两个对象**，不许平铺合并 | **Resolver** |
 
 > ⚠️ `type` 这个词**整份契约里不用**。
 > 它在现有代码里已经被 `ExperienceEvent.type` / `Observation.type` 占了
@@ -77,11 +77,40 @@
 | `kind` | 字段 | 例子 | 解析成 |
 |---|---|---|---|
 | `day_offset` | `n: int` | 今天(0) / 明天(+1) / 昨天(-1) / 前天(-2) / 后天(+2) | `date` |
-| `weekday_next` | `weekday: 1-7` | 下周三 / 周五 | `date`（歧义见第五节） |
+| `weekday_next` | `weekday: 1-7` | **下**周三 | `date`（**下一日历周**的那天，见下方） |
 | `month_end` | — | 月底 | `date`（当月最后一天） |
 | `duration` | `hours` \| `minutes` \| `days` | 两个小时后 / 十分钟后 | `datetime` |
 | `deadline` | `before: <intent>` | 周五之前 | 上界 `datetime` |
 | `slot` | `morning/afternoon/evening/late_night` | 晚上 / 上午 | **修饰符，不单独成型** |
+
+### 🔴 `weekday_next` 的语义必须写死：**下一日历周**的那天
+
+糖糖 2026-09-14 拍的，而且她点出了实现时最容易走歪的地方：
+
+> 否则以后实现 Resolver 的人很容易写成
+> `while candidate <= reference: candidate += 7 days` ——
+> 这种算法实际上是在做「下一个未来星期 X」，语义就悄悄变了。
+
+**正确的算法基于日历周（周一起算），不是"往后找最近的"：**
+
+```python
+week_start = ref.date() - timedelta(days=ref.weekday())   # 本周一
+target     = week_start + timedelta(days=7 + weekday - 1) # 下周的那天
+```
+
+两种算法在**大部分日子里结果相同**，所以走歪了也不容易被发现 ——
+只有当 `reference` 早于本周的那个星期几时才分叉：
+
+| reference | 「下周三」 | 日历周算法 ✅ | `while` 算法 ❌ |
+|---|---|---|---|
+| 2026-09-14 周一 | | **09-23**（下周三） | 09-16（**本**周三） |
+| 2026-09-20 周日 | | **09-23**（3 天后） | 09-23 |
+
+周一那一行就是分叉点。**测试必须覆盖它**，否则这条永远绿。
+
+> 而**光秃秃的「周三」是歧义**（见第五节），走 `unresolved`。
+> 「下周三」有「下」字，是明确的日历概念 —— 两者是两种不同的语言，
+> 不要用同一个 kind 兜。
 
 ### 组合规则
 
@@ -99,23 +128,40 @@
                 "before": {"kind": "weekday_next", "weekday": 5}}
 ```
 
-### 解析结果的形状
+### 数据结构：**Intent 和 Resolution 是两个对象**
+
+糖糖 2026-09-14：「数据结构最好也让这个边界肉眼可见。」
 
 ```json
 {
-  "kind": "day_offset", "n": 1, "slot": null,
-  "resolved": {
-    "precision": "date",                  // date | datetime | slot | none
+  "intent": {                    // ← LLM 产出，只描述关系
+    "kind": "day_offset",
+    "n": 1,
+    "slot": null
+  },
+  "resolution": {                // ← Resolver 产出，只讲落点
+    "precision": "date",         // date | datetime | slot | none
     "date": "2026-09-15",
-    "at": null,                           // precision=datetime 时才有
-    "range": null,                        // slot / deadline 时是一个区间
-    "unresolved_reason": null             // 解析不了时**必须**填，见第五节
+    "at": null,                  // precision=datetime 时才有
+    "range": null,               // slot / deadline 是一个区间
+    "unresolved_reason": null
   }
 }
 ```
 
-`precision` 是给下游用的：Todo 要 `date` 就够，
-纸条（`wakeup.wake_at`）需要 `datetime`，拿到 `slot` 精度时它该**拒绝**而不是自己补一个时刻。
+**为什么必须分成两层，而不是把 `resolved` 塞进同一个对象：**
+
+1. **能分开测。** Intent 测「『明天』有没有被认成 `day_offset(+1)`」，
+   Resolver 测「`+1` 落在 `reference=2026-09-14` 上是不是 09-15」。
+   搅在一起就只能整条测，一红分不清是模型认错了还是算错了。
+2. **Resolver 是确定性的** —— 没有模型参与，输入输出可以枚举。
+   第八节那条 `23:58 → 00:02` 的变异，正是靠这一点才杀得掉：
+   不需要跑模型，直接喂 `intent + reference_time` 就能断言。
+3. **换模型 / 换 parser / 以后干脆不用 LLM，都不影响 Resolver。**
+   契约的两半可以独立演进。
+
+> ⚠️ 写代码时**不许**为了图方便加一个 `resolved_date` 平铺在顶层。
+> 那是把刚分开的两层又粘回去。
 
 ---
 
@@ -188,37 +234,106 @@ Resolver 不许替模型猜，理由和第二节同源：**猜错了没有痕迹
 
 ---
 
-## 六、这套语言给谁用
+## 六、这套语言给谁用：第一版接 Todo，但走可观察的 shadow
 
-第一版只接**一个**消费方，验完再铺开（新能力三问之二：谁消费它）。
+第一版只接**一个**消费方（新能力三问之二：谁消费它）。
 
 ```
-Temporal Intent
-      │
-      ├─ Todo        ← 第一版只接这个
-      │   「今天不去，明天再去」→ next_intervention = resolved.date
-      │   （对应审计 F8：不标完成，只改下次介入时间）
-      │
-      ├─ Attention   ← 以后：Intent 的 deadline（F9）
-      ├─ Memory      ← 以后：记忆按 event_time 检索，不是按写入时间
-      └─ Speaker     ← 已经不用自己算了（第一层 temporal.relative）
+message
+   ↓
+Temporal extraction（独立调用，不挂 appraisal_llm —— 见第七节①）
+   ↓
+Intent
+   ↓
+Resolver ──→ Resolution
+   ↓
+TemporalResult
+   ↓
+   ├─ audit log            ← shadow 出口，**必须先有这个**
+   └─ Todo adapter         ← 第一版暂不产生真实副作用
 ```
 
-**先不接 Memory。** 记忆那边现在靠 `timeline.relativize()` 在正文里补相对日期，
-那是个能用的权宜之计；动它要连带回答「记忆按哪个时间检索」，
-那是另一场审计。
+### 🔴 shadow 必须有出口，否则它不是实验，是黑洞
+
+糖糖 2026-09-14 的原话。而这条是今天刚付过学费的：
+理解层跑了一周多 shadow，回头看那 9 条被丢掉的记录，
+**日志里只有她的原话和一个数字，模型推断了什么一个字都没留** ——
+于是那一周的观察给不出任何结论。
+
+所以 shadow 的日志**必须记三段，缺一不可**：
+
+| 记什么 | 为什么 |
+|---|---|
+| ① 模型说了什么（原始 `intent`） | 模型认错和算错要分得开 |
+| ② Resolver 算了什么（`resolution` + `reference_time`） | 没有 reference 就没法复算 |
+| ③ **为什么没接 Todo** | 是精度不够？是歧义？还是 shadow 就没打算接？ |
+
+③ 最容易被省掉，而它恰恰是决定「什么时候能打开真实写入」的那个信息。
+只记①②的话，几天后看到一堆漂亮的解析结果，
+仍然不知道**真接上会发生什么**。
+
+先跑几天真实数据，看这些话到底被抽成什么：
+
+```
+明天 · 昨天 · 下周三 · 月底 · 晚上 · 两个小时后 · 周五之前
+```
+
+看够了再打开 Todo 的真实写入（`next_intervention`）。
+
+### 接上之后 Todo 那边发生什么（审计 F8）
+
+```
+「今天不去，明天再去」
+   → intent      {kind: day_offset, n: +1}
+   → resolution  {precision: date, date: 2026-09-15}
+   → todo.status            = pending      ← **不动**
+     todo.next_intervention = 2026-09-15   ← 只改这个
+```
+
+**不标完成，只改下次介入时间。** `todo_due.py` 开头那句
+「她说一句『在忙』并不代表运动做了」说的是不能标完成，
+它没说不能改介入时间 —— 这两件事在现有代码里被混成了一件。
+
+### 暂时不接的
+
+- **Attention**（Intent 的 deadline，F9）
+- **Memory** —— 现在靠 `timeline.relativize()` 在正文里补相对日期，
+  是个能用的权宜之计。动它要连带回答「记忆按哪个时间检索」，那是另一场审计。
+- **Speaker** —— 它已经不用自己算了（第一层 `temporal.relative`）。
 
 ---
 
-## 七、开工前还没定的（等她拍）
+## 七、拍板（糖糖 2026-09-14）
 
-1. **谁来产出 intent** —— 挂在现有的 `appraisal_llm`（省一次调用、但它现在是
-   `shadow` 模式），还是单独一次轻量调用？
-   挂上去的话，**shadow 不写 Registry 会不会连 temporal 一起吞掉**要先确认。
-2. **`weekday_next` 的「下周三」跨周边界** —— 周日说「下周三」，
-   是 3 天后还是 10 天后？（我倾向也判歧义，但这条她可能有直觉）
-3. **第一版要不要真接 Todo**，还是先只落日志观察（像理解层那样跑一周 shadow）。
-   考虑到今天刚被「shadow 挡在上游」坑过一次，**要跑 shadow 就得先确认它有出口**。
+### ① Temporal **不挂** `appraisal_llm`，保持独立 contract
+
+理由不是"多一次调用"，是**职责已经不同**：
+
+```
+appraisal_llm   →  「她现在是什么状态 / 这句话意味着什么」
+Temporal        →  「这句话里的时间关系是什么」
+```
+
+一次调用确实能同时抽两个，但现在最需要的是**边界清晰、可测试、可独立演进**。
+而且今天刚遇到一次 shadow 把东西吞掉（`core.attention` 恒为 None，
+理解层的锚点两道闸串着都关着）——**第二层不该从第一天就依赖那个行为**。
+
+> 以后如果发现两者输入完全相同、成本明显值得优化，可以再合并。
+> ⚠️ 但那是**「调用合并」，不是「语义模块合并」** —— 两个 contract 各自独立。
+
+### ② 「下周三」**不判歧义**
+
+`weekday_next` = **下一日历周**的那天（算法和分叉点见第三节）。
+光秃秃的「周三」才是歧义。两者是两种不同的语言，不要用同一个 kind 兜。
+
+### ③ 第一版**就接 Todo**，但先走可观察的 shadow adapter
+
+不再"shadow 一周然后让结果消失"。见第六节的三段日志要求。
+
+### ④ Intent / Resolution **分成两个对象**
+
+见第三节。这是开工前最后一件该钉死的事 ——
+写完 parser 再发现两者搅在一起就晚了。
 
 ---
 
@@ -236,6 +351,17 @@ Temporal Intent
 | 「晚上」收成一个时刻 | 「slot 精度不给点」 |
 | `precision: none` 时下游照样用 `date` | 「空解析不许当成功」 |
 | parser 里加一个表外的 kind | 「封闭集合」 |
+| `weekday_next` 改成 `while candidate <= ref: += 7` | 「**周一** reference 下的「下周三」= 09-23 不是 09-16」 |
+| shadow 日志里去掉「为什么没接 Todo」 | 「三段缺一不可」 |
+| 把 `resolution` 平铺进 `intent` 顶层 | 「两个对象」 |
 
-⚠️ 最后一条最容易假绿：加一个表外分支**不会让任何现有测试红**。
-要挡它得反过来断言——**枚举出允许的 kind 集合，多一个就红**。
+⚠️ **两条最容易假绿的：**
+
+1. **加一个表外的 kind** 不会让任何现有测试红。
+   要挡它得反过来断言 —— **枚举出允许的 kind 集合，多一个就红**。
+2. **`weekday_next` 走歪的算法在大部分日子里结果相同。**
+   只有 reference 早于本周那个星期几时才分叉 ——
+   测试**必须**用周一当 reference，否则这条永远绿。
+
+> 这两条都属于「测的不是那件事」：检查跑了、绿了，
+> 而它根本够不着被改坏的地方。
