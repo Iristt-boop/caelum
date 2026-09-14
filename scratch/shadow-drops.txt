@@ -1,0 +1,15 @@
+    100 意义推断没拿到结果：stop_reason=error error=AuthenticationError: Error code: 401 - {'error': {'code': '401', 'message': '令牌已过期或验证不正确'}}
+      8 意义推断没拿到结果：stop_reason=max_tokens error=None
+      6 意义推断没拿到结果：stop_reason=error error=RateLimitError: Error code: 429 - {'error': {'code': '1305', 'message': '该模型当前访问量过大，请您稍后再试'}}
+      2 意义推断返回的不是 JSON，丢弃：{
+      2 意义推断没拿到结果：stop_reason=error error=BadRequestError: Error code: 400 - {'contentFilter': [{'level': 2, 'role': 'assistant'}], 'error': {'code': '1301', 'message': '系统检测到输入或生成内容可能包含不安全或敏感内容，请您避免输入易产生敏感内容的提示语，感谢您的配合。'}}
+      1 意义推断返回的不是 JSON，丢弃：```json
+      1 意义推断置信度 0.58 < 0.60，丢弃（名字。它的架构在我们整个项目的架构图里格格不入）
+      1 意义推断置信度 0.55 < 0.60，丢弃（那你应该怎么说。原话）
+      1 意义推断置信度 0.55 < 0.60，丢弃（啊？剩900卡不能吃？？我一天就1000多卡的额度啊）
+      1 意义推断置信度 0.55 < 0.60，丢弃（又催  ！！！）
+      1 意义推断置信度 0.55 < 0.60，丢弃（以后也不想去）
+      1 意义推断置信度 0.55 < 0.60，丢弃（今天什都不想干）
+      1 意义推断置信度 0.55 < 0.60，丢弃（91.5分）
+      1 意义推断置信度 0.50 < 0.60，丢弃（看不出来）
+      1 意义推断置信度 0.50 < 0.60，丢弃（你说 你想）

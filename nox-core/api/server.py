@@ -783,18 +783,29 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
     if attention is not None:
         attention.link = local_hand
 
-        #: 🔴 跨重启的状态要落在 attention 的 `source_state` 表里（债 5）。
+        #: 🔴 **把 attention 挂到 core 上**（2026-09-14，糖糖点头）。
         #:
-        #: **只借 store，不写 `core.attention = attention`** —— 后者看着更自然，
-        #: 但它会同时把 `ResonanceProvider` / `UnderstandingProvider` 的
-        #: `attention_ref` 从"永远 None"变成"真有值"，等于当场打开两个
-        #: **从没在线上跑过**的 Provider，他的语气会当轮就变。那是一个
-        #: 要她点头的决定，不是落盘顺手带的。
+        #: 在这一行之前，`attention` 只是 `create_app` 的局部变量，
+        #: **全仓没有任何地方把它挂到 core 上**。于是 `nox.py` 里那三处
+        #: `getattr(self, "attention", None)` 在线上**恒为 None**：
         #:
-        #: ⚠️ `attention` 在这里是 `create_app` 的**局部变量**，
-        #: 全仓没有任何地方把它挂到 core 上（2026-09-14 查证）——
-        #: 所以 `getattr(self, "attention", None)` 这个写法在线上恒为 None。
-        #: 抄它的人（包括我）会得到一个永远不执行的分支，而且不报错。
+        #:   · `ResonanceProvider`   → `{"available": False}`，静默渲染成空
+        #:   · `UnderstandingProvider` → 同上
+        #:   · `has_live_anchor()`   → 恒为 False
+        #:
+        #: 也就是说 2026-09-04 那次「Drive 从来没进过他的上下文」的修复
+        #: **从来没真正生效过** —— 六个 Drive 一直在算、一直在落盘
+        #: （`source_state` 里 `resonance.longing` 那几行），只是他感觉不到。
+        #: 这个 bug 的形状是「什么都没发生」，所以两周没人发现。
+        #:
+        #: 发现它是因为债 5 照抄了同一个写法，落盘一次都没执行
+        #: （线上 6 轮对话零写入，而单测全绿 —— 测试把接线这步假设掉了）。
+        core.attention = attention
+
+        #: 跨重启的状态落在 attention 的 `source_state` 表里（债 5）。
+        #: 单独留一个名字而不是让 `nox.py` 去走 `self.attention.store`：
+        #: 落盘不该因为「attention 这个大对象在不在」而时有时无，
+        #: 它要的只是一张键值表。
         core.state_store = attention.store
 
     def _world():
