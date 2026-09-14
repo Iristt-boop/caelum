@@ -95,6 +95,11 @@ from config import BACKENDS, is_test_session
 from topic_pool import TopicPool, run_topic_loop
 from topic_pool.pool import DEFAULT_SCOUT_INTERVAL_S
 from attention.store import AttentionStore
+from temporal import now as temporal_now
+from temporal import extract as temporal_extract
+from temporal.extract import TemporalExtractor
+from temporal.resolver import resolve as temporal_resolve
+from temporal.result import TemporalResult
 from day import build_day
 from context.compactor import maybe_compact
 from data.store import Store
@@ -986,7 +991,8 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
         except Exception:  # noqa: BLE001
             logger.exception("卡片声称检查失败（不影响对话）")
 
-    def _turn_ends(sid: str, text: str = "", reply: str = "") -> None:
+    def _turn_ends(sid: str, text: str = "", reply: str = "",
+                   message_time: Any = None) -> None:
         """一轮结束、消息真的落库之后，把这轮新留的纸条基准线校准到现在。
 
         ⚠️ **不做这一步，整条唤醒链永远不会触发，而且是静默的。**
@@ -1015,6 +1021,27 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
             _maybe_compact_async(sid)
         except Exception as exc:  # noqa: BLE001
             logger.warning("压缩触发失败（不影响对话）: %s", exc)
+
+        # 时间语义第二层（2026-09-14）：她这句话里的**时间关系**是什么。
+        #
+        # 🔴 **独立 contract，不挂理解层**（糖糖拍的）—— 职责不同：
+        #   理解层  →「她现在是什么状态 / 这句话意味着什么」
+        #   这一层  →「这句话里的时间关系是什么」
+        # 两个开关、两条日志、各自演进。以后真要省一次调用，
+        # 合并的是**调用**不是**语义模块**。
+        #
+        # ⚠️ **必须在下面那道 `attention is None` 之前** —— 时间理解
+        # 跟 attention 毫无关系，被它的开关挡住就是又一个「两道闸串着」。
+        # 写接线测试时抓到的：NOX_ATTENTION 没开时它一次都没跑过，
+        # 而且**一个错都不报**。
+        #
+        # 但**要在测试会话闸门之内的语义里**：它要花钱，而且测试流量
+        # 会把 shadow 数据搅浑（R6 的精神，虽然它不写任何全局状态）。
+        if not is_test_session(sid):
+            try:
+                _temporal_async(sid, text, message_time)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("时间理解启动失败（不影响对话）: %s", exc)
 
         if attention is None:
             return
@@ -1132,11 +1159,74 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
         # 放在最后是因为它是这个函数里唯一要打网络的一步，
         # 前面那些本地计算不该等它。
         try:
-            _appraise_async(sid, text, reply)
+            _appraise_async(sid, text, reply, message_time)
         except Exception as exc:  # noqa: BLE001
             logger.warning("意义推断启动失败（不影响对话）: %s", exc)
 
-    def _appraise_async(sid: str, text: str, reply: str) -> None:
+    def _temporal_async(sid: str, text: str, message_time: Any = None) -> None:
+        """后台线程里抽时间关系（第二层，2026-09-14）。
+
+        ## 第一版的实验目标**只有一个**
+
+            message → Intent → Resolver → TemporalResult → shadow log
+
+        **不做 Todo 匹配**（糖糖 2026-09-14 明确要求）。理由：
+        现在要测的是「自然语言 → 时间语义」能不能稳定工作。
+        这时候混进 Todo 关联猜测，数据出了问题就分不清是
+        **时间理解错了**还是 **Todo 匹配错了** —— 两个变量必须分开测。
+        所以 `todo_match_status` 写死 `not_attempted`，
+        而不是留一个含义不明的 `todo_id: null`。
+
+        ## 为什么和理解层同一个位置
+
+        回应已经发完了，这里做的是对**已经进入系统的消息**做语义分析，
+        不是回应链路上的前置判断。以后真要「她说完 → 当场改待办 →
+        他回『行，那明天练』」，改的是**消费时机**，不是 contract 本身。
+        """
+        if temporal_extract.mode() == "off" or not text:
+            return
+        # 🔴 复用理解层那道闸：主动开口 / 日记批注那几条链路的 `text`
+        # 是**程序拼的提示词**不是她打的字。而且 2026-09-14 起那段提示词
+        # 里**就带着日期**（speaker 的 `_clock_with_date`）——
+        # 抽它等于让模型去读我们自己写进去的时间，纯噪音
+        if appraisal_llm.is_injected(sid):
+            logger.debug("%s 是注入型会话，不抽时间关系", sid)
+            return
+
+        utility = core.router.light_adapter if core.router else None
+        if utility is None:
+            return
+        utility = meter.tag(utility, "temporal")
+
+        # 锚点：她这句话的时间。拿不到就退回现在并**说出来** ——
+        # 静默退回的话，跨午夜那一轮会偏一天而没人知道
+        ref = message_time
+        if ref is None:
+            ref = temporal_now()
+            logger.warning("没拿到 message_time，时间理解退回用现在当锚点")
+
+        def _run() -> None:
+            try:
+                intent = TemporalExtractor(lambda: utility).extract(text)
+                if intent is None:
+                    return          # 她没说时间 —— 常态，不记
+                resolution = temporal_resolve(intent, ref)
+                TemporalResult(
+                    text=text, intent=intent, resolution=resolution,
+                    reference_time=ref,
+                    applied=False,
+                    why_not_applied=f"shadow 模式（NOX_TEMPORAL={temporal_extract.mode()}）",
+                    todo_match_status="not_attempted",
+                ).log()
+            except Exception:  # noqa: BLE001
+                # 不许静默（docs/LOGGING.md）。这一层挂了的表现是
+                # 「shadow 日志忽然没了」，而那看起来和「她最近没说时间」一样
+                logger.exception("时间理解失败（不影响对话）")
+
+        threading.Thread(target=_run, daemon=True, name="temporal").start()
+
+    def _appraise_async(sid: str, text: str, reply: str,
+                        message_time: Any = None) -> None:
         """后台线程里做意义推断（理解层，2026-09-05）。
 
         ## 🔴 为什么必须是后台线程
@@ -2261,6 +2351,10 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
         started = _turn_starts(sid)
         sent = _for_voice(history, req.voice)
 
+        # ⚠️ **在跑模型之前**取她这句话的时间。
+        # 模型要跑 5~10 秒，跨午夜那一轮用"回应完之后的现在"当锚点，
+        # 「明天」就会偏一天 —— 正是时间语义层要治的那类错
+        msg_at = temporal_now()
         try:
             r = core.chat(req.text, sent, images=req.images or None, voice=req.voice,
                           scene=req.scene, model=req.model,
@@ -2272,7 +2366,7 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
         # ⚠️ 完整历史 + 这轮新增。只传 r.messages 的话，通话轮会把
         # 内存缓存削成截断后那几条，下一次文字聊天跟着丢上下文（见 _for_voice）
         sessions.put(sid, list(history) + r.messages[len(sent):])
-        _turn_ends(sid, req.text or "", r.text or "")
+        _turn_ends(sid, req.text or "", r.text or "", message_time=msg_at)
 
         result = r.result
         # 失败时给人话；但如果模型已经说了什么（比如截断的半截），
@@ -2325,6 +2419,11 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
         # 通话只带最近几轮，理由见 _for_voice()。**语音走的就是这条流式路径**
         sent = _for_voice(history, req.voice)
 
+        # ⚠️ 和非流式那条同理：**在跑模型之前**取她这句话的时间。
+        # 这里取在生成器**外面**是故意的 —— 生成器体要等客户端开始消费
+        # 才跑，那可能已经晚了几百毫秒到几秒
+        msg_at = temporal_now()
+
         def events():
             final = None
             # ⚠️ 在生成器**体**里调，不在外面 —— 生成器体是被迭代的那个线程
@@ -2363,7 +2462,8 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
             # ⚠️ history 必须显式传 —— 它是这个生成器的局部变量，
             # 闭包里取不到（差点又写成 NameError，同今天早些时候那次）
             _warn_if_claimed_without_doing(final, history, sid)
-            _turn_ends(sid, req.text or "", final.text or "")
+            _turn_ends(sid, req.text or "", final.text or "",
+                       message_time=msg_at)
             # 附带产物单独发一帧，让前端能在收尾之前就把图显示出来。
             # 外层 type 固定 attachment，具体是什么放 kind ——
             # 之前写成 {"type": "attachment", **att}，att 自带的

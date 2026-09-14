@@ -14,6 +14,9 @@
 
 - 真实模型认得准不准 —— 那要跑真实数据（shadow 就是为这个）
 - 提示词改了之后模型行为怎么变 —— 只能靠观察
+- **`message_time` 缺失时那条退回分支**。两个端点现在都传了，
+  所以应用层够不到它，是防御性代码。变异「把那条 warning 去掉」
+  抓不到 —— 如实写在这儿，而不是造一个扭曲的测试假装覆盖
 """
 
 from __future__ import annotations
@@ -295,3 +298,199 @@ def test_决策里根本表达不了标完成():
 def test_不推迟必须说明为什么():
     with pytest.raises(ValueError, match="说明为什么"):
         DeferDecision(should_defer=False)
+
+
+# ---------------------------------------------------------------- todo 归属状态
+#
+# 糖糖 2026-09-14 坚持要这个字段：几天后看到一堆 todo_id: null，
+# 分不清是「确实没有在追的待办」「有但系统还不会匹配」还是「根本没试过」。
+
+
+def test_todo_match_status_是封闭集合():
+    from temporal.result import TODO_MATCH_STATUSES
+    assert TODO_MATCH_STATUSES == {"not_attempted", "matched", "no_candidate", "ambiguous"}
+
+
+def test_表外的归属状态会被拒():
+    with pytest.raises(ValueError, match="表外的 todo_match_status"):
+        _result(todo_match_status="maybe")
+
+
+def test_没匹配上却带着todo_id是自相矛盾():
+    """日志是这一版唯一的产出，不能让它自己打自己的脸。"""
+    with pytest.raises(ValueError, match="却带着 todo_id"):
+        _result(todo_match_status="not_attempted", todo_id="t1")
+
+
+def test_日志里写明有没有试过匹配(caplog):
+    """🔴 不是记一个含义不明的 null。"""
+    with caplog.at_level(logging.INFO):
+        _result().log()
+    assert "not_attempted" in caplog.text, "没写明有没有试过匹配 —— 几天后这批数据就废了"
+
+
+# ---------------------------------------------------------------- 真接线
+#
+# 上面那些测的是零件。这一节测**它真的被调用了** ——
+# 今天已经栽过一次「写好了但没人调，而且一个错都不报」。
+
+
+class _UtilityAdapter:
+    """假的 utility 模型，固定回一个时间关系。"""
+
+    def __init__(self, payload: str = '{"kind": "day_offset", "n": 1}') -> None:
+        self.payload = payload
+        self.calls = 0
+
+    def complete(self, messages, tools, system=None, **kw):
+        self.calls += 1
+        return type("T", (), {"text": self.payload, "stop_reason": "end_turn", "error": None})()
+
+
+class _ChatCore:
+    """够 `create_app` 起来、且 `/chat` 能跑一轮的最小 core。
+
+    不复用 test_api 的 FakeNox 是为了不在测试之间建耦合 ——
+    那边改一下这边就红，而且红的原因看不出来。
+    """
+
+    class _Loop:
+        tools: dict = {"recall_memory": None}
+
+        def register(self, spec, handler):
+            pass
+
+    def __init__(self, tmp_path, utility) -> None:
+        class _Cfg:
+            db_path = str(tmp_path / "nox.db")
+            history_limit = 40
+            recent_window_tokens = 8000
+            context_budget_tokens = 20000
+
+            class primary:  # noqa: N801
+                model = "fake-model"
+
+        self.cfg = _Cfg()
+        self.loop = self._Loop()
+        self.bridge = None
+        self.system_prompt = "（前缀）"
+        self.current_session_id = None
+        #: extraction 用的就是它
+        self.router = type("R", (), {"light_adapter": utility})()
+
+    def model_name(self, model=None):
+        return model or "fake-model"
+
+    def chat(self, text, history=None, **kw):
+        from agent.llm import Message
+        from agent.loop import LoopResult, Usage
+        from router.intent import Decision, Intent as RIntent
+        from router.router import RouteResult
+        history = list(history or [])
+        return RouteResult(
+            LoopResult(outcome="answered", text="好", iterations=1,
+                       usage=Usage(input_tokens=10, output_tokens=1, cache_read_tokens=0),
+                       messages=[*history, Message(role="user", text=text),
+                                 Message(role="assistant", text="好")],
+                       attachments=[]),
+            Decision(RIntent.SMALL_TALK, "测试"),
+        )
+
+
+def _client(tmp_path, monkeypatch, utility, *, now=None, clock=None):
+    """真跑 create_app + TestClient，后台线程改成同步（否则断言撞时序）。"""
+    from fastapi.testclient import TestClient
+
+    import api.server as server
+    from api.server import Store, create_app
+
+    monkeypatch.setenv("NOX_TEMPORAL", "shadow")
+
+    class _SyncThread:
+        """同步跑，否则断言会撞时序。**args 必须转发** ——
+        第一版漏了，压缩那条线程被调成了无参调用。"""
+
+        def __init__(self, target=None, args=(), kwargs=None, **kw):
+            self.target, self.args, self.kwargs = target, args, kwargs or {}
+
+        def start(self):
+            self.target(*self.args, **self.kwargs)
+
+    monkeypatch.setattr(server.threading, "Thread", _SyncThread)
+    if clock is not None:
+        #: 🔴 **会走的时钟**：第一次调（端点取 message_time）给一个值，
+        #: 之后调（抽取时的"现在"）给另一个。
+        #:
+        #: 固定值的桩**测不出这条** —— 把 `ref = message_time` 改成
+        #: `ref = now()` 两边返回同一个东西，变异照样绿。
+        #: 我第一版就是这么写的，被变异测试抓到了。
+        seq = iter(clock)
+        last = [clock[-1]]
+
+        def _tick():
+            try:
+                last[0] = next(seq)
+            except StopIteration:
+                pass
+            return last[0]
+
+        monkeypatch.setattr(server, "temporal_now", _tick)
+    elif now is not None:
+        monkeypatch.setattr(server, "temporal_now", lambda: now)
+
+    core = _ChatCore(tmp_path, utility)
+    return TestClient(create_app(core, Store(tmp_path / "s.db")))
+
+
+def test_一轮对话真的会产出shadow日志(tmp_path, monkeypatch, caplog):
+    """🔴 挡「写好了但没人调」—— 那种失败的形状是**什么都没发生**。"""
+    utility = _UtilityAdapter()
+    c = _client(tmp_path, monkeypatch, utility, now=REF)
+
+    with caplog.at_level(logging.INFO):
+        assert c.post("/chat", json={"text": "明天去练腿", "session_id": "s-1"}).status_code == 200
+
+    assert utility.calls == 1, "extraction 根本没被调用"
+    assert "时间理解" in caplog.text
+    assert "day_offset" in caplog.text, "缺第①段"
+    assert "2026-09-15" in caplog.text, "缺第②段 —— 锚点是 message_time 才算得出这天"
+    assert "not_attempted" in caplog.text, "缺 todo 归属状态"
+
+
+def test_注入型会话不抽时间(tmp_path, monkeypatch, caplog):
+    """🔴 主动开口的 prompt 里**就带着日期**（speaker 的 _clock_with_date）——
+    抽它等于让模型去读我们自己写进去的时间，纯噪音。"""
+    utility = _UtilityAdapter()
+    c = _client(tmp_path, monkeypatch, utility, now=REF)
+
+    from attention.appraisal_llm import NOT_HER_WORDS
+    prefix = NOT_HER_WORDS if isinstance(NOT_HER_WORDS, str) else NOT_HER_WORDS[0]
+    c.post("/chat", json={"text": "明天去练腿", "session_id": f"{prefix}x"})
+    assert utility.calls == 0, "注入型会话被抽了时间"
+
+
+def test_开关off时一次模型都不调(tmp_path, monkeypatch):
+    utility = _UtilityAdapter()
+    c = _client(tmp_path, monkeypatch, utility, now=REF)
+    monkeypatch.setenv("NOX_TEMPORAL", "off")
+    c.post("/chat", json={"text": "明天去练腿", "session_id": "s-1"})
+    assert utility.calls == 0
+
+
+def test_锚点用的是message_time不是现在(tmp_path, monkeypatch, caplog):
+    """🔴 跨午夜那一轮：她 23:58 说「明天」，模型 10 秒后才回。
+
+    用「现在」当锚点的话会解析成后天。判据是**算出来的日期**，
+    不是「有没有传参」—— 传了但没用上的代码到处都是。
+    """
+    utility = _UtilityAdapter()
+    #: 她 23:58 说，模型跑完已经是第二天 00:02 —— 真实场景就是这样
+    said_at = datetime(2026, 9, 14, 23, 58, tzinfo=CST)
+    ran_at = datetime(2026, 9, 15, 0, 2, tzinfo=CST)
+    c = _client(tmp_path, monkeypatch, utility, clock=[said_at, ran_at])
+
+    with caplog.at_level(logging.INFO):
+        c.post("/chat", json={"text": "明天去练腿", "session_id": "s-1"})
+
+    assert "2026-09-15" in caplog.text, "锚点不对：她说的「明天」应该是 09-15"
+    assert "2026-09-16" not in caplog.text, "用了「现在」（09-15 00:02）当锚点，偏了一天"

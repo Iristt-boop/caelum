@@ -36,6 +36,26 @@ from temporal.resolver import Resolution
 
 logger = logging.getLogger(__name__)
 
+#: 🔴 这条消息有没有被归属到某一个正在追的待办，**结果是什么**。
+#:
+#: 糖糖 2026-09-14 坚持要这个字段，理由值得抄在这里：
+#:
+#: > 否则几天以后你看到大量 `todo_id: null`，根本不知道：
+#: >   · 当时确实没有正在追的 Todo
+#: >   · 其实有 Todo，但系统还不会匹配
+#: >   · 当时根本没尝试匹配
+#:
+#: 第一版**永远是 `not_attempted`** —— 故意不做匹配。
+#: 因为现在要测的是「自然语言 → Intent → Resolver」能不能稳定工作；
+#: 这时候混进 Todo 关联猜测，数据出了问题就分不清是**时间理解错了**
+#: 还是**Todo 匹配错了**。两个变量必须分开测。
+TODO_MATCH_STATUSES = frozenset({
+    "not_attempted",   # 第一版：故意没试
+    "matched",         # 以后：确定是这条
+    "no_candidate",    # 以后：试了，当时没有在追的待办
+    "ambiguous",       # 以后：试了，但对不上唯一一条
+})
+
 
 @dataclass(frozen=True)
 class TemporalResult:
@@ -59,6 +79,12 @@ class TemporalResult:
     why_not_applied: str | None = None
     #: 接了的话，接给谁、干了什么（给审计看）
     applied_to: str | None = None
+    #: ③ 的另一半：**有没有试过**把它归属到某条待办，结果如何。
+    #: 和 `why_not_applied` 是两个轴 —— 前者答「试没试、结果是什么」，
+    #: 后者答「为什么没产生副作用」
+    todo_match_status: str = "not_attempted"
+    #: 匹配上了才有。第一版恒为 None，但**不许**靠它反推「有没有试过」
+    todo_id: str | None = None
 
     def __post_init__(self) -> None:
         if not self.applied and not self.why_not_applied:
@@ -66,6 +92,13 @@ class TemporalResult:
                 "没接下游就必须说明为什么 —— 少了这一段，shadow 就是个黑洞")
         if self.applied and not self.applied_to:
             raise ValueError("接了下游就要说明接给谁")
+        if self.todo_match_status not in TODO_MATCH_STATUSES:
+            raise ValueError(f"表外的 todo_match_status：{self.todo_match_status!r}")
+        #: `todo_id` 有值只可能是因为匹配上了。别的状态带着 id
+        #: 会让日志自相矛盾 —— 而日志是这一版唯一的产出
+        if self.todo_id and self.todo_match_status != "matched":
+            raise ValueError(
+                f"todo_match_status={self.todo_match_status} 却带着 todo_id")
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -76,6 +109,8 @@ class TemporalResult:
             "applied": self.applied,
             "why_not_applied": self.why_not_applied,
             "applied_to": self.applied_to,
+            "todo_match_status": self.todo_match_status,
+            "todo_id": self.todo_id,
         }
 
     # ------------------------------------------------------------ 出口
@@ -93,10 +128,12 @@ class TemporalResult:
             "时间理解｜她说「%.40s」\n"
             "  ① 模型认成：%s\n"
             "  ② 锚点 %s → %s\n"
-            "  ③ %s",
+            "  ③ %s｜待办归属：%s",
             self.text,
             self.intent.to_dict(),
             self.reference_time.isoformat(),
             landed,
             f"已接 {self.applied_to}" if self.applied else f"未接：{self.why_not_applied}",
+            f"{self.todo_match_status}"
+            + (f"（{self.todo_id}）" if self.todo_id else ""),
         )
