@@ -304,3 +304,71 @@ def test_resolve_不碰现在():
 def test_intent_序列化往返(intent):
     """shadow 日志要把原始 intent 记下来，读得回来才有意义。"""
     assert Intent.from_dict(intent.to_dict()) == intent
+
+
+# ---------------------------------------------------------------- 上界的比较语义
+#
+# 糖糖 2026-09-14 钉的：
+#   「周五之前」→ upper_bound = 周五次日 00:00
+#                → 语义：**严格早于**这个时间点，但包含整个周五
+# 差一个等号就把次日 00:00 那一瞬间也算进来了，所以比较收在
+# `Resolution.within()` 一处，下游不许自己写。
+
+
+def _friday_deadline():
+    """「下周五之前」，ref = 2026-09-14 周一 → 下周五是 09-25。"""
+    return resolve(Intent(kind="deadline",
+                          before=Intent(kind="weekday_next", weekday=5)), ref(d=14))
+
+
+@pytest.mark.parametrize("when, inside, why", [
+    (datetime(2026, 9, 25, 0, 0, tzinfo=CST),  True,  "周五一开始就在里面"),
+    (datetime(2026, 9, 25, 23, 59, tzinfo=CST), True,  "整个周五都算"),
+    (datetime(2026, 9, 26, 0, 0, tzinfo=CST),  False, "次日 00:00 是右开的那一端"),
+    (datetime(2026, 9, 26, 0, 1, tzinfo=CST),  False, "过了就是过了"),
+    (datetime(2026, 9, 14, 12, 0, tzinfo=CST), True,  "之前的时刻当然也满足"),
+])
+def test_上界是右开的(when, inside, why):
+    assert _friday_deadline().within(when) is inside, why
+
+
+def test_上界差一个等号就错():
+    """🔴 这条专门盯 `<` 被写成 `<=`。
+
+    次日 00:00 那一瞬间：`<` 排除，`<=` 包含。
+    只测周五中间的时刻是抓不到的 —— 那种断言两种写法都过。
+    """
+    r = _friday_deadline()
+    boundary = r.upper_bound
+    assert r.within(boundary) is False, "上界用了 <=，把边界那一瞬间也算进来了"
+    assert r.within(boundary - timedelta(microseconds=1)) is True
+
+
+def test_slot_区间左闭右开():
+    r = resolve(Intent(kind="day_offset", n=0, slot="evening"), ref())
+    lo, hi = r.range
+    assert r.within(lo) is True
+    assert r.within(hi) is False, "区间右端应该是开的"
+
+
+def test_date_精度问的是同一天():
+    r = resolve(Intent(kind="day_offset", n=1), ref())
+    assert r.within(datetime(2026, 9, 15, 3, tzinfo=CST)) is True
+    assert r.within(datetime(2026, 9, 16, 3, tzinfo=CST)) is False
+
+
+def test_没解析出来的结果不许被消费():
+    """🔴 消费一个 precision=none 正是要抓的 bug —— 抛，不静悄悄返回 False。
+
+    返回 False 的话它长得和「解析出来了但不在范围里」一模一样。
+    """
+    bad = resolve(Intent(kind="weekday_bare", weekday=5), ref())
+    with pytest.raises(ValueError, match="不该被消费"):
+        bad.within(ref())
+
+
+def test_时刻类问不了落不落在里面():
+    """`duration` 是一个点，不是范围。"""
+    r = resolve(Intent(kind="duration", hours=2), ref())
+    with pytest.raises(ValueError, match="是一个时刻"):
+        r.within(ref())

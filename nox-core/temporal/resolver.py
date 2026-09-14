@@ -82,6 +82,34 @@ class Resolution:
         """
         return self.precision != "none"
 
+    def within(self, when: datetime) -> bool:
+        """`when` 落在这个解析结果里吗。
+
+        🔴 **比较语义收在这一处，下游不许自己写。**
+        糖糖 2026-09-14：「不要让 deadline 的 upper_bound 在后续
+        被重新包装成一个普通的事件时间。」把比较也收进来，
+        下游连写 `when <= r.upper_bound` 的机会都没有。
+
+            upper_bound  when <  upper_bound      ← **严格小于**，右开
+            slot         lo   <= when < hi        ← 左闭右开
+            date         when 落在那一天
+
+        `none` 和 `datetime` 直接抛：
+          · `none` —— 消费一个没解析出来的结果，那正是要抓的 bug
+          · `datetime` —— 它是一个点，问「落不落在里面」没有意义
+        """
+        if self.precision == "none":
+            raise ValueError(
+                f"这个结果没解析出来（{self.unresolved_reason}），不该被消费")
+        if self.precision == "upper_bound":
+            return when < self.upper_bound      # ⚠️ 不是 <=
+        if self.precision == "slot":
+            lo, hi = self.range
+            return lo <= when < hi
+        if self.precision == "date":
+            return to_local(when).date() == self.date
+        raise ValueError(f"precision={self.precision} 是一个时刻，问不了「落不落在里面」")
+
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {"precision": self.precision}
         if self.date is not None:
@@ -169,11 +197,17 @@ def resolve(intent: Intent, reference_time: datetime) -> Resolution:
         if inner.at is not None:
             bound = inner.at
         elif inner.date is not None:
-            # 「X 之前」= 不晚于 X 那天结束。
+            # 🔴 **「X 之前」= 严格早于 X 次日 00:00，但包含整个 X 那天。**
             #
-            # 🔶 这是一个**决定**，不是推导出来的：中文里「周五之前」
-            # 基本都指「周五结束前」（含周五），而不是「周五开始前」。
-            # 写在这里是为了它能被看见、被改 —— 不同意的话改这一行。
+            #     「（下）周五之前」  → upper_bound = 2026-09-26 00:00
+            #                        → 语义：event_time < 2026-09-26 00:00
+            #
+            # 也就是说取的是**右开**的上界，而不是 `< 09-25 00:00`
+            # （那等于把整个周五排除在外）。糖糖 2026-09-14 钉的：
+            # 中文里「周五之前」基本都指「周五结束前」，含周五。
+            #
+            # ⚠️ 比较必须用 `<` 不是 `<=` —— 差一个等号就把次日 00:00
+            # 那一瞬间也算进来了。别在下游各写各的，用 `Resolution.within()`。
             bound = datetime.combine(inner.date + timedelta(days=1), time(0), tz)
         else:
             # 内层只有 slot 区间：取区间右端当上界
