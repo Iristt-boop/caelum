@@ -68,21 +68,16 @@ _WEEKDAYS = ["周一", "周二", "周三", "周四", "周五", "周六", "周日
 #: 原来这份是 09-14 当天从 `providers/time.py` 搬过来的，
 #: 搬完当天就发现该搬得更远：它不属于 Context 层，属于时间语义层。
 
-#: 同一天里隔多久就重新报一次时间。
+#: ⏸ **日内时间标记（c3218c4）暂缓上线**（糖糖 2026-09-14 决定）。
 #:
-#: 🔴 **为什么需要日内标记**（糖糖 2026-09-14 报的，这是第二次了）：
-#: 2026-08-11 那次加日期分隔线，治的是「前几天做的美甲他以为是今天」。
-#: 但它只在**换天**时插一行 —— 于是同一天内的消息之间一个时间都没有。
-#: 她上午说的话，到了下午他会说成「昨天聊的」，因为
-#: 「上午说的」和「昨天说的」在他眼里长得一模一样：都是一句没有时间的话。
+#: 那一版让 `with_dates` 在「跨时段 / 隔 45 分钟」时也插一行时间，治的是
+#: 「她上午说的话他说成昨天」。改动本身验过（变异 8/8 全红），但它**改变的是
+#: 模型实际看到的历史文本**，而历史是 prefix cache 的前缀 —— 值得单独观察，
+#: 不该跟时间语义地基绑在一起发。
 #:
-#: 实测（她 2026-09-14 的会话）：22 条消息全在同一天，跨度 14:01~15:47，
-#: 中间有一个一小时的空档 —— 而他看到的只有最上面孤零零一行「（9月14日）」。
-#:
-#: 45 分钟这个数：一段对话的自然停顿通常几分钟到十几分钟，不该打断；
-#: 而她去睡个午觉、出门一趟回来，基本都超过它。
-GAP = timedelta(minutes=45)
-
+#: 代码在 `git show c3218c4`，要上的时候直接取回来。
+#: 更长期的形态见审计文档第五节：存储层绝对、展示层相对 ——
+#: 但那要先拍板 Context/Cache 架构（历史不能再直接当缓存前缀用）。
 
 def _cn(dt: datetime) -> datetime:
     """统一换算到中国时间再判断「哪一天」。
@@ -104,14 +99,9 @@ def _label(dt: datetime) -> str:
 
     会话真正开始于什么时候，由 `nox._session_span()` 那行讲，
     它读的是 `sessions.created_at`，不受窗口影响。**各说各的事实，不重叠。**
-
-    ⚠️ **日内标记也带完整日期**（2026-09-14）。写成「（下午3点）」会省几个字，
-    但那要求他自己往回找最近一行日期才知道是哪天 —— 而**他做不好的恰恰是这件事**，
-    整个 bug 就是这么来的。每一行都自足，多几个 token 换掉一整类错误。
     """
     d = _cn(dt)
-    _, cn = slot_of(d.hour)
-    return f"（{d.month}月{d.day}日 {_WEEKDAYS[d.weekday()]} {cn}{d.hour}点）"
+    return f"（{d.month}月{d.day}日 {_WEEKDAYS[d.weekday()]}）"
 
 
 def with_dates(rows: Iterable[tuple[str, str | None, str | None]]) -> list[Message]:
@@ -122,21 +112,9 @@ def with_dates(rows: Iterable[tuple[str, str | None, str | None]]) -> list[Messa
     而且它跟着那条消息一起冻住，缓存友好。
 
     `created_at` 解析不出来就跳过标注，不抛 —— 少一个日期总比整段历史读不出来好。
-
-    ## 什么时候插一行（2026-09-14 起三个条件，命中任一）
-
-    1. **换天** —— 原来只有这一条
-    2. **跨时段**（上午→下午→晚上→深夜）—— 接住「聊了一整天没断」的情况：
-       没有大空档，但 12 点一过就该让他知道现在是下午了
-    3. **隔了 `GAP`（45 分钟）** —— 接住「她去睡了个午觉」这种
-
-    2 和 3 是互补的，少哪个都有漏网：只看空档，连续聊到天黑他还以为是上午；
-    只看时段，14:00 睡到 16:00 中间没跨时段就不标。
     """
     out: list[Message] = []
     last_day = None
-    last_slot = None
-    last_at: datetime | None = None
 
     for role, text, created_at in rows:
         stamp = ""
@@ -146,15 +124,10 @@ def with_dates(rows: Iterable[tuple[str, str | None, str | None]]) -> list[Messa
             except ValueError:
                 dt = None
             if dt is not None:
-                local = _cn(dt)
-                day = local.date()
-                slot, _ = slot_of(local.hour)
-                # 顺序无关：三个条件任一命中就报一次时间
-                if (day != last_day
-                        or slot != last_slot
-                        or (last_at is not None and local - last_at >= GAP)):
+                day = _cn(dt).date()
+                if day != last_day:
                     stamp = _label(dt) + "\n"
-                last_day, last_slot, last_at = day, slot, local
+                    last_day = day
 
         out.append(Message(role=role, text=(stamp + (text or "")) if stamp else text))
 

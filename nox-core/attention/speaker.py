@@ -171,11 +171,10 @@ def build_prompt(intent: Intent, decision: SchedulerDecision,
     return _PROMPT.format(
         subject=intent.subject,
         reason=intent.reason,
-        # ⚠️ **带日期，不能只给时分**（2026-09-14）。
-        # 原来只有 "14:27" —— 他手上没有"今天是哪天"，于是历史里她上午说的
-        # 「今天不去，明天再去」会被当成前一天的话，下午就来一句
-        # 「昨天你说了今天去」。她报了这个 bug，而且说日常聊天里也一样。
-        clock=_clock_with_date(now),
+        # ⏸ 带日期那版（c3218c4）跟着日内时间标记一起暂缓 —— 见 timeline.py 那段。
+        # ⚠️ 这半其实**和 prefix cache 无关**（prompt 是每轮新生成的 user message，
+        # 不进缓存前缀），单独上线风险很低。压着只是为了不跟那个 commit 拆散。
+        clock=now.astimezone(LOCAL_TZ).strftime("%H:%M"),
         fit_why=decision.reason or "现在适合说这个",
         repeat=repeat,
     )

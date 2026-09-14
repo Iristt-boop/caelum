@@ -320,27 +320,12 @@ from datetime import timedelta  # noqa: E402
 # 主动开口这条路上他手里只有 prompt 和历史 —— 两边都得有绝对日期才算得出来。
 
 
-def test_主动开口的提示里必须有日期不能只给时分():
-    """🔴 原来只有 "14:27"。
-
-    他手上没有「今天是哪天」，于是历史里她上午说的「今天不去，明天再去」
-    会被当成前一天的话，下午就来一句「昨天你说了今天去」。
-
-    能挡什么：有人为了省 token 把日期去掉。
-    挡不住什么：日期对不对（那由 LOCAL_TZ 保证，另有测试）。
-    """
-    from datetime import datetime, timezone
-    from attention.speaker import build_prompt
-    from attention.scheduler import SchedulerDecision
-
-    now = datetime(2026, 9, 14, 6, 27, tzinfo=timezone.utc)   # CST 14:27
-    intent = type("I", (), {"subject": "待办：臀腿训练", "reason": "本周还差 3 次"})()
-    decision = type("D", (), {"reason": "她刚醒"})()
-
-    prompt = build_prompt(intent, decision, spoken=0, last_at=None, now=now)
-
-    assert "9月14日" in prompt, "提示词里没有日期 —— 他算不出历史那句是几小时前说的"
-    assert "14:27" in prompt, "时分也得留着"
+# ⏸ 「提示里必须有日期」那条测试跟着 c3218c4 一起暂缓了 ——
+# 断言留着而行为退了的话，它会变成一条永远红的测试。
+# 要上的时候连测试一起从 `git show c3218c4` 取回来。
+#
+# ⚠️ 下面这条**留着**：日历天口径属于第一层（temporal.relative），
+# 和 c3218c4 无关，已经上线。
 
 
 def test_今天昨天按日历天算不按小时差():

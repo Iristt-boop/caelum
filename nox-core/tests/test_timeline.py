@@ -54,22 +54,16 @@ def test_first_line_does_not_claim_to_be_the_session_start():
 
 
 def test_separator_only_on_day_change():
-    """不给**每条**都盖章 —— 那是 40 条 × 8 token。
-
-    ⚠️ 2026-09-14 改过一次：现在同一天里跨时段/隔久了**也**会盖
-    （她报的「上午说的话他说成昨天」）。但这条测试守的东西没变 ——
-    **连着说的话不重复盖**。原来的断言顺带把「同一天绝不盖」也焊死了，
-    那不是它要守的，是当时的实现恰好如此。
-    """
+    """同一天的消息不重复盖章 —— 每条都盖是 40 条 × 8 token。"""
     out = with_dates([
         ("user", "早", _at(7, 9)),
-        ("assistant", "早呀", _at(7, 9)),      # 同一分钟
-        ("user", "晚上吃什么", _at(7, 19)),     # 同一天但跨到晚上
-        ("user", "在吗", _at(11, 10)),          # 换天了
+        ("assistant", "早呀", _at(7, 9)),
+        ("user", "晚上吃什么", _at(7, 19)),
+        ("user", "在吗", _at(11, 10)),     # 换天了
     ])
     assert "8月7日" in out[0].text
-    assert out[1].text == "早呀", "连着说的话被重复盖章了"
-    assert "8月7日" in out[2].text, "跨了时段却没报时间 —— 那正是她报的 bug"
+    assert out[1].text == "早呀"            # 同一天，不盖
+    assert out[2].text == "晚上吃什么"
     assert "8月11日" in out[3].text         # 换天，盖
 
 
@@ -93,11 +87,7 @@ def test_late_night_counts_as_the_same_day_in_china():
         ("user", "在吗", _at(7, 20)),
         ("user", "睡了", _at(7, 23)),
     ])
-    # 2026-09-14 起这里会盖一行（晚上→深夜跨了时段）。
-    # 这条测试守的不是"盖不盖"，是**盖的那个日期不能跳到第二天** ——
-    # 库里存 UTC，不换算的话 23:00 CST 会被算成 8月8日
-    assert "8月7日" in out[1].text
-    assert "8月8日" not in out[1].text
+    assert out[1].text == "睡了"            # 同一天，不该多一行
 
 
 def test_missing_timestamp_is_tolerated():
@@ -175,92 +165,3 @@ def test_emotion_score_is_not_a_date():
     """`[情感:V0.9/A0.3]` 里也有斜杠和数字。"""
     text = "[主题:睡眠, 恋爱] [情感:V0.9/A0.3]"
     assert relativize(text, TODAY) == text
-
-
-# ------------------------------------------------------------------ 日内时间标记
-#
-# 糖糖 2026-09-14 报的，是 2026-08-11 那个 bug 的**同一类第二次**：
-#   「就在日常的聊天中，他也会出现上午说的话，他会说是昨天聊的」
-# 2026-08-11 加了日期分隔线，但只在**换天**时插 —— 同一天内一个时间都没有，
-# 于是「上午说的」和「昨天说的」在他眼里长得一模一样。
-
-
-def _rows(*stamps):
-    """(role, text, created_at)。时间给 UTC，函数内部会换算成 CST。"""
-    return [("user", f"第{i}句", s) for i, s in enumerate(stamps, 1)]
-
-
-def _stamps(msgs):
-    """把插进去的那些标记行抽出来。"""
-    return [m.text.split("\n")[0] for m in msgs if m.text and m.text.startswith("（")]
-
-
-def test_同一天跨时段要重新报时间():
-    """上午聊到下午，**中间没有大空档** —— 只看空档会漏掉这种。
-
-    ⚠️ 间隔必须 < GAP（45分钟），否则空档规则会顺手把它盖了，
-    这条测试就变成空的 —— 把跨时段那半删掉它照样绿。
-    （2026-09-14 变异测试抓到的：第一版用了 10:30→13:00，2.5 小时。）
-    """
-    msgs = with_dates(_rows(
-        "2026-09-14T03:40:00",   # CST 11:40 上午
-        "2026-09-14T04:00:00",   # CST 12:00 下午 ← 只隔 20 分钟，纯跨时段
-    ))
-    marks = _stamps(msgs)
-    assert len(marks) == 2, f"跨了时段却没报时间（间隔才 20 分钟）：{marks}"
-    assert "上午11点" in marks[0]
-    assert "下午12点" in marks[1]
-
-
-def test_同一天隔久了要重新报时间():
-    """午觉两小时，没跨时段 —— 只看时段会漏掉这种。"""
-    msgs = with_dates(_rows(
-        "2026-09-14T05:05:00",   # CST 13:05 下午
-        "2026-09-14T07:30:00",   # CST 15:30 下午，隔了 2h25m
-    ))
-    assert len(_stamps(msgs)) == 2, "隔了两个多小时还当成一口气聊下来的"
-
-
-def test_连着说话不插标记():
-    """自然停顿不该被打断 —— 否则一段对话里全是时间行，又贵又吵。"""
-    msgs = with_dates(_rows(
-        "2026-09-14T05:00:00",
-        "2026-09-14T05:03:00",
-        "2026-09-14T05:11:00",
-        "2026-09-14T05:25:00",
-    ))
-    assert len(_stamps(msgs)) == 1, "连着聊 25 分钟不该反复报时间"
-
-
-def test_每一行都带完整日期():
-    """🔴 日内标记也要带日期。
-
-    写成「（下午3点）」会省几个 token，但那要求他自己往回找最近一行日期 ——
-    **而他做不好的恰恰是这件事**，整个 bug 就是这么来的。
-    """
-    msgs = with_dates(_rows("2026-09-14T02:00:00", "2026-09-14T05:00:00"))
-    for m in _stamps(msgs):
-        assert "9月14日" in m, f"这一行不自足，他得往回找：{m}"
-
-
-def test_标记仍然是绝对时间不是相对():
-    """历史是冻住的，相对时间会腐烂，而且每天重算会砸掉整段缓存。
-
-    （本文件开头那两条约束，加日内标记之后依然成立。）
-    """
-    msgs = with_dates(_rows("2026-09-14T02:00:00", "2026-09-14T07:00:00"))
-    joined = " ".join(_stamps(msgs))
-    for bad in ("小时前", "分钟前", "刚才", "今天", "昨天"):
-        assert bad not in joined, f"标记里混进了相对时间：{bad}"
-
-
-def test_时段边界和_TimeProvider_用同一份():
-    """两处写迟早会出现「历史标着下午、【此刻】说晚上」。"""
-    from context.providers.time import TimeProvider
-    from context.timeline import slot_of
-
-    import inspect
-    src = inspect.getsource(TimeProvider._fetch)
-    assert "slot_of" in src, "TimeProvider 又自己写了一份时段表"
-    assert slot_of(13) == ("afternoon", "下午")
-    assert slot_of(23) == ("late_night", "深夜")
