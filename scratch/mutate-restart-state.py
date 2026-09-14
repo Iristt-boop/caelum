@@ -20,6 +20,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1] / "nox-core"
 MOOD = ROOT / "personality" / "mood.py"
 NOX = ROOT / "nox.py"
+SERVER = ROOT / "api" / "server.py"
 TESTS = "tests/test_restart_state.py"
 
 # (名字, 文件, 原文, 换成, 期望哪条红)
@@ -100,6 +101,20 @@ MUTATIONS = [
         "        self._restore_state_once()",
         "        pass  # 变异：不恢复",
         "第一轮就把情绪接回来_走真的_dynamic",
+    ),
+    (
+        "create_app 不把 store 挂上来（线上真出过的那个 bug）",
+        SERVER,
+        "        core.state_store = attention.store",
+        "        pass  # 变异：不挂载",
+        "create_app 真的把_store_挂上来了",
+    ),
+    (
+        "退回原来那个恒为 None 的写法",
+        NOX,
+        'return getattr(self, "state_store", None)',
+        'return getattr(getattr(self, "attention", None), "store", None)',
+        "create_app 真的把_store_挂上来了",
     ),
 ]
 

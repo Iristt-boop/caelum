@@ -31,6 +31,7 @@ from attention.store import AttentionStore  # noqa: E402
 from context import ContextProviderRegistry  # noqa: E402
 from context.base import Turn  # noqa: E402
 from context.providers.mood import MoodProvider  # noqa: E402
+from api.server import Store, create_app  # noqa: E402
 from nox import STATE_KEY, Nox, _CardDebt  # noqa: E402
 from personality import mood as mood_mod  # noqa: E402
 from personality.mood import HALF_LIFE, Mood, now_cst  # noqa: E402
@@ -176,6 +177,54 @@ def test_欠卡账读回来不刷新记账时刻():
 
 # --------------------------------------------------------------- 真库 + 真接线
 
+
+class _AppCore:
+    """够 `create_app` + `_build_attention` 跑起来的最小 core。
+
+    比 test_api.py 的 FakeNox 多一个 `context`（`_build_attention` 要
+    `core.context.get("health")`，拿不到就整条链路 return None，
+    那样这条测试会变成**空集当通过**）。
+    """
+
+    class _HealthProvider:
+        def get_state(self, turn=None, force_refresh=False):
+            return {"has_data": False}
+
+    class _Ctx:
+        def get(self, name):
+            return _AppCore._HealthProvider() if name == "health" else None
+
+    class _Loop:
+        tools: dict = {"recall_memory": None}
+
+        def register(self, spec, handler):
+            pass
+
+    def __init__(self, tmp_path) -> None:
+        class _Cfg:
+            db_path = str(tmp_path / "nox.db")
+            history_limit = 40
+            recent_window_tokens = 8000
+            context_budget_tokens = 20000
+
+            class primary:  # noqa: N801
+                model = "fake-model"
+
+            class router:
+                light_adapter = None
+
+        self.cfg = _Cfg()
+        self.loop = self._Loop()
+        self.context = self._Ctx()
+        self.bridge = None
+        self.system_prompt = "（前缀）"
+        self.current_session_id = None
+        self.router = type("R", (), {"light_adapter": None})()
+
+    def model_name(self, model=None):
+        return model or "fake-model"
+
+
 def _core_with_store(tmp_path) -> Nox:
     """只把状态相关的字段装起来的 Nox。
 
@@ -187,7 +236,7 @@ def _core_with_store(tmp_path) -> Nox:
     core.mood = Mood()
     core.card_debt = _CardDebt(on_change=core._save_state)
     core._state_restored = False
-    core.attention = type("A", (), {"store": AttentionStore(tmp_path / "attention.db")})()
+    core.state_store = AttentionStore(tmp_path / "attention.db")
     return core
 
 
@@ -212,15 +261,47 @@ def test_存进去再读回来_走真库(tmp_path):
 
 
 def test_拿不到_store_时不炸也不算已恢复(tmp_path):
-    """attention 比 Nox.__init__ 晚造出来，头几轮可能还没有。"""
+    """store 比 Nox.__init__ 晚挂上来，头几轮可能还没有。"""
     core = Nox.__new__(Nox)
     core.mood = Mood()
     core.card_debt = _CardDebt()
     core._state_restored = False
-    # attention 还没挂上
+    # state_store 还没挂上
     core._restore_state_once()
     assert core._state_restored is False, "没读成却标记成已恢复，后面就再也不试了"
     core._save_state()  # 不该抛
+
+
+def test_create_app_真的把_store_挂上来了(tmp_path, monkeypatch):
+    """🔴 上面那些测试全绿，线上却一个字都没存下来（2026-09-14 实录）。
+
+    根因：`_state_store()` 原本写的是 `getattr(self, "attention", None).store`，
+    照抄 `ResonanceProvider(attention_ref=...)` 的写法 —— 而 **`attention` 是
+    `create_app` 的局部变量，全仓没有任何地方把它挂到 core 上**，那个取值恒为 None。
+    落盘一次都没发生，**而且一个错都不报**。
+
+    上面所有测试都手工 `core.state_store = ...`，等于把接线这一步假设掉了
+    （`cordis-inject-fails-at-runtime` 那个形状）。所以必须有这么一条：
+    **真跑 `create_app`，从 core 那一侧断言它够得着 store。**
+
+    能挡什么：挂载被删/改名/挪走。
+    挡不住什么：`NOX_ATTENTION` 关着时的部署（那时本来就没有 store，落盘不发生是对的）。
+    """
+    monkeypatch.setenv("NOX_ATTENTION", "1")
+    monkeypatch.delenv("NOX_ATTENTION_LIVE", raising=False)
+
+    core = _AppCore(tmp_path)
+    store = Store(tmp_path / "sessions.db")
+    try:
+        create_app(core, store)
+        assert getattr(core, "state_store", None) is not None, (
+            "create_app 跑完了，core 还是够不着 source_state —— 落盘永远不会发生"
+        )
+        # 不只是"有个对象"，得真能读写
+        core.state_store.set_source_state("test-wiring", {"ok": 1})
+        assert core.state_store.get_source_state("test-wiring") == {"ok": 1}
+    finally:
+        store.close()
 
 
 def test_第一轮就把情绪接回来_走真的_dynamic(tmp_path):
@@ -266,6 +347,6 @@ def test_落盘用的是那张共用的_source_state_表(tmp_path):
     # 键写死在这里（不是引用 STATE_KEY）：用常量的话改名两边一起改，
     # 断言恒成立 —— 又一个空断言。写死才挡得住"悄悄挪到别的键/别的表"
     assert STATE_KEY == "personality.state"
-    raw = core.attention.store.get_source_state("personality.state")
+    raw = core.state_store.get_source_state("personality.state")
     assert raw is not None, "personality.state 这个键下什么都没有"
     assert "mood" in raw and "card_debt" in raw

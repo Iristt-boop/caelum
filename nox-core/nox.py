@@ -689,13 +689,19 @@ class Nox:
     # ------------------------------------------------------------ 跨重启的状态
 
     def _state_store(self):
-        """拿 attention 的 `source_state` 表。拿不到返回 None。
+        """拿 `source_state` 表。拿不到返回 None。
 
-        ⚠️ 必须每次现取，不能在 `__init__` 里存下来 —— attention 是
-        `api/server.py:_build_attention` 造的，比 `Nox.__init__` 晚
-        （同 ResonanceProvider 的 `attention_ref`、luckin 的 `store_ref`）。
+        ⚠️ 必须每次现取，不能在 `__init__` 里存下来 —— 它是
+        `api/server.py` 建完 attention 之后挂上来的，比 `Nox.__init__` 晚。
+
+        🔴 **不要写成 `getattr(self, "attention", None).store`**（2026-09-14 踩过）。
+        `attention` 是 `create_app` 的局部变量，**全仓没有任何地方把它挂到 core 上**，
+        所以那个写法在线上恒为 None —— 落盘一次都不会发生，而且**一个错都不报**。
+        我照着 `ResonanceProvider(attention_ref=...)` 抄的，那条本身就是坏的
+        （见 `api/server.py` 挂 `state_store` 那段的注释）。
+        单测全绿、线上 6 轮对话一个字都没存下来，就是这么来的。
         """
-        return getattr(getattr(self, "attention", None), "store", None)
+        return getattr(self, "state_store", None)
 
     def _restore_state_once(self) -> None:
         """第一次用到情绪之前，把上个进程留下的状态接回来。

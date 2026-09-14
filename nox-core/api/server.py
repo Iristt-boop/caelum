@@ -783,6 +783,20 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
     if attention is not None:
         attention.link = local_hand
 
+        #: 🔴 跨重启的状态要落在 attention 的 `source_state` 表里（债 5）。
+        #:
+        #: **只借 store，不写 `core.attention = attention`** —— 后者看着更自然，
+        #: 但它会同时把 `ResonanceProvider` / `UnderstandingProvider` 的
+        #: `attention_ref` 从"永远 None"变成"真有值"，等于当场打开两个
+        #: **从没在线上跑过**的 Provider，他的语气会当轮就变。那是一个
+        #: 要她点头的决定，不是落盘顺手带的。
+        #:
+        #: ⚠️ `attention` 在这里是 `create_app` 的**局部变量**，
+        #: 全仓没有任何地方把它挂到 core 上（2026-09-14 查证）——
+        #: 所以 `getattr(self, "attention", None)` 这个写法在线上恒为 None。
+        #: 抄它的人（包括我）会得到一个永远不执行的分支，而且不报错。
+        core.state_store = attention.store
+
     def _world():
         """World Model 的唯一取法。
 
