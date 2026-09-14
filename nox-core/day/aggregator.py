@@ -40,7 +40,7 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-LOCAL_TZ = timezone(timedelta(hours=8))
+from temporal import LOCAL_TZ  # noqa: E402  ← 唯一定义在 temporal.py（审计 F1）
 TZ_NAME = "Asia/Shanghai"
 
 #: 两条消息隔多久算「另一段对话」。20 分钟是拍的，

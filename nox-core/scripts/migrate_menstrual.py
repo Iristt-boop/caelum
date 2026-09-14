@@ -40,7 +40,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from world_model import WorldModel  # noqa: E402
 
-LOCAL_TZ = timezone(timedelta(hours=8))
+from temporal import LOCAL_TZ  # noqa: E402  ← 唯一定义在 temporal.py（审计 F1）
 HEALTH_DB = "/root/data/health.db"
 WORLD_DB = "/root/nox-core/data/world.db"
 

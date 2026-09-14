@@ -362,5 +362,13 @@ def test_今天昨天按日历天算不按小时差():
     assert _humanize(cst(14, 2), cst(14, 23)) == "今天", "同一天被说成昨天"
     # 跨天：CST 昨晚 23:00 → 今早 09:00（10 小时）
     assert _humanize(cst(13, 23), cst(14, 9)) == "昨天", "隔了一天被说成今天"
-    # 再往前
-    assert _humanize(cst(11, 12), cst(14, 12)) == "3 天前"
+    # 再往前 —— 2026-09-14 起和 timeline 共用同一张词表（审计 F6）。
+    # 措辞有两处变化，都落在 speaker 的 7 天窗口内：
+    #   「2 天前」→「前天」   「3 天前」→「3天前」（少一个空格）
+    # 断言写死新口径，就是为了下次有人再分叉时这里会红
+    assert _humanize(cst(12, 12), cst(14, 12)) == "前天"
+    assert _humanize(cst(11, 12), cst(14, 12)) == "3天前"
+
+    # 和 timeline 那侧必须逐字相同 —— 两套并一套的意义就在这
+    from temporal import humanize
+    assert _humanize(cst(11, 12), cst(14, 12)) == humanize(3)

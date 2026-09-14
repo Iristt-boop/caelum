@@ -66,7 +66,7 @@ logger = logging.getLogger(__name__)
 #: ZoneInfoNotFoundError —— Linux 有系统时区库所以线上不会暴露，
 #: 但开发机上连测试都跑不起来（2026-08-08 踩过）。
 #: 中国 1991 年之后不实行夏令时，UTC+8 是恒定的，固定 offset 永远正确。
-LOCAL_TZ = timezone(timedelta(hours=8), "CST")
+from temporal import LOCAL_TZ  # noqa: E402  ← 唯一定义在 temporal.py（审计 F1）
 
 #: 两次主动开口之间至少隔多久
 BASE_INTERVAL = timedelta(hours=3)

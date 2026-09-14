@@ -49,7 +49,7 @@ logger = logging.getLogger(__name__)
 STATE_KEY = "care.ledger"
 
 #: 中国时区。账本按它换天
-LOCAL_TZ = timezone(timedelta(hours=8))
+from temporal import LOCAL_TZ  # noqa: E402  ← 唯一定义在 temporal.py（审计 F1）
 
 #: 三种决策 + 一种故障
 SPEAK = "speak"

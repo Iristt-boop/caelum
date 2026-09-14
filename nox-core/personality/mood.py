@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 #
 # 用固定偏移而不是 ZoneInfo("Asia/Shanghai")：Windows 上 zoneinfo 要额外装
 # tzdata，少一个依赖少一处会炸的地方。中国不用夏令时，+8 永远成立。
-CST = timezone(timedelta(hours=8))
+from temporal import CST  # noqa: E402  ← 唯一定义在 temporal.py（审计 F1）
 
 
 def now_cst() -> datetime:

@@ -45,7 +45,7 @@ WEEKDAY_THEMES: dict[int, tuple[str, str]] = {
 #: 学习信号的关键词。待办文本命中任一就算「学习相关」（全是她自己的原话）。
 _STUDY_HINTS = ("哲学", "西语", "英语", "单词", "书", "课", "学", "尼采")
 
-CST = timezone(timedelta(hours=8))
+from temporal import CST  # noqa: E402  ← 唯一定义在 temporal.py（审计 F1）
 
 
 def _cst(now: datetime) -> datetime:

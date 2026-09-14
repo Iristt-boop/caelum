@@ -47,7 +47,7 @@ from attention.intent import TRIGGERED, Intent
 from attention.scheduler import LOCAL_TZ, SchedulerDecision
 # 时段划分和历史的日期分隔线共用同一份（`context/timeline.py`）——
 # 两边口径必须一致，他才对得上「历史那句是几小时前说的」
-from context.timeline import slot_of
+from temporal import relative, slot_of
 from planner.push import finalize_push_text
 
 logger = logging.getLogger(__name__)
@@ -136,24 +136,16 @@ _WEEKDAYS = ["周一", "周二", "周三", "周四", "周五", "周六", "周日
 
 
 def _humanize(when: datetime, now: datetime) -> str:
-    """「昨天晚上」比「2026-08-10T21:14:03+00:00」有用得多。
+    """相对时间统一走 `temporal.relative`（2026-09-14，审计 F6）。
 
-    🔴 **按日历天算，不按小时差**（2026-09-14 修）。
-    原来是 `hours < 20 → 今天 / hours < 44 → 昨天`，那会算错两头：
+    这里原来自己写了一套，而且是**按小时差**算的（`hours < 20 → 今天`）——
+    那不是边界 bug，是错的时间模型：「昨天」是日历概念。
+    23:59→00:01 过了两分钟就已经是昨天；02:00→23:00 过了 21 小时仍然是今天。
 
-      · 她凌晨 2 点说的话，当天 23 点回看 = 21 小时 → 报「昨天」，**而那是同一天**
-      · 昨晚 23 点的话，今早 9 点看 = 10 小时 → 报「今天」，**而那是昨天**
-
-    日历天没有这个问题，而且和历史里的日期分隔线口径一致
-    （都换算到 CST 再比 —— 库里是 UTC，不换算的话她晚上 8 点之后
-    说的话会被算成第二天，那正是她最常聊天的时段）。
+    合并后措辞有两处小变化（都落在它的 7 天窗口内）：
+    「2 天前」→「前天」、「3 天前」→「3天前」。两边现在共用一张词表。
     """
-    days = (now.astimezone(LOCAL_TZ).date() - when.astimezone(LOCAL_TZ).date()).days
-    if days <= 0:
-        return "今天"
-    if days == 1:
-        return "昨天"
-    return f"{days} 天前"
+    return relative(when, now)
 
 
 def _clock_with_date(now: datetime) -> str:

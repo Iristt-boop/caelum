@@ -59,26 +59,14 @@ from typing import Iterable
 
 from agent.llm import Message
 from personality.mood import CST, now_cst
+from temporal import humanize, relative, slot_of  # noqa: F401  ← re-export，定义在 temporal.py
 
 _WEEKDAYS = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
 
-#: 时段划分的**唯一出处**。`context/providers/time.py` 从这里取，
-#: 别在那边再写一份 —— 两处写迟早会出现「历史说下午、【此刻】说晚上」。
-#: 边界按糖糖的真实作息，不是常识里的早中晚（她凌晨 1-2 点睡、9-11 点起）。
-SLOTS = [
-    (5, 12, "morning", "上午"),
-    (12, 18, "afternoon", "下午"),
-    (18, 23, "evening", "晚上"),
-]
-
-
-def slot_of(hour: int) -> tuple[str, str]:
-    """小时 → (英文槽位, 中文槽位)。落在表外的都是深夜。"""
-    for lo, hi, en, cn in SLOTS:
-        if lo <= hour < hi:
-            return en, cn
-    return "late_night", "深夜"
-
+#: 时段划分和相对时间都从 `temporal` 取（2026-09-14，审计 F1/F6）。
+#: 这里 re-export 只是为了不改动下游的 import —— **定义只有一份**。
+#: 原来这份是 09-14 当天从 `providers/time.py` 搬过来的，
+#: 搬完当天就发现该搬得更远：它不属于 Context 层，属于时间语义层。
 
 #: 同一天里隔多久就重新报一次时间。
 #:
@@ -178,33 +166,6 @@ def with_dates(rows: Iterable[tuple[str, str | None, str | None]]) -> list[Messa
 # 只给**每次都重新生成**的东西用：工具结果（记忆检索）和 dynamic_system。
 # 那两个不进缓存前缀，也不会冻在历史里，所以相对时间在这里是安全的。
 # 绝不要拿它去改历史消息 —— 理由见本文件开头那两条。
-
-
-def humanize(days: int) -> str:
-    """把「几天前」说成人话。
-
-    粒度是**故意粗的**：她问「美甲是什么时候做的」，
-    「上周」比「7 天前」更像人说的话。真要精确，绝对日期就在旁边。
-    """
-    if days < 0:
-        return "以后"
-    if days == 0:
-        return "今天"
-    if days == 1:
-        return "昨天"
-    if days == 2:
-        return "前天"
-    if days < 7:
-        return f"{days}天前"
-    if days < 14:
-        return "上周"
-    if days < 30:
-        return f"{days // 7}周前"
-    if days < 60:
-        return "上个月"
-    if days < 365:
-        return f"{days // 30}个月前"
-    return f"{days // 365}年多前"
 
 
 #: 记忆正文里出现过的所有日期写法（实际抓线上数据看出来的，不是猜的）：
