@@ -45,6 +45,9 @@ from typing import Any, Callable, Protocol
 
 from attention.intent import TRIGGERED, Intent
 from attention.scheduler import LOCAL_TZ, SchedulerDecision
+# 时段划分和历史的日期分隔线共用同一份（`context/timeline.py`）——
+# 两边口径必须一致，他才对得上「历史那句是几小时前说的」
+from context.timeline import slot_of
 from planner.push import finalize_push_text
 
 logger = logging.getLogger(__name__)
@@ -129,14 +132,40 @@ def _spoken_recently(store: Any, subject: str, now: datetime) -> tuple[int, date
     return len(stamps), max(stamps) if stamps else None
 
 
+_WEEKDAYS = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
+
+
 def _humanize(when: datetime, now: datetime) -> str:
-    """「昨天晚上」比「2026-08-10T21:14:03+00:00」有用得多。"""
-    hours = (now - when).total_seconds() / 3600
-    if hours < 20:
+    """「昨天晚上」比「2026-08-10T21:14:03+00:00」有用得多。
+
+    🔴 **按日历天算，不按小时差**（2026-09-14 修）。
+    原来是 `hours < 20 → 今天 / hours < 44 → 昨天`，那会算错两头：
+
+      · 她凌晨 2 点说的话，当天 23 点回看 = 21 小时 → 报「昨天」，**而那是同一天**
+      · 昨晚 23 点的话，今早 9 点看 = 10 小时 → 报「今天」，**而那是昨天**
+
+    日历天没有这个问题，而且和历史里的日期分隔线口径一致
+    （都换算到 CST 再比 —— 库里是 UTC，不换算的话她晚上 8 点之后
+    说的话会被算成第二天，那正是她最常聊天的时段）。
+    """
+    days = (now.astimezone(LOCAL_TZ).date() - when.astimezone(LOCAL_TZ).date()).days
+    if days <= 0:
         return "今天"
-    if hours < 44:
+    if days == 1:
         return "昨天"
-    return f"{int(hours / 24)} 天前"
+    return f"{days} 天前"
+
+
+def _clock_with_date(now: datetime) -> str:
+    """「9月14日 周日 下午15:28」—— 和历史里的日期分隔线同一个口径。
+
+    两边对得上他才算得出「她那句话是几小时前说的」：
+    历史那行说「（9月14日 周日 上午10点）」，这里说今天是 9月14日，
+    两个绝对值一减就是答案。少任何一边他都只能猜。
+    """
+    d = now.astimezone(LOCAL_TZ)
+    _, slot_cn = slot_of(d.hour)
+    return f"{d.month}月{d.day}日 {_WEEKDAYS[d.weekday()]} {slot_cn}{d:%H:%M}"
 
 
 def build_prompt(intent: Intent, decision: SchedulerDecision,
@@ -150,7 +179,11 @@ def build_prompt(intent: Intent, decision: SchedulerDecision,
     return _PROMPT.format(
         subject=intent.subject,
         reason=intent.reason,
-        clock=now.astimezone(LOCAL_TZ).strftime("%H:%M"),
+        # ⚠️ **带日期，不能只给时分**（2026-09-14）。
+        # 原来只有 "14:27" —— 他手上没有"今天是哪天"，于是历史里她上午说的
+        # 「今天不去，明天再去」会被当成前一天的话，下午就来一句
+        # 「昨天你说了今天去」。她报了这个 bug，而且说日常聊天里也一样。
+        clock=_clock_with_date(now),
         fit_why=decision.reason or "现在适合说这个",
         repeat=repeat,
     )
