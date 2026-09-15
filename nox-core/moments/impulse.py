@@ -46,6 +46,8 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 
+from moments import DRIVE_WORDS
+
 #: 过这个数才算「想发」。
 #: 🔴 0.45 这个数是**挑出来的，不是拍的**：线上实测最强的 drive 是 longing 0.40
 #: （2026-09-14 /api/nox/resonance）。也就是说**任何单独一条 drive，
@@ -85,22 +87,6 @@ def combine(xs: Iterable[float]) -> float:
     return 1.0 - remain
 
 
-#: drive 名 → 人话。**只影响 why 怎么读**，一个字节都不参与算分。
-#:
-#: 和 `context/providers/resonance.py` 的 `_WORDS` 是同一批词，
-#: 但故意不 import 那边 —— 思考层不该伸手进上下文组装层拿一张词表。
-#: 认不出来的 drive **原样打印**：以后加新 drive 不用回来改这里，
-#: 也不会因为漏了一条就拼出半句话。
-_WORDS = {
-    "longing": "想她",
-    "playfulness": "想逗她",
-    "regret": "过意不去",
-    "dejection": "提不起劲",
-    "concern": "担心她",
-    "curiosity": "被一件事勾着",
-}
-
-
 def _lead(drives: Mapping[str, float]) -> str:
     """压着的几件事里最重的那件，怎么说成人话。
 
@@ -110,7 +96,9 @@ def _lead(drives: Mapping[str, float]) -> str:
     if not drives:
         return "心里没事"
     name, intensity = max(drives.items(), key=lambda kv: kv[1])
-    return f"{_WORDS.get(name, name)} {intensity:.2f} 领头"
+    #: 词表在 `moments/__init__.py`（T4 搬上去的）：这里和 `writer.py`
+    #: 必须走同一张，认不出来的 drive 原样打印。
+    return f"{DRIVE_WORDS.get(name, name)} {intensity:.2f} 领头"
 
 
 def _why(drives: Mapping[str, float], *,

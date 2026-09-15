@@ -31,3 +31,22 @@ Moments 接的就是掉在阈值底下的那些 —— 所以这里算的是
   2. **drives 只读。** 从现成的 `attention.drives()` 拿，绝不回写 Registry
      （`attention/resonance.py` 的三条边界）。
 """
+
+#: drive 名 → 人话。**只影响怎么说**，一个字节都不参与算分。
+#:
+#: 这张表原来私有在 `impulse.py` 里（`_WORDS`），T4 把它搬上来变成公共的：
+#: `writer.py` 也要用同一张 —— 帖子里的气氛词和 `why` 里的称呼各留一份
+#: 必然各自漂移（帖子里说「想她」、日志里说「想老婆」），而测试只盯得住一份。
+#:
+#: 和 `context/providers/resonance.py` 的 `_WORDS` 是同一批词，
+#: 但故意不 import 那边 —— 思考层不该伸手进上下文组装层拿一张词表。
+#: 认不出来的 drive **原样打印**：以后加新 drive 不用回来改这里，
+#: 也不会因为漏了一条就拼出半句话。
+DRIVE_WORDS = {
+    "longing": "想她",
+    "playfulness": "想逗她",
+    "regret": "过意不去",
+    "dejection": "提不起劲",
+    "concern": "担心她",
+    "curiosity": "被一件事勾着",
+}
