@@ -89,6 +89,8 @@ scratch/CcCompanion/
 **/*.log
 logs/
 .playwright-mcp/
+#: codex-dev（Zcode）的会话台账，每次派活都会写 —— 是本机状态，不是仓库内容
+.mcp/
 
 #: 手工备份的历史版本（server.js.bak-20260724 那种）。
 #: 接了 git 之后这套就不需要了，但先留在盘上，只是不进库
