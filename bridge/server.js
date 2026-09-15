@@ -318,6 +318,13 @@ db.run(`CREATE TABLE IF NOT EXISTS diary (
 db.run(`CREATE TABLE IF NOT EXISTS diary_comments (
   id TEXT PRIMARY KEY, diary_id TEXT, author TEXT, text TEXT, created_at TEXT
 )`);
+// 2026-09-15 Moments（Nox 的自我表达层）三列 —— 见 Caelum-Moments-设计.md 第二节。
+// 旧帖一行都不迁：kind 默认 'diary'，ALTER 会把已有行直接填上默认值。
+// ⚠️ drive 不能拿 mood 列凑 —— mood 是她写日记时自己选的心情，
+//    drive 是他发帖那一刻的心理背景，语义不同，两列并存。
+dbTry(`ALTER TABLE diary ADD COLUMN kind TEXT DEFAULT 'diary'`)
+dbTry(`ALTER TABLE diary ADD COLUMN drive TEXT DEFAULT ''`)
+dbTry(`ALTER TABLE diary ADD COLUMN impulse_why TEXT DEFAULT ''`)
 // 本地 books / book_annotations 两张表 2026-08-05 删了。
 // 书架实际走共读代理（/api/reading/* → co-reading:3100，BookReader 用 /reading/...），
 // 这套本地表 2026-07 就没人读了，只留了一张永远空的表和三四个死端点。
@@ -1851,17 +1858,56 @@ app.get("/api/diary", (req, res) => {
 });
 
 app.post("/api/diary", (req, res) => {
-  const { date, mood, content, author } = req.body;
+  const { date, mood, content, author, kind, drive, impulse_why } = req.body;
   if (!content) return res.status(400).json({ error: "content required" });
   const id = randomUUID();
   const now = new Date().toISOString();
   const time = now.slice(11, 16);
   // author 缺省是糖糖（前端就这么用的）。Core 的 write_diary 会传 Nox
   const who = author === "Nox" ? "Nox" : "糖糖";
-  dbRun(`INSERT INTO diary (id, date, time, mood, author, body, created_at) VALUES (?,?,?,?,?,?,?)`, [id, date || now.slice(0,10), time, mood || "平静", who, content, now]);
+  // kind 是**白名单**：只有小写 moment 是他自发的帖，其余一律是日记。
+  // 反过来写成"不是 moment 就是别的"的话，前端随手传个值就能造出第三种
+  // kind —— 两个视图谁都认不出来，帖子就沉底了。
+  const postKind = kind === "moment" ? "moment" : "diary";
+  // 非字符串一律当没给（数字/对象直接进 SQLite 会变成 "1"/"[object Object]"，审计时看不出来）
+  const text = (v) => (typeof v === "string" ? v : "");
+  dbRun(`INSERT INTO diary (id, date, time, mood, author, body, created_at, kind, drive, impulse_why) VALUES (?,?,?,?,?,?,?,?,?,?)`, [id, date || now.slice(0,10), time, mood || "平静", who, content, now, postKind, text(drive), text(impulse_why)]);
+  // Moments 也走这一条：他的 moment 是他自己发的，评论该由她来留，
+  // 程序替他配一条就是自问自答（她评他回见 /api/diary/:id/comment）
   // 只给糖糖的日记配 AI 评论 —— 他自己写的那条再触发就是自问自答
   if (who === "糖糖") triggerAiComment(id, content, "diary");
   res.json({ id, ok: true });
+});
+
+// 🕒 Moments 时间流（2026-09-15）。
+//
+// **两个视图看同一张表**：这里是「他的帖 + 她的日记」混在一起的无限流，
+// 上面 `GET /api/diary` 是月历视图。所以这条**不按 kind 过滤** ——
+// 一过滤她在 Moments 里就只剩自己的日记，这个页面就没有存在的意义了。
+app.get("/api/moments", (req, res) => {
+  // limit：默认 20，夹在 1..50。非数字（parseInt → NaN）当没传 ——
+  // 前端传个 "abc" 不该让整页空白，也不该让一次请求把整张表拖出来
+  const asked = Number.parseInt(req.query.limit, 10);
+  const limit = Number.isFinite(asked) ? Math.min(50, Math.max(1, asked)) : 20;
+  // 游标是**严格小于**：翻页时本页最后那条已经在上一页给过她了，
+  // 写成 <= 的话每翻一页都会先看到她刚看完的那条
+  const where = [];
+  const params = [];
+  if (req.query.before) { where.push("created_at < ?"); params.push(req.query.before); }
+  // 不传 author 就是两个人的都返回 —— 「全都流」是默认行为，不是特例
+  if (req.query.author) { where.push("author = ?"); params.push(req.query.author); }
+  // 时间流：最新在前。和上面日记接口的 ASC + ?month= 是两回事（那是月历），别复用。
+  const items = dbAll(
+    `SELECT * FROM diary${where.length ? " WHERE " + where.join(" AND ") : ""} ORDER BY created_at DESC LIMIT ?`,
+    [...params, limit]
+  );
+  // 每条附上评论（同 GET /api/diary）
+  for (const e of items) {
+    e.comments = dbAll("SELECT * FROM diary_comments WHERE diary_id=? ORDER BY created_at ASC", [e.id]);
+  }
+  // 满页才可能有下一页；不满就到底了，nextBefore 给 null 前端才停得下来
+  const nextBefore = items.length === limit ? items[items.length - 1].created_at : null;
+  res.json({ items, nextBefore });
 });
 
 app.post("/api/diary/:id/comment", async (req, res) => {
