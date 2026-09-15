@@ -94,6 +94,9 @@ from world_model import WorldModel
 from config import BACKENDS, is_test_session
 from topic_pool import TopicPool, run_topic_loop
 from topic_pool.pool import DEFAULT_SCOUT_INTERVAL_S
+#: Moments（T6，`moments/loop.py`）—— 取模块名而不是那几个函数：
+#: `mode()` 要**每轮现读**，这样 shadow 转 on 只改环境变量 + 重启就生效
+from moments import loop as moments_loop
 from attention.store import AttentionStore
 from temporal import now as temporal_now
 from temporal import extract as temporal_extract
@@ -714,12 +717,99 @@ def _build_attention(core: Nox, sessions: "Sessions", db: Store) -> AttentionSer
         return None
 
 
+def _build_moments(core: Any, attention: Any, meter: Any) -> dict | None:
+    """Moments 的接线。**关掉 / 缺件就返回 None**，调用方据此决定起不起循环。
+
+    做成独立函数是为了能单独测 —— 抄 `_build_attention` 的先例
+    （见 `tests/test_attention_wiring.py` 开头那段：只在线上活的分支，
+    本地测不到就等于没写）。
+
+    ## 缺件宁可不起，不许起一个半残的循环
+
+    返回的字典直接 `run_post_loop(**parts)`，五件缺一样都不行：
+
+        store       attention.store —— 跨重启的计数（`source_state["moments"]`）
+        attention   drives 从这儿来（`_read_drives` 只读它）
+        adapter_ref utility 模型 —— 正文是它写的
+        bridge      帖子落在她电脑上那只手里
+        sessions    会话库 —— 「今天聊了几句」是从它的 `messages_between` 数的
+
+    少一件的表现都不是报错：少 bridge 是每轮 `write_failed`、少 sessions 是
+    `turns_today` 恒 0（今天聊得再多也照发），少 utility 是正文生不出来。
+    所以缺件一律 `logger.warning` + None，让 `/health` 和日志能回答
+    「它为什么没跑」。`meter` 是**唯一**可以缺的一件：`agent/meter.py`
+    的规矩是「没接 = 不记账，行为完全不变」，它不该成为第六个必需件。
+
+    ## 🔴 这一层不许碰的东西（设计文档第一节）
+
+      · **不走 `Orchestrator._deliver`、不碰 push/send、不占 Care 的每日配额、
+        不吃 gate 冷却。** 发帖不推送、不弹锁屏，**它不是开口**（R1 管的是开口）。
+        哨兵 R10 盯着（T7 加）。
+      · **只读 attention**：`post_tick` 只调 `attention.drives()` 和读
+        `attention.longing.last_contact`，绝不写 Registry、绝不调
+        `resonance.snapshot`（`attention/resonance.py` 的三条边界）。
+
+    🔴 整段都在 try 里，连 `core.router` 这种「看着不会失败的属性访问」也算 ——
+    2026-08-08 那次 `core.context.get("health")` 的 AttributeError 一次干掉
+    22 个测试，而且**只在线上活**（本地没开那个环境变量）。
+    """
+    if moments_loop.mode() == "off":
+        logger.debug("Moments 是 off（NOX_MOMENTS 没开），这条线不跑")
+        return None
+
+    try:
+        if attention is None:
+            logger.info("Moments 需要 attention 引擎（drives 从那儿来），这次不起")
+            return None
+
+        utility = core.router.light_adapter if core.router else None
+        if utility is None:
+            logger.warning("没有 utility 模型，Moments 不起")
+            return None
+        #: 贴任务名记账（同话题池 / 知识小课堂那两处）—— 不接 meter 就照常跑
+        if meter is not None:
+            utility = meter.tag(utility, "moments")
+
+        bridge = getattr(core, "bridge", None)
+        if bridge is None:
+            logger.warning("没配 bridge（NOX_BRIDGE_URL），Moments 不起：写了没地方落")
+            return None
+
+        #: `create_app` 里那个 `db`（会话库）。它是局部变量，够不着它 ——
+        #: 所以挂在 core 上取（同 `core.state_store` 那段的理由）。
+        #: ⚠️ 不在这儿新开一个 `Store(cfg.db_path)`：两个对象指着同一个
+        #: SQLite 文件，写入会互相看不见对方的缓存。
+        sessions = getattr(core, "session_store", None)
+        if sessions is None:
+            logger.warning("拿不到会话库（core.session_store），Moments 不起：数不出今天聊了几句")
+            return None
+
+        return {
+            "store": attention.store,
+            "attention": attention,
+            "adapter_ref": utility,
+            "bridge": bridge,
+            "sessions": sessions,
+        }
+    except Exception:  # noqa: BLE001
+        #: 🔴 Moments 是**附加层**：它起不来不该让他连话都说不了
+        logger.exception("Moments 接线失败，这条线不跑")
+        return None
+
+
 def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
     started = datetime.now(timezone.utc)
 
     # 允许注入，方便测试时传假的 / 传临时库
     core = nox or Nox()
     db = store or Store(core.cfg.db_path)
+    #: 会话库挂到 core 上（T6）。它是 `create_app` 的局部变量，
+    #: 而挂在这儿的**模块级**函数够不着它 —— `_build_moments` 的签名里
+    #: 没有 db，可 `post_tick` 的 `sessions=` 要的正是这个
+    #: `messages_between` 在它身上的库（「今天她说了几句」）。
+    #: 同 `core.state_store` 那段的理由：单独留一个名字，
+    #: 别让谁去拆 `Sessions` 的私有 `_store`。
+    core.session_store = db
     sessions = Sessions(
         db, history_limit=core.cfg.history_limit,
         recent_window_tokens=core.cfg.recent_window_tokens,
@@ -881,6 +971,28 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
                                     str(DEFAULT_SCOUT_INTERVAL_S)))
             heartbeat.declare("topic_scout", every_s=scout_s)
             tasks.append(asyncio.create_task(run_topic_loop(_pool_for_loop, scout_s)))
+        # Moments（T6，2026-09-15）—— 他自己房间里那块碎片。
+        #
+        # 🔴 **整段都在 try 里**，理由就是 `tests/test_attention_wiring.py`
+        # 开头记的那次（2026-08-08）：接线里一个 `AttributeError`
+        # 把整个 Core 拖挂了，而且**只在线上活** —— 本地没开那个环境变量，
+        # 这段代码根本不执行，测试全绿。
+        # Moments 是个附加层：它起不来不该让他连话都说不了。
+        try:
+            _moments = _build_moments(core, attention, meter)
+            if _moments is not None:
+                # 🔴 **先 declare 再起循环**（审计 1.4）：只在 beat 时才登记的
+                # 话，一条从没成功过的循环在台账里根本不存在 ——
+                # 而「它一次都没跑起来」正是最该看见的那种坏。
+                # `off` 的时候连 declare 都不调（这条线本来就不该占台账一行）
+                moments_loop.declare_heartbeat()
+                moments_s = int(os.getenv(
+                    "NOX_MOMENTS_INTERVAL_S", str(moments_loop.TICK_SECONDS)))
+                tasks.append(asyncio.create_task(
+                    moments_loop.run_post_loop(**_moments, interval_s=moments_s)))
+                logger.info("Moments 循环启动：mode=%s", moments_loop.mode())
+        except Exception:  # noqa: BLE001
+            logger.exception("Moments 接线失败，这条线不跑")
         try:
             yield
         finally:

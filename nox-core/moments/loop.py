@@ -52,7 +52,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import os
 import random
 from collections.abc import Mapping
 from datetime import datetime, timezone
@@ -83,6 +85,31 @@ STATE_KEY = "moments"
 TICK_SECONDS = 900
 #: 心跳台账里的活计名。declare 过之后看门狗自动覆盖它
 HEARTBEAT_JOB = "post_tick"
+
+#: 开关。默认 off —— 先发代码零行为变化，再开 shadow 看节奏，节奏对了才 on。
+#: 糖糖定的两步走（设计文档第七节）：**别合并**这三步。
+#:
+#:     off     不跑（默认）：`post_tick` 第一个判断就 return None
+#:     shadow  跑，只记日志，不落帖（`record.py` 的三段式是它的出口）
+#:     on      跑，接消费方（writer → bridge）
+#:
+#: ⚠️ 默认 off，和 `NOX_TEMPORAL` 同一个理由：它要花钱，而且行为还没被观察过。
+ENV = "NOX_MOMENTS"
+
+
+def mode() -> str:
+    """逐字照抄 `temporal/extract.py` 的 `mode()` 形状 —— 两处的开关读法要一样。
+
+    🔴 **每次现读**，不缓存：shadow 转 on 靠改环境变量 + 重启生效，
+    启动时读一次存下来的话，循环里那行日志说的就是「启动那一刻是什么模式」，
+    和此刻真正在做的事对不上。
+    """
+    v = os.getenv(ENV, "off").strip().lower()
+    if v in ("1", "on", "true", "yes"):
+        return "on"
+    if v == "shadow":
+        return "shadow"
+    return "off"
 
 
 # ---------------------------------------------------------------- 收信号
@@ -371,3 +398,66 @@ def post_tick(*, mode: str, store: Any, attention: Any, sessions: Any,
         dice=dice, dice_p=dice_p, posted=True, post_id=post_id,
         reason="", why_not_posted="",
     ))
+
+
+# ---------------------------------------------------------------- 循环
+
+
+async def run_post_loop(
+    *,
+    store: Any,
+    attention: Any,
+    sessions: Any,
+    bridge: Any,
+    adapter_ref: Any,
+    interval_s: int = TICK_SECONDS,
+) -> None:
+    """FastAPI `lifespan` 用的后台循环。**形状照抄 `run_care_loop`。**
+
+    `post_tick` 里有阻塞的 HTTP（打 bridge）和模型调用，所以丢线程池 ——
+    不丢的话这条循环会卡住整个事件循环（`attention/service.py` 开头
+    那条 async 边界的原话）。
+
+    ## 🔴 每一轮现读 `mode()`，不在启动时读一次存下来
+
+    shadow 转 on 靠「改环境变量 + 重启」生效；启动时读一次的话，
+    循环里那行日志说的是启动那一刻的模式，而 `post_tick` 真正在做的事
+    和它记下来的对不上。而且日志里要能看出**这一轮**是什么模式。
+
+    ## 🔴 这里**不 beat 心跳**
+
+    `post_tick` 内部已经 beat 过了（`_finish`，T5 的第 15 条盯着）。
+    在这儿再打一次就是**双计**：看门狗判的是「这条循环的节奏还在不在」，
+    计数翻倍会让那个判断跟着偏 —— 而它是**唯一**能看出「它是不是还活着」
+    的线（`obs/heartbeat.py` 开头）。
+
+    ## 边界（设计文档第一节）
+
+    发帖**不是开口**：这条路径不走 `Orchestrator._deliver`、
+    **不碰 push/send**、不占 Care 的每日配额、不吃 gate 冷却 ——
+    发帖不推送、不弹她的锁屏。哨兵 R10 盯着（T7 加）。
+    """
+    logger.info("Moments 循环启动：mode=%s，每 %s 秒一 tick", mode(), interval_s)
+    while True:
+        try:
+            await asyncio.sleep(interval_s)
+            #: 🔴 `mode()` 写在 lambda **里面**：每一轮真的去读一次环境变量。
+            #: 提到外面存成局部变量的话，这一行的语义就变了（见 docstring）
+            record = await asyncio.to_thread(
+                lambda: post_tick(
+                    mode=mode(), store=store, attention=attention,
+                    sessions=sessions, bridge=bridge, adapter_ref=adapter_ref,
+                )
+            )
+            #: `None` = 这一轮什么都没做（off / mode 不认识），不必记
+            if record is not None:
+                record.log(logger)
+        except asyncio.CancelledError:
+            logger.info("Moments 循环停止")
+            #: 原样往外抛 —— 吞了的话 `lifespan` 的 finally 等不到头，
+            #: 关机就挂在这儿
+            raise
+        except Exception:  # noqa: BLE001
+            #: 一轮炸了不该让这条线死掉：死了的表现是「他忽然不再想发帖了」，
+            #: 进程活着、日志干净。留 traceback，下一轮接着来
+            logger.exception("Moments 循环出错，下一轮继续")
