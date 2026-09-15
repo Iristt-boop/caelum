@@ -3,7 +3,7 @@ from playwright.sync_api import sync_playwright
 
 # 读 bridge 的 NOX_TOKEN（不打印）
 token = subprocess.run(
-    ["ssh", "-o", "ConnectTimeout=10", "root@43.133.211.140",
+    ["ssh", "-o", "ConnectTimeout=10", "root@43.153.154.237",
      "systemctl show bridge -p Environment | tr ' ' '\\n' | sed -n 's/^NOX_TOKEN=//p'"],
     capture_output=True, text=True).stdout.strip()
 

@@ -840,7 +840,7 @@ touch-server 现在要 token 了。**没更新 `wifi_secrets.h` 就刷固件，�
 ```c
 #define WIFI_SSID "你家WiFi名"
 #define WIFI_PASS "密码"
-#define VPS_URL "http://43.133.211.140:9333/touch/<TOUCH_TOKEN>"
+#define VPS_URL "http://43.153.154.237:9333/touch/<TOUCH_TOKEN>"
 ```
 
 （token 值在 VPS 的 `/etc/systemd/system/touch-server.service` 里。）
@@ -868,10 +868,10 @@ touch-server 现在要 token 了。**没更新 `wifi_secrets.h` 就刷固件，�
 > **一条重要判断**：先去轮换密钥，**不要先去清 git 历史**。清历史耗时、有风险，而且撤不回别人已经 clone 的那份；轮换只要几分钟就断了攻击者的路。顺序永远是 **先轮换，再清历史**。
 
 - [x] **0.0 收口 `touch-server:9333`（今晚 · 15min）** ← **唯一一条陌生人现在就能做到**
-  `http://43.133.211.140:9333/latest` 实测 **200 / 1214 字节 / 零鉴权** —— 你的身体接触记录公网匿名可读。
+  `http://43.153.154.237:9333/latest` 实测 **200 / 1214 字节 / 零鉴权** —— 你的身体接触记录公网匿名可读。
 
   🔴 **别直接去掉 `touch-server.service:13` 那行的注释就重启** —— **会打断你的娃娃**：
-  ESP32 固件里 `VPS_URL = "http://43.133.211.140:9333/touch"` 是**编译期硬编码**的（`fsr402-wifi.ino:17`），没有配置门户；而 `touch_server.py:35` 一旦设了 `TOUCH_TOKEN` 就要求 `/touch/<TOKEN>` 路径或 `X-Touch-Token` 头。设备两样都没有 → **触摸数据静默断掉，而且你不会立刻发现。**
+  ESP32 固件里 `VPS_URL = "http://43.153.154.237:9333/touch"` 是**编译期硬编码**的（`fsr402-wifi.ino:17`），没有配置门户；而 `touch_server.py:35` 一旦设了 `TOUCH_TOKEN` 就要求 `/touch/<TOKEN>` 路径或 `X-Touch-Token` 头。设备两样都没有 → **触摸数据静默断掉，而且你不会立刻发现。**
 
   **两条真的 15 分钟、且不碰固件的做法（选一个）：**
   - [x] **A（保功能）**：安全组把 9333 改成**只放行你家宽带 IP**。代价：家里 IP 变了要手动更新一次。
@@ -881,7 +881,7 @@ touch-server 现在要 token 了。**没更新 `wifi_secrets.h` 就刷固件，�
 
   **另立一条**（要碰硬件，别挤在今晚）：
   - [~] **0.0b 加 token + 重刷 ESP32**（1h，需要 USB 碰得到板子）
-        改 `fsr402-wifi.ino:17` 的 `VPS_URL` → `http://43.133.211.140:9333/touch/<TOKEN>`，同时 unit 里启用 `TOUCH_TOKEN`。做完之后 A 方案的 IP 白名单就可以撤了。
+        改 `fsr402-wifi.ino:17` 的 `VPS_URL` → `http://43.153.154.237:9333/touch/<TOKEN>`，同时 unit 里启用 `TOUCH_TOKEN`。做完之后 A 方案的 IP 白名单就可以撤了。
 
 - [x] **0.1 ~~修异地备份的引号 bug~~**（✅ 2026-09-11 代码已改，**待你跑一次验证**）
   `scripts/pull-vps-backup.cmd` 一共改了三处：

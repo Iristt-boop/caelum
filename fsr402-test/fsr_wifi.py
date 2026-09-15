@@ -35,7 +35,7 @@ try:
 except ImportError:
     WIFI_SSID = ""
     WIFI_PASS = ""
-VPS_HOST  = "43.133.211.140"     # VPS IP（腾讯云东京）
+VPS_HOST  = "43.153.154.237"     # VPS IP（腾讯云东京）
 VPS_PORT  = 9333                 # touch-server 端口
 # ═════════════════════════════════════════
 

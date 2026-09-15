@@ -235,7 +235,7 @@ netease-mcp.noxtang.com
 
 ```text
 Stack-chan (ESP32-S3)
-  └─ ws://43.133.211.140:8010/xiaozhi/v1/     ← Docker 容器 xiaozhi-esp32-server
+  └─ ws://43.153.154.237:8010/xiaozhi/v1/     ← Docker 容器 xiaozhi-esp32-server
       ├─ ASR   Qwen3ASRFlash（阿里百炼）
       ├─ LLM   DeepSeekLLM
       ├─ TTS   ElevenLabs
@@ -248,7 +248,7 @@ Stack-chan (ESP32-S3)
 
 ```text
 共感娃娃 (ESP32-S3 + FSR402 压力传感 ×5)
-  └─ POST http://43.133.211.140:9333/touch     ← touch-server 接收
+  └─ POST http://43.153.154.237:9333/touch     ← touch-server 接收
       └─ 写 /root/touch-server/data/touch_moments.jsonl
           └─ touch-mcp:9336 读 jsonl 提供「查触摸记录」工具
               └─ Caddy /touch/<token>/mcp → claude.ai（见第三十一节）
@@ -295,7 +295,7 @@ noxtang.com 的前端、TTS/STT、共读代理；Nox Core 只负责"想清楚该
 
 | 项目 | 值 |
 |---|---|
-| IP | `43.133.211.140` |
+| IP | `43.153.154.237` |
 | 地域 | **腾讯云轻量 · 东京** |
 | 规格 | 2 核 / 3.6G 内存 / 60G 磁盘（已用 38%）/ 30Mbps |
 | 系统 | Ubuntu 22.04.5 LTS，内核 5.15.0-181 |
@@ -415,7 +415,7 @@ SQLite `todos` 表，GitHub 那份 `todo.md` 2026-08-18 就退役为只读存档
 
 糖糖配 iPhone 快捷指令时要填的 token 是 `HEALTH_SYNC_TOKEN`，在服务器上看：
 ```bash
-ssh root@43.133.211.140 "grep HEALTH_SYNC_TOKEN /root/health-mcp/.env"
+ssh root@43.153.154.237 "grep HEALTH_SYNC_TOKEN /root/health-mcp/.env"
 ```
 
 ## 五、Caddy 当前配置（2026-08-02 从线上 `/etc/caddy/Caddyfile` 抄回）
@@ -1203,14 +1203,14 @@ npm run build
 $k = "C:\Users\14372\.ssh\id_ed25519"
 
 # 上传 bridge
-scp -i $k "D:\claude-code\bridge\server.js" root@43.133.211.140:/root/bridge/server.js
-ssh -i $k root@43.133.211.140 "systemctl restart bridge"
+scp -i $k "D:\claude-code\bridge\server.js" root@43.153.154.237:/root/bridge/server.js
+ssh -i $k root@43.153.154.237 "systemctl restart bridge"
 
 # 前端打包上传
 cd "D:\claude-code\nox-app\frontend"
 tar -czf "$env:TEMP\dist.tgz" dist
-scp -i $k "$env:TEMP\dist.tgz" root@43.133.211.140:/root/frontend/dist.tgz
-ssh -i $k root@43.133.211.140 "cd /root/frontend && rm -rf dist-new && mkdir dist-new && tar xzf dist.tgz -C dist-new --strip-components=1 && rm -rf dist-old && mv dist dist-old && mv dist-new dist && rm dist.tgz"
+scp -i $k "$env:TEMP\dist.tgz" root@43.153.154.237:/root/frontend/dist.tgz
+ssh -i $k root@43.153.154.237 "cd /root/frontend && rm -rf dist-new && mkdir dist-new && tar xzf dist.tgz -C dist-new --strip-components=1 && rm -rf dist-old && mv dist dist-old && mv dist-new dist && rm dist.tgz"
 ```
 
 ### Nox Core 部署（**逐文件传，线上不是 git 仓库**）
@@ -1220,14 +1220,14 @@ ssh -i $k root@43.133.211.140 "cd /root/frontend && rm -rf dist-new && mkdir dis
 
 ```powershell
 $k = "C:\Users\14372\.ssh\id_ed25519"
-scp -i $k "D:\claude-code\nox-core\attention\service.py" root@43.133.211.140:/root/nox-core/attention/service.py
-ssh -i $k root@43.133.211.140 "systemctl restart nox-core"
+scp -i $k "D:\claude-code\nox-core\attention\service.py" root@43.153.154.237:/root/nox-core/attention/service.py
+ssh -i $k root@43.153.154.237 "systemctl restart nox-core"
 ```
 
 线上到底有没有某次改动，**去线上 grep，别靠记忆**：
 
 ```bash
-ssh root@43.133.211.140 'grep -c "那句新写的话" /root/nox-core/tools/computer.py'
+ssh root@43.153.154.237 'grep -c "那句新写的话" /root/nox-core/tools/computer.py'
 ls -la --time-style=+%m-%d\ %H:%M /root/nox-core/tools/computer.py   # 文件时间也能对
 ```
 
@@ -1249,21 +1249,21 @@ copy .env.example .env                        # 填 OPENROUTER_API_KEY
 ### ha-mcp / xiaozhi-server 部署
 ```powershell
 $k = "C:\Users\14372\.ssh\id_ed25519"
-scp -i $k "D:\claude-code\ha-mcp\main.py" root@43.133.211.140:/root/ha-mcp/main.py
-ssh -i $k root@43.133.211.140 "systemctl restart ha-mcp"
+scp -i $k "D:\claude-code\ha-mcp\main.py" root@43.153.154.237:/root/ha-mcp/main.py
+ssh -i $k root@43.153.154.237 "systemctl restart ha-mcp"
 
 # xiaozhi-server 改的是配置不是代码，改完重启容器
-ssh -i $k root@43.133.211.140 "docker restart xiaozhi-esp32-server"
+ssh -i $k root@43.153.154.237 "docker restart xiaozhi-esp32-server"
 ```
 
 ### co-watching（共影）部署
 ```powershell
 $k = "C:\Users\14372\.ssh\id_ed25519"
-scp -i $k "D:\claude-code\co-watching\app.py" root@43.133.211.140:/root/co-watching/app.py
-ssh -i $k root@43.133.211.140 "systemctl restart co-watching"
+scp -i $k "D:\claude-code\co-watching\app.py" root@43.153.154.237:/root/co-watching/app.py
+ssh -i $k root@43.153.154.237 "systemctl restart co-watching"
 
 # 部署后必跑：真网络真视频的端到端冒烟
-ssh -i $k root@43.133.211.140 "cd /root/co-watching && python3 smoke.py"
+ssh -i $k root@43.153.154.237 "cd /root/co-watching && python3 smoke.py"
 ```
 
 ⚠️ **本地 Python 3.12，服务器 3.10.12** —— co-watching 跑的是**系统 python**
@@ -1525,7 +1525,7 @@ CONFIG_SEND_WAKE_WORD_DATA=y
 > 用了 3.11/3.12 才有的语法，表现是重启后服务直接挂掉。
 > 所以 nox-core 部署的规矩多一步，**重启之前先在线上编译一遍**：
 > ```bash
-> ssh root@43.133.211.140 "cd /root/nox-core && .venv/bin/python -m py_compile <刚传的那些文件>"
+> ssh root@43.153.154.237 "cd /root/nox-core && .venv/bin/python -m py_compile <刚传的那些文件>"
 > ```
 > 同一个坑 co-watching 那边早就记着了（第十四节：本地 3.12、服务器 3.10.12），
 > 只是没人想到 nox-core 也是。
@@ -2766,7 +2766,7 @@ core/handle/textMessageProcessor.py:31        按 type 查表分发
 | | 旧 | 新 |
 |---|---|---|
 | 位置 | 阿里云 ECS · 新加坡 `ap-southeast-1` | 腾讯云轻量 · 东京 |
-| IP | ~~47.84.92.71~~ | `43.133.211.140` |
+| IP | ~~47.84.92.71~~ | `43.153.154.237` |
 | 规格 | 2核 / 1.6G / 40G | 2核 / 4G / 60G / 30Mbps / 1.5TB |
 | 系统 | Ubuntu 22.04.5 + Python 3.10.12 | **完全相同**（venv 直接搬） |
 
@@ -3023,9 +3023,9 @@ NOX_UTILITY_MODEL=deepseek-v4-flash    ← 同一个
 ```powershell
 $k = "C:\Users\14372\.ssh\id_ed25519"
 # 改之前先拉
-scp -i $k root@43.133.211.140:/root/co-reading-mcp/public/reader.css "D:\claude-code\co-reading\public\reader.css"
+scp -i $k root@43.153.154.237:/root/co-reading-mcp/public/reader.css "D:\claude-code\co-reading\public\reader.css"
 # 改完推回（静态文件，不用重启）
-scp -i $k "D:\claude-code\co-reading\public\reader.css" root@43.133.211.140:/root/co-reading-mcp/public/reader.css
+scp -i $k "D:\claude-code\co-reading\public\reader.css" root@43.153.154.237:/root/co-reading-mcp/public/reader.css
 ```
 
 ⚠️ **静态文件不发 `Cache-Control` / `ETag` / `Last-Modified`**，改了 CSS 浏览器

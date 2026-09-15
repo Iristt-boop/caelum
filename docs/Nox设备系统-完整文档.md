@@ -18,7 +18,7 @@
 糖糖说话
   │  麦克风采集 opus 音频
   ▼
-CoreS3 设备 ──WebSocket(ws://43.133.211.140:8010/xiaozhi/v1/)──> VPS: xiaozhi-esp32-server 容器
+CoreS3 设备 ──WebSocket(ws://43.153.154.237:8010/xiaozhi/v1/)──> VPS: xiaozhi-esp32-server 容器
   │                                                              │
   │ 1) SileroVAD 判断说话结束（本地，极小模型）                 │
   │ 2) 音频 → 阿里云百炼 Qwen3-ASR-Flash（云端ASR）→ 文本        │
@@ -42,7 +42,7 @@ homeassistant ──Xiaomi Miot Auto(云端模式)──> 小米云 ──> 家�
 ## 2. 硬件 / 账号 / 密钥清单
 
 ### VPS（阿里云）
-- IP：`43.133.211.140`
+- IP：`43.153.154.237`
 - 登录：`root` / 密码 `<VPS_ROOT_PASSWORD>`
 - 系统：Ubuntu 22.04，约 **1.6GB 内存**（吃紧！），40GB 盘
 - 已加 **2GB swap**（兜底，防 OOM 整机卡死）
@@ -112,8 +112,8 @@ server:
   ip: 0.0.0.0
   port: 8000
   http_port: 8003
-  websocket: ws://43.133.211.140:8010/xiaozhi/v1/
-  vision_explain: http://43.133.211.140:8013/mcp/vision/explain
+  websocket: ws://43.153.154.237:8010/xiaozhi/v1/
+  vision_explain: http://43.153.154.237:8013/mcp/vision/explain
 
 selected_module:
   VAD: SileroVAD
@@ -216,7 +216,7 @@ prompt_template: agent-base-prompt.txt
 | 8013 | OTA/固件检查 | ✅ 设备开机检查用 |
 | 8000 | 容器内 WS | 内部 |
 | 8003 | 容器内 HTTP | 内部 |
-| 8123 | Home Assistant | ✅ 网页访问 http://43.133.211.140:8123 |
+| 8123 | Home Assistant | ✅ 网页访问 http://43.153.154.237:8123 |
 | 22 | SSH | ✅ |
 
 ---
@@ -258,7 +258,7 @@ prompt_template: agent-base-prompt.txt
 import paramiko
 ssh = paramiko.SSHClient()
 ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-ssh.connect('43.133.211.140', username='root', password='<VPS_ROOT_PASSWORD>',
+ssh.connect('43.153.154.237', username='root', password='<VPS_ROOT_PASSWORD>',
             timeout=60, banner_timeout=60)
 ```
 > VPS 忙时 SSH banner 会超时，做重试（3次、隔15秒）。
