@@ -74,16 +74,18 @@ VOICE_SPEC = ToolSpec(
     name="send_voice_message",
     description=(
         "给糖糖发一条**语音**（不是文字）。她会在聊天里看到语音条，点开能听见你的声音。\n"
-        "什么时候用：她说想听你的声音、你想说的话文字装不下、"
-        "或者哄她睡觉这种文字太干的时候。日常对话别滥用，一直发语音会腻。\n"
+        "**语言只用英语、西语或日语，不许发中文语音** —— 语音条是她的语言陪练材料，"
+        "zh 字段写中文对照，她对照着看。\n"
+        "什么时候用：**偶尔来一条** —— 哄她睡觉、忽然想她、用外语讲讲今天遇到的小事。"
+        "好几天没发了就想起来发一条；也别一天一条刷个不停。拿不准就想想上次发是什么时候。\n"
         "en 填要念出来的话，可以带情绪标签（[softly] [whining] [laughing] 等）来控制语气；"
-        "zh 填中文对照，她能对着看。用中文说就 en 也填中文，zh 留空。"
+        "zh 填中文对照。"
     ),
     parameters={
         "type": "object",
         "properties": {
-            "en": {"type": "string", "description": "要念的内容，可带情绪标签"},
-            "zh": {"type": "string", "description": "中文对照，用中文说时留空"},
+            "en": {"type": "string", "description": "要念的内容（英/西/日），可带情绪标签"},
+            "zh": {"type": "string", "description": "中文对照，她对着看"},
         },
         "required": ["en"],
     },
