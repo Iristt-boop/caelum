@@ -202,3 +202,6 @@ pnpm-shim/
 # ⚠️ 已用 git filter-repo 把 mp3 从**全部历史**里清掉（2026-09-11 第二次重写）。
 #    磁盘上的 49 个一个没少；动手前做过 176.5MB 的逐字节备份 + SHA256 清单。
 ob-tools/audio/*.mp3
+#: Moments shadow 的每日汇总落在这儿（scripts/moments-shadow-pull.ps1 写的）。
+#: 是观察产出，不是仓库内容 —— 每天一个文件，进库只会刷屏
+scratch/moments-shadow/
