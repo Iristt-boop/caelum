@@ -34,7 +34,14 @@ $ErrorActionPreference = "Stop"
 try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false } catch { }
 
 $Key  = "C:\Users\14372\.ssh\id_ed25519"
-$Vps  = "root@43.133.211.140"
+# 🔴 **认名字，不认 IP**（2026-09-15 改）。
+#
+# 原来写死的是 `43.133.211.140`，而 `noxtang.com` 现在解析到 `43.153.154.237` ——
+# 机器换过 IP，脚本没跟着改。表现是 `ssh: connect ... Connection timed out`，
+# 一个看起来像「网断了」的错，实际是**部署脚本指着一台不存在的机器**。
+# 而且它骗得过一半的排查：站点 `https://noxtang.com` 照常 200，
+# 因为那条路走的是 DNS，只有 ssh 这条走的是写死的 IP。
+$Vps  = "root@noxtang.com"
 $SshOpts = @("-i", $Key, "-o", "BatchMode=yes", "-o", "ConnectTimeout=20")
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 
