@@ -393,6 +393,27 @@ def post_tick(*, mode: str, store: Any, attention: Any, sessions: Any,
         logger.warning("Moments 状态落盘失败（帖子已经发出去了，计数可能不准）：%s: %s",
                        type(exc).__name__, exc)
 
+    #: 🔴 R1 的精神：任何「他为什么说话」必须能沿账本溯源。
+    #: 发帖不是开口（不推送、不占配额），所以走 `note_moment` 而不是
+    #: `note_external_speech` —— 差别见 `attention/care/ledger.py` 的 POSTED。
+    #:
+    #: ⚠️ **只有真发出去这一条路才走到这儿**（上面六条各自 return 了）：
+    #: 记了的话账本里会出现一堆「他留了一条痕迹」而实际什么都没发生。
+    #:
+    #: ⚠️ 记账失败**照样返回 `posted=True`**：帖子真的发出去了，瞒着不如记着。
+    #: `attention` 上还没有这个方法（假对象 / 老版本）也不许抛 ——
+    #: 这个函数跑在后台线程里，冒出去就是整条循环死掉。
+    note_moment = getattr(attention, "note_moment", None)
+    if note_moment is None:
+        logger.warning("attention 上没有 note_moment（假对象 / 老版本），这条帖子不进账本")
+    else:
+        try:
+            note_moment(post_id=post_id, drive=_lead_drive(signals.drives),
+                        why=imp.why)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Moments 记账炸了（帖子已经发出去了，账本里少一笔）：%s: %s",
+                           type(exc).__name__, exc)
+
     return _finish(MomentRecord(
         at=now, mode=mode, signals=signals, impulse=imp, threshold=THRESHOLD,
         dice=dice, dice_p=dice_p, posted=True, post_id=post_id,

@@ -52,7 +52,7 @@ from attention.care import (
     SourcePolicy,
     ThreadBook,
 )
-from attention.care.ledger import SPEAK, CareLedger
+from attention.care.ledger import POSTED, SPEAK, CareLedger
 from attention.sources.todo_due import MAX_CHASE as TODO_MAX_CHASE
 from attention.engine import AttentionEngine
 from attention.gate import STATE_KEY as GATE_KEY
@@ -963,6 +963,32 @@ class AttentionService:
         self._persist()
         logger.info("Care 记账：%s 开了口（%s）", source, subject)
         return t.id
+
+    # ------------------------------------------------------------ 留痕
+
+    def note_moment(self, post_id: str, drive: str = "", why: str = "",
+                    now: datetime | None = None) -> None:
+        """他在 Moments 留了一条痕迹。**只记账，不开链、不算开口。**
+
+        和 `note_external_speech`（上面那个）的差别是本任务的全部要点，
+        差别写在 `ledger.POSTED` 的注释里 —— 动这里之前先读那一段。
+        """
+        try:
+            #: 截到 200 字：账本一天最多 300 条（`ledger.MAX_EVENTS`），
+            #: 长正文塞满会把落盘的那份状态整个撑大。drive 拼在前面，
+            #: 一起做溯源用（`record()` 没有 drive 参数，不为它改签名）
+            reason = f"{drive}｜{why[:200]}" if drive else why[:200]
+            self.ledger.record(source="moment", decision=POSTED,
+                               message_id=post_id, reason=reason, now=now)
+            self._persist()
+            logger.info("Care 记账：Moments 留了一条痕迹（%s，%s）",
+                        post_id, drive or "?")
+        except Exception as exc:  # noqa: BLE001
+            #: 帖子**已经发出去了**。记账失败是「账本里少一笔」，不是
+            #: 「这次发帖失败」—— 冒出去的话调用方会把一条真发出去的帖子
+            #: 当成没发，而日志里只有一段 traceback
+            logger.warning("Moments 记账失败（帖子已经发出去了，账本里少一笔）：%s: %s",
+                           type(exc).__name__, exc)
 
     # ------------------------------------------------------------ 观察
 
