@@ -52,11 +52,15 @@ class ThinkingSource:
 
     name = "random"
 
-    def __init__(self, store: Any, sessions_store: Any) -> None:
+    def __init__(self, store: Any, sessions_store: Any,
+                 rhythm: Any = None) -> None:
         #: attention.db，存下次醒来的时间
         self.store = store
         #: Core 的会话库，用来问「她上次说话是什么时候」
         self.sessions = sessions_store
+        #: 节奏调制器（2026-09-08）：她回不回拉长/恢复窗口（负反馈），
+        #: 想念压缩窗口（正反馈）。None = 不调制，行为和以前一样
+        self.rhythm = rhythm
         self._next_at: datetime | None = None
         self._load()
 
@@ -76,20 +80,27 @@ class ThinkingSource:
 
         # 到点了：产出念头，并以现在为锚点排下一次
         self._schedule(now)
-        logger.info("想起她了（下次 %s）", self._next_at.astimezone().strftime("%H:%M:%S"))
+        logger.info("想起她了（下次 %s）",
+                    self._next_at.astimezone().strftime("%H:%M:%S"))
+        boost = self.rhythm.urgency_boost() if self.rhythm is not None else 1.0
         return [CareSignal(
             source=self.name,
             subject="想起你了",
             thread_kind=COMPANY,
-            # 比睡眠那种身体信号低 —— 它不该挤掉真正要紧的事
-            urgency=0.4,
+            # 比睡眠那种身体信号低 —— 它不该挤掉真正要紧的事；
+            # 想念高的时候乘一点急迫度（0.8–1.2，rhythm 调制）
+            urgency=0.4 * boost,
         )]
 
     # ------------------------------------------------------------ 内部
 
     def _schedule(self, anchor: datetime) -> None:
         """摇下一个点。**秒级精度，不取整** —— 取整就有节拍了。"""
-        seconds = random.uniform(MIN_GAP_MIN * 60, MAX_GAP_MIN * 60)
+        lo, hi = MIN_GAP_MIN, MAX_GAP_MIN
+        if self.rhythm is not None:
+            # 她回得少 → 窗口拉长（负反馈）；想念高 → 窗口缩短（正反馈）
+            lo, hi = self.rhythm.gap_window(MIN_GAP_MIN, MAX_GAP_MIN)
+        seconds = random.uniform(lo * 60, hi * 60)
         self._next_at = anchor + timedelta(seconds=seconds)
         try:
             self.store.set_source_state(STATE_KEY, {"next_at": self._next_at.isoformat()})
@@ -118,7 +129,11 @@ class ThinkingSource:
     # ------------------------------------------------------------ 观察
 
     def snapshot(self) -> dict[str, Any]:
+        lo, hi = MIN_GAP_MIN, MAX_GAP_MIN
+        if self.rhythm is not None:
+            lo, hi = self.rhythm.gap_window(MIN_GAP_MIN, MAX_GAP_MIN)
         return {
             "next_at": self._next_at.isoformat() if self._next_at else None,
             "window_min": [MIN_GAP_MIN, MAX_GAP_MIN],
+            "effective_window_min": [round(lo, 1), round(hi, 1)],
         }

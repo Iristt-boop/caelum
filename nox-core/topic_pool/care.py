@@ -18,6 +18,16 @@
 外部材料不该挤掉「想起她」——urgency 0.3（惦记是 0.4，身体信号更高），
 节奏 3–8 小时一次。池子空了就 1 小时后再看，**不产出念头**——
 空池子不进账本，那不是「想了想说不出」，是根本没什么可想。
+
+## 2026-09-08 政策变更：两道闸都不吃了
+
+糖糖观察：topic 吃 DailyGate 之后**基本没见他发过** ——
+时间醒来（12:00/18:30/22:30）每天把 3 条额度用完，topic 永远排不上。
+现在和惦记同权：不吃 DailyGate、不吃新链冷却，靠**自己的三重节流**：
+
+1. 3–8 小时随机窗口（rhythm 可调制：她回得少自动拉长）
+2. **一天最多一条**（`_submit_date` 幂等；被看片拦截吃掉当天不补，同小课堂）
+3. 夜间避让：到点时她在睡就推 2 小时，不进安静时段硬发
 """
 
 from __future__ import annotations
@@ -28,6 +38,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from attention.care.signal import COMPANY, CareSignal
+from attention.longing import _asleep
 
 logger = logging.getLogger(__name__)
 
@@ -42,18 +53,24 @@ MAX_GAP_H = 8
 #: 池子空时的回看间隔。空不是错误，别按错误刷
 EMPTY_BACKOFF_MIN = 60
 
+#: 夜间到点的顺延量。她在睡不硬发，推两个小时再看
+NIGHT_POSTPONE_H = 2
+
 
 class TopicSource:
     """池子里有条没聊过的。第七个 Care 源，喂料的，不开口。"""
 
     name = "topic"
 
-    def __init__(self, store: Any, pool: Any) -> None:
+    def __init__(self, store: Any, pool: Any, rhythm: Any = None) -> None:
         #: attention.db，存下次翻池子的时间（同 ThinkingSource）
         self.store = store
         #: TopicPool。None = 话题池没启用，这条源永远安静
         self.pool = pool
+        #: 节奏调制器（同 ThinkingSource）。None = 不调制
+        self.rhythm = rhythm
         self._next_at: datetime | None = None
+        self._submit_date = ""  # 今天提交过念头了吗（一天最多一条）
         self._load()
 
     # ------------------------------------------------------------ Source
@@ -67,6 +84,12 @@ class TopicSource:
             return []
 
         if now < self._next_at:
+            return []
+
+        # 夜里到点：推两个钟头再看。两道闸都不吃了，安静时段得自己躲
+        if _asleep(now):
+            self._next_at = now + timedelta(hours=NIGHT_POSTPONE_H)
+            self._save()
             return []
 
         # 到点了。只看 open——surfaced 的是推过/聊过的，不再循环（§2.3/§4.1）
@@ -85,15 +108,22 @@ class TopicSource:
             logger.debug("池子空，%d 分钟后再看", EMPTY_BACKOFF_MIN)
             return []
 
+        # 一天最多一条：提交过就收工（source_state 幂等，跨重启活着）
+        today = now.astimezone().date().isoformat()
+        if self._submit_date == today:
+            return []
+        self._submit_date = today
+
         t = topics[0]
         self._schedule(now)
         logger.info("池子里有条没聊过的（下次 %s）",
                     self._next_at.astimezone().strftime("%m-%d %H:%M"))
+        boost = self.rhythm.urgency_boost() if self.rhythm is not None else 1.0
         return [CareSignal(
             source=self.name,
             subject=f"池子里没聊过的：{(t.source_title or t.hook)[:24]}",
             thread_kind=COMPANY,
-            urgency=0.3,
+            urgency=0.3 * boost,
             payload={
                 "topic_id": t.id,
                 "hook": t.hook,
@@ -107,29 +137,44 @@ class TopicSource:
 
     def _schedule(self, anchor: datetime) -> None:
         """摇下一个点。秒级精度不取整 —— 取整就有节拍（同 ThinkingSource）。"""
-        seconds = random.uniform(MIN_GAP_H * 3600, MAX_GAP_H * 3600)
+        lo_min, hi_min = MIN_GAP_H * 60, MAX_GAP_H * 60
+        if self.rhythm is not None:
+            lo_min, hi_min = self.rhythm.gap_window(lo_min, hi_min)
+        seconds = random.uniform(lo_min * 60, hi_min * 60)
         self._next_at = anchor + timedelta(seconds=seconds)
         self._save()
 
     def _save(self) -> None:
         try:
-            self.store.set_source_state(
-                STATE_KEY, {"next_at": self._next_at.isoformat()})
+            self.store.set_source_state(STATE_KEY, self.to_dict())
         except Exception:  # noqa: BLE001
             logger.warning("topic 线头的下一次时间没存住")
 
     def _load(self) -> None:
         try:
-            raw = (self.store.get_source_state(STATE_KEY) or {}).get("next_at")
-            if raw:
-                self._next_at = datetime.fromisoformat(raw)
+            raw = self.store.get_source_state(STATE_KEY) or {}
+            nxt = raw.get("next_at")
+            self._next_at = datetime.fromisoformat(nxt) if nxt else None
+            self._submit_date = str(raw.get("submit_date") or "")
         except Exception:  # noqa: BLE001
             self._next_at = None
+            self._submit_date = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "next_at": self._next_at.isoformat() if self._next_at else None,
+            "submit_date": self._submit_date,
+        }
 
     # ------------------------------------------------------------ 观察
 
     def snapshot(self) -> dict[str, Any]:
+        lo_min, hi_min = MIN_GAP_H * 60, MAX_GAP_H * 60
+        if self.rhythm is not None:
+            lo_min, hi_min = self.rhythm.gap_window(lo_min, hi_min)
         return {
             "next_at": self._next_at.isoformat() if self._next_at else None,
             "window_h": [MIN_GAP_H, MAX_GAP_H],
+            "effective_window_min": [round(lo_min, 1), round(hi_min, 1)],
+            "submitted_date": self._submit_date,
         }

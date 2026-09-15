@@ -268,9 +268,11 @@ def test_topic_prompt_leads_with_his_own_reaction(tmp_path):
 
 
 def test_service_registers_topic_policy(tmp_path):
+    """2026-09-08 政策：topic 两道闸都不吃（时间醒来三时段吃满额度把它饿死，
+    糖糖的原话「基本就没见他发过」）；节流靠它自己：3–8h 窗口+一天一条+夜间避让。"""
     svc = next(_service(tmp_path, FakeSpeaker(), None))
     policy = svc.care.policies["topic"]
-    assert policy.takes_gate and policy.takes_quota and policy.max_steps == 1
+    assert not policy.takes_gate and not policy.takes_quota and policy.max_steps == 1
 
 
 # ---------------------------------------------------------------- 工具

@@ -535,7 +535,13 @@ def _build_attention(core: Nox, sessions: "Sessions", db: Store) -> AttentionSer
         #   糖糖的原话：「他可以一直发消息，回不回是我的事，但是不能没有消息。」
         # 位置：她出门 / 到家。HA 那条**本来就是自动的**（GPS，5 米精度），
         #   缺的从来不是数据，是「有人盯着跃迁」+「能把他叫醒」。
-        fast_sources = [ThinkingSource(astore, db)]
+        #
+        # 节奏调制器（2026-09-08）：她回不回 → 惦记/话题窗口拉长恢复（负反馈），
+        # 想念 → 窗口微调 + 急迫度（正反馈）。longing 在 svc 上，
+        # svc 建完才回填 longing_ref（同 ResonanceProvider 的取值函数套路）
+        from attention.rhythm import RhythmModulator
+        rhythm = RhythmModulator(astore)
+        fast_sources = [ThinkingSource(astore, db, rhythm=rhythm)]
         # ⚠️ 2026-09-11：这里原来还 `or os.getenv("NOX_HA_URL")` —— 但 NOX_HA_URL 是
         # **ha-mcp 的 MCP 端点**（http://127.0.0.1:8004/mcp），拿它当 REST base 会拼出
         # `.../mcp/api/states/person.nox` 这种必然 404 的地址，而且失败是静默的。
@@ -558,7 +564,7 @@ def _build_attention(core: Nox, sessions: "Sessions", db: Store) -> AttentionSer
         # 「要不要说、现在说不说」全部归 Orchestrator —— 吃闸、吃额度、进账本
         if topics_pool is not None:
             from topic_pool.care import TopicSource
-            fast_sources.append(TopicSource(astore, topics_pool))
+            fast_sources.append(TopicSource(astore, topics_pool, rhythm=rhythm))
 
         # 她在不在看片（共影 P1，2026-08-22）。没配 bridge 就没有这条线 ——
         # 那样行为和接共影之前一样，他照常开口
@@ -621,7 +627,10 @@ def _build_attention(core: Nox, sessions: "Sessions", db: Store) -> AttentionSer
                                gate=gate, time_source=time_source, world=world,
                                watching=watching, shared_sources=[shared_source],
                                self_sources=self_sources,
-                               topics=topics_pool, card_source=card_source)
+                               topics=topics_pool, card_source=card_source,
+                               rhythm=rhythm)
+        # svc 建完才有 longing —— 回填取值函数（rhythm.gap_window 每次现取）
+        rhythm.longing_ref = lambda: getattr(svc, "longing", None)
 
         # 体重 / 生理期：HealthKit 那条同步坏了（体重 14 天一条没有，
         # 经期表被快捷指令写坏），改成他在对话里主动记进 World Model
@@ -977,6 +986,10 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
             attention.store.set_source_state(
                 REGRET_KEY, attention.regret.to_dict()
             )
+            # 节奏调制器（2026-09-08 负反馈）：她理他了 → 回复率回升，
+            # 惦记/话题的窗口逐档恢复。存盘方法自己管
+            if getattr(attention, "rhythm", None) is not None:
+                attention.rhythm.on_contact(_now_utc)
 
             # 低落（2026-08-27）：想帮但帮不上。
             #

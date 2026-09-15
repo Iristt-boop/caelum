@@ -138,6 +138,7 @@ class AttentionService:
         self_sources: list[Any] | None = None,
         topics: Any = None,
         card_source: Any = None,
+        rhythm: Any = None,
     ) -> None:
         self.store = store
         #: World Model —— 事实的收口。Source 往里写、Evaluator 从里反查趋势。
@@ -189,6 +190,10 @@ class AttentionService:
         #: 这里只负责到点讲（_speak_card）和讲完回调 mark_delivered。
         #: None = 整条线下线（NOX_DAILY_CARD_DISABLED）
         self.card_source = card_source
+        #: 节奏调制器（2026-09-08）：她回不回 → 惦记/话题窗口拉长恢复（负反馈），
+        #: 想念 → 窗口微调 + 急迫度（正反馈）。开口记录在 care_tick 的 spoke 处，
+        #: 她说话的挂点在 api/server.py 的 on_contact 一排。None = 不调制
+        self.rhythm = rhythm
         #: 固定时间醒来（M5′ a 重构，2026-08-14）：午饭/晚饭/睡前到点主动开口。
         #: 和 SleepSource 不同 —— 它是「时刻驱动」，不经过 Evaluator/Registry。
         self.time_source = time_source
@@ -259,10 +264,12 @@ class AttentionService:
                     thread_kind=FOLLOWUP,
                 ),
                 # 话题池线头（Topic_Pool §4.1，2026-08-31 定稿：决策丢给 Care）。
-                # **吃闸也吃额度** —— 它不比惦记更急，和所有线抢同一份
-                # 「一小时一条新链」；一步就收（说完就走，不追问）。
+                # 🔴 2026-09-08 改两道闸都不吃：原来吃 DailyGate，但时间醒来
+                # （12:00/18:30/22:30）每天把 3 条额度用完，topic **基本饿死**
+                #（糖糖的原话：「基本就没见他发过」）。现在和惦记同权，
+                # 节流靠它自己：3–8 小时随机窗口 + 一天最多一条 + 夜间避让。
                 # surfaced 的记录在 _speak_topic 里，真开了口才记
-                "topic": SourcePolicy(takes_quota=True, takes_gate=True, max_steps=1),
+                "topic": SourcePolicy(takes_quota=False, takes_gate=False, max_steps=1),
                 # 知识小课堂（2026-09-07）：**两道闸都不吃** ——
                 # 不占每日 3 条关心额度、不吃一小时新链冷却。糖糖 09-06 问
                 # 「会不会抵消掉其他的主动开口」——不会，这是它自己的通道，
@@ -451,6 +458,15 @@ class AttentionService:
         它们是慢变量，跑那么勤没意义还费钱（每轮都要打 health-mcp）。
         """
         now = now or datetime.now(timezone.utc)
+
+        # 5.8 节奏调制器：到期的开口判定「她回没回」（负反馈的观察端）。
+        # 她说话的那一半挂在 api/server.py 的 on_contact 一排
+        if self.rhythm is not None:
+            try:
+                self.rhythm.tick(now)
+            except Exception:  # noqa: BLE001
+                logger.exception("节奏调制器判定出错，这轮跳过")
+
         for src in self.fast_sources:
             try:
                 self.care.submit_all(src.poll(now))
@@ -473,8 +489,11 @@ class AttentionService:
             if o.action in ("spoke", "failed"):
                 logger.info("Care（快）：%s", o.render())
             if o.action == "spoke":
-                # 他开口了 —— 开始等她回话（V3.6）
+                # 他开口了 —— 开始等她回话（V3.6）；
+                # 节奏调制器同样记账：回复率决定下一条多快（2026-09-08 负反馈）
                 self.regret.on_spoke(now, getattr(o, "text", "") or "")
+                if self.rhythm is not None:
+                    self.rhythm.on_spoke(now)
         if out:
             self._persist()
         return out
