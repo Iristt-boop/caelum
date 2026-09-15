@@ -92,48 +92,22 @@ def test_续链用记住的thread_id():
 # ---------------------------------------------------------------- 节奏
 
 
-def test_一小时追一次不是每次心跳都追():
-    """Attention 心跳 15 分钟一次，不设间隔就会四倍于她定的节奏。"""
-    said = []
-    o = CareOrchestrator(ThreadBook(), lambda s, t, n: said.append(s.subject) or True,
-                         policies=_policy())
-
-    first = o._decide(CareSignal(source="todo", subject="运动", thread_kind=TASK), T0)
-    tid = first.thread.id
-
-    early = o._decide(
-        CareSignal(source="todo", subject="运动", thread_kind=TASK, thread_id=tid),
-        T0 + timedelta(minutes=15),
-    )
-    assert early.action == "dropped"
-    assert "刚追过" in early.reason
-
-    ok = o._decide(
-        CareSignal(source="todo", subject="运动", thread_kind=TASK, thread_id=tid),
-        T0 + timedelta(minutes=61),
-    )
-    assert ok.action == "spoke"
-    assert said == ["运动", "运动"]
-
-
-def test_链内最多追三次():
+def test_一天只追一次():
+    """糖糖 2026-09-15：「我感觉他一天一直提醒我，因为还有上下文。
+    主动一次就可以了。」—— 到点说一次链就关，mark_fired 让今天收手；
+    跨天重开由 bridge 的 fired_on 日期失效保证。"""
     o = CareOrchestrator(ThreadBook(), lambda s, t, n: True, policies=_policy())
     first = o._decide(CareSignal(source="todo", subject="运动", thread_kind=TASK), T0)
     tid = first.thread.id
+    assert first.action == "spoke"
 
-    for i in range(1, MAX_CHASE):
-        r = o._decide(
-            CareSignal(source="todo", subject="运动", thread_kind=TASK, thread_id=tid),
-            T0 + timedelta(minutes=61 * i),
-        )
-        assert r.action == "spoke"
-
-    over = o._decide(
+    # 1 小时后再来同一件 —— 链已到步数上限，不再追
+    again = o._decide(
         CareSignal(source="todo", subject="运动", thread_kind=TASK, thread_id=tid),
-        T0 + timedelta(hours=9),
+        T0 + timedelta(hours=1),
     )
-    assert over.action == "dropped"
-    assert "链已经关了" in over.reason
+    assert again.action == "dropped"
+    assert "链已经关了" in again.reason
 
 
 def test_追待办不吃开口闸():
@@ -157,8 +131,8 @@ def test_她回话了任务链不关():
 # ---------------------------------------------------------------- 跨天
 
 
-def test_追满才标记fired而不是追一次就标():
-    """每追一次就标的话，一天只追得了一次 —— 而她定的是链内 3 次。"""
+def test_标记fired走bridge():
+    """mark_fired 就是往 bridge 打一发 /api/todo/fired（一天一次的记账）。"""
     bridge = FakeBridge()
     src = TodoDueSource(bridge)
     src.mark_fired("t1")

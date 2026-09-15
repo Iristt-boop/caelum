@@ -236,7 +236,9 @@ class AttentionService:
                 # 到点追待办（Todo-Daily-Planner-设计.md 第二节）：
                 # 她自己设的时间，不该被「今天额度用完了」挡掉 ——
                 # 那是她要求被追的事，不是他主动想说话。
-                # 节奏 1 小时一次、链内最多 3 次、跨天重开（糖糖 2026-08-18）
+                # 跨天重开（糖糖 2026-08-18）；**一天只提一次**
+                #（糖糖 2026-09-15：「我感觉他一天一直提醒我，因为还有上下文，
+                # 主动一次就可以了」——链内不再 3 次 1 小时一隔，说完即收）
                 "todo": SourcePolicy(
                     takes_quota=False, takes_gate=False,
                     max_steps=TODO_MAX_CHASE, min_step_gap_min=TODO_CHASE_GAP_MIN,
@@ -784,13 +786,13 @@ class AttentionService:
         if todo_id:
             # 记住链，下一轮同一件事续这条，而不是又开一条新的
             self.todo_source.remember_thread(todo_id, thread.id)
-            # ⚠️ `fired_on` 的语义是「**今天这条追完了**」，不是「追过一次」。
-            # 每追一次就标的话，一天只追得了一次 —— 而糖糖定的是
-            # 「链内 3 次，1 小时一隔，跨天重开」。
+            # `fired_on` 的语义是「今天这条追完了」。2026-09-15 起链内
+            # 只追一次（MAX_CHASE=1），所以第一步说完就标 ——
+            # 跨天由 bridge 的日期比对失效，明天到点还会再来这一次。
             # 这里 thread.step() 还没被 orchestrator 调，所以要 +1 预判。
             if thread.steps + 1 >= thread.max_steps:
                 self.todo_source.mark_fired(todo_id)
-                logger.info("待办追满 %d 次，今天收手：%s", thread.max_steps, text)
+                logger.info("待办今天提过了，明天到点再说：%s", text)
         self.scheduler.note_spoke(intent, now)
         return True
 
