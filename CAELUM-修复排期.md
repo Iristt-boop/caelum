@@ -1779,7 +1779,36 @@ touch-server 现在要 token 了。**没更新 `wifi_secrets.h` 就刷固件，�
       → ✅ **2026-09-13 15:24 线上演习通过**（她要求实测的）：
         停 nox-core → 第 1 轮只记账不推 → 第 2 轮推「nox-core 没在跑；探活不通过」
         → 起回来 → 推「恢复了」→ 状态清空。**整场共 2 条推送，一条不多。**
-- [ ] 1.6 systemd 加 watchdog；`RestartSec` + `StartLimitBurst`（1h）
+- [x] ~~1.6 systemd 加 watchdog；`RestartSec` + `StartLimitBurst`（1h）~~
+      ✅ **2026-09-16 上线 + 实测演习通过**（她逐次点头的）。
+      `scratch/apply-restart-policy.sh` 写好三天，今天执行。13 个服务写 drop-in
+      （不改原 unit，删掉就回滚），**零中断** —— 三个服务的启动时刻还是昨天，
+      `daemon-reload` 不碰运行中的服务。
+
+      · `RestartSec=10`｜`[Unit]` 段 `StartLimitBurst=10` / `IntervalSec=300`
+        → 10×10=100 秒 < 300 秒窗口，**限流这次是真的够得到**
+        （原来 3~5s / Burst 5 / 10s 窗口，10 秒里最多起 2~3 次，永远触发不到）
+      · 🔴 **caddy：`Restart=no` → `on-failure`**。它是整套系统唯一的入口，
+        在这之前挂了**不会自己起来** —— 排期原文说「含 caddy 反复重启」是**反的**
+      · 备份 `/root/dropin-backup-20260916-115318`
+
+      **判据一，配置真生效**：`systemctl show` 回读 13 个全对 —— 不是看文件写没写
+      （`StartLimitIntervalSec` 写进 `[Service]` 会被新版 systemd 静默忽略，
+      drop-in 里写在 `[Unit]`）。
+
+      **判据二，真的会自愈**：12:04 `kill -9` nox-core（她点名授权的）：
+
+          12:04:27  Main process exited, code=killed, status=9/KILL
+          12:04:37  Scheduled restart job, restart counter is at 1   ← 正好 10 秒
+          12:04:43  active（新 PID 347900）
+          12:04:57  Application startup complete
+          12:05:14  health 200 · noxtang.com 200 · 零告警
+
+      `NRestarts` 0 → 1，**全程 30 秒无人干预**。这是它第一次真的被 systemd 拉起来。
+      顺带验了债 5：情绪存档跨 `kill -9` 一字不差活下来。
+
+      ⚠️ 演习时第一次 curl 探早了（active 之后还要 14 秒才真正起好），
+      拿到 `health 000` 差点把一次成功的演习读成失败。**判据挑早了和挑错了一样糟。**
       **脚本写好了（`scratch/apply-restart-policy.sh`），未执行，等她授权。**
       实测现状比排期写的更细：
       · 12 个服务 `RestartSec=3~5s` + `StartLimitIntervalSec=10s` + `Burst=5`
