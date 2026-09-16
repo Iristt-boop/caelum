@@ -16,7 +16,11 @@ setlocal
 set DST=D:\claude-code\backups\vps
 set LOG=%DST%\pull.log
 set KEEP=7
-set VPS=root@43.133.211.140
+rem Host by NAME, not IP (2026-09-16). 43.133.211.140 is a dead address since
+rem the 09-15 rebind; commit 286160c missed this file (and deploy.ps1, fixed in
+rem dcf1da2). It would still fail loudly -- empty NAME exits 1 -- but the error
+rem reads "no backup found on VPS", which points at the wrong cause.
+set VPS=root@noxtang.com
 if not exist "%DST%" mkdir "%DST%"
 
 for /f "usebackq delims=" %%i in (`ssh -o "BatchMode=yes" -o "ConnectTimeout=30" %VPS% "readlink /root/backups/auto/latest.tar.gz.enc"`) do set NAME=%%i
