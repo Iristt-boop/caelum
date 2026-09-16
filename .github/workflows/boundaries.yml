@@ -1,0 +1,55 @@
+# Caelum 边界哨兵的 CI 入口（排期 3.6）。
+#
+# ## 为什么 pre-commit 之外还要这个
+#
+# pre-commit 可以被 `--no-verify` 绕过，也可以因为没跑
+# `git config core.hooksPath .githooks` 而根本没装。
+# 换台机器、换个 agent 干活，它就静悄悄地不在了 ——
+# 而「静悄悄地不在」正是这条法则要防的那种失败。
+#
+# CI 是绕不过的那一道。
+#
+# ## ⚠️ CI 上 R5 会显示「跳过」，那是对的
+#
+# R5 扫的是 `nox-app/`，那是**嵌套的独立仓库**，不在这个 repo 里。
+# 哨兵会打 `[–] R5 跳过 …… **这不是通过**` 并且**不**把它算成绿。
+#
+# 2026-09-16 之前它不是这样的：那时 `2>/dev/null` 把「目录不存在」吞掉，
+# grep 找不到东西 → veto 通过 → **R5 在干净 clone 上恒为绿**。
+# 一条永远成立的检查，比没有这条检查更糟。
+
+name: 边界法则
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  boundaries:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 跑哨兵
+        run: bash scripts/check-boundaries.sh
+
+      # 🔴 哨兵本身不在了要红，不能静默跳过这一步。
+      # 文件被删/改名时，「没跑」和「跑过了」必须分得开 ——
+      # 同 pre-commit 里那段的理由（CAELUM-MAP 第三·五节：空集不是通过）。
+      - name: 确认哨兵确实存在（空集不是通过）
+        if: always()
+        run: |
+          test -f scripts/check-boundaries.sh || {
+            echo "🔴 scripts/check-boundaries.sh 不见了 —— 上一步等于什么都没验"
+            exit 1
+          }
+          n=$(grep -c '^rule \|^  rule ' scripts/check-boundaries.sh || true)
+          echo "哨兵里有 $n 条规则"
+          # 规则数量骤降 = 有人把法则删了而 CI 照样绿。
+          # 门槛设在当前条数之下留点余量，但不许掉到个位数。
+          test "$n" -ge 8 || {
+            echo "🔴 只剩 $n 条规则，太少了 —— 是不是被删了？"
+            exit 1
+          }

@@ -3,6 +3,8 @@
 # 规则全文见 CAELUM-MAP.md 第二节。新增"合法例外"必须同时更新那里的例外清单。
 set -u
 FAIL=0
+#: 有规则因为依赖不在而没跑。**跳过不是通过** —— 结尾要说出来
+SKIPPED=0
 rule() {  # $1=编号 $2=说明 $3=期望(allow/veto) $4=完整 grep 命令（经 eval）
   local id="$1" desc="$2" expect="$3" cmd="$4"
   local out; out=$(eval "$cmd")
@@ -38,9 +40,22 @@ rule "R4" "OB 只准经 ob_client" veto \
   "$PYG -E '8002|ombre/mcp' nox-core | grep -v tests/ | grep -v config.py | grep -v ob_client.py | $PYV"
 
 # R5 前端不给第二把主动消息钥匙（注释里提到端点是文档性引用，不算调用）
-rule "R5" "前端不直接推消息" veto \
-  "grep -rn 'api/push/send' nox-app/frontend/src nox-app/caelum-os-ui/src 2>/dev/null \
-   | grep -vE ':[0-9]+:[[:space:]]*(//|\\*|/\\*)'"
+#
+# 🔴 **它扫的是另一个仓库**（2026-09-16 修）。`nox-app/` 是嵌套的独立仓库，
+# 干净 clone 和 CI 上根本没有这个目录。原来那版 `2>/dev/null` 把
+# 「目录不存在」的报错吞了 → grep 什么都找不到 → veto 通过 →
+# **R5 在干净 clone 上恒为绿**，一条永远成立的检查。
+#
+# 所以这里分三种状态，而不是两种：目录在就真查，不在就**明说跳过**。
+# 静默通过和明说跳过的区别，正是这份排期一直在讲的那件事。
+if [ -d nox-app/frontend/src ] || [ -d nox-app/caelum-os-ui/src ]; then
+  rule "R5" "前端不直接推消息" veto \
+    "grep -rn 'api/push/send' nox-app/frontend/src nox-app/caelum-os-ui/src 2>/dev/null \
+     | grep -vE ':[0-9]+:[[:space:]]*(//|\\*|/\\*)'"
+else
+  echo "[–] R5 跳过 —— nox-app/ 不在本地（独立仓库）。**这不是通过**"
+  SKIPPED=1
+fi
 
 # R8 花钱的动作模型够不着（2026-09-06）：createOrder 这类只准出现在
 # 确认端点后面。工具层（tools/luckin.py）里若出现真下单调用就是闸门塌了。
@@ -89,4 +104,10 @@ rule "R2b" "Moments 不直接读话题池（只经 CuriositySource 变成 Drive�
   "$PYG -E 'topic_pool|topics_browse|TopicPool' nox-core/moments | $PYV"
 
 echo "════════"
-if [ "$FAIL" -eq 0 ]; then echo "边界法则全部守住了 ✓"; else echo "有越界，见上 ✗"; exit 1; fi
+if [ "$FAIL" -ne 0 ]; then echo "有越界，见上 ✗"; exit 1; fi
+if [ "$SKIPPED" -ne 0 ]; then
+  echo "边界法则守住了，**但有规则被跳过（见上面的 [–]）** ——"
+  echo "那些规则这一轮什么都没验证。要全覆盖，在有 nox-app/ 的机器上跑。"
+else
+  echo "边界法则全部守住了 ✓"
+fi

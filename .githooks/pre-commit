@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# Caelum 边界哨兵的提交前入口（排期 3.6）。
+#
+# ## 为什么要有它
+#
+# `scripts/check-boundaries.sh` 是「平行实现反复长出来」（结构性风险 债 7）
+# **唯一的防线** —— 而在这之前它**没有任何自动入口**，只有人想起来才跑。
+# `api/server.py` 里那句「两个孤岛就重新长出来，而且不报错」，
+# 在这个 hook 之前没有任何机器在守。
+#
+# 2026-09-14 那天就亲眼见过两次：`observed_at` 的概念被独立发明了两遍，
+# UTC+8 这个常量被定义了八次。两次都不是有人偷懒，是**没人提醒**。
+#
+# ## 装它
+#
+#     git config core.hooksPath .githooks
+#
+# 放在 `.githooks/` 而不是 `.git/hooks/` 是为了**能进版本库** ——
+# `.git/hooks/` 不被跟踪，换台机器就没了，那等于又回到「靠人记得」。
+#
+# ## 绕过它
+#
+#     git commit --no-verify
+#
+# 留这个口子是故意的：哨兵是 grep，会有误判，而一条挡住正常工作的检查
+# 迟早会被整个关掉。但**用了 --no-verify 就该在 commit 信息里说一句为什么**。
+
+set -u
+
+ROOT="$(git rev-parse --show-toplevel)"
+SENTINEL="$ROOT/scripts/check-boundaries.sh"
+
+# 🔴 哨兵不在就**红**，不是静默放行。
+# 文件被删/改名的时候，「跳过」和「通过」必须分得开 ——
+# 那正是这套哨兵存在的理由（CAELUM-MAP 第三·五节：空集不是通过）。
+if [ ! -f "$SENTINEL" ]; then
+  echo "🔴 pre-commit：找不到 $SENTINEL"
+  echo "   哨兵没了就等于没有边界检查。要么恢复它，要么 --no-verify 并说明原因。"
+  exit 1
+fi
+
+echo "── 边界哨兵（pre-commit）──"
+if bash "$SENTINEL"; then
+  exit 0
+fi
+
+echo
+echo "🔴 有越界，提交拦下了。"
+echo "   · 真是越界 → 改代码"
+echo "   · 是误判   → 改哨兵的口径（别改法则），或 git commit --no-verify 并在信息里说明"
+exit 1
