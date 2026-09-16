@@ -66,6 +66,26 @@ if systemctl is-enabled ombre-brain-decay.timer >/dev/null 2>&1; then
 else
   warn "ombre-brain-decay.timer 没启用 —— 衰减会退回「有人调工具才跑」"
 fi
+# 库体积哨兵（排期 4.7）。
+#
+# 🔴 对话那两张表**不删**（2026-09-16 量完之后定的：约 25MB/年，十年 250MB，
+#    磁盘剩 34G，涨不起来）。但排期的原始风险是「数据无限增长」——
+#    **不设上限又不设监控，才是那条风险真正的样子。**
+#    所以这里看着它们：正常一年涨几 MB，真要是哪天日增翻百倍，
+#    几天内就会撞线，而不是等磁盘满了才发现。
+echo "-- 库体积 --"
+for db in /root/data/nox-bridge.db /root/nox-core/data/sessions.db \
+          /root/nox-core/data/world.db /root/ombre-brain/buckets/embeddings.db; do
+  [ -f "$db" ] || continue
+  # 含 WAL —— WAL 有时比库本身还大，只看 .db 会低估
+  mb=$(du -cb "$db" "$db-wal" 2>/dev/null | tail -1 | awk '{printf "%.0f", $1/1048576}')
+  name=$(basename "$db")
+  if   [ "$mb" -ge 500 ]; then bad  "$name ${mb}MB —— 涨疯了，查是谁在写"
+  elif [ "$mb" -ge 100 ]; then warn "$name ${mb}MB —— 比预期快，留意一下"
+  else good "$name ${mb}MB"
+  fi
+done
+
 # 数据保留策略（排期 4.7）。每周日 04:30 的 oneshot。
 #
 # ⚠️ oneshot 平时是 inactive(dead)，那是**正常状态**，不能拿 is-active 判它 ——

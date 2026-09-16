@@ -78,10 +78,10 @@ MUTATIONS = [
         "test_还在用的对话一个字都不动",
     ),
     (
-        "出厂策略：对话改回按行删",
-        '        group_col="id",\n        default_days=180,',
-        "        default_days=180,",
-        "test_出厂策略_conversations留180天",
+        "出厂策略：对话退回按行删",
+        '        group_col="id",\n        default_days=KEEP_FOREVER,',
+        "        default_days=KEEP_FOREVER,",
+        "test_出厂策略_对话的删法保持按会话",
     ),
     (
         "级联不删父行（留下空壳会话）",
@@ -91,15 +91,15 @@ MUTATIONS = [
     ),
     (
         "出厂策略：messages 去掉级联",
-        '        cascade=("sessions", "id"),\n        default_days=180,',
-        "        default_days=180,",
-        "test_出厂策略_messages和对话同口径",
+        '        cascade=("sessions", "id"),\n        # 同上 —— 不删。',
+        "        # 同上 —— 不删。",
+        "test_出厂策略_对话的删法保持按会话",
     ),
     (
-        "出厂策略：messages 窗口和对话不一致",
-        '        cascade=("sessions", "id"),\n        default_days=180,',
-        '        cascade=("sessions", "id"),\n        default_days=30,',
-        "test_出厂策略_messages和对话同口径",
+        "出厂策略：messages 被设了保留天数（和对话口径不一致）",
+        '        default_days=KEEP_FOREVER,\n        why="不删 —— 和 conversations 同口径',
+        '        default_days=30,\n        why="不删 —— 和 conversations 同口径',
+        "test_出厂策略_对话两张表口径一致",
     ),
     (
         "近期地板：夹一下而不是拒绝（配置事故变成静默删除）",
@@ -138,10 +138,10 @@ MUTATIONS = [
         "test_出厂策略_observations默认是留",
     ),
     (
-        "出厂策略：对话保留天数被改",
-        "        default_days=180,       # ← 糖糖 2026-09-16 定的",
-        "        default_days=30,",
-        "test_出厂策略_conversations留180天",
+        "出厂策略：对话又被设了保留天数",
+        '        default_days=KEEP_FOREVER,\n        why="不删 —— 量下来约 4MB/年',
+        '        default_days=180,\n        why="不删 —— 量下来约 4MB/年',
+        "test_出厂策略_对话两张表都不删",
     ),
     (
         "库不存在就默默跳过",

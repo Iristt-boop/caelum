@@ -465,26 +465,43 @@ def test_出厂策略_observations默认是留():
     assert p.days_for("sleep_duration") is KEEP_FOREVER
 
 
-def test_出厂策略_messages和对话同口径():
+def test_出厂策略_对话两张表都不删():
+    """🔴 糖糖 2026-09-16 量完之后定的：**能多留就多留**。
+
+    她担心的是存储无限增长（那也是这条排期的原始风险点）。量下来
+    约 25MB/年、十年 250MB，而磁盘剩 34G —— 存储不是约束。
+
+    而删的代价是真的：摘要的 prompt 明写着「忽略：寒暄、重复、情绪波动」，
+    对工作助理对，对他们俩不对。删了那些就永久没了。
+    """
+    for t in ("conversations", "messages"):
+        p = _shipped(t)
+        assert p.default_days is KEEP_FOREVER, \
+            f"{t} 被设了保留天数（{p.default_days}）—— 她要的是能多留就多留"
+
+
+def test_出厂策略_对话两张表口径一致():
     """两个库存的是**同一段对话**（session id 都一样），一份给 App 看、
-    一份给他做上下文。窗口不一致 = 一边忘了一边还记得。
+    一份给他做上下文。口径不一致 = 她在 App 里看不到了、他却还记得。
     """
     m = _shipped("messages")
     c = _shipped("conversations")
-    assert m.default_days == c.default_days == 180, \
-        "messages 和 conversations 的保留窗口不一致了"
-    assert m.group_col == "session_id", "messages 变成按行删了"
+    assert m.default_days == c.default_days, \
+        "messages 和 conversations 的保留口径不一致了"
+
+
+def test_出厂策略_对话的删法保持按会话():
+    """现在两张表都是 KEEP_FOREVER，**但删法得留着**。
+
+    ⚠️ 这条测试挡的是「哪天又决定要删」那一刻：那时候很容易只改天数、
+    忘了删法，于是直接退回按行删 —— 从活着的对话里往前啃。
+    """
+    c = _shipped("conversations")
+    m = _shipped("messages")
+    assert c.group_col == "id", "对话的按会话删没了"
+    assert m.group_col == "session_id", "messages 的按会话删没了"
     assert m.cascade == ("sessions", "id"), \
         "级联没了 —— 会留下空壳会话（列表里有，点进去空白）"
-
-
-def test_出厂策略_conversations留180天():
-    """糖糖 2026-09-16 定的。改这个数要她再点一次头。"""
-    p = _shipped("conversations")
-    assert p.default_days == 180, f"对话保留天数被改成了 {p.default_days}"
-    # 🔴 按会话删，不是按行删 —— 去掉 group_col 就会从活着的对话里往前啃
-    assert p.group_col == "id", \
-        "对话变成按行删了 —— 还在用的那段会被从开头吃掉"
 
 
 def test_库不在不算通过(tmp_path, capsys):
