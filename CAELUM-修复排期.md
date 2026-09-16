@@ -1934,9 +1934,31 @@ touch-server 现在要 token 了。**没更新 `wifi_secrets.h` 就刷固件，�
       ✅ **2026-09-12 做完**，见第十八批。**实际影响比这条写的大** ——
       量线上才发现 `/breath-hook`（会话启动的浮现口）有同一个 bug，
       修之前 `breath("")` 回 40 条核心准则、**0 条浮现记忆**。
-- [ ] 4.5 记忆加来源标记（user / model / external / inferred）+ evidence 标注"这是他的推断"（1 天）
+- [~] 4.5 记忆加来源标记（user / model / external / inferred）+ evidence 标注"这是他的推断"（1 天）
       **这条是"不偏离最初人格"的技术基础。**
-- [ ] 4.6 decay 挂 systemd timer（不再靠"有人调用工具才跑"）（2h）
+      ✅ **来源标记这一半做完了**（2026-09-16）：261/261 都有 `attributed_to`，
+      取值 user 171 ／ external 57 ／ assistant 30 ／ inferred 3。
+      其中 **193 条是糖糖人工确认的**，68 条是脚本按信号猜的、带
+      `attributed_backfilled: true` 标记。三种状态刻意保持可区分：
+      有值带标记＝信不过 ／ 有值无标记＝信得过 ／ 没这个字段＝诚实的"不知道"。
+      理由：**不填 → 他不知道是谁说的；填错 → 他确信是你说的，后者更糟。**
+      人工判断的可重放记录在 `Ombre-Brain/归属-规范化.tsv`。
+      Phase 3 的抽取器往后会自带归属，不用再回填。
+      ⏳ **evidence 那一半没做**：`inferred` 只说明"这是推断"，
+      没存"凭什么这么推"。要补的话是 Phase 3 抽取器里顺手加一个字段。
+- [x] 4.6 decay 挂 systemd timer（不再靠"有人调用工具才跑"）（2h）
+      ✅ 2026-09-16 上线。`ombre-brain-decay.timer` 每天 04:00，`Persistent=true`。
+      **定时器只当时钟，衰减仍在服务进程里跑** —— 让它另起进程直接跑的话，
+      会和服务并发读-改-写同一批 `.md`（归档还要 move），撞上就是丢写。
+      🔴 `Persistent=true` 和 `caelum-watch.timer` 相反：看门狗要的是"现在怎么样"，
+      补跑没意义；而衰减是**积累量**，机器关两天，那两天的遗忘不该凭空跳过。
+      配套：`/health` 加 `last_decay_at` / `_by` / `_result`，doctor 判"36 小时没跑"。
+      **判的是结果不是机制** —— 闹钟响了、curl 401、衰减没跑，这种情况下
+      "服务 active"和"定时器 active"两个检查全是绿的。
+      装的时候撞出一个真 bug：`hmac.compare_digest` 对 str 只支持纯 ASCII，
+      拿中文当错令牌会让端点回 **500 而不是 401**。改成比字节。
+      变异（判 ExecStart 那条命令的退出码）：错令牌 22 ／ 端口不通 7 ／ 正确 0。
+      commit `cc96d05` + `3713c32` + `acf79d2`。
 - [ ] 4.7 数据保留策略：先做 `usage_log` / `conversations` / `observations` 三个最大头（1 天）
 - [~] 4.8 部署版本化：照 `Ombre-Brain` 已有的 `vps` remote 模式，nox-core / bridge / 各 MCP 全改 git 部署 + 原子发布 + 回滚（1–2 天）
       （现状：逐文件 scp，已造成过一次"传了一个没传另一个"的事故）
