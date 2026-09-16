@@ -1164,6 +1164,15 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
             except Exception as exc:  # noqa: BLE001
                 logger.warning("时间理解启动失败（不影响对话）: %s", exc)
 
+        # 记忆抽取 shadow（Phase 3，2026-09-16）：一轮结束后把对话片段交给
+        # OB 的 extract_memory —— 只抽取记日志、不落库，积累一周数据人工
+        # 看抽取质量。🔴 同一道测试会话闸门：测试流量会把 shadow 数据搅浑
+        if not is_test_session(sid):
+            try:
+                _ob_extract_async(sid, text, reply)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("记忆抽取 shadow 启动失败（不影响对话）: %s", exc)
+
         if attention is None:
             return
         if is_test_session(sid):
@@ -1349,6 +1358,45 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
                 logger.exception("时间理解失败（不影响对话）")
 
         threading.Thread(target=_run, daemon=True, name="temporal").start()
+
+    def _ob_extract_async(sid: str, text: str, reply: str) -> None:
+        """后台线程里跑记忆抽取 shadow（Phase 3，2026-09-16）。
+
+        把「她说的 + 他回的」交给 OB 的 extract_memory（shadow 模式）。
+        🔴 shadow：OB 侧只抽取记日志、不落库 —— 先积累一周人工看质量，
+        糖糖点头后才切 live。这条线**不设开关**：它不写任何状态，
+        「关」的需求到 live 那天才存在；现在关它 = 不调它。
+
+        为什么无脑每轮调：一次是 utility 的钱（厘级），且抽取器自己会
+        拒收没有信息量的候选 —— shadow 数据缺一周才是真的浪费。
+        只有太短的回合（「嗯」「好」）不值得一次调用，直接跳过。
+        """
+        if core.ob is None:
+            return
+        parts = []
+        if text:
+            parts.append(f"糖糖：{text}")
+        if reply:
+            parts.append(f"Nox：{reply}")
+        dialog = "\n\n".join(parts)
+        if len(dialog.strip()) < 30:
+            return
+
+        def _run() -> None:
+            try:
+                # today 不传 —— OB 侧用自己的时钟兜底（线上时区 +0800），
+                # 这里少一个 datetime 形状依赖
+                r = asyncio.run(core.ob.aextract_memory(dialog))
+                if not r.ok:
+                    # 不许静默（docs/LOGGING.md）：shadow 断了的表现是
+                    # 「日志忽然没了」，看起来和「她最近没说话」一样
+                    logger.warning("记忆抽取 shadow 失败: %s", r.error)
+                else:
+                    logger.info("记忆抽取 shadow 完成: %s", (r.text or "")[:80])
+            except Exception:  # noqa: BLE001
+                logger.exception("记忆抽取 shadow 异常")
+
+        threading.Thread(target=_run, daemon=True, name="ob-extract").start()
 
     def _appraise_async(sid: str, text: str, reply: str,
                         message_time: Any = None) -> None:

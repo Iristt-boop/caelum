@@ -347,6 +347,25 @@ class OmbreBrain:
         except Exception as exc:  # noqa: BLE001
             return MemoryResult(False, error=f"hold: {type(exc).__name__}: {exc}")
 
+    async def aextract_memory(self, dialog: str, today: str = "",
+                              mode: str = "shadow") -> MemoryResult:
+        """Phase 3 shadow 钩子（2026-09-16）：一轮对话交给 OB 抽记忆候选。
+
+        shadow 模式只记日志、**不落库** —— 先积累一周数据人工看抽取
+        质量，糖糖点头后才在 OB 侧允许 live。失败不抛：shadow 断了
+        表现是「日志忽然没了」，这里只警告。
+        """
+        if not dialog.strip():
+            return MemoryResult(False, error="dialog 为空")
+        args: dict[str, Any] = {"dialog": dialog[:4000], "mode": mode}
+        if today:
+            args["now"] = today
+        try:
+            return await self._acall("extract_memory", args)
+        except Exception as exc:  # noqa: BLE001
+            return MemoryResult(
+                False, error=f"extract_memory: {type(exc).__name__}: {exc}")
+
 
 def _text_of(resp: Any) -> str:
     """把 MCP 的 content 块拼成纯文本。OB 的工具都返回单个 text 块。"""
