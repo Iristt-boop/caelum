@@ -102,6 +102,19 @@ class AttentionStore:
         with self._lock:
             self._conn.executescript(_SCHEMA)
             self._conn.execute("PRAGMA journal_mode=WAL")
+            # 拿不到锁先等 5 秒，别当场抛 `database is locked`。
+            #
+            # ⚠️ **这一行本身不修任何东西** —— Python 的
+            # `sqlite3.connect()` 默认 `timeout=5.0`，已经等价于 5000
+            # （2026-09-13 实测：默认 connect 回来就是 5000）。
+            # 写在这里只为两件事：
+            #   ① 把"这个库要等锁，不许秒失败"变成看得见的意图，
+            #      而不是藏在一个库默认值里
+            #   ② 万一以后有人给 connect 加了 `timeout=0`，这一行会盖回来
+            #
+            # 为什么在意：这个库存着「他今天开过几次口」。写失败又恰好重启，
+            # 就是她看到的"他翻来覆去说同一件事"（见 service.py 的 `_persist`）。
+            self._conn.execute("PRAGMA busy_timeout=5000")
             self._conn.commit()
         logger.info("Attention 库就绪：%s", self.path)
 

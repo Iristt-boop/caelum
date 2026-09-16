@@ -50,5 +50,43 @@ rule "R5" "前端不直接推消息" veto \
 # 所以这里查的是**除 place 之外**有没有别的地方触达下单。
 rule "R8" "花钱的动作只在确认端点后面" veto   "grep -n \"SERVER_TOOLS\[.luckin_order.\]\" nox-core/tools/luckin.py    | grep -v 'def place' | grep -v '^[0-9]*: *#'"
 
+# R9 时间语义只有一处地基（2026-09-14，审计 F1）。
+#
+# 审计时全仓有 **8 份**独立的 `timezone(timedelta(hours=8))`，
+# 三个名字（CST / LOCAL_TZ / _CST）指同一个东西。眼下值一样所以看不出问题 ——
+# 这正是它危险的地方：哪天要支持她出国、或者把「她的一天」从 00:00 挪到 04:00
+# （她凌晨才睡），得改八处，**漏一处不报错**。
+#
+# 只有 nox-core/temporal/ 这个包能造它。别处再写就是 F1 长回来了。
+rule "R9" "UTC+8 只在 temporal 包里定义一次" veto   "$PYG -E 'timezone\(timedelta\(hours=8' nox-core | grep -v tests/ | grep -v 'nox-core/temporal/' | $PYV"
+
+# R10 朋友圈不许推送（2026-09-15）。
+#
+# 发帖不推送、不弹锁屏 —— **它不是开口**，所以它不走 R1 那条出口，
+# 也不占 Care 的每日额度。但反过来说，它**绝不许自己长出一条推送**：
+# 那就是第五条主动消息渠道（糖糖 2026-08-18：「不要成为第五条主动消息渠道」）。
+#
+# ⚠️ 这条**不能靠自觉**：发帖和开口长得太像了 ——
+#    `bridge.post("/api/diary", ...)` 和 `bridge.post("/api/push/send", ...)`
+#    在 diff 里只差几个字符，review 时眼睛会滑过去。
+#
+# 🔴 口径和 R1 一样认**完整端点路径** `api/push/send`，**故意不认裸的
+#    `push/send`** —— 后者会命中 `moments/__init__.py` 里解释这条法则本身的
+#    那段文档，于是哨兵天生就是红的，几天后它会被当噪音关掉。
+rule "R10" "Moments 不许推送（发帖不是开口）" veto \
+  "$PYG -E 'api/push/send|api/nox/push' nox-core/moments | $PYV"
+
+# 🔴 空集不是通过（CAELUM-MAP.md 第三·五节第一个案例）：上面那条 veto 在
+#    空集上恒真。`nox-core/moments/` 哪天被删掉或改名，它就**静默地永远为真** ——
+#    哨兵全绿，而它盯的东西已经不存在了。
+rule "R10b" "Moments 那一层确实还在（法则不许对着空目录成立）" allow \
+  "ls nox-core/moments/loop.py nox-core/moments/writer.py 2>/dev/null"
+
+# R2b Moments 不直接读话题池（设计文档第一节）：话题池的料只能经
+#     `CuriositySource`（它已经把池子的料变成「好奇」这个 Drive），
+#     帖子读的是**那个 Drive 和它的 evidence**，不许直接读池子。
+rule "R2b" "Moments 不直接读话题池（只经 CuriositySource 变成 Drive）" veto \
+  "$PYG -E 'topic_pool|topics_browse|TopicPool' nox-core/moments | $PYV"
+
 echo "════════"
 if [ "$FAIL" -eq 0 ]; then echo "边界法则全部守住了 ✓"; else echo "有越界，见上 ✗"; exit 1; fi

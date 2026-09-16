@@ -40,6 +40,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 import math
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -153,13 +154,48 @@ class Attention:
 class AttentionRegistry:
     """一组 Attention，按 subject 索引。
 
-    纯内存 + 纯同步。落盘是 `attention.store.AttentionStore` 的事，
+    纯内存。落盘是 `attention.store.AttentionStore` 的事，
     这一层不碰 IO —— 分开之后这些规则逻辑全都能用普通单测覆盖，
     不需要临时数据库。
+
+    ## 🔴 但它**不是单线程的**（审计 2.2，2026-09-13 补锁）
+
+    原来这里写着"纯内存 + 纯同步"，读的人容易以为不用管并发。**不对。**
+    同时会碰它的至少有三路，而且都在不同线程上：
+
+        Attention 心跳      `run_loop` → `to_thread(tick)`     15 分钟
+        Care 快循环         `run_care_loop` → `to_thread`      60 秒
+        每一轮对话          FastAPI 的 def 端点走线程池        她一说话就来
+
+    `prune()` / `list()` / `to_list()` 都在**遍历** `_items`，而
+    `upsert()` 会往里加键。遍历的同时有人加键 = `RuntimeError:
+    dictionary changed size during iteration` —— 它会从
+    `_turn_ends` 那条增强路径里炸出来，表现成"偶尔某一轮他不对劲"。
+
+    ### 两道防线，各挡各的（别搞混，我一开始就写混了）
+
+    **① `list(self._items.values())` 挡住崩溃。** CPython 里
+    `list(d.values())` 是一次 C 调用，**GIL 下原子**，中途插不进去；
+    而 `[a for a in d.values()]` 是解释器逐个取，随时可能被切走 ——
+    实测就是这一句会抛 `RuntimeError`，换成前者不会。
+    所以凡是要遍历的地方都先物化一份快照。
+
+    **② `RLock` 挡住"读一半被人改"。** 比如 `weaken()` 是
+    读当前强度 → 乘系数 → 写回，中间被另一个 `upsert` 插进来就丢更新；
+    `prune()` 是先算出 dead 名单再逐个删，中间有人复活了某条就会误删。
+    这类**复合操作**光靠物化快照救不了。
+
+    ⚠️ 而且第 ① 条是**靠 GIL 的**。自由线程版 Python（3.13t 起）没有 GIL，
+    那时候只剩第 ② 条撑着 —— 所以锁不是冗余，是唯一真正可移植的那道。
+
+    **用 RLock 不是 Lock**：`top()` 调 `list()`，可重入省掉一整类
+    自己锁自己的死锁。
     """
 
     def __init__(self) -> None:
         self._items: dict[str, Attention] = {}
+        #: 见类文档。**所有碰 `_items` 的地方都要在它下面。**
+        self._lock = threading.RLock()
 
     # ------------------------------------------------------------ 写
 
@@ -188,6 +224,13 @@ class AttentionRegistry:
             raise ValueError(f"strength 要在 [0, 1]，拿到 {strength}")
         now = now or _now()
 
+        with self._lock:
+            return self._upsert_locked(subject, strength, kind, decay, event, summary, now)
+
+    def _upsert_locked(
+        self, subject: str, strength: float, kind: str, decay: str,
+        event: ExperienceEvent | None, summary: str, now: datetime,
+    ) -> Attention:
         item = self._items.get(subject)
         if item is None:
             item = Attention(
@@ -220,24 +263,29 @@ class AttentionRegistry:
 
     def weaken(self, subject: str, factor: float, now: datetime | None = None) -> Attention | None:
         """按比例削弱。M5 的 Feedback 用这个 —— 她忽略了就该淡下去。"""
-        item = self._items.get(subject)
-        if item is None:
-            return None
         now = now or _now()
-        item.strength = item.current_strength(now) * factor
-        item.last_updated = now
+        with self._lock:
+            item = self._items.get(subject)
+            if item is None:
+                return None
+            item.strength = item.current_strength(now) * factor
+            item.last_updated = now
         logger.info("削弱关心：%s → %.2f", subject, item.strength)
         return item
 
     def drop(self, subject: str) -> bool:
-        return self._items.pop(subject, None) is not None
+        with self._lock:
+            return self._items.pop(subject, None) is not None
 
     def prune(self, now: datetime | None = None) -> list[str]:
         """清掉已经衰减到地板以下的。返回被清掉的 subject。"""
         now = now or _now()
-        dead = [s for s, a in self._items.items() if not a.is_alive(now)]
-        for s in dead:
-            del self._items[s]
+        with self._lock:
+            # ⚠️ 先物化成 list 再删 —— 直接在 `.items()` 上边遍历边删
+            #    同样会炸，那是另一条路上的同一个错
+            dead = [s for s, a in list(self._items.items()) if not a.is_alive(now)]
+            for s in dead:
+                del self._items[s]
         if dead:
             logger.info("清掉已经淡掉的关心：%s", "、".join(dead))
         return dead
@@ -245,7 +293,8 @@ class AttentionRegistry:
     # ------------------------------------------------------------ 读
 
     def get(self, subject: str) -> Attention | None:
-        return self._items.get(subject)
+        with self._lock:
+            return self._items.get(subject)
 
     def list(
         self, min_strength: float = 0.0, now: datetime | None = None
@@ -255,7 +304,11 @@ class AttentionRegistry:
         `min_strength` 比的是**衰减之后**的值。
         """
         now = now or _now()
-        out = [a for a in self._items.values() if a.current_strength(now) >= min_strength]
+        with self._lock:
+            # 先复制一份快照再算强度：`current_strength` 是纯计算，
+            # 但排序期间别人往里加键照样会炸
+            snapshot = list(self._items.values())
+        out = [a for a in snapshot if a.current_strength(now) >= min_strength]
         return sorted(out, key=lambda a: a.current_strength(now), reverse=True)
 
     def top(self, now: datetime | None = None) -> Attention | None:
@@ -263,18 +316,25 @@ class AttentionRegistry:
         return items[0] if items else None
 
     def __len__(self) -> int:
-        return len(self._items)
+        with self._lock:
+            return len(self._items)
 
     def __contains__(self, subject: object) -> bool:
-        return subject in self._items
+        with self._lock:
+            return subject in self._items
 
     # ------------------------------------------------------------ 序列化
 
     def to_list(self) -> list[dict[str, Any]]:
-        return [a.to_dict() for a in self._items.values()]
+        # 落盘走这里。**遍历期间被加键就是那条经典的 RuntimeError** ——
+        # 而它炸在落盘路径上，等于这一轮的状态没写下去（见审计 2.4）
+        with self._lock:
+            return [a.to_dict() for a in list(self._items.values())]
 
     @classmethod
     def from_list(cls, rows: list[dict[str, Any]]) -> AttentionRegistry:
+        # 这里**不用加锁**：对象还没交给任何人，别的线程够不着它。
+        # 写清楚，免得后来人照着"到处都有锁"的样子往这儿也加一把。
         reg = cls()
         for row in rows:
             a = Attention.from_dict(row)

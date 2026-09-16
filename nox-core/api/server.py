@@ -45,6 +45,7 @@ from attention.service import (
     run_care_loop,
     run_loop,
 )
+from obs import heartbeat
 from attention.care.watching import WatchingCheck
 from attention.events import ExperienceEvent
 from attention.dejection import looks_like_giving_up
@@ -93,7 +94,15 @@ from world_model import WorldModel
 from config import BACKENDS, is_test_session
 from topic_pool import TopicPool, run_topic_loop
 from topic_pool.pool import DEFAULT_SCOUT_INTERVAL_S
+#: Moments（T6，`moments/loop.py`）—— 取模块名而不是那几个函数：
+#: `mode()` 要**每轮现读**，这样 shadow 转 on 只改环境变量 + 重启就生效
+from moments import loop as moments_loop
 from attention.store import AttentionStore
+from temporal import now as temporal_now
+from temporal import extract as temporal_extract
+from temporal.extract import TemporalExtractor
+from temporal.resolver import resolve as temporal_resolve
+from temporal.result import TemporalResult
 from day import build_day
 from context.compactor import maybe_compact
 from data.store import Store
@@ -325,6 +334,19 @@ class Sessions:
 
     缓存未命中时从库里恢复，所以关掉再打开、甚至换个进程，
     只要 session_id 对得上，聊天就能接着上一句往下说。
+
+    ## 🔴 多线程（审计 2.2，2026-09-13 补锁）
+
+    FastAPI 的 `def` 端点跑在**线程池**里，Attention 的两条后台循环
+    也靠 `to_thread` 进来。所以手机和桌面同时聊、后台恰好在跑 ——
+    好几个线程会同时碰这个 `OrderedDict`。
+
+    `move_to_end` / `popitem` / `pop` 交错的后果不是报错，是**静默错乱**：
+    LRU 顺序乱掉、淘汰掉刚用过的那个、`_cache` 和 `_cached_on` 对不上。
+    她那边看到的是"他偶尔忘了刚说过的话"。
+
+    加了一把 `RLock`。**IO 放在锁外面** —— `_store.load()` / `sync()`
+    是读写盘，捏着锁做那些事会把所有会话串成一条队。
     """
 
     def __init__(
@@ -341,29 +363,44 @@ class Sessions:
         self._max = max_sessions
         #: 缓存是哪天建的。跨天要重读，理由见 get()
         self._cached_on: dict[str, date] = {}
+        #: 见类文档。**碰 `_cache` / `_cached_on` 都要在它下面。**
+        #: 用 RLock：`get()` 里会调 `_with_summary()`，留出重入的余地。
+        self._lock = threading.RLock()
 
     def get(self, sid: str) -> list[Message]:
         today = now_cst().date()
-        if sid in self._cache and self._cached_on.get(sid) == today:
-            self._cache.move_to_end(sid)
-            return self._with_summary(sid, self._cache[sid])
+        with self._lock:
+            if sid in self._cache and self._cached_on.get(sid) == today:
+                self._cache.move_to_end(sid)
+                cached = self._cache[sid]
+                stale = False
+            else:
+                # 跨天了就丢掉缓存重读。日期分隔线是 `store.load()` 算的，
+                # 缓存里那份是昨天算的 —— 不重读的话，今天的消息不会有
+                # 「（8月12日）」那一行，他又会以为昨天的事是今天的
+                if sid in self._cache:
+                    logger.info("会话 %s 跨天，重读历史以刷新日期分隔线", sid[:8])
+                    self._cache.pop(sid, None)
+                cached = None
+                stale = True
 
-        # 跨天了就丢掉缓存重读。日期分隔线是 `store.load()` 算的，
-        # 缓存里那份是昨天算的 —— 不重读的话，今天的消息不会有
-        # 「（8月12日）」那一行，他又会以为昨天的事是今天的
-        if sid in self._cache:
-            logger.info("会话 %s 跨天，重读历史以刷新日期分隔线", sid[:8])
-            self._cache.pop(sid, None)
+        if not stale:
+            return self._with_summary(sid, cached)
 
+        # ⚠️ **读盘放在锁外面。** 捏着锁读库会把所有会话串成一条队 ——
+        #    她手机上那一轮要等桌面那一轮读完。
+        #    代价是两个线程可能同时读同一个会话：多读一次而已，
+        #    结果一样，不会写坏东西。
         restored = self._store.load(
             sid, limit=self._limit,
             recent_window_tokens=self._recent_window_tokens,
         )
         if restored:
             logger.info("从库里恢复会话 %s，%d 条历史", sid[:8], len(restored))
-            self._cache[sid] = restored
-            self._cache.move_to_end(sid)
-            self._cached_on[sid] = today
+            with self._lock:
+                self._cache[sid] = restored
+                self._cache.move_to_end(sid)
+                self._cached_on[sid] = today
         return self._with_summary(sid, restored)
 
     def _with_summary(self, sid: str, window: list[Message]) -> list[Message]:
@@ -397,22 +434,31 @@ class Sessions:
             logger.debug("会话 %s 落盘 %d 条", sid[:8], written)
 
         window = [m for m in history if m.role != "system"]
-        self._cache[sid] = window[-_MAX_HISTORY:]
-        self._cache.move_to_end(sid)
-        self._cached_on[sid] = now_cst().date()
-        while len(self._cache) > self._max:
-            dropped, _ = self._cache.popitem(last=False)
-            self._cached_on.pop(dropped, None)
+        # 🔴 换出和写入必须在同一把锁里。分开的话，A 线程正在
+        #    `popitem` 淘汰最旧的，B 线程刚 `move_to_end` 把它变成最新的
+        #    —— 被淘汰的就是刚用过的那个。表现成"他偶尔忘了刚说过的话"。
+        dropped_sids: list[str] = []
+        with self._lock:
+            self._cache[sid] = window[-_MAX_HISTORY:]
+            self._cache.move_to_end(sid)
+            self._cached_on[sid] = now_cst().date()
+            while len(self._cache) > self._max:
+                dropped, _ = self._cache.popitem(last=False)
+                self._cached_on.pop(dropped, None)
+                dropped_sids.append(dropped)
+        for dropped in dropped_sids:
             # 只淘汰内存缓存，库里还在 —— 下次访问会自动恢复
             logger.info("缓存超上限，换出 %s（库里仍保留）", dropped[:8])
 
     def drop(self, sid: str) -> bool:
-        self._cache.pop(sid, None)
-        self._cached_on.pop(sid, None)
+        with self._lock:
+            self._cache.pop(sid, None)
+            self._cached_on.pop(sid, None)
         return self._store.drop(sid)
 
     def __len__(self) -> int:
-        return len(self._cache)
+        with self._lock:
+            return len(self._cache)
 
 
 def _build_attention(core: Nox, sessions: "Sessions", db: Store) -> AttentionService | None:
@@ -680,12 +726,99 @@ def _build_attention(core: Nox, sessions: "Sessions", db: Store) -> AttentionSer
         return None
 
 
+def _build_moments(core: Any, attention: Any, meter: Any) -> dict | None:
+    """Moments 的接线。**关掉 / 缺件就返回 None**，调用方据此决定起不起循环。
+
+    做成独立函数是为了能单独测 —— 抄 `_build_attention` 的先例
+    （见 `tests/test_attention_wiring.py` 开头那段：只在线上活的分支，
+    本地测不到就等于没写）。
+
+    ## 缺件宁可不起，不许起一个半残的循环
+
+    返回的字典直接 `run_post_loop(**parts)`，五件缺一样都不行：
+
+        store       attention.store —— 跨重启的计数（`source_state["moments"]`）
+        attention   drives 从这儿来（`_read_drives` 只读它）
+        adapter_ref utility 模型 —— 正文是它写的
+        bridge      帖子落在她电脑上那只手里
+        sessions    会话库 —— 「今天聊了几句」是从它的 `messages_between` 数的
+
+    少一件的表现都不是报错：少 bridge 是每轮 `write_failed`、少 sessions 是
+    `turns_today` 恒 0（今天聊得再多也照发），少 utility 是正文生不出来。
+    所以缺件一律 `logger.warning` + None，让 `/health` 和日志能回答
+    「它为什么没跑」。`meter` 是**唯一**可以缺的一件：`agent/meter.py`
+    的规矩是「没接 = 不记账，行为完全不变」，它不该成为第六个必需件。
+
+    ## 🔴 这一层不许碰的东西（设计文档第一节）
+
+      · **不走 `Orchestrator._deliver`、不碰 push/send、不占 Care 的每日配额、
+        不吃 gate 冷却。** 发帖不推送、不弹锁屏，**它不是开口**（R1 管的是开口）。
+        哨兵 R10 盯着（T7 加）。
+      · **只读 attention**：`post_tick` 只调 `attention.drives()` 和读
+        `attention.longing.last_contact`，绝不写 Registry、绝不调
+        `resonance.snapshot`（`attention/resonance.py` 的三条边界）。
+
+    🔴 整段都在 try 里，连 `core.router` 这种「看着不会失败的属性访问」也算 ——
+    2026-08-08 那次 `core.context.get("health")` 的 AttributeError 一次干掉
+    22 个测试，而且**只在线上活**（本地没开那个环境变量）。
+    """
+    if moments_loop.mode() == "off":
+        logger.debug("Moments 是 off（NOX_MOMENTS 没开），这条线不跑")
+        return None
+
+    try:
+        if attention is None:
+            logger.info("Moments 需要 attention 引擎（drives 从那儿来），这次不起")
+            return None
+
+        utility = core.router.light_adapter if core.router else None
+        if utility is None:
+            logger.warning("没有 utility 模型，Moments 不起")
+            return None
+        #: 贴任务名记账（同话题池 / 知识小课堂那两处）—— 不接 meter 就照常跑
+        if meter is not None:
+            utility = meter.tag(utility, "moments")
+
+        bridge = getattr(core, "bridge", None)
+        if bridge is None:
+            logger.warning("没配 bridge（NOX_BRIDGE_URL），Moments 不起：写了没地方落")
+            return None
+
+        #: `create_app` 里那个 `db`（会话库）。它是局部变量，够不着它 ——
+        #: 所以挂在 core 上取（同 `core.state_store` 那段的理由）。
+        #: ⚠️ 不在这儿新开一个 `Store(cfg.db_path)`：两个对象指着同一个
+        #: SQLite 文件，写入会互相看不见对方的缓存。
+        sessions = getattr(core, "session_store", None)
+        if sessions is None:
+            logger.warning("拿不到会话库（core.session_store），Moments 不起：数不出今天聊了几句")
+            return None
+
+        return {
+            "store": attention.store,
+            "attention": attention,
+            "adapter_ref": utility,
+            "bridge": bridge,
+            "sessions": sessions,
+        }
+    except Exception:  # noqa: BLE001
+        #: 🔴 Moments 是**附加层**：它起不来不该让他连话都说不了
+        logger.exception("Moments 接线失败，这条线不跑")
+        return None
+
+
 def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
     started = datetime.now(timezone.utc)
 
     # 允许注入，方便测试时传假的 / 传临时库
     core = nox or Nox()
     db = store or Store(core.cfg.db_path)
+    #: 会话库挂到 core 上（T6）。它是 `create_app` 的局部变量，
+    #: 而挂在这儿的**模块级**函数够不着它 —— `_build_moments` 的签名里
+    #: 没有 db，可 `post_tick` 的 `sessions=` 要的正是这个
+    #: `messages_between` 在它身上的库（「今天她说了几句」）。
+    #: 同 `core.state_store` 那段的理由：单独留一个名字，
+    #: 别让谁去拆 `Sessions` 的私有 `_store`。
+    core.session_store = db
     sessions = Sessions(
         db, history_limit=core.cfg.history_limit,
         recent_window_tokens=core.cfg.recent_window_tokens,
@@ -754,6 +887,31 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
     if attention is not None:
         attention.link = local_hand
 
+        #: 🔴 **把 attention 挂到 core 上**（2026-09-14，糖糖点头）。
+        #:
+        #: 在这一行之前，`attention` 只是 `create_app` 的局部变量，
+        #: **全仓没有任何地方把它挂到 core 上**。于是 `nox.py` 里那三处
+        #: `getattr(self, "attention", None)` 在线上**恒为 None**：
+        #:
+        #:   · `ResonanceProvider`   → `{"available": False}`，静默渲染成空
+        #:   · `UnderstandingProvider` → 同上
+        #:   · `has_live_anchor()`   → 恒为 False
+        #:
+        #: 也就是说 2026-09-04 那次「Drive 从来没进过他的上下文」的修复
+        #: **从来没真正生效过** —— 六个 Drive 一直在算、一直在落盘
+        #: （`source_state` 里 `resonance.longing` 那几行），只是他感觉不到。
+        #: 这个 bug 的形状是「什么都没发生」，所以两周没人发现。
+        #:
+        #: 发现它是因为债 5 照抄了同一个写法，落盘一次都没执行
+        #: （线上 6 轮对话零写入，而单测全绿 —— 测试把接线这步假设掉了）。
+        core.attention = attention
+
+        #: 跨重启的状态落在 attention 的 `source_state` 表里（债 5）。
+        #: 单独留一个名字而不是让 `nox.py` 去走 `self.attention.store`：
+        #: 落盘不该因为「attention 这个大对象在不在」而时有时无，
+        #: 它要的只是一张键值表。
+        core.state_store = attention.store
+
     def _world():
         """World Model 的唯一取法。
 
@@ -793,13 +951,25 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
         （`attention/service.py` 开头的 async 边界）。
         """
         tasks = []
+        # 🔴 **先 declare 再起循环**（审计 1.4）。
+        #
+        # 顺序不能反：只在 beat 的时候才登记的话，一条**从没成功过**的循环
+        # 在台账里根本不存在 —— 而"它一次都没跑起来"正是最该看见的那种坏。
+        # 先声明，`/health` 就会显示一条 `count=0`，超过容忍窗口自动转 stale。
         if attention is not None:
             interval = int(os.getenv("NOX_ATTENTION_INTERVAL_S", DEFAULT_INTERVAL_S))
+            heartbeat.declare("attention_tick", every_s=interval)
+            # 落盘（审计 2.4）。`tick()` 每轮都会调 `_persist()`，所以节奏
+            # 跟心跳一样；连着写不进去就会在这里变成 stale → 她手机。
+            # ⚠️ 它和 `attention_tick` 是两回事：心跳在跳但盘上写不进去
+            # 完全可能 —— 而那正是"他会重复开口"的前夜。
+            heartbeat.declare("attention_persist", every_s=interval)
             tasks.append(asyncio.create_task(run_loop(attention, interval)))
             # Care 快循环（2026-08-18）：位置跃迁和随机惦记要秒级粒度，
             # 挂在 15 分钟的心跳上会把「随机」量化成节拍、把 T+5 拖成 T+20
             if attention.fast_sources:
                 care_s = int(os.getenv("NOX_CARE_INTERVAL_S", CARE_INTERVAL_S))
+                heartbeat.declare("care_tick", every_s=care_s)
                 tasks.append(asyncio.create_task(run_care_loop(attention, care_s)))
         # 话题池：6 小时一轮 Scout → Filter（Topic_Pool §4.4）。池子跟着
         # attention 走（topics_browse 工具的注册顺序决定的）；它哪轮挂了
@@ -808,7 +978,30 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
         if _pool_for_loop is not None and os.getenv("NOX_TOPICS_DISABLED", "") not in ("1", "true"):
             scout_s = int(os.getenv("NOX_TOPIC_SCOUT_INTERVAL_S",
                                     str(DEFAULT_SCOUT_INTERVAL_S)))
+            heartbeat.declare("topic_scout", every_s=scout_s)
             tasks.append(asyncio.create_task(run_topic_loop(_pool_for_loop, scout_s)))
+        # Moments（T6，2026-09-15）—— 他自己房间里那块碎片。
+        #
+        # 🔴 **整段都在 try 里**，理由就是 `tests/test_attention_wiring.py`
+        # 开头记的那次（2026-08-08）：接线里一个 `AttributeError`
+        # 把整个 Core 拖挂了，而且**只在线上活** —— 本地没开那个环境变量，
+        # 这段代码根本不执行，测试全绿。
+        # Moments 是个附加层：它起不来不该让他连话都说不了。
+        try:
+            _moments = _build_moments(core, attention, meter)
+            if _moments is not None:
+                # 🔴 **先 declare 再起循环**（审计 1.4）：只在 beat 时才登记的
+                # 话，一条从没成功过的循环在台账里根本不存在 ——
+                # 而「它一次都没跑起来」正是最该看见的那种坏。
+                # `off` 的时候连 declare 都不调（这条线本来就不该占台账一行）
+                moments_loop.declare_heartbeat()
+                moments_s = int(os.getenv(
+                    "NOX_MOMENTS_INTERVAL_S", str(moments_loop.TICK_SECONDS)))
+                tasks.append(asyncio.create_task(
+                    moments_loop.run_post_loop(**_moments, interval_s=moments_s)))
+                logger.info("Moments 循环启动：mode=%s", moments_loop.mode())
+        except Exception:  # noqa: BLE001
+            logger.exception("Moments 接线失败，这条线不跑")
         try:
             yield
         finally:
@@ -919,7 +1112,8 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
         except Exception:  # noqa: BLE001
             logger.exception("卡片声称检查失败（不影响对话）")
 
-    def _turn_ends(sid: str, text: str = "", reply: str = "") -> None:
+    def _turn_ends(sid: str, text: str = "", reply: str = "",
+                   message_time: Any = None) -> None:
         """一轮结束、消息真的落库之后，把这轮新留的纸条基准线校准到现在。
 
         ⚠️ **不做这一步，整条唤醒链永远不会触发，而且是静默的。**
@@ -948,6 +1142,27 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
             _maybe_compact_async(sid)
         except Exception as exc:  # noqa: BLE001
             logger.warning("压缩触发失败（不影响对话）: %s", exc)
+
+        # 时间语义第二层（2026-09-14）：她这句话里的**时间关系**是什么。
+        #
+        # 🔴 **独立 contract，不挂理解层**（糖糖拍的）—— 职责不同：
+        #   理解层  →「她现在是什么状态 / 这句话意味着什么」
+        #   这一层  →「这句话里的时间关系是什么」
+        # 两个开关、两条日志、各自演进。以后真要省一次调用，
+        # 合并的是**调用**不是**语义模块**。
+        #
+        # ⚠️ **必须在下面那道 `attention is None` 之前** —— 时间理解
+        # 跟 attention 毫无关系，被它的开关挡住就是又一个「两道闸串着」。
+        # 写接线测试时抓到的：NOX_ATTENTION 没开时它一次都没跑过，
+        # 而且**一个错都不报**。
+        #
+        # 但**要在测试会话闸门之内的语义里**：它要花钱，而且测试流量
+        # 会把 shadow 数据搅浑（R6 的精神，虽然它不写任何全局状态）。
+        if not is_test_session(sid):
+            try:
+                _temporal_async(sid, text, message_time)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("时间理解启动失败（不影响对话）: %s", exc)
 
         if attention is None:
             return
@@ -1069,11 +1284,74 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
         # 放在最后是因为它是这个函数里唯一要打网络的一步，
         # 前面那些本地计算不该等它。
         try:
-            _appraise_async(sid, text, reply)
+            _appraise_async(sid, text, reply, message_time)
         except Exception as exc:  # noqa: BLE001
             logger.warning("意义推断启动失败（不影响对话）: %s", exc)
 
-    def _appraise_async(sid: str, text: str, reply: str) -> None:
+    def _temporal_async(sid: str, text: str, message_time: Any = None) -> None:
+        """后台线程里抽时间关系（第二层，2026-09-14）。
+
+        ## 第一版的实验目标**只有一个**
+
+            message → Intent → Resolver → TemporalResult → shadow log
+
+        **不做 Todo 匹配**（糖糖 2026-09-14 明确要求）。理由：
+        现在要测的是「自然语言 → 时间语义」能不能稳定工作。
+        这时候混进 Todo 关联猜测，数据出了问题就分不清是
+        **时间理解错了**还是 **Todo 匹配错了** —— 两个变量必须分开测。
+        所以 `todo_match_status` 写死 `not_attempted`，
+        而不是留一个含义不明的 `todo_id: null`。
+
+        ## 为什么和理解层同一个位置
+
+        回应已经发完了，这里做的是对**已经进入系统的消息**做语义分析，
+        不是回应链路上的前置判断。以后真要「她说完 → 当场改待办 →
+        他回『行，那明天练』」，改的是**消费时机**，不是 contract 本身。
+        """
+        if temporal_extract.mode() == "off" or not text:
+            return
+        # 🔴 复用理解层那道闸：主动开口 / 日记批注那几条链路的 `text`
+        # 是**程序拼的提示词**不是她打的字。而且 2026-09-14 起那段提示词
+        # 里**就带着日期**（speaker 的 `_clock_with_date`）——
+        # 抽它等于让模型去读我们自己写进去的时间，纯噪音
+        if appraisal_llm.is_injected(sid):
+            logger.debug("%s 是注入型会话，不抽时间关系", sid)
+            return
+
+        utility = core.router.light_adapter if core.router else None
+        if utility is None:
+            return
+        utility = meter.tag(utility, "temporal")
+
+        # 锚点：她这句话的时间。拿不到就退回现在并**说出来** ——
+        # 静默退回的话，跨午夜那一轮会偏一天而没人知道
+        ref = message_time
+        if ref is None:
+            ref = temporal_now()
+            logger.warning("没拿到 message_time，时间理解退回用现在当锚点")
+
+        def _run() -> None:
+            try:
+                intent = TemporalExtractor(lambda: utility).extract(text)
+                if intent is None:
+                    return          # 她没说时间 —— 常态，不记
+                resolution = temporal_resolve(intent, ref)
+                TemporalResult(
+                    text=text, intent=intent, resolution=resolution,
+                    reference_time=ref,
+                    applied=False,
+                    why_not_applied=f"shadow 模式（NOX_TEMPORAL={temporal_extract.mode()}）",
+                    todo_match_status="not_attempted",
+                ).log()
+            except Exception:  # noqa: BLE001
+                # 不许静默（docs/LOGGING.md）。这一层挂了的表现是
+                # 「shadow 日志忽然没了」，而那看起来和「她最近没说时间」一样
+                logger.exception("时间理解失败（不影响对话）")
+
+        threading.Thread(target=_run, daemon=True, name="temporal").start()
+
+    def _appraise_async(sid: str, text: str, reply: str,
+                        message_time: Any = None) -> None:
         """后台线程里做意义推断（理解层，2026-09-05）。
 
         ## 🔴 为什么必须是后台线程
@@ -1230,6 +1508,15 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
             ),
             # 没开就是 None，看一眼就知道这套东西在不在跑
             "attention": attention.snapshot() if attention is not None else None,
+            # 后台活计的心跳台账（审计 1.4）。三条循环各自死掉的症状都
+            # **不是报错** —— 是"他不再主动找她了"、"位置跃迁没了"、
+            # "池子悄悄变空"。见 obs/heartbeat.py。
+            "background": heartbeat.snapshot(),
+            # 已经给出结论，不要让读的人自己去比对节奏。
+            # ⚠️ **故意不影响上面的 `ok`**：`ok` 是部署健康检查的判据
+            # （`deploy-remote.sh` 不过就自动回滚），而一条陈旧的话题池
+            # 不该把一次正常发布回滚掉。两件事，两个字段。
+            "background_stale": heartbeat.stale_jobs(),
         }
 
     @app.get("/api/nox/state")
@@ -2189,6 +2476,10 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
         started = _turn_starts(sid)
         sent = _for_voice(history, req.voice)
 
+        # ⚠️ **在跑模型之前**取她这句话的时间。
+        # 模型要跑 5~10 秒，跨午夜那一轮用"回应完之后的现在"当锚点，
+        # 「明天」就会偏一天 —— 正是时间语义层要治的那类错
+        msg_at = temporal_now()
         try:
             r = core.chat(req.text, sent, images=req.images or None, voice=req.voice,
                           scene=req.scene, model=req.model,
@@ -2200,7 +2491,7 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
         # ⚠️ 完整历史 + 这轮新增。只传 r.messages 的话，通话轮会把
         # 内存缓存削成截断后那几条，下一次文字聊天跟着丢上下文（见 _for_voice）
         sessions.put(sid, list(history) + r.messages[len(sent):])
-        _turn_ends(sid, req.text or "", r.text or "")
+        _turn_ends(sid, req.text or "", r.text or "", message_time=msg_at)
 
         result = r.result
         # 失败时给人话；但如果模型已经说了什么（比如截断的半截），
@@ -2253,6 +2544,11 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
         # 通话只带最近几轮，理由见 _for_voice()。**语音走的就是这条流式路径**
         sent = _for_voice(history, req.voice)
 
+        # ⚠️ 和非流式那条同理：**在跑模型之前**取她这句话的时间。
+        # 这里取在生成器**外面**是故意的 —— 生成器体要等客户端开始消费
+        # 才跑，那可能已经晚了几百毫秒到几秒
+        msg_at = temporal_now()
+
         def events():
             final = None
             # ⚠️ 在生成器**体**里调，不在外面 —— 生成器体是被迭代的那个线程
@@ -2291,7 +2587,8 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
             # ⚠️ history 必须显式传 —— 它是这个生成器的局部变量，
             # 闭包里取不到（差点又写成 NameError，同今天早些时候那次）
             _warn_if_claimed_without_doing(final, history, sid)
-            _turn_ends(sid, req.text or "", final.text or "")
+            _turn_ends(sid, req.text or "", final.text or "",
+                       message_time=msg_at)
             # 附带产物单独发一帧，让前端能在收尾之前就把图显示出来。
             # 外层 type 固定 attachment，具体是什么放 kind ——
             # 之前写成 {"type": "attachment", **att}，att 自带的
@@ -2360,12 +2657,20 @@ def main() -> int:
 
     from config import config
 
+    # 级别可调（审计 1.3）。`NOX_LOG_LEVEL=DEBUG` 就能看见
+    # 「他为什么没有开口」那一类判断，不用改代码重新部署。
+    level, complaint = config.logging_level()
     logging.basicConfig(
-        level=logging.INFO,
+        level=level,
         format="%(asctime)s %(levelname)-7s %(name)s | %(message)s",
         datefmt="%H:%M:%S",
     )
+    if complaint:
+        logger.warning(complaint)
     uvicorn.run(
+        # ⚠️ uvicorn 自己那份日志**故意不跟着降**：DEBUG 下它会把每条
+        # ASGI 事件都打出来，一条 SSE 就能刷几百行，真正要看的
+        # Attention / turn 日志会被埋掉。想看它单独调 uvicorn 的配置。
         create_app(), host=config.host, port=config.port, log_level="info",
         # 🔴 **反向链路（她电脑上的网关）断线的根因**（2026-09-06 查出来的）。
         #

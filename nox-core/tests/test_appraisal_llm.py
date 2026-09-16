@@ -368,3 +368,37 @@ def test_switch_values(monkeypatch, val, want):
     """认不出来的值一律当关 —— 打错一个字母不该悄悄把它打开。"""
     monkeypatch.setenv("NOX_LLM_APPRAISAL", val)
     assert mode() == want
+
+
+def test_丢弃时日志要带上它推断了什么(caplog):
+    """🔴 2026-09-14 补。丢弃仍然不进库，但**日志要记全**。
+
+    起因：影子模式跑了一周多，回头看那 9 条被置信度门槛丢掉的记录，
+    只有她的原话和一个数字 —— 能判断"这句话看起来值不值得记"，
+    **判断不了它判得对不对**。而后者才是决定 0.6 这个门槛该不该动的
+    唯一证据。于是那次观察给不出结论。
+
+    能挡什么：有人为了"日志干净"把推断内容从这条日志里拿掉。
+    挡不住什么：模型压根没给 meaning 的那种（那会打成「（没给出意义）」，
+              是如实，不是这条测试的目标）。
+    """
+    import logging
+
+    with caplog.at_level(logging.INFO):
+        ap = _appraiser(_reply(
+            confidence=MIN_CONFIDENCE - 0.05,
+            meaning="她嘴上说算了，其实是在等他拦一句",
+        )).appraise_turn("算了")
+
+    #: ① 上面那条规矩没松：一个字都不进库
+    assert ap is None
+
+    #: ② 但日志里要看得见它想记什么 —— 判据挑**推断内容本身**，
+    #:    不是"有没有打过日志"（那种断言永远成立）
+    text = caplog.text
+    assert "她嘴上说算了，其实是在等他拦一句" in text, (
+        "丢弃日志里没有推断内容 —— 下次回头看还是判断不了它判得对不对"
+    )
+    #: ③ 她的原话和分数也要在，否则对不上是哪一句
+    assert "算了" in text
+    assert "0.5" in text or "0.55" in text

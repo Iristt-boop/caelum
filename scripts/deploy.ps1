@@ -26,8 +26,22 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+
+# 🔴 **这台机器的 Console.OutputEncoding 是 gb2312。**
+# ssh / git 这些 native 进程吐的是 UTF-8 字节，PS 5.1 会拿上面那个编码去解
+# —— 于是远端日志里的中文全变乱码，「详见上面的日志」这句话就成了废话。
+# （2026-09-13：正是它让第 [4] 步的成功判定一直失效，见那里的注释。）
+try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false } catch { }
+
 $Key  = "C:\Users\14372\.ssh\id_ed25519"
-$Vps  = "root@43.133.211.140"
+# 🔴 **认名字，不认 IP**（2026-09-15 改）。
+#
+# 原来写死的是 `43.133.211.140`，而 `noxtang.com` 现在解析到 `43.153.154.237` ——
+# 机器换过 IP，脚本没跟着改。表现是 `ssh: connect ... Connection timed out`，
+# 一个看起来像「网断了」的错，实际是**部署脚本指着一台不存在的机器**。
+# 而且它骗得过一半的排查：站点 `https://noxtang.com` 照常 200，
+# 因为那条路走的是 DNS，只有 ssh 这条走的是写死的 IP。
+$Vps  = "root@noxtang.com"
 $SshOpts = @("-i", $Key, "-o", "BatchMode=yes", "-o", "ConnectTimeout=20")
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 
@@ -42,21 +56,37 @@ $Services = @{
 }
 
 function Invoke-Remote([string]$Script) {
-  # 走 stdin 喂脚本。两个 PS 5.1 的坑都在这里处理掉：
+  # 走 stdin 喂脚本。三个 PS 5.1 / shell 的坑都在这里处理掉：
   #
   # 🔴 坑 1：**PowerShell 5.1 往 native 进程 stdin 写时，会给最后一行补 CRLF。**
   #    于是最后一个命令收不到干净的参数 —— `head -n 20` 会报
   #    `invalid number of lines: '20\r'`（2026-09-11 被这个坑了半天）。
-  #    解法：末尾补一行无害的 `: # end`，让那个 \r 落在它身上。
+  #    解法：末尾补一行，让那个 \r 落在它身上。
   #
-  # 🔴 坑 2：`$ErrorActionPreference = "Stop"` 时，native 命令往 stderr 写一行
+  # 🔴 坑 2（2026-09-13 修）：**补的那一行不能是 `: # end`。**
+  #    `:` 永远成功，于是**外层 shell 的退出码恒为 0**，把里面
+  #    `bash deploy-remote.sh` 的失败整个吃掉 —— 第 [4] 步就再也分不出成败。
+  #    解法：补的这一行**先接住上一条的 $?，再原样 exit 出去**，
+  #    那个 \r 落进尾部注释里，照样无害。
+  #
+  #    ⚠️ 我的第一版验证没抓到它，因为**测的形状不对**：
+  #    送的是 `echo …; exit 1` —— `exit` 会当场结束整个 shell，
+  #    补的那行根本没机会跑。而真实形状是 `bash deploy-remote.sh`：
+  #    **子进程**退 1，外层若无其事地继续往下走。
+  #    （同一类错误在第八批也犯过一次：sed 改的是默认值，而 unit 里的
+  #    显式 env 覆盖了它，于是"测试"什么都没测到。）
+  #
+  # 🔴 坑 3：`$ErrorActionPreference = "Stop"` 时，native 命令往 stderr 写一行
   #    会被 PS 当成**终止性错误**抛出来，把正常输出也一起打断。
   #    解法：调用期间临时切成 Continue，再把结果统一转成字符串。
-  $Script = ($Script -replace "`r", "") + "`n: # end"
+  $Script = ($Script -replace "`r", "") + "`n__rc=`$?`nexit `$__rc  # end"
   $prev = $ErrorActionPreference
   $ErrorActionPreference = "Continue"
   try {
     $out = $Script | ssh @SshOpts $Vps "bash -s" 2>&1
+    # 远端脚本的退出码（ssh 原样带回来）。**这才是"成功了没有"的判据**，
+    # 见第 [4] 步那段注释 —— 别再回去 match 日志里的中文。
+    $script:RemoteExit = $LASTEXITCODE
     return ($out | ForEach-Object { $_.ToString() })
   }
   finally { $ErrorActionPreference = $prev }
@@ -113,7 +143,10 @@ try {
   cmd /c "git archive --format=tar --output=`"$tar`" $Commit $Sub"
   if ($LASTEXITCODE -ne 0) { throw "git archive 失败" }
   $size = [math]::Round((Get-Item $tar).Length / 1KB, 1)
-  $count = (tar -tf $tar | Measure-Object).Count
+  # ⚠️ 别用 `tar -tf $tar` 数 —— GNU tar 会把 `C:\...` 当成**远程主机**
+  #    ("Cannot connect to C: resolve failed")，条目数恒为 0，
+  #    看起来像"什么都没打进去"。问 git 要，它本来就知道。
+  $count = (git ls-tree -r --name-only $Commit $Sub | Measure-Object).Count
   Write-Host "[1] 打包完成：$size KB / $count 个条目"
 
   # ── [2] 上传 ─────────────────────────────────────────────────
@@ -128,8 +161,17 @@ try {
   # ── [4] 远端执行 ─────────────────────────────────────────────
   $out = Invoke-Remote "bash /root/deploy-remote.sh '$Service' '$Tag' '/tmp/release-$Service.tar'"
   $out | ForEach-Object { Write-Host $_ }
-  if (-not (($out -join "`n") -match "部署完成")) {
-    Write-Host "🔴 部署未成功（详见上面的日志）" -ForegroundColor Red
+  # 🔴 **判据是远端的退出码，不是日志里的中文**（2026-09-13 修）。
+  #
+  # 原来这里写的是 `($out -join "`n") -match "部署完成"`，
+  # 而它**从来没有成立过** —— 上面那条 OutputEncoding 的注释解释了原因。
+  # 结果是每一次成功部署都打红字 + exit 1。
+  #
+  # 那比没有检查更坏：狼来了喊多了，真失败的那一次也没人信。
+  # 而 `deploy-remote.sh` 每条失败路径都 exit 1、成功 exit 0，
+  # ssh 会把它原样带回来 —— 这个信号一直都在，只是没人用。
+  if ($script:RemoteExit -ne 0) {
+    Write-Host "🔴 部署未成功（远端退出码 $script:RemoteExit，详见上面的日志）" -ForegroundColor Red
     exit 1
   }
 

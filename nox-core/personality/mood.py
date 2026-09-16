@@ -15,11 +15,15 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
 from agent.llm import HER_EMOTIONS
+
+logger = logging.getLogger(__name__)
 
 # 固定 UTC+8，不用 datetime.now() 的机器本地时间。
 #
@@ -30,11 +34,31 @@ from agent.llm import HER_EMOTIONS
 #
 # 用固定偏移而不是 ZoneInfo("Asia/Shanghai")：Windows 上 zoneinfo 要额外装
 # tzdata，少一个依赖少一处会炸的地方。中国不用夏令时，+8 永远成立。
-CST = timezone(timedelta(hours=8))
+from temporal import CST  # noqa: E402  ← 唯一定义在 temporal.py（审计 F1）
 
 
 def now_cst() -> datetime:
     return datetime.now(CST)
+
+
+# 累积情绪的默认坐标。**下面 Mood 的字段默认值必须和这两个常量一致** ——
+# `restore()` 的衰减目标就是它们，两处对不上会让"衰减到底"停在一个
+# 谁都没定义过的地方，而且不会报错。
+DEFAULT_VALENCE = 0.3
+DEFAULT_AROUSAL = 0.3
+
+#: 半衰期：离开这么久，累积情绪走一半的路回默认坐标（糖糖 2026-09-14 定）。
+#:
+#: 为什么要衰减而不是"一律恢复"或"一律清零"：
+#: 原来的设计是重启即清零，注释写着"隔了一天再开口，本来也该是平常状态"——
+#: 理由本身对，但它**默认了「进程重启 ≈ 隔了很久」**。而 2026-09-13 一天之内
+#: nox-core 重启了 8 次，全是发版本造成的，间隔几十秒。她那头一句话还没说完，
+#: 他就忽然变客气了（惯性 0.7，热起来要 5~8 轮，那几轮全白攒）。
+#:
+#: 所以判断的不是"要不要留"，而是"隔多久之后它就不该留了"。
+#: 用连续衰减而不是硬阈值，是为了和这个模块本来的原则一致：**带惯性，不跳变**。
+#: 详见 `docs/RESTART-STATE.md`。
+HALF_LIFE = timedelta(hours=2)
 
 # 糖糖可能的情绪 → Nox 该怎么接。
 # 不写"你要表现得心疼"这种表演指令，写的是**接住的方式** ——
@@ -101,8 +125,8 @@ class Mood:
     也不会因为一句平淡的话瞬间冷掉。
     """
 
-    valence: float = 0.3
-    arousal: float = 0.3
+    valence: float = DEFAULT_VALENCE
+    arousal: float = DEFAULT_AROUSAL
     her_emotion: str = "平静"
     turns: int = 0
     updated_at: datetime = field(default_factory=now_cst)
@@ -132,6 +156,71 @@ class Mood:
         self.her_emotion = emotion if emotion in self._TARGET else "平静"
         self.turns += 1
         self.updated_at = now_cst()
+
+    # ------------------------------------------------------------ 落盘
+
+    def to_dict(self) -> dict[str, Any]:
+        """序列化。`updated_at` 是**恢复时算衰减的唯一依据**，不能省。"""
+        return {
+            "valence": self.valence,
+            "arousal": self.arousal,
+            "her_emotion": self.her_emotion,
+            "turns": self.turns,
+            "updated_at": self.updated_at.isoformat(),
+        }
+
+    def restore(self, d: dict[str, Any] | None, now: datetime | None = None) -> bool:
+        """把落盘的状态按离开的时长衰减之后**就地**写回。恢复了返回 True。
+
+        ⚠️ **必须就地改字段，不许新建 Mood 对象替换。**
+        `nox.py` 是 `MoodProvider(self.mood)` 这么注册的 —— Provider 手里攥的是
+        引用，在 `__init__` 那一刻就绑死了。换对象的话 Provider 会继续读旧的那个，
+        **而且不报错**：他的上下文里永远是默认情绪，日志干干净净。
+        这正是 `docs/RESTART-STATE.md` 第四节说的"失败形状是什么都没发生"。
+
+        **这个方法不抛异常。** 存档坏了最坏的后果是这次回到平常状态，
+        比起因此起不来要轻得多（同 `attention/store.py:260` 的取舍）。
+
+        能挡什么：部署造成的几十秒重启把攒了几轮的温度清零。
+        不能挡什么：进程被 kill -9 时**最后一轮**还没落盘的那一次更新
+        （落盘在 update 之后同步做，窗口只有几毫秒，不值得上 WAL）。
+        """
+        if not d:
+            return False
+        now = now or now_cst()
+        try:
+            saved_at = datetime.fromisoformat(str(d["updated_at"]))
+            valence = float(d["valence"])
+            arousal = float(d["arousal"])
+        except (KeyError, TypeError, ValueError):
+            logger.exception("情绪存档读不出来，这次按平常状态开始：%r", d)
+            return False
+
+        if saved_at.tzinfo is None:
+            # 历史存档没带时区的兜底。按 CST 解释 —— 写它的进程就在 +8
+            saved_at = saved_at.replace(tzinfo=CST)
+
+        # 时钟回拨（NTP 校时、换机器）会让 elapsed 变负，clamp 到 0 当"刚刚"。
+        # 不 clamp 的话 2**正数 会把情绪放大到坐标系外面去
+        elapsed = max((now - saved_at).total_seconds(), 0.0)
+        decay = 0.5 ** (elapsed / HALF_LIFE.total_seconds())
+
+        self.valence = round(DEFAULT_VALENCE + (valence - DEFAULT_VALENCE) * decay, 3)
+        self.arousal = round(DEFAULT_AROUSAL + (arousal - DEFAULT_AROUSAL) * decay, 3)
+
+        # her_emotion 和 turns 是离散的，没法"衰减一半"。
+        # 挂在同一个半衰期上：离开不到一个半衰期才接着算上一轮的状态，
+        # 超过了就当这是新的开始 —— 和上面的连续衰减说的是同一件事
+        fresh = decay >= 0.5
+        self.her_emotion = str(d.get("her_emotion") or "平静") if fresh else "平静"
+        self.turns = int(d.get("turns") or 0) if fresh else 0
+        self.updated_at = now
+
+        logger.info(
+            "情绪接回来了：离开 %.0f 秒，衰减 %.2f｜valence %.2f→%.2f｜她上一轮 %s",
+            elapsed, decay, valence, self.valence, self.her_emotion,
+        )
+        return True
 
     @property
     def warmth(self) -> str:

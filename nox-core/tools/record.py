@@ -39,7 +39,7 @@ from tools import context
 
 logger = logging.getLogger(__name__)
 
-LOCAL_TZ = timezone(timedelta(hours=8))
+from temporal import LOCAL_TZ  # noqa: E402  ← 唯一定义在 temporal.py（审计 F1）
 
 #: World Model 里的事实类型
 PERIOD = "menstrual"

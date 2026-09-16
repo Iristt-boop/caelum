@@ -28,7 +28,13 @@ function pickPort() {
   return 20000 + Math.floor(Math.random() * 20000);
 }
 
-export async function startBridge() {
+/**
+ * @param {Record<string,string>} [extraEnv]
+ *   盖掉下面任何一条默认环境变量。用来把 bridge 指向一个**假的上游**
+ *   （比如假的 nox-core），验它怎么解读上游的回答 ——
+ *   默认那个死端口只能验"连不上"，验不了"连上了但内容不对"。
+ */
+export async function startBridge(extraEnv = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "bridge-test-"));
   const port = pickPort();
 
@@ -58,6 +64,7 @@ export async function startBridge() {
       //: 票根门槛压到 0 —— 测试造的场次开始和结束只差几毫秒。
       //: 门槛本身由 `longEnough()` 的单测守着（lib/movie-meta.js）
       TICKET_MIN_MINUTES: "0",
+      ...extraEnv,
     },
     stdio: ["ignore", "pipe", "pipe"],
   });

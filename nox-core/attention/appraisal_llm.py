@@ -364,12 +364,26 @@ class LLMAppraiser:
             logger.warning("意义推断的 confidence 不是数，丢弃：%r", d.get("confidence"))
             return None
         if confidence < self.min_confidence:
-            #: 够不着门槛的**不留痕**。留下来的话，
+            #: 够不着门槛的**不进 Registry**。留下来的话，
             #: 「攒够几次低置信度就算数」这种想法迟早会有人去实现，
             #: 而那正是造出似是而非的 concern 的方式
+            #:
+            #: 但**日志里要把它推断了什么一起打出来**（2026-09-14 补）。
+            #: 在这之前只记了她的原话和一个数字，于是一周之后回头看这 9 条，
+            #: 只能判断"这句话看起来值不值得记"，**判断不了它判得对不对** ——
+            #: 而后者才是决定 0.6 这个门槛该不该动的唯一证据。
+            #: 当时就是因为这个没法下结论（糖糖 2026-09-14 问起）。
+            #:
+            #: ⚠️ 打日志 ≠ 留痕。这里**仍然 return None**，
+            #: 一个字都不进库，上面那条规矩没松。
             logger.info(
-                "意义推断置信度 %.2f < %.2f，丢弃（%.30s）",
+                "意义推断置信度 %.2f < %.2f，丢弃｜她说「%.30s」→ 它想记的是：%s"
+                "（%s，强度 %s，锚点 %s）",
                 confidence, self.min_confidence, her_text,
+                str(d.get("meaning") or "").strip()[:MAX_MEANING] or "（没给出意义）",
+                valence,
+                d.get("intensity"),
+                str(d.get("anchor") or "").strip()[:MAX_ANCHOR] or "无",
             )
             return None
 

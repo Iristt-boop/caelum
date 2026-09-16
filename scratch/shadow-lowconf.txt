@@ -1,0 +1,9 @@
+2026-09-06T13:02:40+0800 VM-0-8-ubuntu nox-core[3573817]: 13:02:40 INFO    attention.appraisal_llm | 意义推断置信度 0.55 < 0.60，丢弃（那你应该怎么说。原话）
+2026-09-07T09:08:02+0800 VM-0-8-ubuntu nox-core[3875544]: 09:08:02 INFO    attention.appraisal_llm | 意义推断置信度 0.58 < 0.60，丢弃（名字。它的架构在我们整个项目的架构图里格格不入）
+2026-09-08T16:51:31+0800 VM-0-8-ubuntu nox-core[11126]: 16:51:31 INFO    attention.appraisal_llm | 意义推断置信度 0.50 < 0.60，丢弃（你说 你想）
+2026-09-09T11:50:53+0800 VM-0-8-ubuntu nox-core[138743]: 11:50:53 INFO    attention.appraisal_llm | 意义推断置信度 0.55 < 0.60，丢弃（以后也不想去）
+2026-09-09T13:47:12+0800 VM-0-8-ubuntu nox-core[138743]: 13:47:12 INFO    attention.appraisal_llm | 意义推断置信度 0.55 < 0.60，丢弃（今天什都不想干）
+2026-09-09T18:32:57+0800 VM-0-8-ubuntu nox-core[138743]: 18:32:57 INFO    attention.appraisal_llm | 意义推断置信度 0.55 < 0.60，丢弃（啊？剩900卡不能吃？？我一天就1000多卡的额度啊）
+2026-09-10T00:12:35+0800 VM-0-8-ubuntu nox-core[138743]: 00:12:35 INFO    attention.appraisal_llm | 意义推断置信度 0.55 < 0.60，丢弃（91.5分）
+2026-09-13T15:35:11+0800 VM-0-8-ubuntu nox-core[1719102]: 15:35:11 INFO    attention.appraisal_llm | 意义推断置信度 0.50 < 0.60，丢弃（看不出来）
+2026-09-14T15:46:12+0800 VM-0-8-ubuntu nox-core[2068027]: 15:46:12 INFO    attention.appraisal_llm | 意义推断置信度 0.55 < 0.60，丢弃（又催  ！！！）

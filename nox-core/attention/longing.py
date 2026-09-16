@@ -41,6 +41,8 @@ Murmur 的 `attachment` 是纯时间函数（`v += 0.05`），
 from __future__ import annotations
 
 import logging
+
+from temporal import to_local
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -82,7 +84,7 @@ SLEEP_FROM, SLEEP_TO = 1, 10
 
 
 def _cst_hour(now: datetime) -> int:
-    return (now.astimezone(timezone(timedelta(hours=8)))).hour
+    return to_local(now).hour
 
 
 def _asleep(now: datetime) -> bool:

@@ -14,6 +14,18 @@
      轮数，数不了时间。一个每轮都慢、每轮都不报错的上游能把 12 轮拖成几十
      分钟，而糖糖那边只看到"一直在转"。deadline 让"慢"变成一个**有下场的
      结局**（`timeout`），而不是一段无声的等待。
+  6. **每轮一行 turn 日志**（2026-09-13 加，审计 1.2）—— 见文件末尾 `log_turn`。
+
+## 日志（审计 1.2）
+
+在这之前整个 loop 只有 `_execute` 里的两行 warning：工具抛异常、闸门拦下。
+也就是说 —— **只有出事了才有日志，正常跑完一个字都不留。**
+于是"他今天怪怪的"这类问题没有任何可查的东西：他调了什么、跑了几轮、
+花了多久、用的哪个后端，全部只存在于那一瞬间。
+
+现在每轮结束落一行，**出口只有两个**（`run` / `run_stream`），
+所以不管从哪个 `return` 出去都跑得到。这不是巧合，是故意只在这两处记 ——
+`_run_inner` 有 8 个返回点，在每个点上手写日志，迟早会有人加第 9 个时忘掉。
 """
 
 from __future__ import annotations
@@ -166,12 +178,22 @@ class AgentLoop:
         # 上下文当局部变量持有，不用 contextvar 包整轮 ——
         # 那样在流式路径下会炸（见 tools/context.py 开头）
         ctx = tool_context.ToolContext(session_id=session_id)
+        # 日志用的两个基准，必须在进 _run_inner 之前取（见 _tools_used）
+        started = time.monotonic()
+        base = len(history or [])
         result = self._run_inner(
             user_text, ctx, system=system, dynamic_system=dynamic_system,
             history=history, images=images, adapter=adapter,
         )
         result.attachments = ctx.attachments
         result.dirty_providers = sorted(ctx.dirty)
+        log_turn(
+            result,
+            model=adapter_name(adapter or self.adapter),
+            elapsed_s=time.monotonic() - started,
+            history_len=base,
+            stream=False,
+        )
         return result
 
     def _run_inner(
@@ -294,18 +316,45 @@ class AgentLoop:
         # 局部变量，不是 contextvar —— 生成器帧天然按调用隔离，并发不会串，
         # 而 contextvar 跨 yield 在这里必炸（见 tools/context.py 开头）
         ctx = tool_context.ToolContext(session_id=session_id)
-        for ev in self._stream_inner(
-            user_text, ctx, system=system, dynamic_system=dynamic_system,
-            history=history, images=images, split=split, adapter=adapter,
-        ):
-            # done 事件带上工具产生的附带产物（比如「要发的图片」），
-            # 以及「这一轮写过哪些状态」—— 后者由调用方拿去清 Provider 缓存
-            if ev.type == "done":
-                result = getattr(ev, "result", None)
-                if result is not None:
-                    result.attachments = ctx.attachments
-                    result.dirty_providers = sorted(ctx.dirty)
-            yield ev
+        started = time.monotonic()
+        base = len(history or [])
+        model = adapter_name(adapter or self.adapter)
+        finished = False
+        try:
+            for ev in self._stream_inner(
+                user_text, ctx, system=system, dynamic_system=dynamic_system,
+                history=history, images=images, split=split, adapter=adapter,
+            ):
+                # done 事件带上工具产生的附带产物（比如「要发的图片」），
+                # 以及「这一轮写过哪些状态」—— 后者由调用方拿去清 Provider 缓存
+                if ev.type == "done":
+                    result = getattr(ev, "result", None)
+                    if result is not None:
+                        result.attachments = ctx.attachments
+                        result.dirty_providers = sorted(ctx.dirty)
+                        finished = True
+                        log_turn(
+                            result, model=model,
+                            elapsed_s=time.monotonic() - started,
+                            history_len=base, stream=True,
+                        )
+                yield ev
+        finally:
+            # 🔴 **走不到 done 的那条路也要留痕。**
+            #
+            # 生成器被调用方提前丢掉（她关掉页面、SSE 断开、上游抛异常穿过去）
+            # 时，上面那个 `if ev.type == "done"` 一次都不会执行 ——
+            # 于是最该查的那类轮次反而是日志里唯一的空白。
+            # 这正是「连接抖一下就断」那个坑（api/server.py 的 ws_ping 注释）
+            # 当初查了两天的原因：**断掉的会话不留任何记录。**
+            #
+            # ⚠️ 这里在 GeneratorExit 期间运行，所以只许打日志，不许 yield。
+            if not finished:
+                logger.warning(
+                    "turn 中断 | outcome=abandoned stream=1 model=%s t=%.1fs "
+                    "（调用方没取到 done 就丢掉了这条流：断线 / 客户端关闭 / 上游异常）",
+                    model, time.monotonic() - started,
+                )
 
     def _stream_inner(
         self,
@@ -484,6 +533,101 @@ class AgentLoop:
 
         tracker.record(outcome, call.name)
         return outcome
+
+
+def adapter_name(adapter: LLMAdapter) -> str:
+    """这一轮是谁答的，形如 `openai_compat:glm-5.3`。
+
+    🔴 **两段都要**，这是上线当天实测出来的（2026-09-13）：
+    第一版只打 `adapter.name`，线上看到的是 `model=openai_compat` ——
+    那是**传输层**，不是模型。而糖糖在前端随时换模型，
+    "他今天怪怪的"里有一大半就是"这轮是哪个模型答的"。
+
+    反过来只打模型也不行：`anthropic` 原生和 `openai_compat` 走的是两条
+    代码路径（`depth` 只在前者生效，见 `adapters.py`），那个区别咬过人。
+
+    ⚠️ **拿不到也不许炸** —— 日志不值得把一轮对话搞挂。协议里写了
+    `name: str`，但协议是给类型检查看的，运行时谁都能塞个鸭子类型进来。
+    """
+    name = str(getattr(adapter, "name", None) or "?")
+    model = getattr(getattr(adapter, "cfg", None), "model", None)
+    return f"{name}:{model}" if model else name
+
+
+#: turn 日志里最多列几个工具调用。超了截断并标出还有多少 ——
+#: 一轮里调 40 次工具本身就是个信号，但不该让一行日志变成一屏
+_TOOLS_IN_LOG = 20
+
+
+def _tools_used(messages: list[Message], history_len: int) -> list[str]:
+    """这一轮**他自己**调了哪些工具，按调用顺序，失败的打 ✗。
+
+    ⚠️ `messages` 的前 `history_len` 条是**传进来的历史**，里面带着
+    以前几轮的 `tool_calls`。不跳过它们的话，聊得越久这行日志越长，
+    而且会把上一轮的工具算到这一轮头上 —— 那种错比没日志更坏。
+
+    故意**不去重**：同一个工具连着出现三次，正是"他在打转"的样子，
+    压成一个就把唯一的线索压没了。
+    """
+    failed: set[str] = set()
+    for msg in messages[history_len:]:
+        for res in msg.tool_results:
+            if res.is_error:
+                failed.add(res.call_id)
+
+    names: list[str] = []
+    for msg in messages[history_len:]:
+        for call in msg.tool_calls:
+            names.append(f"{call.name}✗" if call.id in failed else call.name)
+    return names
+
+
+def log_turn(
+    result: LoopResult,
+    *,
+    model: str,
+    elapsed_s: float,
+    history_len: int,
+    stream: bool,
+    path: str = "full",
+) -> None:
+    """一轮一行。**这是"他今天怪怪的"唯一能查的东西**（审计 1.2）。
+
+    要能回答四个问题，所以四组字段缺一不可：
+
+        他跑完了吗   outcome / iter
+        他慢在哪     t（墙钟）、对照 iter 就知道是轮数多还是单轮慢
+        他干了什么   tools（按顺序，失败打 ✗）
+        花了多少     tok
+
+    `answered` 走 INFO，其余全部 WARNING —— 因为其余每一种都是
+    "她那边收到的东西不完整"：截断、拒答、超时、打转、工具卡住。
+    这些不该跟正常轮次混在同一个级别里等人去筛。
+
+    `path=light` 是 Router 那条便宜路（`router/router.py`）——
+    它不走 loop，所以 `iter=1 tools=-` 是常态，不是异常。
+    **`stream` 和 `path` 是两个轴，别合并**：一个说传输，一个说路由。
+    """
+    tools = _tools_used(result.messages, history_len)
+    shown = ",".join(tools[:_TOOLS_IN_LOG])
+    if len(tools) > _TOOLS_IN_LOG:
+        shown = f"{shown},…+{len(tools) - _TOOLS_IN_LOG}"
+
+    u = result.usage
+    line = (
+        "turn | outcome=%s path=%s iter=%d t=%.1fs model=%s stream=%d "
+        "tools=%s tok=in%d/out%d/cr%d/cw%d"
+    )
+    args = (
+        result.outcome, path, result.iterations, elapsed_s, model, int(stream),
+        shown or "-",
+        u.input_tokens, u.output_tokens, u.cache_read_tokens, u.cache_write_tokens,
+    )
+    if result.detail:
+        line += " | %s"
+        args += (result.detail,)
+
+    logger.log(logging.INFO if result.ok else logging.WARNING, line, *args)
 
 
 def _assistant_message(turn: Turn) -> Message:

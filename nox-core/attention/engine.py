@@ -90,11 +90,34 @@ class AttentionEngine:
         decision = self.evaluator.evaluate(event, self.registry, now)
 
         if not decision.should_apply:
-            logger.debug("忽略 %s：%s", event, decision.reason)
+            # 🔴 **这一行是「他为什么没有开口」的唯一证据**（审计 1.3）。
+            #
+            # 原来写死在 DEBUG，而两个入口的 `basicConfig` 又写死 INFO ——
+            # 等于永远看不见。查一次"他今天怎么一声不吭"要先改代码、再发一次版。
+            #
+            # 现在分两档（`AttentionDecision.routine`）：
+            #   routine=True   她说了句普通的话、指标正常 —— 每天几百次，留在 DEBUG
+            #   routine=False  她说过别问这个、开关被关掉、事件没人接 —— 走 INFO
+            #
+            # 分档不是洁癖：全提到 INFO 的话，真正的那几条会被
+            # "这句话没有需要记挂的信号" 淹掉，等于换了个方式看不见。
+            logger.log(
+                logging.DEBUG if decision.routine else logging.INFO,
+                "Attention 不关心 %s：%s", event, decision.reason,
+            )
             return decision
 
         if decision.action == "weaken":
             # 关心的对象好转了 —— 松一口气，不是慢慢忘
+            #
+            # ⚠️ upsert 那几条在 `evaluator.py` 里各自打了 INFO，**唯独
+            # weaken 没有** —— 于是"他昨天还惦记着，今天怎么不提了"
+            # 在日志里是一片空白。补在这里而不是 evaluator：那边有 4 个
+            # weaken 返回点，补 4 次迟早漏一个（2026-09-13，审计 1.3）。
+            logger.info(
+                "Attention 松开 %s ×%.1f：%s",
+                decision.subject, decision.factor, decision.reason,
+            )
             self.registry.weaken(decision.subject, decision.factor, now)
         else:
             self.registry.upsert(

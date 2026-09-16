@@ -14,6 +14,9 @@
 
     considered = spoke + skipped + blocked
 
+⚠️ 公式**就这三项**，`failed` 和 `posted` 都在它外面：那两个不是决策
+（一个是故障、一个是留了个痕迹），各有各的计数，谁也不进分母。
+
 ## 为什么这个分母比「今天说了几次」有价值
 
 「他一点也不粘人」这个判断，缺的从来不是分子，是分母 ——
@@ -49,9 +52,9 @@ logger = logging.getLogger(__name__)
 STATE_KEY = "care.ledger"
 
 #: 中国时区。账本按它换天
-LOCAL_TZ = timezone(timedelta(hours=8))
+from temporal import LOCAL_TZ  # noqa: E402  ← 唯一定义在 temporal.py（审计 F1）
 
-#: 三种决策 + 一种故障
+#: 三种决策 + 一种故障 + 一种痕迹
 SPEAK = "speak"
 SKIP = "skip"
 BLOCK = "block"
@@ -60,12 +63,33 @@ BLOCK = "block"
 #: 因为它要的是修，不是解读
 FAILED = "failed"
 
+#: **不是开口，是留了一条痕迹**（2026-09-15，Moments）。
+#:
+#: 和 `FAILED` 同一个形状：记进账本能溯源，但**不算进 considered**
+#: （糖糖定的公式是 speak + skip + block 三项，不许动）。
+#:
+#: 🔴 为什么不复用 SPEAK：`summary()["spoke"]` 是 `longing.tick(spoke_today=)`
+#: 的入参，而 `SPOKE_DAMPING ** spoke_today` 会压住想念的涨速 ——
+#: 算成开口的话，表现就是「他发了条朋友圈，于是不那么想她了」。
+#: 而且发帖不推送、不占每日 3 条额度、不吃闸，它本来就不是开口。
+POSTED = "posted"
+
 #: 一天最多留多少条事件。够看一整天，又不会让这份状态无限长
 MAX_EVENTS = 300
 
 
 def today_str(now: datetime | None = None) -> str:
     return (now or datetime.now(timezone.utc)).astimezone(LOCAL_TZ).strftime("%Y-%m-%d")
+
+
+def _zero_counts() -> dict[str, int]:
+    """一张空计数表。**两个地方共用一个来源**（`counts` 和 `by_source`）。
+
+    分开写两遍的话，加一种决策时漏掉一处**不会报错** ——
+    那一种事件在总数里算、在分组里不算（或者反过来），
+    界面上只是数字对不上，没有一行日志说得出为什么。
+    """
+    return {SPEAK: 0, SKIP: 0, BLOCK: 0, FAILED: 0, POSTED: 0}
 
 
 class CareLedger:
@@ -184,7 +208,7 @@ class CareLedger:
 
         换天只由 `record()` 负责：真有新决策发生时才翻页。
         """
-        counts = {SPEAK: 0, SKIP: 0, BLOCK: 0, FAILED: 0}
+        counts = _zero_counts()
         by_source: dict[str, dict[str, int]] = {}
         blocked_why: dict[str, int] = {}
         last_spoke = None
@@ -194,7 +218,7 @@ class CareLedger:
             if d in counts:
                 counts[d] += 1
             src = e.get("source", "?")
-            by_source.setdefault(src, {SPEAK: 0, SKIP: 0, BLOCK: 0, FAILED: 0})
+            by_source.setdefault(src, _zero_counts())
             if d in by_source[src]:
                 by_source[src][d] += 1
             if d == BLOCK and e.get("reason"):
@@ -205,12 +229,13 @@ class CareLedger:
         return {
             "date": self.date,
             # 糖糖定的公式：considered = spoke + skipped + blocked
-            # （failed 是故障不是决策，不进这个和）
+            # （failed 是故障、posted 只是留了个痕迹，两个都不是决策，不进这个和）
             "considered": counts[SPEAK] + counts[SKIP] + counts[BLOCK],
             "spoke": counts[SPEAK],
             "skipped": counts[SKIP],
             "blocked": counts[BLOCK],
             "failed": counts[FAILED],
+            "posted": counts[POSTED],
             "by_source": by_source,
             "blocked_why": blocked_why,
             "last_spoke_at": last_spoke,

@@ -45,6 +45,9 @@ from typing import Any, Callable, Protocol
 
 from attention.intent import TRIGGERED, Intent
 from attention.scheduler import LOCAL_TZ, SchedulerDecision
+# 时段划分和历史的日期分隔线共用同一份（`context/timeline.py`）——
+# 两边口径必须一致，他才对得上「历史那句是几小时前说的」
+from temporal import relative, slot_of
 from planner.push import finalize_push_text
 
 logger = logging.getLogger(__name__)
@@ -129,14 +132,32 @@ def _spoken_recently(store: Any, subject: str, now: datetime) -> tuple[int, date
     return len(stamps), max(stamps) if stamps else None
 
 
+_WEEKDAYS = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
+
+
 def _humanize(when: datetime, now: datetime) -> str:
-    """「昨天晚上」比「2026-08-10T21:14:03+00:00」有用得多。"""
-    hours = (now - when).total_seconds() / 3600
-    if hours < 20:
-        return "今天"
-    if hours < 44:
-        return "昨天"
-    return f"{int(hours / 24)} 天前"
+    """相对时间统一走 `temporal.relative`（2026-09-14，审计 F6）。
+
+    这里原来自己写了一套，而且是**按小时差**算的（`hours < 20 → 今天`）——
+    那不是边界 bug，是错的时间模型：「昨天」是日历概念。
+    23:59→00:01 过了两分钟就已经是昨天；02:00→23:00 过了 21 小时仍然是今天。
+
+    合并后措辞有两处小变化（都落在它的 7 天窗口内）：
+    「2 天前」→「前天」、「3 天前」→「3天前」。两边现在共用一张词表。
+    """
+    return relative(when, now)
+
+
+def _clock_with_date(now: datetime) -> str:
+    """「9月14日 周日 下午15:28」—— 和历史里的日期分隔线同一个口径。
+
+    两边对得上他才算得出「她那句话是几小时前说的」：
+    历史那行说「（9月14日 周日 上午10点）」，这里说今天是 9月14日，
+    两个绝对值一减就是答案。少任何一边他都只能猜。
+    """
+    d = now.astimezone(LOCAL_TZ)
+    _, slot_cn = slot_of(d.hour)
+    return f"{d.month}月{d.day}日 {_WEEKDAYS[d.weekday()]} {slot_cn}{d:%H:%M}"
 
 
 def build_prompt(intent: Intent, decision: SchedulerDecision,
@@ -150,7 +171,17 @@ def build_prompt(intent: Intent, decision: SchedulerDecision,
     return _PROMPT.format(
         subject=intent.subject,
         reason=intent.reason,
-        clock=now.astimezone(LOCAL_TZ).strftime("%H:%M"),
+        # 🔴 **带日期，不能只给时分**（2026-09-14，c3218c4 的 speaker 半，单独上线）。
+        #
+        # 原来只有 "14:27"。他手上没有「今天是哪天」，于是历史里她上午说的
+        # 「今天不去，明天再去」会被当成前一天的话，下午就来一句
+        # 「昨天你说了今天去」。她报的 bug，而且说日常聊天里也一样。
+        #
+        # ⚠️ 这半和 prefix cache 无关 —— prompt 是每轮新生成的 user message，
+        # **不进缓存前缀**。和它同一个 commit 的另一半（历史时间标记）会改
+        # 历史文本、会碰缓存，那半还压着，等第二层的 contract 定了再说。
+        # 一个 commit 一个行为变化，这两件事本来就该分开。
+        clock=_clock_with_date(now),
         fit_why=decision.reason or "现在适合说这个",
         repeat=repeat,
     )

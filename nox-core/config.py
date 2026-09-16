@@ -6,12 +6,17 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
 Provider = Literal["anthropic", "openai_compat"]
+
+#: `NOX_LOG_LEVEL` 认的值。故意不接受 `WARN` 这种别名 ——
+#: 多一个写法就多一处"我明明设了却没生效"的坑
+LOG_LEVELS = ("CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG")
 
 
 def _load_dotenv() -> None:
@@ -492,6 +497,18 @@ class Config:
     max_concurrency: int = field(
         default_factory=lambda: _env_int("NOX_MAX_CONCURRENCY", 16))
 
+    #: 日志级别（审计 1.3）。之前两个入口都把 `logging.INFO` 写死在
+    #: `basicConfig` 里 —— 想看一次 DEBUG 就得改代码、重新部署。
+    #:
+    #: 最想看见的那类东西恰好在 DEBUG：`attention/engine.py` 里
+    #: 「**他为什么没有开口**」那一行。查一次"他今天怎么一声不吭"
+    #: 不该需要发一次版。
+    #:
+    #: ⚠️ 写错了**不拦启动**，退回 INFO 并在启动时 warning 一句
+    #: （见 `logging_level()`）。日志级别不值得让他起不来。
+    log_level: str = field(
+        default_factory=lambda: _env("NOX_LOG_LEVEL", "INFO").upper())
+
     # ---- 会话持久化 ----
     # 默认落在 nox-core/data/sessions.db（已在 .gitignore 里）
     db_path: str = field(
@@ -529,6 +546,21 @@ class Config:
         if not self.ob_url:
             problems.append("NOX_OB_URL 未设置，记忆层无法连接")
         return problems
+
+    def logging_level(self) -> tuple[int, str | None]:
+        """`NOX_LOG_LEVEL` → `(级别, 抱怨)`。抱怨非 None 时调用方**必须**打出来。
+
+        为什么不放进 `check()`：那个列表是"不修好就别启动"，
+        而一个拼错的日志级别不该把他挡在门外。
+        但也不能静默 —— 静默的话她设了 `DEBUG` 却什么都没多出来，
+        只会以为"这功能根本没做"。
+        """
+        if self.log_level in LOG_LEVELS:
+            return getattr(logging, self.log_level), None
+        return logging.INFO, (
+            f"NOX_LOG_LEVEL={self.log_level!r} 不认识，这次按 INFO 跑。"
+            f"可选：{', '.join(LOG_LEVELS)}"
+        )
 
 
 config = Config()

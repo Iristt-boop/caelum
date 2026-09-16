@@ -45,7 +45,7 @@ GENERATE_HOUR = 6
 #: 急迫度。比「到点追待办」温和，比普通惦记具体 —— 同一轮撞车时让位给真事
 URGENCY = 0.55
 
-_CST = timezone(timedelta(hours=8))
+from temporal import CST as _CST  # noqa: E402  ← 唯一定义在 temporal.py（审计 F1）
 
 
 class DailyCardSource:

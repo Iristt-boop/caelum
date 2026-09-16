@@ -310,3 +310,66 @@ def test_service_records_failure_not_success(astore):
     svc.tick(EVENING)      # 不抛
     triggered = [i for i in svc.intents.all() if i.action_history]
     assert triggered[0].action_history[-1]["note"] == "发送失败"
+
+
+from datetime import timedelta  # noqa: E402
+
+# ------------------------------------------------------------------ 时间口径
+#
+# 糖糖 2026-09-14：「上午说的话，他会说是昨天聊的」。
+# 主动开口这条路上他手里只有 prompt 和历史 —— 两边都得有绝对日期才算得出来。
+
+
+def test_主动开口的提示里必须有日期不能只给时分():
+    """🔴 原来只有 "14:27"（c3218c4 的 speaker 半，2026-09-14 单独上线）。
+
+    他手上没有「今天是哪天」，于是历史里她上午说的「今天不去，明天再去」
+    会被当成前一天的话，下午就来一句「昨天你说了今天去」。
+
+    能挡什么：有人为了省 token 把日期去掉。
+    挡不住什么：历史那侧的时间标记（那半还压着，见 context/timeline.py）。
+    """
+    from datetime import datetime, timezone
+    from attention.speaker import build_prompt
+    from attention.scheduler import SchedulerDecision
+
+    now = datetime(2026, 9, 14, 6, 27, tzinfo=timezone.utc)   # CST 14:27
+    intent = type("I", (), {"subject": "待办：臀腿训练", "reason": "本周还差 3 次"})()
+    decision = type("D", (), {"reason": "她刚醒"})()
+
+    prompt = build_prompt(intent, decision, spoken=0, last_at=None, now=now)
+
+    assert "9月14日" in prompt, "提示词里没有日期 —— 他算不出历史那句是几小时前说的"
+    assert "周一" in prompt, "星期也该在 —— 她说「周五之前」时他得对得上"
+    assert "14:27" in prompt, "时分也得留着"
+
+
+def test_今天昨天按日历天算不按小时差():
+    """🔴 原来是 hours<20 → 今天，两头都会错。
+
+    · 凌晨 2 点说的话，当天 23 点回看 = 21 小时 → 旧逻辑报「昨天」，而那是同一天
+    · 昨晚 23 点的话，今早 9 点看 = 10 小时 → 旧逻辑报「今天」，而那是昨天
+    """
+    from datetime import datetime, timezone
+    from attention.speaker import _humanize
+
+    CST = timezone(timedelta(hours=8))
+
+    def cst(d, h):
+        """直接造一个中国时间 —— 判据是「她那边是哪天」，不是 UTC 哪天。"""
+        return datetime(2026, 9, d, h, tzinfo=CST)
+
+    # 同一天：CST 02:00 → CST 23:00（21 小时）
+    assert _humanize(cst(14, 2), cst(14, 23)) == "今天", "同一天被说成昨天"
+    # 跨天：CST 昨晚 23:00 → 今早 09:00（10 小时）
+    assert _humanize(cst(13, 23), cst(14, 9)) == "昨天", "隔了一天被说成今天"
+    # 再往前 —— 2026-09-14 起和 timeline 共用同一张词表（审计 F6）。
+    # 措辞有两处变化，都落在 speaker 的 7 天窗口内：
+    #   「2 天前」→「前天」   「3 天前」→「3天前」（少一个空格）
+    # 断言写死新口径，就是为了下次有人再分叉时这里会红
+    assert _humanize(cst(12, 12), cst(14, 12)) == "前天"
+    assert _humanize(cst(11, 12), cst(14, 12)) == "3天前"
+
+    # 和 timeline 那侧必须逐字相同 —— 两套并一套的意义就在这
+    from temporal import humanize
+    assert _humanize(cst(11, 12), cst(14, 12)) == humanize(3)

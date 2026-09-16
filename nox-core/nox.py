@@ -10,6 +10,7 @@ import logging
 import re
 import uuid
 from datetime import datetime, timezone
+from typing import Any
 
 from agent import vision
 from agent.adapters import make_adapter, supports_vision
@@ -81,6 +82,85 @@ def _strip_mood_tag(result: RouteResult, cleaned: str) -> None:
         if m.role == "assistant" and m.text:
             m.text = cleaned
             break
+
+
+#: 欠卡账的落盘键。和 `attention/` 那几个键同一张 `source_state` 表 ——
+#: 情绪和这条账一起存，因为它们同生同灭：都是"这一轮之前发生了什么"，
+#: 都按同一个半衰期过期。**别再开一张表**（CAELUM-MAP 那条「平行实现」）
+STATE_KEY = "personality.state"
+
+
+class _CardDebt(set):
+    """欠卡账，对外就是个 `set[str]`，但每次变动会顺手落盘。
+
+    为什么做成 set 的子类而不是换个数据结构：`api/server.py` 里那段
+    `_warn_if_claimed_without_doing` 直接 `.add()` / `.discard()`，
+    `nox.py:_dynamic` 直接 `in`，测试里还有 `== set()` —— 子类把这些
+    语义原样留着，调用方一行都不用改。
+
+    额外记 `_at`（记账时刻），恢复时用它判断这笔账过没过期。
+    """
+
+    def __init__(self, on_change=None) -> None:
+        super().__init__()
+        #: sid → 记账时刻 ISO。只在 add 时写，discard 时删
+        self._at: dict[str, str] = {}
+        self._on_change = on_change
+
+    def add(self, sid: str) -> None:
+        if sid not in self:
+            self._at[sid] = mood.now_cst().isoformat()
+        super().add(sid)
+        self._changed()
+
+    def discard(self, sid: str) -> None:
+        if sid not in self:
+            return  # 没这笔账就别为它写一次盘
+        super().discard(sid)
+        self._at.pop(sid, None)
+        self._changed()
+
+    def _changed(self) -> None:
+        if self._on_change is not None:
+            self._on_change()
+
+    def to_dict(self) -> dict[str, Any]:
+        # 只导出还在集合里的，`_at` 里的孤儿（理论上没有）顺手丢掉
+        return {sid: at for sid, at in self._at.items() if sid in self}
+
+    def restore(self, d: dict[str, Any] | None, now: datetime | None = None) -> int:
+        """读回没过期的欠账，返回捡回来几笔。**不抛异常。**
+
+        为什么这条账也要跨重启（糖糖 2026-09-14 定）：
+        原注释说「重启就忘那正好，重启后他未必再犯」——但**会话历史还留在库里**，
+        而这条账治的恰恰是"他照抄自己的历史"。历史没变，他照抄的前提就没变，
+        账却因为发了个版本清掉了 —— 这条防线在部署之后是**静默失效**的。
+
+        过期时间挂 `mood.HALF_LIFE`（同一个旋钮）：那之后这段历史多半
+        已经滚出上下文窗口，再当面点破他就是背一个过时的指控了。
+        """
+        if not d:
+            return 0
+        now = now or mood.now_cst()
+        kept = 0
+        for sid, at in dict(d).items():
+            try:
+                when = datetime.fromisoformat(str(at))
+            except (TypeError, ValueError):
+                logger.warning("欠卡账的时间戳读不出来，丢掉这笔：%s=%r", sid, at)
+                continue
+            if when.tzinfo is None:
+                when = when.replace(tzinfo=mood.CST)
+            if (now - when) > mood.HALF_LIFE:
+                continue
+            # 走 super()：这是"读回来"不是"新记一笔"，
+            # 既不该刷新记账时刻，也不该为此再写一次盘
+            super().add(sid)
+            self._at[sid] = str(at)
+            kept += 1
+        if kept:
+            logger.info("欠卡账接回来 %d 笔（还没过期）", kept)
+        return kept
 
 
 class Nox:
@@ -360,9 +440,16 @@ class Nox:
 
         self.router = Router(self.loop, self._system, light_adapter=light)
 
-        # 累积情绪。进程内常驻，带惯性 —— 连续几轮甜蜜会慢慢热起来，
-        # 不会因为一句平淡的话瞬间冷掉。重启会重置回默认，
-        # 这是有意的：隔了一天再开口，本来也该是平常状态。
+        # 累积情绪。带惯性 —— 连续几轮甜蜜会慢慢热起来，
+        # 不会因为一句平淡的话瞬间冷掉。
+        #
+        # 2026-09-14 起**跨重启**：落 `source_state`，恢复时按离开的时长朝默认
+        # 衰减（半衰期 2 小时，见 `personality/mood.py:HALF_LIFE`）。
+        #
+        # 原来这里写的是"重启会重置回默认，这是有意的：隔了一天再开口，本来也
+        # 该是平常状态"。那句话的理由没错，错在它**默认了「重启 ≈ 隔了很久」**：
+        # 2026-09-13 一天重启 8 次，全是发版本，间隔几十秒 —— 她一句话还没说完，
+        # 攒了五六轮的温度就没了。衰减同时满足两头：几十秒几乎原样，隔天照样平常。
         self.mood = mood.Mood()
 
         #: 🔴 **欠她一张卡的会话**（2026-09-06）。
@@ -375,9 +462,17 @@ class Nox:
         #: 所以只能在同一条历史里把它掰回来：检测到「说了没做」就记一笔，
         #: 下一轮在他的动态块里当面点破，直到真的发出卡才清掉。
         #:
-        #: 进程内存不落盘 —— 重启就忘，那正好：重启后历史还在但他
-        #: 未必再犯，没必要背着一个可能过时的指控。
-        self.card_debt: set[str] = set()
+        #: 2026-09-14 起**跟着情绪一起落盘**，同一个半衰期过期。
+        #: 原来写的是「重启就忘那正好，他未必再犯」——但那条理由是反的：
+        #: **会话历史还留在库里**，而这条账治的就是"他照抄自己的历史"。
+        #: 历史没变，照抄的前提就没变，账却因为发了个版本清掉了 ——
+        #: 这条防线在部署之后是**静默失效**的。见 `_CardDebt.restore`。
+        self.card_debt = _CardDebt(on_change=self._save_state)
+
+        #: 状态只在第一次用到时读回来一次（见 `_restore_state_once`）。
+        #: 不能在这里读：存档在 attention 的库里，而 attention 要等
+        #: `api/server.py:_build_attention` 才造出来，那会儿这里早跑完了
+        self._state_restored = False
 
         # Context Provider 注册表。第一个（也是眼下唯一一个）实例是 MoodProvider ——
         # 把本来就在跑的三层情绪收编进框架，而不是另起一套「每轮注入」的机制
@@ -591,6 +686,65 @@ class Nox:
         block = vision.wrap(desc, len(images))
         return (f"{text}\n\n{block}" if text else block), None
 
+    # ------------------------------------------------------------ 跨重启的状态
+
+    def _state_store(self):
+        """拿 `source_state` 表。拿不到返回 None。
+
+        ⚠️ 必须每次现取，不能在 `__init__` 里存下来 —— 它是
+        `api/server.py` 建完 attention 之后挂上来的，比 `Nox.__init__` 晚。
+
+        🔴 **不要写成 `getattr(self, "attention", None).store`**（2026-09-14 踩过）。
+        `attention` 是 `create_app` 的局部变量，**全仓没有任何地方把它挂到 core 上**，
+        所以那个写法在线上恒为 None —— 落盘一次都不会发生，而且**一个错都不报**。
+        我照着 `ResonanceProvider(attention_ref=...)` 抄的，那条本身就是坏的
+        （见 `api/server.py` 挂 `state_store` 那段的注释）。
+        单测全绿、线上 6 轮对话一个字都没存下来，就是这么来的。
+        """
+        return getattr(self, "state_store", None)
+
+    def _restore_state_once(self) -> None:
+        """第一次用到情绪之前，把上个进程留下的状态接回来。
+
+        失败只记一笔就走 —— 接不回来最坏是这次从平常状态开始，
+        绝不能因此让这一轮聊不成（同 `attention/store.py:260` 的取舍）。
+        """
+        if self._state_restored:
+            return
+        store = self._state_store()
+        if store is None:
+            return  # attention 还没起来，下一轮再试
+        self._state_restored = True  # 成败都只试这一次，别每轮都去读库
+        try:
+            saved = store.get_source_state(STATE_KEY) or {}
+        except Exception:  # noqa: BLE001
+            logger.exception("读不出上个进程的情绪存档，这次从平常状态开始")
+            return
+        self.mood.restore(saved.get("mood"))
+        self.card_debt.restore(saved.get("card_debt"))
+
+    def _save_state(self) -> None:
+        """把情绪和欠卡账写回库。每轮一次，**同步写**。
+
+        为什么不等 attention 那条 tick 顺手带走：那条 tick 最长隔几十秒，
+        而部署式重启本来就发生在几十秒的尺度上 —— 靠 tick 落盘等于这件事
+        有一半的时候仍然会丢。写一次是一个带锁的 UPSERT，在模型已经跑了
+        几秒的这条路上可以忽略。
+
+        失败**只警告不抛**：情绪没存住的代价是下次重启回到平常状态，
+        而抛出去会把她这一轮的回复整个弄没。但必须留痕（`docs/LOGGING.md`）。
+        """
+        store = self._state_store()
+        if store is None:
+            return
+        try:
+            store.set_source_state(STATE_KEY, {
+                "mood": self.mood.to_dict(),
+                "card_debt": self.card_debt.to_dict(),
+            })
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("情绪落盘失败（不影响这轮对话），下次重启会回到平常状态：%s", exc)
+
     def _dynamic(self, text: str, voice: bool, scene: str | None = None,
                  has_images: bool = False,
                  session_id: str | None = None,
@@ -599,6 +753,10 @@ class Nox:
 
         两者都走 dynamic_system，跟在缓存断点之后 —— 静态前缀一个字都不能变。
         """
+        # 挂在这里是因为这是情绪和欠卡账**第一次被读**的地方（下面 Provider
+        # 渲染 + `session_id in self.card_debt` 都在这条路上）。恢复必须早于
+        # 第一次读，晚一步她这轮拿到的就是默认情绪
+        self._restore_state_once()
         # 情绪现在走 Context 框架出来（MoodProvider），输出与原来的
         # mood.render() 逐字相同 —— tests/test_mood_provider.py 拿 1000 组基线守着。
         # 以后加 time / memory / home，只要往这个名单里添名字；
@@ -742,6 +900,7 @@ class Nox:
                 "情绪 → %s | valence=%.2f arousal=%.2f",
                 detected, self.mood.valence, self.mood.arousal,
             )
+            self._save_state()
         if cleaned != result.text:
             _strip_mood_tag(result, cleaned)
         return result
@@ -796,6 +955,7 @@ class Nox:
                         )
                     if detected:
                         self.mood.update(detected)
+                        self._save_state()
                     if cleaned != result.text:
                         result.text = cleaned
                         for m in reversed(result.messages):
@@ -824,11 +984,15 @@ def main() -> int:
     ap.add_argument("--new", action="store_true", help="开一段全新的对话，不接历史")
     args = ap.parse_args()
 
+    # 同 api/server.py：级别由 NOX_LOG_LEVEL 决定（审计 1.3）
+    level, complaint = default_config.logging_level()
     logging.basicConfig(
-        level=logging.INFO,
+        level=level,
         format="%(asctime)s %(levelname)-7s %(name)s | %(message)s",
         datefmt="%H:%M:%S",
     )
+    if complaint:
+        logger.warning(complaint)
     try:
         nox = Nox()
     except RuntimeError as exc:

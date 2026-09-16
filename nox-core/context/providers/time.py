@@ -31,17 +31,14 @@ from datetime import timedelta
 from typing import Any
 
 from context.base import BaseContextProvider, Turn
+from context.timeline import slot_of
 from personality.mood import now_cst
 
 _WEEKDAYS = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
 
-# 时段按糖糖的真实作息划，不是按常识里的「早中晚」：
-# 她凌晨 1-2 点睡、早上 9-11 点起，所以 23 点对她还是「晚上」不是「深夜」。
-_SLOTS = [
-    (5, 12, "morning", "上午"),
-    (12, 18, "afternoon", "下午"),
-    (18, 23, "evening", "晚上"),
-]
+# 时段表从 `context/timeline.py` 取，**这里不再写一份**（2026-09-14）。
+# 历史的日内时间标记和这里的【此刻】必须用同一套边界 ——
+# 分成两处写，迟早出现「历史标着下午、【此刻】说晚上」这种谁也解释不清的错位。
 
 
 class TimeProvider(BaseContextProvider):
@@ -56,12 +53,7 @@ class TimeProvider(BaseContextProvider):
     def _fetch(self, turn: Turn) -> dict[str, Any]:
         now = turn.now or now_cst()
         hour = now.hour
-
-        slot, slot_cn = "late_night", "深夜"
-        for lo, hi, en, cn in _SLOTS:
-            if lo <= hour < hi:
-                slot, slot_cn = en, cn
-                break
+        slot, slot_cn = slot_of(hour)
 
         return {
             "datetime": now.isoformat(timespec="minutes"),

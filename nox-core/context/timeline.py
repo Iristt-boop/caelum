@@ -54,14 +54,30 @@
 from __future__ import annotations
 
 import re
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Iterable
 
 from agent.llm import Message
 from personality.mood import CST, now_cst
+from temporal import humanize, relative, slot_of  # noqa: F401  ← re-export，定义在 temporal.py
 
 _WEEKDAYS = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
 
+#: 时段划分和相对时间都从 `temporal` 取（2026-09-14，审计 F1/F6）。
+#: 这里 re-export 只是为了不改动下游的 import —— **定义只有一份**。
+#: 原来这份是 09-14 当天从 `providers/time.py` 搬过来的，
+#: 搬完当天就发现该搬得更远：它不属于 Context 层，属于时间语义层。
+
+#: ⏸ **日内时间标记（c3218c4）暂缓上线**（糖糖 2026-09-14 决定）。
+#:
+#: 那一版让 `with_dates` 在「跨时段 / 隔 45 分钟」时也插一行时间，治的是
+#: 「她上午说的话他说成昨天」。改动本身验过（变异 8/8 全红），但它**改变的是
+#: 模型实际看到的历史文本**，而历史是 prefix cache 的前缀 —— 值得单独观察，
+#: 不该跟时间语义地基绑在一起发。
+#:
+#: 代码在 `git show c3218c4`，要上的时候直接取回来。
+#: 更长期的形态见审计文档第五节：存储层绝对、展示层相对 ——
+#: 但那要先拍板 Context/Cache 架构（历史不能再直接当缓存前缀用）。
 
 def _cn(dt: datetime) -> datetime:
     """统一换算到中国时间再判断「哪一天」。
@@ -123,33 +139,6 @@ def with_dates(rows: Iterable[tuple[str, str | None, str | None]]) -> list[Messa
 # 只给**每次都重新生成**的东西用：工具结果（记忆检索）和 dynamic_system。
 # 那两个不进缓存前缀，也不会冻在历史里，所以相对时间在这里是安全的。
 # 绝不要拿它去改历史消息 —— 理由见本文件开头那两条。
-
-
-def humanize(days: int) -> str:
-    """把「几天前」说成人话。
-
-    粒度是**故意粗的**：她问「美甲是什么时候做的」，
-    「上周」比「7 天前」更像人说的话。真要精确，绝对日期就在旁边。
-    """
-    if days < 0:
-        return "以后"
-    if days == 0:
-        return "今天"
-    if days == 1:
-        return "昨天"
-    if days == 2:
-        return "前天"
-    if days < 7:
-        return f"{days}天前"
-    if days < 14:
-        return "上周"
-    if days < 30:
-        return f"{days // 7}周前"
-    if days < 60:
-        return "上个月"
-    if days < 365:
-        return f"{days // 30}个月前"
-    return f"{days // 365}年多前"
 
 
 #: 记忆正文里出现过的所有日期写法（实际抓线上数据看出来的，不是猜的）：

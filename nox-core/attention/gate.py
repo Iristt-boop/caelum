@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 
 #: 糖糖在中国，服务器在东京。判断「现在是不是她睡觉时间」必须按她的时区。
 #: 固定 offset（中国 1991 年后无夏令时，UTC+8 恒定）—— 理由见 scheduler.py。
-LOCAL_TZ = timezone(timedelta(hours=8), "CST")
+from temporal import LOCAL_TZ  # noqa: E402  ← 唯一定义在 temporal.py（审计 F1）
 
 #: 每天最多主动开口几次（Care + Attention + 唤醒链 合计）
 DAILY_QUOTA = 3
