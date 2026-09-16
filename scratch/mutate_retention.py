@@ -66,6 +66,24 @@ MUTATIONS = [
         "test_旧快照会被清掉",
     ),
     (
+        "出厂策略：给 usage_log 设保留天数",
+        '        table="usage_log",\n        time_col="ts",\n        default_days=KEEP_FOREVER,',
+        '        table="usage_log",\n        time_col="ts",\n        default_days=90,',
+        "test_出厂策略_usage_log不许删",
+    ),
+    (
+        "出厂策略：observations 默认方向反过来",
+        '        type_col="type",\n        default_days=KEEP_FOREVER,          # ← 新 type 出现时默认留着',
+        '        type_col="type",\n        default_days=90,',
+        "test_出厂策略_observations默认是留",
+    ),
+    (
+        "出厂策略：对话保留天数被改",
+        "        default_days=180,       # ← 糖糖 2026-09-16 定的",
+        "        default_days=30,",
+        "test_出厂策略_conversations留180天",
+    ),
+    (
         "库不存在就默默跳过",
         '            report["missing"].append(str(p.db))',
         "            pass",

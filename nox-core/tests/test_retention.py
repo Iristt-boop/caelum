@@ -214,6 +214,50 @@ def test_干跑不备份(tmp_path):
 
 # ---------------------------------------------------------------- 空集 / 缺库
 
+# ---------------------------------------------------------------- 出厂策略本身
+#
+# 🔴 上面那些验的是**机制**，这一组验的是**决定**。
+#    保留多久、哪张表不许删，都是有人拍过板的 —— 被"顺手整理"掉时
+#    要有东西红，否则这些理由只活在 commit message 里。
+
+def _shipped(table: str):
+    from scripts.retention import POLICIES
+    hits = [p for p in POLICIES if p.table == table]
+    assert len(hits) == 1, f"{table} 在策略表里出现了 {len(hits)} 次"
+    return hits[0]
+
+
+def test_出厂策略_usage_log不许删():
+    """🔴 `/api/usage-stats` 的总花费是实时全表加出来的
+    （`bridge/server.js:3922` `allRows = rowsOf("")`）。
+    给它设保留天数 = 她的历史总花费开始悄悄变小，而且不会有任何提示。
+    """
+    p = _shipped("usage_log")
+    assert p.default_days is KEEP_FOREVER, \
+        "usage_log 被设了保留天数 —— 她的历史总花费会开始变小"
+    assert not p.by_type, "usage_log 不该有按类型的例外"
+
+
+def test_出厂策略_observations默认是留():
+    """新出现的 observation 类型必须默认留着。
+
+    反过来的话，将来加一类事实 = 它被静默清空，很久以后才有人发现。
+    """
+    p = _shipped("observations")
+    assert p.default_days is KEEP_FOREVER, "observations 的默认方向反了"
+    assert set(p.by_type) == {"她在电脑上做的事", "他在电脑上做的事"}, \
+        "要删的类型变了 —— 确认这是有人拍过板的，不是顺手改的"
+    assert p.days_for("menstrual") is KEEP_FOREVER, \
+        "月经周期会被删 —— health.py 查它用的是 days=400"
+    assert p.days_for("sleep_duration") is KEEP_FOREVER
+
+
+def test_出厂策略_conversations留180天():
+    """糖糖 2026-09-16 定的。改这个数要她再点一次头。"""
+    p = _shipped("conversations")
+    assert p.default_days == 180, f"对话保留天数被改成了 {p.default_days}"
+
+
 def test_库不在不算通过(tmp_path, capsys):
     """🔴 库路径写错时，「没有过期的」和「全清干净了」长得一模一样。"""
     r = run([_policy(tmp_path / "根本没这个库.db", by_type={"x": 30})],
