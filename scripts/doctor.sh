@@ -66,6 +66,20 @@ if systemctl is-enabled ombre-brain-decay.timer >/dev/null 2>&1; then
 else
   warn "ombre-brain-decay.timer 没启用 —— 衰减会退回「有人调工具才跑」"
 fi
+# 数据保留策略（排期 4.7）。每周日 04:30 的 oneshot。
+#
+# ⚠️ oneshot 平时是 inactive(dead)，那是**正常状态**，不能拿 is-active 判它 ——
+#    那样每天都会误报。判的是 is-failed：上一次跑砸没砸。
+if systemctl is-enabled caelum-retention.timer >/dev/null 2>&1; then
+  if [ "$(systemctl is-failed caelum-retention.service 2>/dev/null)" = "failed" ]; then
+    bad "上次数据保留跑砸了 —— journalctl -u caelum-retention"
+  else
+    good "caelum-retention.timer 已启用（数据保留）"
+  fi
+else
+  warn "caelum-retention.timer 没启用 —— 活动追踪会一直攒下去"
+fi
+
 DH=$(curl -s -m 10 http://127.0.0.1:8002/health 2>/dev/null)
 if [ -z "$DH" ]; then
   bad "OB /health 无响应，查不了衰减跑没跑"
