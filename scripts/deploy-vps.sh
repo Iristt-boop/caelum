@@ -54,6 +54,19 @@ fingerprint() {  # $1=repo_dir $2=rel_path
 ssh_vps() { ssh -i "$KEY" -o ConnectTimeout=12 "root@${HOST}" "$@"; }
 scp_vps() { scp -i "$KEY" -o ConnectTimeout=12 -q "$1" "root@${HOST}:$2"; }
 
+# 重建某服务的 summary（当前集合视图）。deploy 和 record 都要走——
+# 漏了的话 record 只进历史 jsonl，version 看到的还是旧集合（第一次就踩了）
+rebuild_summary() {  # $1=service
+  ssh_vps "python3 - <<'PYEOF'
+import json
+rows=[json.loads(l) for l in open('$INFO_DIR/$1.jsonl',encoding='utf-8')]
+cur={}
+for r in rows: cur[r['file']]=r
+json.dump({'service':'$1','files':list(cur.values())},
+          open('$INFO_DIR/$1.summary','w',encoding='utf-8'),ensure_ascii=False,indent=1)
+PYEOF"
+}
+
 cmd="${1:-}"
 [ -z "$cmd" ] && { sed -n '2,20p' "$0"; exit 1; }
 
@@ -81,13 +94,7 @@ case "$cmd" in
     # 指纹上服务器：jsonl 追加历史 + summary 覆盖为「当前集合」
     ssh_vps "mkdir -p $INFO_DIR"
     printf '%s' "$lines" | ssh_vps "cat >> $INFO_DIR/$service.jsonl"
-    ssh_vps "python3 -c \"
-import json
-rows=[json.loads(l) for l in open('$INFO_DIR/$service.jsonl',encoding='utf-8')]
-cur={}
-for r in rows: cur[r['file']]=r   # 后写覆盖先写 = 当前集合
-json.dump({'service':'$service','updated':'$(date '+%Y-%m-%d %H:%M')','files':list(cur.values())},
-          open('$INFO_DIR/$service.summary','w',encoding='utf-8'),ensure_ascii=False,indent=1)\""
+    rebuild_summary "$service"
     echo "✓ 部署完成，指纹已记录（$service）"
     ;;
 
@@ -109,6 +116,7 @@ json.dump({'service':'$service','updated':'$(date '+%Y-%m-%d %H:%M')','files':li
     done
     ssh_vps "mkdir -p $INFO_DIR"
     printf '%s' "$lines" | ssh_vps "cat >> $INFO_DIR/$service.jsonl"
+    rebuild_summary "$service"
     echo "✓ 补录完成（不部署文件）"
     ;;
 

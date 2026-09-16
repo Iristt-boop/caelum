@@ -1167,6 +1167,17 @@ handle /.well-known/oauth-protected-resource* {
 | ~~**Nox 会话超 40 条后静默失忆**~~ | ✅ **根治（2026-08-14）**：`Store.sync()` 原用条数比对，会话一超 `history_limit=40`，history 永远是截断的 40 条 + 新增 → `len(pending) <= count` 永不成立 → **所有消息（用户/Care/晨报/Attention）8-07 起不再落库**，Nox 停在 40 条前的旧世界。改**内容锚点**定位新增（`data/store.py`）+ **token 预算压缩**（见第十九节"上下文压缩"）。8-07→8-14 丢失的 412 条已从 bridge 回填 |
 
 ## 十四、本地开发与部署
+
+### 部署纪律：逐文件部署必须走 deploy-vps.sh（2026-09-16 起）
+
+线上是逐文件 scp 的演化线，多会话并行时线上文件集合来自不同 commit 甚至
+未提交的工作树。**部署/补录一律用 `scripts/deploy-vps.sh`**，它会自动给每个
+文件记指纹（`<sha>` / `dirty@<sha>` / `untracked`）写到服务器 `/root/DEPLOY_INFO/`；
+排障先 `deploy-vps.sh version` 看「线上跑着哪版」。
+不加指纹的裸 scp = 让「配套断裂」回到只能靠猜的状态（09-16 撞过一次：
+server.py 来自最新 master、它引用的 decay 属性来自另一会话的本地改动）。
+
+
 ### 本机 DSH 运行方式（2026-08-14 起独立运行，不再经 WorkBuddy 启动）
 
 DSH（DeepSeek Harness）是独立开源软件，**可以脱离 WorkBuddy 宿主直接运行**。
