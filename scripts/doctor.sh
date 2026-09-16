@@ -50,6 +50,53 @@ else
   warn "nox-daily.timer 没在跑，早报会断"
 fi
 
+# ── 1.5) 遗忘曲线到底跑没跑（排期 4.6，2026-09-16）──────
+#
+# 🔴 判的是**结果**，不是机制。
+#
+# 「ombre-brain.service active」只说明进程活着；
+# 「ombre-brain-decay.timer active」只说明闹钟还在响 ——
+# 闹钟响了、curl 401、衰减一轮没跑，这两个检查**全是绿的**。
+#
+# 所以这里判 OB 自己报的 last_decay_at：那是衰减**真的跑完**才会动的值。
+# 阈值 36 小时：定时器是每天 04:00，给一天多一点的余量，
+# 不至于因为一次 RandomizedDelaySec 或补跑就误报。
+if systemctl is-enabled ombre-brain-decay.timer >/dev/null 2>&1; then
+  good "ombre-brain-decay.timer 已启用（遗忘曲线的时钟）"
+else
+  warn "ombre-brain-decay.timer 没启用 —— 衰减会退回「有人调工具才跑」"
+fi
+DH=$(curl -s -m 10 http://127.0.0.1:8002/health 2>/dev/null)
+if [ -z "$DH" ]; then
+  bad "OB /health 无响应，查不了衰减跑没跑"
+else
+  # 退出码：0=新鲜 1=太久没跑 2=从来没跑过 3=读不出来
+  # ⚠️ 判据走退出码，不匹配文本（编码一变就永远为假）
+  DAGE=$(python3 - "$DH" <<'PYEOF'
+import json, sys
+from datetime import datetime
+try:
+    at = json.loads(sys.argv[1]).get("last_decay_at")
+except Exception:
+    sys.exit(3)
+if not at:
+    sys.exit(2)
+try:
+    hours = (datetime.now() - datetime.fromisoformat(at)).total_seconds() / 3600
+except Exception:
+    sys.exit(3)
+print(f"{hours:.1f}")
+sys.exit(0 if hours <= 36 else 1)
+PYEOF
+)
+  case $? in
+    0) good "衰减 ${DAGE}h 前跑过" ;;
+    1) bad  "衰减 ${DAGE}h 没跑了 —— 定时器响了但没干成事，查 journalctl -u ombre-brain-decay" ;;
+    2) warn "OB 重启后还没跑过一轮衰减（重启当天正常，连着两天就不正常）" ;;
+    *) bad  "读不出 last_decay_at —— OB 是不是回退到没有 4.6 的版本了" ;;
+  esac
+fi
+
 # ── 2) 探活聚合（bridge /api/health）─────────────
 echo "-- 探活 --"
 H=$(curl -s -m 30 http://127.0.0.1:3003/api/health 2>/dev/null)
