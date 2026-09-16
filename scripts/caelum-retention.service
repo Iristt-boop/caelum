@@ -1,0 +1,16 @@
+# 跑一次数据保留策略（排期 4.7，2026-09-16）
+#
+# 策略本身、以及每张表**为什么**是那个策略，都写在 retention.py 的模块文档里。
+# 改保留天数之前先读那段 —— 尤其是「usage_log 不删」和
+# 「observations 必须按 type 分策」这两条，它们各自防着一个具体的事故。
+
+[Unit]
+Description=Caelum 数据保留策略（清过期的活动追踪）
+After=network-online.target
+
+[Service]
+Type=oneshot
+# 删之前它自己会先备份库文件，并只留最近 3 份快照
+ExecStart=/usr/bin/python3 /root/retention.py --apply
+StandardOutput=journal
+StandardError=journal

@@ -1,0 +1,24 @@
+# 数据保留策略的时钟（排期 4.7，2026-09-16）
+#
+# 每周一次就够 —— 要清的东西日均 150 条，攒一周也才 1000 条出头，
+# 而每次运行都会做一份库快照。跑得越勤，快照翻得越快，
+# 后悔余地反而越短。
+
+[Unit]
+Description=每周跑一次 Caelum 数据保留策略
+
+[Timer]
+# 周日凌晨 4:30 —— 避开 ombre-brain-decay.timer 的 04:00，
+# 两个都在动库，错开半小时省得互相等锁
+OnCalendar=Sun *-*-* 04:30:00
+
+# 🔴 要 Persistent —— 和 decay 一样，这是**积累量**：
+#    机器关了一周，那一周该清的东西不该凭空豁免，
+#    只会越积越多。开机后补跑一次正好。
+Persistent=true
+
+RandomizedDelaySec=10min
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target
