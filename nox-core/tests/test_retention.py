@@ -290,10 +290,141 @@ def test_按会话删也要报对条数(tmp_path):
     assert _conv_count(db) == 8, "干跑动了数据"
 
 
+def _mksess(tmp_path: Path, rows: list[tuple[str, str]]) -> Path:
+    """rows = [(session_id, created_at)]。顺带建 sessions 父表。"""
+    db = tmp_path / "sessions.db"
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE sessions (id TEXT PRIMARY KEY, updated_at TEXT, summary TEXT)")
+    conn.execute("CREATE TABLE messages (session_id TEXT, role TEXT, text TEXT, created_at TEXT)")
+    conn.executemany("INSERT INTO messages VALUES (?,'user','x',?)", rows)
+    for sid in {s for s, _ in rows}:
+        conn.execute("INSERT INTO sessions VALUES (?,?,?)", (sid, "", "摘要"))
+    conn.commit()
+    conn.close()
+    return db
+
+
+def _sess_counts(db: Path) -> tuple[int, int]:
+    conn = sqlite3.connect(db)
+    try:
+        return (conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0],
+                conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0])
+    finally:
+        conn.close()
+
+
+def _sess_policy(db: Path) -> Policy:
+    return Policy(db=str(db), table="messages", time_col="created_at",
+                  group_col="session_id", cascade=("sessions", "id"),
+                  default_days=180)
+
+
+def test_级联删掉父行_不留空壳(tmp_path):
+    """🔴 糖糖 2026-09-16：「只要别出现第二天整个会话都空了的情况就好」。
+
+    只删 messages 不删 sessions = **空壳会话**：列表里看得见，
+    点进去一片空白。那就是"会话空了"，只是慢一点。
+    """
+    db = _mksess(tmp_path, [("老", _ago(400)), ("老", _ago(300)), ("新", _ago(5))])
+    run([_sess_policy(db)], apply=True, now=NOW)
+
+    msgs, sess = _sess_counts(db)
+    assert msgs == 1, "消息删错了"
+    assert sess == 1, "父行没跟着删 —— 留下了空壳会话"
+
+    conn = sqlite3.connect(db)
+    try:
+        left = [r[0] for r in conn.execute("SELECT id FROM sessions")]
+    finally:
+        conn.close()
+    assert left == ["新"], "删掉的不是过期那一段"
+
+
+def test_活着的会话父行也不动(tmp_path):
+    db = _mksess(tmp_path, [("主对话", _ago(400)), ("主对话", _ago(1))])
+    run([_sess_policy(db)], apply=True, now=NOW)
+    assert _sess_counts(db) == (2, 1), "还在用的会话被动了"
+
+
+def test_级联必须配合group(tmp_path):
+    with pytest.raises(ValueError):
+        Policy(db="x.db", table="messages", time_col="ts", cascade=("sessions", "id"))
+
+
 def test_group和type不许同时用():
     """想不清楚的组合最容易变成事故 —— 直接不让用。"""
     with pytest.raises(ValueError):
         Policy(db="x.db", table="t", time_col="ts", group_col="id", type_col="type")
+
+
+# ---------------------------------------------------------------- 两道保险
+#
+# 🔴 糖糖 2026-09-16：「不能我第二天看对话的时候直接什么都没有了。
+#    而他也没有了昨天的记忆。要把我的体验感放在第一。」
+#
+# 保留天数是**策略**，策略会写错、时间格式会变、时区会差八小时。
+# 这两道保险不管策略说什么，先护住她眼前的东西。
+
+def test_近期地板_拒绝过短的保留天数(tmp_path):
+    """🔴 手滑把天数写成 1，必须**拒绝跑**，而不是真删。"""
+    from scripts.retention import RECENT_FLOOR_DAYS, RetentionRefused
+
+    db = _mkconv(tmp_path, [("x", _ago(3))])
+    with pytest.raises(RetentionRefused):
+        run([_conv_policy(db, days=1)], apply=True, now=NOW)
+    assert _conv_count(db) == 1, "地板没拦住，数据已经被删了"
+    assert RECENT_FLOOR_DAYS >= 7, "地板被调低到一周以内了"
+
+
+def test_近期地板_刚好等于地板可以跑(tmp_path):
+    """判据是 `<` 不是 `<=` —— 地板本身是允许的值，不然文档里那个数是假的。"""
+    from scripts.retention import RECENT_FLOOR_DAYS
+
+    db = _mkconv(tmp_path, [("老", _ago(999)), ("新", _ago(1))])
+    run([_conv_policy(db, days=RECENT_FLOOR_DAYS)], apply=True, now=NOW)
+    assert _conv_count(db, "新") == 1
+    assert _conv_count(db, "老") == 0
+
+
+def test_熔断_要删掉大半张表就停手(tmp_path, capsys):
+    """🔴 一次要删掉大半张表，几乎一定是判据坏了，不是真有那么多过期。
+
+    正确反应是**停手喊人**，不是照删。
+    """
+    from scripts.retention import MIN_ROWS_FOR_BREAKER
+
+    rows = ([("老", _ago(400))] * (MIN_ROWS_FOR_BREAKER)
+            + [("新", _ago(1))] * 10)
+    db = _mkconv(tmp_path, rows)
+    r = run([_conv_policy(db)], apply=True, now=NOW)
+
+    assert _conv_count(db) == len(rows), "熔断了却还是删了"
+    assert "conversations" in r["refused"]
+    assert "停手" in capsys.readouterr().out
+
+
+def test_熔断_小表不误触发(tmp_path):
+    """3 行删 2 行是 67%，但那说明不了任何问题。
+
+    天天误报的告警等于没有告警 —— 真出事那次会被当成又一次误报。
+    """
+    db = _mkconv(tmp_path, [("老", _ago(400)), ("老", _ago(300)), ("新", _ago(1))])
+    r = run([_conv_policy(db)], apply=True, now=NOW)
+    assert r["refused"] == [], "小表上误触发了熔断"
+    assert _conv_count(db) == 1
+
+
+def test_熔断了要非零退出(tmp_path, monkeypatch):
+    """熔断了却悄悄成功退出 = 等于没有熔断：
+    systemd 不会变 failed，体检不会红，没人知道。
+    """
+    from scripts import retention
+    from scripts.retention import MIN_ROWS_FOR_BREAKER
+
+    db = _mkconv(tmp_path, [("老", _ago(400))] * MIN_ROWS_FOR_BREAKER + [("新", _ago(1))])
+    monkeypatch.setattr(retention, "POLICIES", [_conv_policy(db)])
+    monkeypatch.setattr(sys, "argv", ["retention.py", "--apply"])
+    assert retention.main() == 1, "熔断了还返回 0"
 
 
 # ---------------------------------------------------------------- 出厂策略本身
@@ -332,6 +463,19 @@ def test_出厂策略_observations默认是留():
     assert p.days_for("menstrual") is KEEP_FOREVER, \
         "月经周期会被删 —— health.py 查它用的是 days=400"
     assert p.days_for("sleep_duration") is KEEP_FOREVER
+
+
+def test_出厂策略_messages和对话同口径():
+    """两个库存的是**同一段对话**（session id 都一样），一份给 App 看、
+    一份给他做上下文。窗口不一致 = 一边忘了一边还记得。
+    """
+    m = _shipped("messages")
+    c = _shipped("conversations")
+    assert m.default_days == c.default_days == 180, \
+        "messages 和 conversations 的保留窗口不一致了"
+    assert m.group_col == "session_id", "messages 变成按行删了"
+    assert m.cascade == ("sessions", "id"), \
+        "级联没了 —— 会留下空壳会话（列表里有，点进去空白）"
 
 
 def test_出厂策略_conversations留180天():

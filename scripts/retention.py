@@ -95,6 +95,44 @@ from pathlib import Path
 #: 想删必须显式写出来，漏写只会导致"留久了"，不会导致"删错了"。
 KEEP_FOREVER = None
 
+# ================================================================
+# 两道保险 —— 糖糖 2026-09-16 定的要求：
+#
+#   「不能我第二天看对话的时候直接什么都没有了。
+#     而他也没有了昨天的记忆。要把我的体验感放在第一。」
+#
+# 保留天数写多少是**策略**，而策略可能写错、时间格式可能对不上、
+# 时区可能差八小时。这两道保险不管策略说什么，先护住她眼前的东西。
+# ================================================================
+
+#: 🔴 **近期地板**：任何策略都不许删比这更新的东西。
+#:
+#: 就算某天有人把保留天数手滑写成 0、或者 cutoff 因为时区/格式算歪了，
+#: 最近一周的对话和记忆也一定还在 —— 她第二天打开不会是空的，
+#: 他也不会忘了昨天。策略算出来的 cutoff 比这更近就**直接拒绝跑**，
+#: 不是"夹一下再跑"：那样会把一次配置事故变成一次静默的小规模删除。
+RECENT_FLOOR_DAYS = 7
+
+#: 🔴 **熔断**：一次运行删掉一张表超过这个比例，就中止、不删、报错。
+#:
+#: 正常情况下每周清掉的是一小撮过期数据。要是某一次算出来要删掉大半张表，
+#: 那几乎一定是判据出了问题（时间格式变了、字段改名了、时区错了），
+#: **而不是真有那么多东西过期**。这种时候正确的反应是停手喊人，不是照删。
+MAX_SHARE = 0.5
+
+#: 熔断只对**有规模的表**生效。
+#:
+#: 一张 3 行的表删掉 2 行是 67%，但那说明不了任何问题；
+#: 3000 行删掉 2000 行才说明判据坏了。不设这个下限的话，
+#: 熔断会在小表上天天误触发 —— 而**天天误报的告警等于没有告警**，
+#: 真出事那次也会被当成又一次误报。
+#: 小表不设防也不危险：上面那道近期地板照样护着最近一周。
+MIN_ROWS_FOR_BREAKER = 100
+
+
+class RetentionRefused(Exception):
+    """保险拦下来了。**不许 catch 之后接着删。**"""
+
 
 class Policy:
     """一张表的保留策略。
@@ -121,6 +159,7 @@ class Policy:
                  type_col: str | None = None,
                  by_type: dict[str, int | None] | None = None,
                  group_col: str | None = None,
+                 cascade: tuple[str, str] | None = None,
                  why: str = ""):
         self.db = Path(db)
         self.table = table
@@ -129,7 +168,17 @@ class Policy:
         self.type_col = type_col
         self.by_type = by_type or {}
         self.group_col = group_col
+        #: `(表名, 主键列)` —— 整组删掉之后，把父表里对应的行也删掉。
+        #:
+        #: 🔴 不级联的话会留下**空壳会话**：`sessions` 里有这一行、
+        #:    `messages` 里一条都没有，列表里看得见，点进去一片空白。
+        #:    糖糖 2026-09-16：「只要别出现第二天整个会话都空了的情况就好」——
+        #:    空壳正是那个样子，只是慢一点。
+        self.cascade = cascade
         self.why = why
+        if cascade and not group_col:
+            # 级联是"这一组没了，父表那行也该没"，没有组的概念就无从谈起
+            raise ValueError("cascade 必须和 group_col 一起用")
         if group_col and type_col:
             # 两个一起用的语义是"按组删但每组还分类型"，想不出真实用例，
             # 而想不清楚的组合最容易变成事故。要用再说。
@@ -138,8 +187,16 @@ class Policy:
     def days_for(self, type_value: str | None) -> int | None:
         """某一行该留多久。**查不到就用 default**，而 default 是「永久」。"""
         if self.type_col and type_value in self.by_type:
-            return self.by_type[type_value]
-        return self.default_days
+            days = self.by_type[type_value]
+        else:
+            days = self.default_days
+        if days is not KEEP_FOREVER and days < RECENT_FLOOR_DAYS:
+            # 🔴 拒绝，不是夹一下 —— 夹一下会把配置事故变成静默的小规模删除
+            raise RetentionRefused(
+                f"{self.table} 的保留天数是 {days}，比地板 {RECENT_FLOOR_DAYS} 天还短。"
+                f"这几乎一定是写错了 —— 拒绝执行。真要删这么近的东西，"
+                f"先改 RECENT_FLOOR_DAYS 并说清楚为什么。")
+        return days
 
 
 #: 🔴 改这张表 = 改她的数据会被留多久。改之前先读上面那三段。
@@ -178,6 +235,22 @@ POLICIES: list[Policy] = [
         why="原始聊天正文留半年。长期记忆在 OB 里，删这个不影响他记不记得；"
             "真出事时半年的暴露面比「全部」小得多",
     ),
+    Policy(
+        db="/root/nox-core/data/sessions.db",
+        table="messages",
+        time_col="created_at",
+        # 和 bridge 的 conversations **同一段对话**（session id 都是同一个）——
+        # 一份给 App 看，一份给他做上下文。两边用不同窗口会变成
+        # 一边忘了一边还记得，排查时非常难受。所以同样 180 天、同样按会话删。
+        group_col="session_id",
+        # 🔴 连 `sessions` 那一行一起删。留着 = 空壳会话，
+        #    列表里看得见、点进去一片空白。
+        #    （会连带删掉那一行的 summary —— 摘要只为它自己那段对话服务，
+        #      段没了摘要也没用了。糖糖 2026-09-16 拍的板。）
+        cascade=("sessions", "id"),
+        default_days=180,
+        why="nox-core 侧的同一段对话，和 conversations 同口径；整段删干净不留空壳",
+    ),
 ]
 
 
@@ -211,6 +284,13 @@ def _rows_to_delete(conn: sqlite3.Connection, p: Policy, now: datetime) -> dict[
             f"SELECT COUNT(*) FROM {p.table} WHERE {p.group_col} IN ({qs})",
             groups).fetchone()[0]
         out[f"(整段对话 × {len(groups)})"] = n
+        if p.cascade:
+            ctable, ckey = p.cascade
+            cn = conn.execute(
+                f"SELECT COUNT(*) FROM {ctable} WHERE {ckey} IN ({qs})",
+                groups).fetchone()[0]
+            if cn:
+                out[f"({ctable} 里对应的行)"] = cn
         return out
 
     if p.type_col:
@@ -251,6 +331,13 @@ def _delete(conn: sqlite3.Connection, p: Policy, now: datetime) -> int:
             cur = conn.execute(
                 f"DELETE FROM {p.table} WHERE {p.group_col} IN ({qs})", groups)
             total = cur.rowcount
+            if p.cascade:
+                # 🔴 同一个事务里。父行留下来 = 空壳会话，
+                #    而空壳正是「点进去一片空白」的那个样子。
+                ctable, ckey = p.cascade
+                cur = conn.execute(
+                    f"DELETE FROM {ctable} WHERE {ckey} IN ({qs})", groups)
+                total += cur.rowcount
         conn.commit()
         return total
 
@@ -284,12 +371,30 @@ KEEP_BACKUPS = 3
 def backup(db: Path) -> Path:
     """删之前先拷一份。几 MB 的东西，没有不备份的理由。
 
+    🔴 **必须用 SQLite 自己的备份接口，不能 `shutil.copy2`。**
+
+    这几个库全是 WAL 模式，而且 WAL 文件有 4MB 上下 —— 比某些库文件本身还大。
+    `copy2` 只拷 `.db`，**已提交但还没 checkpoint 的事务全都不在里面**。
+    实测（2026-09-16）：`cp` 出来的 sessions.db 少了 220 条消息，
+    nox-bridge.db 少了 195 条 —— 而且拷贝过程一声不吭，**只有真去恢复
+    的那天才会发现少了东西**，那时候原件已经被删过了。
+
+    `conn.backup()` 走的是在线备份接口，拿到的是一致快照（含 WAL 内容）。
+
     ⚠️ 顺手清掉旧快照 —— 这条是**每周**跑的，不清的话
     「保留策略」自己会在她机器上攒一地备份文件，那就成笑话了。
     """
     dest = db.with_name(f"{db.stem}-before-retention-"
                         f"{datetime.now():%Y%m%d-%H%M%S}{db.suffix}")
-    shutil.copy2(db, dest)
+    src = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    try:
+        dst = sqlite3.connect(str(dest))
+        try:
+            src.backup(dst)
+        finally:
+            dst.close()
+    finally:
+        src.close()
 
     olds = sorted(db.parent.glob(f"{db.stem}-before-retention-*{db.suffix}"))
     for old in olds[:-KEEP_BACKUPS]:
@@ -303,7 +408,8 @@ def backup(db: Path) -> Path:
 
 def run(policies: list[Policy], *, apply: bool, now: datetime | None = None) -> dict:
     now = now or datetime.now()
-    report: dict = {"checked": 0, "deleted": 0, "skipped": [], "missing": [], "details": []}
+    report: dict = {"checked": 0, "deleted": 0, "skipped": [], "missing": [],
+                    "refused": [], "details": []}
 
     for p in policies:
         if not p.db.exists():
@@ -324,6 +430,20 @@ def run(policies: list[Policy], *, apply: bool, now: datetime | None = None) -> 
             plan = _rows_to_delete(conn, p, now)
             if not plan:
                 print(f"[✓] {p.table}：没有过期的")
+                continue
+
+            # 🔴 熔断。判据是**这张表自己的行数**，不是父表的 ——
+            #    级联删掉的父行不算在分母里，否则比例会被稀释。
+            total_rows = conn.execute(f"SELECT COUNT(*) FROM {p.table}").fetchone()[0]
+            own = sum(n for k, n in plan.items() if not k.startswith("("
+                      + (p.cascade[0] if p.cascade else "\x00")))
+            if total_rows >= MIN_ROWS_FOR_BREAKER and own / total_rows > MAX_SHARE:
+                msg = (f"{p.table} 这一次要删掉 {own}/{total_rows} 条"
+                       f"（{own / total_rows:.0%}），超过 {MAX_SHARE:.0%} —— "
+                       f"这几乎一定是判据出了问题（时间格式变了？字段改名了？时区错了？），"
+                       f"不是真有那么多东西过期。**停手，一条都不删。**")
+                print(f"🔴 {msg}")
+                report["refused"].append(p.table)
                 continue
 
             for t, n in sorted(plan.items(), key=lambda kv: -kv[1]):
@@ -382,6 +502,11 @@ def main() -> int:
         print(f"会删 {r['deleted']} 条，查了 {r['checked']} 个库")
         print("（干跑，一个字节都没写。加 --apply 才真删）")
 
+    if r["refused"]:
+        # 🔴 非零退出 —— systemd 单元会变 failed，体检那条会红。
+        #    熔断了却悄悄成功退出，等于没有熔断。
+        print(f"🔴 熔断了：{'、'.join(r['refused'])} —— 一条都没删，去查判据")
+        return 1
     if r["checked"] == 0:
         return 1
     return 1 if r["missing"] else 0

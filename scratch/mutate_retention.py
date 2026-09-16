@@ -19,8 +19,8 @@ TESTS = "nox-core/tests/test_retention.py"
 MUTATIONS = [
     (
         "没写进策略的 type 改成删（默认方向反过来）",
-        "        return self.default_days",
-        "        return 30",
+        "            days = self.default_days",
+        "            days = 30",
         "test_没见过的type默认留着",
     ),
     (
@@ -82,6 +82,48 @@ MUTATIONS = [
         '        group_col="id",\n        default_days=180,',
         "        default_days=180,",
         "test_出厂策略_conversations留180天",
+    ),
+    (
+        "级联不删父行（留下空壳会话）",
+        "            if p.cascade:\n                # 🔴 同一个事务里。父行留下来 = 空壳会话，",
+        "            if False:\n                # 🔴 同一个事务里。父行留下来 = 空壳会话，",
+        "test_级联删掉父行_不留空壳",
+    ),
+    (
+        "出厂策略：messages 去掉级联",
+        '        cascade=("sessions", "id"),\n        default_days=180,',
+        "        default_days=180,",
+        "test_出厂策略_messages和对话同口径",
+    ),
+    (
+        "出厂策略：messages 窗口和对话不一致",
+        '        cascade=("sessions", "id"),\n        default_days=180,',
+        '        cascade=("sessions", "id"),\n        default_days=30,',
+        "test_出厂策略_messages和对话同口径",
+    ),
+    (
+        "近期地板：夹一下而不是拒绝（配置事故变成静默删除）",
+        "            raise RetentionRefused(",
+        "            return RECENT_FLOOR_DAYS  # noqa\n        if False:\n            raise RetentionRefused(",
+        "test_近期地板_拒绝过短的保留天数",
+    ),
+    (
+        "近期地板：调低到 1 天",
+        "RECENT_FLOOR_DAYS = 7",
+        "RECENT_FLOOR_DAYS = 1",
+        "test_近期地板_拒绝过短的保留天数",
+    ),
+    (
+        "熔断：只报警不停手",
+        '                print(f"🔴 {msg}")\n                report["refused"].append(p.table)\n                continue',
+        '                print(f"🔴 {msg}")',
+        "test_熔断_要删掉大半张表就停手",
+    ),
+    (
+        "熔断：熔断了还返回 0",
+        '    if r["refused"]:',
+        "    if False:",
+        "test_熔断了要非零退出",
     ),
     (
         "出厂策略：给 usage_log 设保留天数",
