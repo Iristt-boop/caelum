@@ -97,10 +97,30 @@ KEEP_FOREVER = None
 
 
 class Policy:
+    """一张表的保留策略。
+
+    `group_col` —— 🔴 **按组删，不是按行删。**
+
+    对话是这么组织的：一个 `id` 下面挂着从头到尾所有消息。
+    实测（2026-09-16）线上有一个会话 `1809ea16d4f7`：**4049 条，
+    2026-08-06 开始，到今天还在用** —— 占全部消息的 88%。
+
+    如果按行删，到期那天它会**从这段还活着的对话里，一天一天往前啃**：
+    今天删掉 8 月 6 日那几条，明天删 8 月 7 日的……
+    会话还在列表里，点进去开头没了，而且**没有任何提示**。
+    `/api/conv-sessions` 的标题取的是"第一条用户消息"，
+    所以连标题都会跟着变成中间某句话。
+
+    设了 `group_col` 之后，判据变成**整组里最新的那一条**：
+    只要这段对话最近还说过话，一个字都不动；
+    整段都超过保留期了，才整段删掉。
+    """
+
     def __init__(self, db: str, table: str, time_col: str, *,
                  default_days: int | None = KEEP_FOREVER,
                  type_col: str | None = None,
                  by_type: dict[str, int | None] | None = None,
+                 group_col: str | None = None,
                  why: str = ""):
         self.db = Path(db)
         self.table = table
@@ -108,7 +128,12 @@ class Policy:
         self.default_days = default_days
         self.type_col = type_col
         self.by_type = by_type or {}
+        self.group_col = group_col
         self.why = why
+        if group_col and type_col:
+            # 两个一起用的语义是"按组删但每组还分类型"，想不出真实用例，
+            # 而想不清楚的组合最容易变成事故。要用再说。
+            raise ValueError("group_col 和 type_col 暂不支持同时使用")
 
     def days_for(self, type_value: str | None) -> int | None:
         """某一行该留多久。**查不到就用 default**，而 default 是「永久」。"""
@@ -146,6 +171,9 @@ POLICIES: list[Policy] = [
         db="/root/data/nox-bridge.db",
         table="conversations",
         time_col="timestamp",
+        # 🔴 **按会话删，不是按行删。** 线上有一段 4049 条的对话从 8 月开到现在，
+        #    按行删会从它中间往前啃，而会话还在列表里 —— 见 Policy 的文档。
+        group_col="id",
         default_days=180,       # ← 糖糖 2026-09-16 定的
         why="原始聊天正文留半年。长期记忆在 OB 里，删这个不影响他记不记得；"
             "真出事时半年的暴露面比「全部」小得多",
@@ -155,9 +183,36 @@ POLICIES: list[Policy] = [
 
 # ---------------------------------------------------------------- 干活
 
+def _expired_groups(conn: sqlite3.Connection, p: Policy, cutoff: str) -> list[str]:
+    """哪些组**整组**都过期了。判据是组里**最新**的那一条。
+
+    🔴 `HAVING MAX(time) < cutoff` —— 不是 `WHERE time < cutoff`。
+    后者会从还在用的对话里往前啃。
+    """
+    return [r[0] for r in conn.execute(
+        f"SELECT {p.group_col} FROM {p.table} "
+        f"GROUP BY {p.group_col} HAVING MAX({p.time_col}) < ?", (cutoff,))]
+
+
 def _rows_to_delete(conn: sqlite3.Connection, p: Policy, now: datetime) -> dict[str, int]:
     """返回 {type: 条数}。不改任何东西。"""
     out: dict[str, int] = {}
+
+    if p.group_col:
+        days = p.days_for(None)
+        if days is KEEP_FOREVER:
+            return out
+        cutoff = (now - timedelta(days=days)).isoformat()
+        groups = _expired_groups(conn, p, cutoff)
+        if not groups:
+            return out
+        qs = ",".join("?" * len(groups))
+        n = conn.execute(
+            f"SELECT COUNT(*) FROM {p.table} WHERE {p.group_col} IN ({qs})",
+            groups).fetchone()[0]
+        out[f"(整段对话 × {len(groups)})"] = n
+        return out
+
     if p.type_col:
         types = [r[0] for r in conn.execute(
             f"SELECT DISTINCT {p.type_col} FROM {p.table}")]
@@ -184,6 +239,21 @@ def _rows_to_delete(conn: sqlite3.Connection, p: Policy, now: datetime) -> dict[
 
 def _delete(conn: sqlite3.Connection, p: Policy, now: datetime) -> int:
     total = 0
+
+    if p.group_col:
+        days = p.days_for(None)
+        if days is KEEP_FOREVER:
+            return 0
+        cutoff = (now - timedelta(days=days)).isoformat()
+        groups = _expired_groups(conn, p, cutoff)
+        if groups:
+            qs = ",".join("?" * len(groups))
+            cur = conn.execute(
+                f"DELETE FROM {p.table} WHERE {p.group_col} IN ({qs})", groups)
+            total = cur.rowcount
+        conn.commit()
+        return total
+
     if p.type_col:
         types = [r[0] for r in conn.execute(
             f"SELECT DISTINCT {p.type_col} FROM {p.table}")]

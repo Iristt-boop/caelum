@@ -214,6 +214,88 @@ def test_干跑不备份(tmp_path):
 
 # ---------------------------------------------------------------- 空集 / 缺库
 
+# ---------------------------------------------------------------- 按会话删
+#
+# 🔴 这一组是糖糖问「到 180 天的时候会话直接清空？」逼出来的。
+#    原来的实现是**按行删**，而线上有一段 4049 条的对话从 8 月开到现在 ——
+#    按行删会从这段还活着的对话里一天一天往前啃，会话还在列表里，
+#    开头没了，标题还会跟着变（`/api/conv-sessions` 的标题取第一条用户消息）。
+
+def _mkconv(tmp_path: Path, rows: list[tuple[str, str]]) -> Path:
+    """rows = [(session_id, timestamp)]"""
+    db = tmp_path / "bridge.db"
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE conversations (id TEXT, role TEXT, content TEXT, timestamp TEXT)")
+    conn.executemany("INSERT INTO conversations VALUES (?,'user','x',?)", rows)
+    conn.commit()
+    conn.close()
+    return db
+
+
+def _conv_count(db: Path, sid: str | None = None) -> int:
+    conn = sqlite3.connect(db)
+    try:
+        if sid is None:
+            return conn.execute("SELECT COUNT(*) FROM conversations").fetchone()[0]
+        return conn.execute("SELECT COUNT(*) FROM conversations WHERE id=?",
+                            (sid,)).fetchone()[0]
+    finally:
+        conn.close()
+
+
+def _conv_policy(db: Path, days: int = 180) -> Policy:
+    return Policy(db=str(db), table="conversations", time_col="timestamp",
+                  group_col="id", default_days=days)
+
+
+def test_还在用的对话一个字都不动(tmp_path):
+    """🔴 整组的判据是**最新**那一条，不是每一行各算各的。
+
+    线上那段主对话从 2026-08 开到现在。按行删的话，到期那天它会
+    从开头被啃掉，而会话还活着 —— 比整段删掉更糟，因为没有任何提示。
+    """
+    db = _mkconv(tmp_path, [
+        ("主对话", _ago(300)),   # 开头很老
+        ("主对话", _ago(200)),
+        ("主对话", _ago(1)),     # 但昨天还在说话
+    ])
+    run([_conv_policy(db)], apply=True, now=NOW)
+    assert _conv_count(db, "主对话") == 3, \
+        "还在用的对话被从开头啃了 —— 判据用成了按行删"
+
+
+def test_整段都过期了才整段删(tmp_path):
+    db = _mkconv(tmp_path, [
+        ("老对话", _ago(400)),
+        ("老对话", _ago(300)),   # 最新的也超过 180 天
+        ("新对话", _ago(10)),
+    ])
+    run([_conv_policy(db)], apply=True, now=NOW)
+    assert _conv_count(db, "老对话") == 0, "整段过期的没删掉"
+    assert _conv_count(db, "新对话") == 1
+
+
+def test_只差一天也不动(tmp_path):
+    """最新那条正好 179 天 → 整段留着。边界必须清楚。"""
+    db = _mkconv(tmp_path, [("x", _ago(400)), ("x", _ago(179))])
+    run([_conv_policy(db)], apply=True, now=NOW)
+    assert _conv_count(db) == 2
+
+
+def test_按会话删也要报对条数(tmp_path):
+    """干跑要说清楚「会删几条、几段」，不能只说几段。"""
+    db = _mkconv(tmp_path, [("老", _ago(400))] * 7 + [("新", _ago(1))])
+    r = run([_conv_policy(db)], apply=False, now=NOW)
+    assert r["deleted"] == 7, f"报了 {r['deleted']} 条，应该是 7"
+    assert _conv_count(db) == 8, "干跑动了数据"
+
+
+def test_group和type不许同时用():
+    """想不清楚的组合最容易变成事故 —— 直接不让用。"""
+    with pytest.raises(ValueError):
+        Policy(db="x.db", table="t", time_col="ts", group_col="id", type_col="type")
+
+
 # ---------------------------------------------------------------- 出厂策略本身
 #
 # 🔴 上面那些验的是**机制**，这一组验的是**决定**。
@@ -256,6 +338,9 @@ def test_出厂策略_conversations留180天():
     """糖糖 2026-09-16 定的。改这个数要她再点一次头。"""
     p = _shipped("conversations")
     assert p.default_days == 180, f"对话保留天数被改成了 {p.default_days}"
+    # 🔴 按会话删，不是按行删 —— 去掉 group_col 就会从活着的对话里往前啃
+    assert p.group_col == "id", \
+        "对话变成按行删了 —— 还在用的那段会被从开头吃掉"
 
 
 def test_库不在不算通过(tmp_path, capsys):

@@ -66,6 +66,24 @@ MUTATIONS = [
         "test_旧快照会被清掉",
     ),
     (
+        "按会话删退回按行删（从活着的对话里往前啃）",
+        "f\"GROUP BY {p.group_col} HAVING MAX({p.time_col}) < ?\", (cutoff,))]",
+        "f\"WHERE {p.time_col} < ?\", (cutoff,))]",
+        "test_还在用的对话一个字都不动",
+    ),
+    (
+        "整组判据用 MIN 而不是 MAX",
+        "HAVING MAX({p.time_col}) < ?",
+        "HAVING MIN({p.time_col}) < ?",
+        "test_还在用的对话一个字都不动",
+    ),
+    (
+        "出厂策略：对话改回按行删",
+        '        group_col="id",\n        default_days=180,',
+        "        default_days=180,",
+        "test_出厂策略_conversations留180天",
+    ),
+    (
         "出厂策略：给 usage_log 设保留天数",
         '        table="usage_log",\n        time_col="ts",\n        default_days=KEEP_FOREVER,',
         '        table="usage_log",\n        time_col="ts",\n        default_days=90,',
