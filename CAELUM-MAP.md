@@ -224,3 +224,17 @@
   只算冲动、只记日志、**不落帖**，观察它一天想发几条、为什么
   （记录形状见 `moments/record.py` 的三段式：**缺一段就构造不出来**），节奏对了再 `on`。
   ⏸ v1 不做图片 / 点赞 / 个人页和相册（v2，形状记在 `Caelum-Moments-设计.md` 第六节）
+
+## Embodied（行动闸门）架构原则（2026-09-16 立）
+
+**把不可靠的智能限制在它擅长的地方，把确定性问题交给确定系统。**
+这句话在系统里出现了三次：日期归 Temporal（LLM 不能算日期）、
+状态归 Registry（LLM 推断意义）、现实归 embodied Validator（LLM 决定意图）。
+
+- 位置：「想做什么」和「真的发生」之间的闸门——`nox-core/embodied/`
+  （Device Model 十设备语义 + Validator 确定性规则链），挂在 ha 工具执行前
+- Unknown 是一等公民：requires 无传感器时，**她本轮原话里的就绪表述就是证据**；
+  没证据 → DENY + 询问话术，不默认执行；新设备无语义档案 → 降权限
+- DENY 必须带原因+替代方向，**话术归 Nox**（同 [SKIP]：代码不定台词）
+- 设计全文与两个真实事故复盘：`nox-core/embodied/README.md`
+

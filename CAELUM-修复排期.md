@@ -1898,8 +1898,10 @@ touch-server 现在要 token 了。**没更新 `wifi_secrets.h` 就刷固件，�
       别人没我微信也跳转不过去。没必要再加」。
       `toy_set` 的闸门是蓝牙这个物理前提（见 3.2 的批注）；另两个都止步于跳转链接，
       真正的下单动作发生在她自己的手机上。**给它们加确认卡只是给他上锁，不增加任何安全性。**
-- [ ] 3.5 `hass_set_state` 校验 `DEVICES` + 域白名单（2h）
-      **判据**：传 `homeassistant.turn_off` 被拒。
+- [x] ~~3.5 `hass_set_state` 校验 `DEVICES` + 域白名单（2h）~~
+      ✅ **2026-09-16 做完**（embodied 行动闸门，随 nox-core 上线）——
+      它成了 embodied 规则链第 1 条（forbidden_domain），和后面的
+      unknown/环境/quiet 检查同一个闸。判据「homeassistant.turn_off 被拒」✅。
 - [x] ~~3.6 `check-boundaries.sh` 进 pre-commit + CI，并扩到卫星层（半天）~~
       ✅ **2026-09-16 做完**（`35616ea`）。三件：
       · `.githooks/pre-commit`（装：`git config core.hooksPath .githooks`）——
