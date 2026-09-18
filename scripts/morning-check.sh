@@ -197,14 +197,24 @@ if [ "${MORNING_CHECK_NO_PUSH:-0}" = "1" ]; then
   exit 0
 fi
 
-TOKEN=$(grep -oP 'Environment="?NOX_TOKEN=\K[^"]+' /etc/systemd/system/bridge.service)
+# 🔴 token 不进 argv（0.5b，2026-09-18）：`-H "X-Nox-Token: $TOKEN"` 里的
+# 主令牌在 ps aux 下一览无余。改走 curl -K 配置文件（600 临时文件，EXIT 删）
+# —— 同 caelum-watch 的做法。值从 /etc/nox/bridge.env 读（05 密钥外置后的
+# 正身），不再 grep unit 文件。
+TOKEN=$(grep -oP '^NOX_TOKEN=\K[^"]+' /etc/nox/bridge.env 2>/dev/null | head -1)
+if [ -z "$TOKEN" ]; then
+  echo "$LOG_TAG 推送失败: /etc/nox/bridge.env 里没有 NOX_TOKEN"
+  exit 0
+fi
 PAYLOAD=$(python3 -c "
 import json
 print(json.dumps({'title': '晨检', 'body': '''$SUMMARY'''}, ensure_ascii=False))
 ")
-RESP=$(curl -s -m 20 -X POST http://127.0.0.1:3003/api/push/send \
-  -H "X-Nox-Token: $TOKEN" -H "Content-Type: application/json" \
-  -d "$PAYLOAD")
+cfg=$(umask 077; mktemp)
+trap 'rm -f "$cfg"' EXIT
+printf 'header = "X-Nox-Token: %s"\nheader = "Content-Type: application/json"\n' "$TOKEN" > "$cfg"
+RESP=$(curl -s -m 20 -K "$cfg" -X POST http://127.0.0.1:3003/api/push/send \
+  --data-binary "$PAYLOAD")
 echo "$RESP" | grep -q '"ok":true' \
   && echo "$LOG_TAG 已推送" \
   || echo "$LOG_TAG 推送失败: $RESP"

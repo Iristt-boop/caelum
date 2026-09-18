@@ -108,9 +108,12 @@ SLUGISH  = re.compile(r'^[a-z0-9]+(?:-[a-z0-9]{1,12}){2,}$')       # claude-3-5-
 rows = []; skipped = 0; n_shape = 0; n_path = 0; n_ent = 0
 
 # ── 来源 A：所有 env 形状的文件（glob，不再手写清单）──
+# 2026-09-18 扩充（排期「普查清单来源扩充」）：/root 的 txt（touch_moments/
+# mcp-urls 这类明文资产住那儿）、/etc/xui（3X-UI 的配置与数据库旁文件）
 files = []
 for pat in ['/etc/nox/*.env','/etc/nox/*/*.env','/etc/**/*.env','/root/*/.env','/root/*/*.env',
-            '/root/*/.secret','/root/*/.netease_cred','/root/watch/cookies.txt','/root/.backup-pass']:
+            '/root/*/.secret','/root/*/.netease_cred','/root/watch/cookies.txt','/root/.backup-pass',
+            '/root/*.txt','/root/*/*.txt','/etc/xui/*']:
     files += glob.glob(pat, recursive=True)
 files = sorted(set(f for f in files if os.path.isfile(f) and os.path.getsize(f) < 2_000_000))
 
