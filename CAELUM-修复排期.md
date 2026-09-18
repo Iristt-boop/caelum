@@ -1890,12 +1890,14 @@ touch-server 现在要 token 了。**没更新 `wifi_secrets.h` 就刷固件，�
       >
       > 所以现在 `side_effect` 是**结构声明**（让越界能被 CI 抓、让日志说得清），
       > **不是锁**。真正该加固的是周界 —— 那就是 `0.6`–`0.9` 为什么被提到它前面做完。
-- [x] ~~3.3 麦当劳迁到 `/api/nox/orders/{id}/confirm`（1 天）~~
-      ✅ **已完成（09-08 那轮 takeWayCode 修复时顺带落地，当时没勾）**：
-      四个动作工具全部确认制（出 preview 卡 → 她点确认 → orders/confirm 才真下单），
-      判据 `test_tool_never_places_the_order`（tests/test_orders.py）对麦当劳绿——
-      工具只调 preview 绝不触达 createOrder，输出里把「还没下单」说死。
-      09-16 复验 41 passed。**第二梯队至此只剩 `1.6`（等她发话）。**
+- [ ] 3.3 麦当劳迁到 `/api/nox/orders/{id}/confirm`（1 天）
+      🔴 **2026-09-16 误勾一次，已撤销。** 当时的错误判断：「描述带确认字样 +
+      test_orders.py 全绿」= 已迁移。实际查证：那批测试里
+      `test_tool_never_places_the_order` 测的是**瑞幸**的 handler；
+      `mcd_create_order` 仍是直接透传（调用即真调 create-order 下单），
+      「确认制」只活在工具描述的文字里 —— 靠模型自觉，没有任何硬闸。
+      真实剩余：照瑞幸的形状（tools/luckin.py + orders/luckin.py）改成出卡 +
+      confirm 真下单。
 - [·] ~~3.4 `toy_set` / galatea 公开发帖 / 淘宝 同类处理（1 天）~~
       🚫 **2026-09-13 她定：不做。** 原话「那三个也多余。其实有跳转链接，
       别人没我微信也跳转不过去。没必要再加」。
