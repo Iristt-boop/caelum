@@ -48,7 +48,7 @@ MAX_RECENT = 5
 #: 🔴 超了**不截断**：见模块头。
 MAX_CHARS = 140
 
-#: 四条约束，一条一个字符串（设计文档第四节）。
+#: 五条约束，一条一个字符串（设计文档第四节 + 2026-09-18 补的第 5 条）。
 #: `_PROMPT` 由这几条 join 出来 —— 不许在别处再抄一遍。
 _RULES = (
     "1. **不是对着她讲。** 这是他自己房间里写下的一块碎片，此刻没有收件人，"
@@ -65,10 +65,54 @@ _RULES = (
 
     "4. **短，两三句就停。** 朋友圈是碎片，不是日记：不要分段、不要列点、"
     "不要起标题，写完那句想说的话就收。",
+
+    "5. **只写你真的知道的。** 上面「因为」和「她说过」里有什么，你才能写什么；"
+    "没给你的具体细节——几点、几小时、多少次、她做了什么——**一个都不许编**。"
+    "没有具体的事可写，就写你此刻的感觉，那也是真的。",
 )
 
-#: 系统提示词。🔴 只此一份 —— 四条约束从 `_RULES` 拼进来
+#: 系统提示词。🔴 只此一份 —— 五条约束从 `_RULES` 拼进来
 _PROMPT = "\n".join(_RULES)
+
+#: 每条 because / evidence 进提示词前截到多少字。
+#: 账本和提示词都不该被一条长文本撑爆；`MomentRecord` 里那份快照不截，
+#: 那是事后复算用的原始数据。
+CONTEXT_CLIP_CHARS = 60
+
+
+def _clip(text: object) -> str:
+    """把一条 because / evidence 收成一行、截到 `CONTEXT_CLIP_CHARS`。"""
+    return str(text).strip()[:CONTEXT_CLIP_CHARS]
+
+
+def _background(drives: Mapping[str, float],
+                context: Mapping[str, Mapping] | None) -> str:
+    """心理背景那一块：气氛词 +（有的话）它背后的事。
+
+    🔴 一个数值、一个 drive 名都不许进这里 —— 进去就等于「照着这个写」。
+    `context` 为 `None` 或某个 drive 没有 context 时，那一行**只写气氛词**：
+    「因为：」后面跟一个空的，会教模型自己编一个。
+    """
+    lines: list[str] = []
+    for name in drives:
+        word = DRIVE_WORDS.get(name, name)
+        ctx = (context or {}).get(name) or {}
+        because = [
+            _clip(item) for item in (ctx.get("because") or [])
+            if str(item).strip()
+        ][:2]
+        evidence = [
+            _clip(item) for item in (ctx.get("evidence") or [])
+            if str(item).strip()
+        ][:1]
+        bits: list[str] = []
+        if because:
+            bits.append("因为：" + "、".join(because))
+        if evidence:
+            bits.append("她说过：" + "、".join(f"「{item}」" for item in evidence))
+        lines.append(f"· {word}" + (f" —— {'；'.join(bits)}" if bits else ""))
+    #: 空集也不能写成空的：那会拼出一个没有主语的块
+    return "\n".join(lines) or "没什么起伏"
 
 
 def build_prompt(
@@ -76,19 +120,23 @@ def build_prompt(
     recent: Sequence[str],
     impulse_why: str,
     clock: str = "",
+    context: Mapping[str, Mapping] | None = None,
 ) -> tuple[str, str]:
     """拼出 (system, user)。抽出来是为了能单独测（照抄 speaker 的 `build_prompt`）。
 
     `user` 里永远有三块：**心理背景**、**最近发过的**、**现在几点** ——
     空的那块也要在场，形状每次一样，模型行为才不会跟着飘。
 
-    ⚠️ 心理背景里只放**气氛词**（`DRIVE_WORDS`），一个数值都不放 ——
+    ⚠️ 心理背景里只放**气氛词**（`DRIVE_WORDS`）和**它背后的事**
+    （`context` 里的 because / evidence），一个数值都不放 ——
     放了就等于告诉它「照这个写」，那就是「drive 变成内容」。
+
+    🔴 `context` 为什么必须进提示词：只给「担心她 0.58」的话，模型会自己
+    补一个具体场景出来（2026-09-18 实测编出了「她昨晚只睡了六个多小时」）。
+    Drive 本来就带着 `because` / `evidence` —— 给它真素材，它就不用编。
     """
-    #: 气氛词，不带数值。空集也不能写成空的：那会拼出一个没主语的块
-    background = "、".join(
-        DRIVE_WORDS.get(name, name) for name in drives
-    ) or "没什么起伏"
+    #: 气氛词 + 背后的事，不带数值。空集也不能写成空的
+    background = _background(drives, context)
 
     #: 最近发过的。最新在前，只喂 `MAX_RECENT` 条（防复读）
     listed = "\n".join(f"· {body}" for body in recent[:MAX_RECENT])
@@ -133,6 +181,7 @@ def generate(
     recent: Sequence[str],
     impulse_why: str,
     clock: str = "",
+    context: Mapping[str, Mapping] | None = None,
 ) -> str | None:
     """生成一条正文。**拿不到就是 None**，不编、不退而求其次。
 
@@ -151,7 +200,7 @@ def generate(
         logger.info("没有可用的 utility 模型，这轮不发帖")
         return None
 
-    system, user = build_prompt(drives, recent, impulse_why, clock)
+    system, user = build_prompt(drives, recent, impulse_why, clock, context=context)
     try:
         turn = adapter.complete(
             [Message(role="user", text=user)],

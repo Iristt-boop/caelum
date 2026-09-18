@@ -8,7 +8,8 @@
 ## 这份汇总要回答的就两个问题（设计文档第九节）
 
     1. 「他什么时候会想发一条」准不准
-    2. 「发出来的东西」像不像他自言自语      ← 这个 shadow 阶段还看不到（不落帖）
+    2. 「发出来的东西」像不像他自言自语      ← 2026-09-18 起 shadow 也真生成，
+       正文打在行尾 `｜body=<正文>`（不落帖，但看得到他会写什么）
 
 所以这里数的核心是 **would_post**：过了阈值、没撞上限也没撞间隔、**骰子也中了**
 的那些 tick —— 「要不是 shadow，这一刻他就发出去了」。
@@ -38,14 +39,38 @@ import sqlite3
 import subprocess
 import sys
 from collections import Counter
+from datetime import datetime
 from statistics import median
 
 #: 一行 shadow 记录里那几个**不会随措辞变**的键
 RE_MODE = re.compile(r"mode=(\w+)")
+RE_AT = re.compile(r"Moments｜([^｜]+)｜")
 RE_DRIVES = re.compile(r"drives=(\{[^}]*\})")
 RE_VALUE = re.compile(r"value=([\d.]+) inner=([\d.]+) timing=([\d.]+)")
 RE_GATE = re.compile(r"threshold=([\d.]+) dice=(\S+) p=(\S+)")
 RE_OUT = re.compile(r"posted=(True|False)(?: reason=(\w+))?")
+#: 行尾的正文（`MomentRecord.log()` 追加的那一段）。`-` = 这一 tick 没有正文
+RE_BODY = re.compile(r"｜body=(.*)$")
+
+#: drive 名 → 人话。这个脚本是**独立一个文件**（scp 到 VPS 上跑），
+#: 不能 import `moments` 包，所以这张表在这里必须有一份自己的。
+#: 和 `moments/__init__.py` 的 `DRIVE_WORDS` 漂了也不会报错，但只影响显示，
+#: 不参与任何判据。
+DRIVE_WORDS = {
+    "longing": "想她",
+    "playfulness": "想逗她",
+    "regret": "过意不去",
+    "dejection": "提不起劲",
+    "concern": "担心她",
+    "curiosity": "被一件事勾着",
+}
+
+#: 报告里每条正文截到多少字（给人扫的，不是全文归档）
+BODY_CLIP_CHARS = 80
+#: 报告里最多列几条
+BODY_LIMIT = 5
+#: 解析不到正文时写这一句 —— **不许打一个空标题**
+NO_BODY_PLACEHOLDER = "（这一段还没有数据）"
 
 #: reason → 人话。和 `moments/record.py` 的 NOT_POSTED_REASONS 一一对应；
 #: 表外的 reason 原样打印（以后加了新原因，这里不改也不会拼出半句话）
@@ -88,8 +113,11 @@ def parse(line: str) -> dict | None:
         except Exception:  # noqa: BLE001
             drives = {}
     m = RE_MODE.search(line)
+    a = RE_AT.search(line)
+    b = RE_BODY.search(line)
     return {
         "mode": m.group(1) if m else "?",
+        "at": a.group(1) if a else "",
         "drives": drives,
         "value": float(v.group(1)),
         "inner": float(v.group(2)),
@@ -97,7 +125,42 @@ def parse(line: str) -> dict | None:
         "threshold": float(g.group(1)),
         "posted": o.group(1) == "True",
         "reason": o.group(2) or "",
+        #: `body=-` 是「没有正文」的占位，不是一条叫 `-` 的帖子
+        "body": (b.group(1).strip() if b and b.group(1).strip() != "-" else ""),
     }
+
+
+def _body_timestamp(at: str) -> str:
+    """ISO 时刻 → `MM-DD HH:MM`。看不懂就原样给前 16 个字符。"""
+    try:
+        return datetime.fromisoformat(at).strftime("%m-%d %H:%M")
+    except Exception:  # noqa: BLE001
+        return at[:16]
+
+
+def format_recent_bodies(recs: list[dict], limit: int = BODY_LIMIT) -> list[str]:
+    """「本来会发出去」的正文，排成人能扫的几行。**没有就返回 []**。
+
+    只算 `reason="shadow"`（过了阈值、没撞上限也没撞间隔、骰子也中了）——
+    那才是「要不是 shadow，这一刻他就发出去了」。每行形如：
+
+        [09-18 00:18] 担心她领头 —— 「……」
+    """
+    lines: list[str] = []
+    wanted = [
+        r for r in recs
+        if r.get("reason") == "shadow" and str(r.get("body") or "").strip()
+    ][-limit:]
+    for r in wanted:
+        drives = r.get("drives") or {}
+        lead = max(drives.items(), key=lambda kv: kv[1])[0] if drives else ""
+        label = f"{DRIVE_WORDS.get(lead, lead)}领头" if lead else ""
+        body = str(r["body"]).strip()[:BODY_CLIP_CHARS]
+        when = _body_timestamp(str(r.get("at") or ""))
+        prefix = f"  [{when}] " if when else "  "
+        lines.append(f"{prefix}{label} —— 「{body}」" if label else
+                     f"{prefix}「{body}」")
+    return lines
 
 
 def moments_in_db() -> tuple[int, int] | None:
@@ -172,6 +235,7 @@ def main() -> int:
 
     counts = moments_in_db()
     print()
+    exit_code = 0
     if counts is None:
         print("⚠️ 库里的条数没验到 —— 「shadow 没偷偷落帖」这条今天**没有**被确认")
     else:
@@ -181,8 +245,20 @@ def main() -> int:
               + ("（shadow 期间 moment 必须是 0）" if moment == 0
                  else " —— **shadow 落帖了，这是 bug，去看 moments/record.py 的结构闸门**"))
         if moment:
-            return 1
-    return 0
+            exit_code = 1
+
+    #: 🔴 这一段回答验收标准的后一半：「发出来的东西像不像他自言自语」。
+    #: 解析不到就明说「还没有数据」，**不打一个空标题** —— 空标题读起来
+    #: 像「这几天没有本来会发的」，和「脚本没解析到」是两回事。
+    print()
+    print("最近几条「本来会发出去」的正文：")
+    bodies = format_recent_bodies(recs)
+    if bodies:
+        for line in bodies:
+            print(line)
+    else:
+        print(f"  {NO_BODY_PLACEHOLDER}")
+    return exit_code
 
 
 if __name__ == "__main__":

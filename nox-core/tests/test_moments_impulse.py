@@ -22,13 +22,18 @@ from __future__ import annotations
 
 import itertools
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+#: 走模块名拿 `EXCLUDED_FROM_INNER`：这个常量还没写出来时，只有点它的那条红
+#: （AttributeError），别的照常绿 —— 红得看得见，才知道自己红的是什么
+from moments import impulse as impulse_mod  # noqa: E402
 from moments.impulse import THRESHOLD, PostImpulse, Signals, impulse  # noqa: E402
+from moments.record import MomentRecord  # noqa: E402
 
 
 def test_a_single_drive_never_reaches_the_threshold():
@@ -299,3 +304,140 @@ def test_impulse_is_a_pure_function():
         encoding="utf-8")
     for banned in ("random", "requests", "datetime.now", "open(", "http"):
         assert banned not in source, f"impulse.py 里不该出现 {banned!r}"
+
+
+# ---------------------------------------------------------------- concern 不进 inner
+
+
+def test_only_concern_is_excluded_from_the_inner_score():
+    """🔴 排除表**只有 `concern` 一条**，而且恰好一条。
+
+    糖糖 2026-09-18 拍板：`concern` 是「担心她」，来源是她的状态 / 活动量 /
+    睡眠，本来就该走 **Care 开口**（那是唯一出口），不该变成一条朋友圈。
+    三天 shadow 实测它领头 235 个 tick 里的 160 次，生成的六条正文**六条
+    全是同一件事** —— 正是糖糖点名要防的「一个月后打开全是同一句」。
+
+    断 `==` 和 `len == 1` 都是故意的：`issubset` 挡不住「顺手多排一条」，
+    而每加一条都必须回来改这个数、被迫想一遍「这条为什么不该发朋友圈」。
+
+    能挡：把表清空（`test_concern_alone_never_scores` 会红）、
+          或者顺手把别的 drive 也排掉。
+    不能挡：`impulse()` 有没有**真的**用这张表 —— 那是下一条。
+    """
+    assert impulse_mod.EXCLUDED_FROM_INNER == {"concern"}
+    assert len(impulse_mod.EXCLUDED_FROM_INNER) == 1, "空集 / 多半条都不是通过"
+
+
+def test_concern_alone_never_scores():
+    """🔴 只压着一件「担心她」（0.9），时机三项全满，也不发。
+
+    这条挡的就是「担心她变成朋友圈」：concern 不参与 `combine`，
+    所以 inner 是 0、value 是 0，哪怕她 999 分钟没说话、今天一句没聊、
+    他也从来没发过帖。它的出口是 Care 开口，不是这里。
+
+    能挡：把 `EXCLUDED_FROM_INNER` 清空的实现（inner 会算出 0.9）、
+          只把 concern 从记录里删掉但照旧参与算分的实现。
+    不能挡：concern 还在不在记录里 —— 那是对下面那条**配套**的要求
+          （不参与算分 ≠ 从记录里抹掉，否则以后想重新评估就没数据了）。
+    """
+    signals = Signals(
+        drives={"concern": 0.9},
+        minutes_since_contact=999,      # 她很久没说话了
+        turns_today=0,                  # 今天一句都没聊
+        minutes_since_last_post=None,   # 从来没发过
+    )
+
+    result = impulse(signals)
+
+    assert result.inner == 0.0
+    assert result.value == 0.0
+    assert result.wants_to_post() is False
+
+
+def test_concern_still_shows_up_in_the_record():
+    """concern **只是不参与算分，不是从记录里抹掉** —— 快照里照样有它。
+
+    三天 shadow 能发现「concern 领头 68%」靠的就是这份快照；改完这一版
+    以后想重新评估这个决定（比如哪天糖糖觉得担心她也该偶尔留一条），
+    还得靠它复算。抹掉的话那次评估就永远做不出来了。
+
+    这是**配套的守卫**：它在改动前就是绿的，防的是「顺手删干净」。
+    能挡：把 concern 从 `_read_drives` / `Signals.drives` 里过滤掉的实现
+          （inner 是对的，但数据没了）。
+    不能挡：参与算分的那半 —— 那是上一条。
+    """
+    signals = Signals(
+        drives={"concern": 0.9},
+        minutes_since_contact=999,
+        turns_today=0,
+        minutes_since_last_post=None,
+    )
+    record = MomentRecord(
+        at=datetime(2026, 9, 18, 0, 18, tzinfo=timezone.utc),
+        mode="shadow",
+        signals=signals,
+        impulse=impulse(signals),
+        threshold=THRESHOLD,
+        dice=None, dice_p=None,
+        posted=False, post_id=None,
+        reason="below_threshold",
+        why_not_posted="（测试）担心她不参与算分",
+    )
+
+    assert "concern" in signals.drives
+    assert "concern" in record.to_dict()["drives"]
+
+
+def test_why_does_not_claim_concern_is_leading():
+    """🔴 `why` 不会说谎：领头那件事只从**参与算分**的 drive 里挑。
+
+    concern 0.9 比 curiosity 0.3 大得多，但它根本没参与算分。
+    如果 `_lead()` 还从全部 drives 里挑，日志会写「担心她 0.90 领头
+    （内心 0.30 × ...）」—— 一个**没参与算分**的东西被说成领头，
+    几天后翻 shadow 的人会照着它去调一个跟结果无关的数。
+
+    能挡：`_lead()` 从全部 drives 里挑（这条会红在 `担心她` 上）、
+          或者干脆不挑、写死一句。
+    不能挡：措辞好不好读 —— 只钉「领头的是参与算分的那个」。
+    """
+    signals = Signals(
+        drives={"concern": 0.9, "curiosity": 0.3},
+        minutes_since_contact=999,
+        turns_today=0,
+        minutes_since_last_post=None,
+    )
+
+    why = impulse(signals).why
+
+    assert "被一件事勾着" in why, f"领头的是 curiosity，why 里却没有它：{why!r}"
+    assert "担心她" not in why, f"concern 没参与算分，why 里不许说它领头：{why!r}"
+
+
+def test_the_real_2026_09_18_snapshot_scores_without_concern():
+    """线上那组典型值重算：inner 等于**去掉 concern 之后**的叠加。
+
+    `{"concern": 0.59, "curiosity": 0.46, "longing": 0.40, "regret": 0.07}`
+    是三天 shadow 里的一组典型读数。去掉 concern 之后叠加是
+    `1 - 0.54×0.60×0.93 ≈ 0.699`，对一位小数是 0.7。
+
+    钉具体数字是故意的：「大于 0」「小于 1」对「有没有把 concern 算进去」
+    不敏感 —— 算进去的话 inner 是 0.867，也对一位小数是 0.9，两种实现
+    都能蒙混过去。只有钉 0.7 才对这件事有约束。
+
+    能挡：concern 照旧参与算分（0.9）、或者顺手把别的 drive 也排掉
+          （0.9 或 0.5）。
+    不能挡：别的 drives 组合 —— 它钉的就是这一组具体的数。
+    """
+    signals = Signals(
+        drives={"concern": 0.59, "curiosity": 0.46,
+                "longing": 0.40, "regret": 0.07},
+        turns_today=0,
+        minutes_since_contact=999,
+        minutes_since_last_post=None,
+    )
+
+    result = impulse(signals)
+
+    expected = impulse_mod.combine([0.46, 0.40, 0.07])
+    assert round(result.inner, 1) == round(expected, 1)
+    assert round(result.inner, 1) == 0.7

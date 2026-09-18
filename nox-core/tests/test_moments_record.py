@@ -63,6 +63,7 @@ def _record(**overrides) -> MomentRecord:
         post_id=None,
         reason="below_threshold",
         why_not_posted="没到阈值",
+        body="",
     )
     kwargs.update(overrides)
     return MomentRecord(**kwargs)
@@ -91,6 +92,7 @@ def test_a_complete_record_can_be_constructed():
         why_not_posted="",
         dice=0.71,
         dice_p=0.5,
+        body="今天风挺好",
     )
 
     assert on_mode.posted is True
@@ -204,15 +206,15 @@ def test_a_posted_record_must_name_its_post_and_carry_no_reason():
     for bad_id in (None, ""):
         with pytest.raises(ValueError):
             _record(mode="on", posted=True, post_id=bad_id, reason="",
-                    why_not_posted="")
+                    why_not_posted="", body="今天风挺好")
 
     with pytest.raises(ValueError):
         _record(mode="on", posted=True, post_id="abc", reason="dice",
-                why_not_posted="")
+                why_not_posted="", body="今天风挺好")
 
 
 def test_to_dict_carries_exactly_the_specified_keys():
-    """`to_dict()` 的键**完全等于**规格列的那 19 个 —— 不是「至少包含」。
+    """`to_dict()` 的键**完全等于**规格列的那 20 个 —— 不是「至少包含」。
 
     用 `==` 不用 `issubset` 是故意的：issubset 挡不住「少一个键」，
     而少一个键正是这一层最可能悄悄发生的事（比如漏掉 `threshold`，
@@ -233,7 +235,7 @@ def test_to_dict_carries_exactly_the_specified_keys():
         "at", "mode", "drives", "turns_today", "minutes_since_contact",
         "minutes_since_last_post", "posts_today", "value", "inner", "timing",
         "parts", "why", "threshold", "dice", "dice_p", "posted", "post_id",
-        "reason", "why_not_posted",
+        "reason", "why_not_posted", "body",
     }
     assert isinstance(d["at"], str)
     assert isinstance(d["drives"], dict)
@@ -245,6 +247,7 @@ def test_to_dict_carries_exactly_the_specified_keys():
     assert d["why"] == rec.impulse.why
     assert d["threshold"] == THRESHOLD
     assert d["reason"] == "below_threshold"
+    assert d["body"] == ""
 
 
 def test_log_emits_exactly_one_info_line_carrying_the_numbers(caplog):
@@ -304,6 +307,7 @@ def test_log_emits_exactly_one_info_line_carrying_the_numbers(caplog):
     posted = _record(
         mode="on", posted=True, post_id="abc", reason="", why_not_posted="",
         dice=0.71, dice_p=0.5,
+        body="今天的风",
     )
 
     before = len(caplog.records)
@@ -314,6 +318,51 @@ def test_log_emits_exactly_one_info_line_carrying_the_numbers(caplog):
     assert added[0].levelno == logging.INFO
     assert "value=0.62" in added[0].getMessage()
     assert "abc" in added[0].getMessage()          # 发了就得看得出是哪条
+
+
+def test_a_posted_record_without_a_body_cannot_be_constructed():
+    """🔴 `posted=True` 且 `body` 为空 —— **构造不出来**。
+
+    发出去了却不知道发的是什么，审计就断了：几天后看到「他发了」，
+    点不回那条帖、也核对不了生成的内容。这是第 ⑦ 步开始真生成之后
+    才有的信息，也正因为 shadow 现在会生成，才更要在结构上钉死 ——
+    不然「shadow 记下了正文，on 那条路忘了填」会静默地发生。
+
+    能挡：空串、全空白串、以及 loop 在 on 路上忘了把 body 填进记录。
+    不能挡：正文**内容**对不对 —— 那只能人看。
+    """
+    for empty in ("", "   "):
+        with pytest.raises(ValueError):
+            _record(mode="on", posted=True, post_id="abc", reason="",
+                    why_not_posted="", body=empty)
+
+
+def test_the_log_line_carries_the_body(caplog):
+    """`log()` 末尾追加 `｜body=<正文>` —— 没有就写 `-`。
+
+    shadow 的全部产出就是那一行：不把正文打出来的话，「发出来的东西
+    像不像他自言自语」这半边验收标准三天完全观测不到（原来就栽在这）。
+    `-` 是给「没生成正文的那些 tick」一个**看得见的**空值，而不是
+    段尾什么都没有 —— 那样统计脚本分不清「没有正文」和「日志被截了」。
+
+    能挡：忘了打 body、空正文时不打这一段、把正文塞进别的字段里。
+    不能挡：正文里的换行会不会把一行日志拆开 —— 提示词第 4 条管着它。
+    """
+    caplog.set_level(logging.INFO)
+    logger = logging.getLogger("moments.record")
+
+    posted = _record(
+        mode="on", posted=True, post_id="abc", reason="", why_not_posted="",
+        dice=0.71, dice_p=0.5, body="今天的风",
+    )
+    before = len(caplog.records)
+    posted.log(logger)
+    assert "body=今天的风" in caplog.records[before].getMessage()
+
+    not_posted = _record(reason="below_threshold", why_not_posted="没到阈值")
+    before = len(caplog.records)
+    not_posted.log(logger)
+    assert "body=-" in caplog.records[before].getMessage()
 
 
 def test_every_whitelisted_reason_works_and_the_whitelist_stays_six():

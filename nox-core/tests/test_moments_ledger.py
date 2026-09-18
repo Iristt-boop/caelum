@@ -392,8 +392,9 @@ def _fake_writer(monkeypatch, *, body: str | None = "今天风挺大，窗户没
     """把 `writer.generate` / `writer.post` 换成记账版。"""
     calls: dict[str, list] = {"generate": [], "post": []}
 
-    def fake_generate(adapter_ref, drives, recent, impulse_why, clock=""):
-        calls["generate"].append({"impulse_why": impulse_why})
+    def fake_generate(adapter_ref, drives, recent, impulse_why, clock="",
+                      context=None):
+        calls["generate"].append({"impulse_why": impulse_why, "context": context})
         return body
 
     def fake_post(bridge, text, drive, impulse_why):

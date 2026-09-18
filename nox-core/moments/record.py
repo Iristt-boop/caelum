@@ -82,6 +82,10 @@ class MomentRecord:
     reason: str
     #: ③ 给人读的一句中文；`posted=False` 时必填
     why_not_posted: str
+    #: 「这一刻他会写什么」—— shadow 里是本来会发出去的正文，on 里就是
+    #: 真发出去的那条。默认空串：没走到生成那一步的 tick（没到阈值 /
+    #: 骰子没中）本来就没有正文，硬填一个就是编。
+    body: str = ""
 
     def __post_init__(self) -> None:
         #: ① 挡「模式写成自由字符串」：`off` 混进来会骗审计
@@ -117,6 +121,12 @@ class MomentRecord:
                     f"发了就不该带着没发的原因：{self.reason!r}")
             if not self.post_id:
                 raise ValueError("发了就必须记下是哪条（bridge 返回的 post_id）")
+            #: ⑥ 🔴 发出去了却不知道发的是什么，审计就断了 —— 几天后
+            #: 看到「他发了」也点不回那条帖、核对不了生成的内容。
+            #: 用 `.strip()`：图省事传的正是 `"   "` 这种空白串。
+            if not self.body.strip():
+                raise ValueError(
+                    "发了就必须记下正文（body）—— 不知道发的是什么，审计就断了")
 
     def to_dict(self) -> dict[str, Any]:
         """**扁平、可 JSON 序列化**的一份 —— 落库和日志都走它。
@@ -148,6 +158,7 @@ class MomentRecord:
             "post_id": self.post_id,
             "reason": self.reason,
             "why_not_posted": self.why_not_posted,
+            "body": self.body,
         }
 
     # ------------------------------------------------------------ 出口
@@ -173,7 +184,7 @@ class MomentRecord:
         dice_p = "没掷" if self.dice_p is None else f"{self.dice_p:.2f}"
         logger.info(
             "Moments｜%s｜mode=%s｜drives=%s｜value=%.2f inner=%.2f timing=%.2f"
-            "｜threshold=%.2f dice=%s p=%s｜%s｜%s",
+            "｜threshold=%.2f dice=%s p=%s｜%s｜%s｜body=%s",
             self.at.isoformat(),
             self.mode,
             dict(self.signals.drives),
@@ -185,4 +196,5 @@ class MomentRecord:
             dice_p,
             outcome,
             self.impulse.why,
+            self.body or "-",
         )

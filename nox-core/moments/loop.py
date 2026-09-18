@@ -61,7 +61,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from moments import writer
-from moments.impulse import THRESHOLD, Signals, impulse
+from moments.impulse import EXCLUDED_FROM_INNER, THRESHOLD, Signals, impulse
 from moments.record import MODES, MomentRecord
 from obs import heartbeat
 from temporal import to_local
@@ -170,6 +170,43 @@ def _read_drives(attention: Any, now: datetime) -> dict[str, float]:
         return {}
 
 
+def _read_drive_context(attention: Any, now: datetime) -> dict[str, dict]:
+    """`{name: {"because": [...], "evidence": [...]}}` —— 给正文当**真素材**。
+
+    🔴 为什么要这个：提示词只给「担心她 0.58」的话，模型会自己编一个场景出来
+    （2026-09-18 实测编出了「她昨晚只睡了六个多小时」这种看着像真的数字）。
+    Drive 本来就带着 `because`（哪些 concern）和 `evidence`（原话）——
+    给它真素材，它就不用编。设计文档第一节写的就是「帖子读的是那个 Drive
+    和它的 evidence」。
+
+    读不出来 / 抛异常 → 返回 `{}` + `logger.warning`（**不许静默**），
+    生成照跑，只是没素材 —— 那是安全方向。
+    """
+    try:
+        raw = attention.drives(now)
+        return {
+            str(name): {
+                "because": [
+                    str(item).strip()
+                    for item in (getattr(drive, "because", None) or [])
+                    if str(item).strip()
+                ],
+                "evidence": [
+                    str(item).strip()
+                    for item in (getattr(drive, "evidence", None) or [])
+                    if str(item).strip()
+                ],
+            }
+            for name, drive in raw.items()
+        }
+    except Exception as exc:  # noqa: BLE001
+        #: 这个函数跑在后台线程里，冒出去就是整条循环死掉。读不出素材是
+        #: **安全方向**：生成照跑、只是没有因为/原话，总比让模型自己编强。
+        logger.warning("读 drive 素材（because/evidence）失败，这一 tick 没有真素材：%s: %s",
+                       type(exc).__name__, exc)
+        return {}
+
+
 def _turns_today(sessions: Any, now: datetime) -> int:
     """今天两个人来回了几轮 —— 数 `role == "user"` 的，即她说了几句。
 
@@ -202,10 +239,19 @@ def _lead_drive(drives: Mapping[str, float]) -> str:
     认不出来（空集）就回空串：这里**不编**一个名字出来。空集在冲动过阈值时
     不可能出现（`value = inner × timing`，inner 算法是空集 → 0），所以走到这儿
     空串成不了「有 drive 但说不出是哪条」的假象。
+
+    🔴 领头只从**参与算分**的 drive 里挑（和 `impulse._lead` 同一条规矩）：
+    concern 0.9 但不参与算分时，这一条帖子可能是 longing 压出来的 ——
+    报成 `concern` 会让前端渲染成「担心她」，账本里也记成那个来源，
+    而正文根本不是那件事。
     """
-    if not drives:
+    scored = {
+        name: value for name, value in drives.items()
+        if name not in EXCLUDED_FROM_INNER
+    }
+    if not scored:
         return ""
-    return max(drives.items(), key=lambda kv: kv[1])[0]
+    return max(scored.items(), key=lambda kv: kv[1])[0]
 
 
 def post_probability(value: float, *, threshold: float = THRESHOLD,
@@ -334,17 +380,47 @@ def post_tick(*, mode: str, store: Any, attention: Any, sessions: Any,
             ),
         ))
 
+    def _generate_body() -> str | None:
+        """生成一条正文。**绝不让异常往外冒**（跑在后台线程里）。
+
+        shadow 和 on 都走它：shadow 要的是「本来会发的那条长什么样」，
+        on 要的是真发出去的那条 —— 两边的提示词必须一模一样，
+        否则验收看的不是同一条线。
+        """
+        clock = to_local(now).strftime("%Y-%m-%d %H:%M")
+        context = _read_drive_context(attention, now)
+        try:
+            recent = writer.recent_posts(bridge)
+            return writer.generate(adapter_ref, signals.drives, recent, imp.why,
+                                   clock, context=context)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("发帖生成炸了：%s: %s", type(exc).__name__, exc)
+            return None
+
     #: ⑦ shadow：算了、也想发，**故意不落帖**。骰子照样掷（不然 shadow 记下来的
-    #: 分布不是他真正会发的分布），但绝不调 writer、绝不打 bridge、
-    #: 绝不动计数 —— 动了就偷偷吃掉真实配额。
+    #: 分布不是他真正会发的分布），正文也照真生成 —— 糖糖的验收标准有一半是
+    #: 「发出来的东西像不像他自言自语」，不生成的话那半边三天都观测不到。
+    #: 但绝不调 `writer.post`、绝不打 bridge 的 post、绝不动计数 ——
+    #: 动了就偷偷吃掉真实配额。
     if mode == "shadow":
+        body = _generate_body()
+        if body is None:
+            return _finish(MomentRecord(
+                at=now, mode=mode, signals=signals, impulse=imp, threshold=THRESHOLD,
+                dice=dice, dice_p=dice_p, posted=False, post_id=None,
+                reason="write_failed", body="",
+                why_not_posted=(
+                    "shadow：这一刻本来会发，但正文没生成出来"
+                    "（模型没给 / 超长 / 调用炸了），这一轮不发"
+                ),
+            ))
         return _finish(MomentRecord(
             at=now, mode=mode, signals=signals, impulse=imp, threshold=THRESHOLD,
             dice=dice, dice_p=dice_p, posted=False, post_id=None,
-            reason="shadow",
+            reason="shadow", body=body,
             why_not_posted=(
                 "shadow：这一刻本来会发（过了阈值、没到上限也没到间隔、骰子中了），"
-                "只是影子模式故意不落帖"
+                "正文已经生成、记在这条记录里，只是影子模式故意不落帖"
             ),
         ))
 
@@ -352,18 +428,12 @@ def post_tick(*, mode: str, store: Any, attention: Any, sessions: Any,
     #: 冒出去就是整条循环死掉（`service.py` 那种「进程活着、日志不响、
     #: 而那件事已经不发生了」）。拿不到正文 / 拿不到 id 一律 `write_failed`，
     #: 它和「骰子没中」要能分开数 —— 一个是设计，一个是坏了。
-    clock = to_local(now).strftime("%Y-%m-%d %H:%M")
-    try:
-        recent = writer.recent_posts(bridge)
-        body = writer.generate(adapter_ref, signals.drives, recent, imp.why, clock)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("发帖生成炸了：%s: %s", type(exc).__name__, exc)
-        body = None
+    body = _generate_body()
     if body is None:
         return _finish(MomentRecord(
             at=now, mode=mode, signals=signals, impulse=imp, threshold=THRESHOLD,
             dice=dice, dice_p=dice_p, posted=False, post_id=None,
-            reason="write_failed",
+            reason="write_failed", body="",
             why_not_posted="正文没生成出来（模型没给 / 超长 / 调用炸了），这一轮不发",
         ))
 
@@ -417,7 +487,7 @@ def post_tick(*, mode: str, store: Any, attention: Any, sessions: Any,
     return _finish(MomentRecord(
         at=now, mode=mode, signals=signals, impulse=imp, threshold=THRESHOLD,
         dice=dice, dice_p=dice_p, posted=True, post_id=post_id,
-        reason="", why_not_posted="",
+        reason="", why_not_posted="", body=body,
     ))
 
 
