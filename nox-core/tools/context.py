@@ -50,6 +50,12 @@ class ToolContext:
     #: contextvar 只在一次工具调用那一小段里 bind（见本文件开头那个坑）。
     session_id: str | None = None
 
+    #: 她这一轮的原话。设备行动闸门（embodied）拿它当「就绪证据」的来源：
+    #: 蒸蛋器要水要蛋，传感器测不到，但她刚说过「蛋和水都放好了」——
+    #: 她说过的话就是证据（同 Mem0 attributed_to 的思想）。
+    #: 默认空串 = 没有证据，闸门按 unknown 处理。
+    user_text: str = ""
+
     attachments: list[dict[str, Any]] = field(default_factory=list)
 
     #: 这一轮里**写过的状态** → 管着它的 Context Provider 名字。

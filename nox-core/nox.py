@@ -202,7 +202,8 @@ class Nox:
         ha_client: McpClient | None = None
         if self.cfg.ha_url:
             ha_client = McpClient(self.cfg.ha_url, name="ha", timeout=self.cfg.ha_timeout)
-            ha_tools.register_all(self.loop, ha_client)
+            ha_tools.register_all(self.loop, ha_client,
+                                  world_ref=lambda: self.world)
             # 打脱敏后的地址 —— ha-mcp 的访问凭据在 URL 路径里，
             # 原样打日志会把它写进 journal 和日志文件
             logger.info("家居工具已注册（%s）", _mask_url(self.cfg.ha_url))

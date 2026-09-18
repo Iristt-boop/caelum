@@ -109,12 +109,17 @@ LIGHT_SPEC = ToolSpec(
 )
 
 
-def make_handlers(client: McpClient) -> dict[str, object]:
+def make_handlers(client: McpClient, world_ref=None) -> dict[str, object]:
     """生成处理函数。
 
     失败一律 raise —— 让 loop 按「工具失败」原样回传给模型（见 guard.py）。
     在这里 try/except 转成一句"失败了"，正是会让他开始编造的那个错误：
     他会说"灯已经开了"，而实际上根本没开。
+
+    `world_ref`：取 World Model 的函数（同 HealthProvider 的 world_ref 套路）。
+    设备行动闸门（embodied）用它拼世界快照 —— 温度/在场是「动手前」的事实，
+    不是他想起来才看的参考。2026-09-16 两个事故（夏天开电热毯、空蒸蛋器）
+    的根因都是「动作从非家居对话里长出来，环境没在场」。
     """
 
     def _call(tool: str, args: dict) -> str:
@@ -122,6 +127,29 @@ def make_handlers(client: McpClient) -> dict[str, object]:
         if not r.ok:
             raise RuntimeError(f"家居控制失败: {r.error}")
         return r.text or "（服务没有返回内容）"
+
+    def _gate(eid: str, action: str):
+        """行动闸门（embodied），返回 GateResult。
+
+        DENY → 调用处直接 return g.human（**不 raise** —— 被闸门拦下不是
+        工具故障，是这次行动的合法结局；raise 会让他以为出故障再去「修复」）。
+        ALLOW 带警告 → 附在结果尾部；否则空串。
+        没执行就**不调 context.wrote("home")** —— 没动手不该打掉缓存。
+        """
+        from embodied.validator import gate as _vgate, world_snapshot
+        ctx = context.current()
+        world = world_snapshot(world_ref) if world_ref else {}
+        return _vgate(eid, action, world,
+                      user_text=(ctx.user_text if ctx else ""))
+
+    @staticmethod
+    def _denied_text(g) -> str:
+        out = g.human
+        if g.ask:
+            out += f"\n（可以问她：{g.ask}）"
+        if g.alternative:
+            out += f"\n（替代方向：{g.alternative}）"
+        return out
 
     # 状态变更类工具发完命令后立刻查状态，可能还是旧的 ——
     # IR 桥接 / 云桥设备从命令被收到到状态更新有几秒滞后。
@@ -158,12 +186,17 @@ def make_handlers(client: McpClient) -> dict[str, object]:
             return "这是空调，请改用 ha_set_climate。"
         if eid.startswith("light."):
             return "这是灯，请改用 ha_set_light（能调亮度）。"
+        # ---- 行动闸门（embodied）：环境冲突 / unknown 前置 / 未收录设备 ----
+        g = _gate(eid, state)
+        if not g.allow:
+            return _denied_text(g)
         result = _call("hass_set_state", {"entity_id": eid, "state": state})
         # 设备状态变了 → 打掉 home Provider 的缓存。它 TTL 只有 30 秒，
         # 但 30 秒里他会照旧说「那盏灯是关的」。见 tools/context.py 的 wrote()。
         context.wrote("home")
         extra = _readback(eid)
-        return f"{result}\n（回读：{extra}）" if extra else result
+        out = f"{result}\n（回读：{extra}）" if extra else result
+        return f"{out}\n{g.warning}" if g.warning else out
 
     def set_climate(args: dict) -> str:
         eid = str(args.get("entity_id", "")).strip()
@@ -176,10 +209,15 @@ def make_handlers(client: McpClient) -> dict[str, object]:
             payload["temperature"] = int(args["temperature"])
         if len(payload) == 1:
             return "没指定模式或温度，空调没动。"
+        # 行动闸门：hvac 不吃「反季节」拦截 —— 它本身就是制冷/制热的替代品
+        g = _gate(eid, str(payload.get("mode", "set")))
+        if not g.allow:
+            return _denied_text(g)
         result = _call("hass_set_climate", payload)
         context.wrote("home")     # 同上：空调状态也挂在 home 里
         extra = _readback(eid)
-        return f"{result}\n（回读：{extra}）" if extra else result
+        out = f"{result}\n（回读：{extra}）" if extra else result
+        return out
 
     def set_light(args: dict) -> str:
         eid = str(args.get("entity_id", "")).strip()
@@ -188,10 +226,15 @@ def make_handlers(client: McpClient) -> dict[str, object]:
         payload: dict = {"entity_id": eid, "state": str(args.get("state", "on"))}
         if args.get("brightness"):
             payload["brightness"] = int(args["brightness"])
+        # 行动闸门：quiet_hours 只警告不拦（半夜她醒了开灯是正当的）
+        g = _gate(eid, payload["state"])
+        if not g.allow:
+            return _denied_text(g)
         result = _call("hass_set_light", payload)
         context.wrote("home")     # 同上
         extra = _readback(eid)
-        return f"{result}\n（回读：{extra}）" if extra else result
+        out = f"{result}\n（回读：{extra}）" if extra else result
+        return f"{out}\n{g.warning}" if g.warning else out
 
     return {
         "ha_list_devices": list_devices,
@@ -202,11 +245,11 @@ def make_handlers(client: McpClient) -> dict[str, object]:
     }
 
 
-def register_all(loop, client: McpClient) -> None:
+def register_all(loop, client: McpClient, world_ref=None) -> None:
     """注册五个家居工具。
 
     注册顺序固定 —— 工具定义是缓存前缀的一部分，顺序变了缓存就失效。
     """
-    handlers = make_handlers(client)
+    handlers = make_handlers(client, world_ref=world_ref)
     for spec in (LIST_SPEC, GET_SPEC, SWITCH_SPEC, CLIMATE_SPEC, LIGHT_SPEC):
         loop.register(spec, handlers[spec.name])  # type: ignore[arg-type]

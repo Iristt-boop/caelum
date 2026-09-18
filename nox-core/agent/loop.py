@@ -177,7 +177,7 @@ class AgentLoop:
     ) -> LoopResult:
         # 上下文当局部变量持有，不用 contextvar 包整轮 ——
         # 那样在流式路径下会炸（见 tools/context.py 开头）
-        ctx = tool_context.ToolContext(session_id=session_id)
+        ctx = tool_context.ToolContext(session_id=session_id, user_text=user_text)
         # 日志用的两个基准，必须在进 _run_inner 之前取（见 _tools_used）
         started = time.monotonic()
         base = len(history or [])
@@ -315,7 +315,7 @@ class AgentLoop:
         """
         # 局部变量，不是 contextvar —— 生成器帧天然按调用隔离，并发不会串，
         # 而 contextvar 跨 yield 在这里必炸（见 tools/context.py 开头）
-        ctx = tool_context.ToolContext(session_id=session_id)
+        ctx = tool_context.ToolContext(session_id=session_id, user_text=user_text)
         started = time.monotonic()
         base = len(history or [])
         model = adapter_name(adapter or self.adapter)
