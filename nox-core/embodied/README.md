@@ -188,6 +188,23 @@ Validator 只给**机器可读的 alternative**（如 `cooling_possible`）和�
 
 ---
 
+## 7. 版本路线（本文件是 v0.x 的文档，兼记终局设计）
+
+| 版本 | 内容 | 状态 |
+|---|---|---|
+| **v0.1（现在）** | Device Model 十设备硬编码 + Validator 规则链 + user_text 就绪证据；env_temp 来自天气缓存（室外近似） | ✅ 已上线 |
+| v0.2 | 室内温湿度传感器接入 HA → 事实进 World Model → validator 的 env_temp **切读 World Model**（从「室外近似」变「室内实测」） | 等硬件 |
+| v0.3 | DEVICE_MODEL 外置 `devices.yaml`；`hass_list_devices` 自动生成契约草稿，人工只补 category | 设备变多时 |
+| v0.4+ | 新 Perception Source（摄像头/机器人）+ 新 executor；独立 Planner（候选枚举评估）——等真实动作空间需要 | 远期 |
+
+⚠️ **读这份文档的正确姿势**：第 0-2 节的「定位 / Unknown 原则 / Device Model 语义结构」是**终局设计**，
+不会随版本变；第 3-5 节的规则链细节、World 快照来源、数据结构是 **v0.1 现状**，
+升级时以对应版本的改动为准。三不做（Planner / 新 World State / YAML 自动化）
+在 v0.2、v0.3 会各解禁一条，但「Unknown 一等公民」和「闸门位置」永不解禁——
+它们是这套东西存在的原因。
+
+---
+
 ## 7. 状态
 
 - [ ] 文档（本文件）
