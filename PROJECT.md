@@ -7407,3 +7407,42 @@ loop 8 次、接线 5 次、账本 4 次、哨兵 4 次（含一条**反向**变
 
 顺带被变异台子自己抓到一次假验证：`"author": "Nox"` 这个锚点在 writer 里出现两次，
 `replace(...,1)` 改的是另一处 —— **变异前先断言锚点唯一**这条规矩当场救了一次。
+
+## 五十、Dream shadow：他夜里自己的梦（2026-09-18，**默认 off**）
+
+> 糖糖拍板：触发器放夜间；产出先 shadow 跑一周，看「都会梦到什么」再决定放哪里
+> （早报带一句？独立梦境页？）。
+
+### 现状澄清（这次开工前查的）
+
+「做梦」此前分两半：**能用的一半早在线上** —— OB `dream` 工具 + nox-core
+`review_memory`（聊天里主动回顾）；**没做完的一半**才是「夜里自动做梦」：
+触发器从未接线（Care Dream 源停在 signal.py 注释）、生成器没写、
+`dream_select.py` 停在 D1「只挑不生成」。本节补的是这后半。
+
+### 实现（nox-core/attention/dream.py + api/server.py 接线）
+
+- **触发**：lifespan 后台循环（形状照 Moments），每晚 02:00-05:00 CST 现掷
+  随机锚点，一天至多一场；`NOX_DREAM_SHADOW=1` 才起（off 连 heartbeat 都不 declare）
+- **选材**：公式照搬 OB `dream_select.py`（42e87f3，手抄不是 import ——
+  跨仓库 import 会把部署指纹捆死，**两边公式改了要同步**）：3 天窗口 top5
+  素材（0.45 新鲜+0.30 情绪+0.20 重要+0.15 低语）+ 1 条 7 天外的旧回声
+  （一半权重给「和今天有没有呼应」）；pinned/protected/anchor、非 whisper 的
+  feel、归档不入梦
+- **生成**：utility（deepseek flash，meter 记账 dream-shadow）自由联想，
+  第一人称 2~4 句，梦的逻辑（时空揉在一起、比喻不讲道理、情绪是真的），
+  只基于素材不编造
+- **shadow 落地**：只写 `/root/nox-core/data/dream-shadow.jsonl`
+  （一晚一行：ts/素材列表含 age/回声/梦全文）+ state 防重文件。
+  **不写 OB、不走 push/send、不进早报、不占 Care 额度** —— 连他自己
+  都「不记得」做过（shadow 期梦不存在于他的任何记忆表面）
+- **心跳**：`dream_tick` declare 26h（一晚至多一次）；成功或「今晚没素材」
+  才 beat，生成失败不 beat —— 连两晚失败 /health 里看得见
+
+### 已知边界 / 待她看完一周再拍
+
+- 每晚有素材就做（她连续几天有对话就会夜夜有梦）—— 密度是否合适看 shadow 数据
+- 窗口/锚点、prompt、素材截断（500 字）都是第一版参数
+- 转 live 的前置：产出形式（她拍）+ 写回链（hold feel / trace resolved，
+  设计稿在 v1.0 Phase B）+ 是否接 understanding
+- 测试 `tests/test_dream.py`（13 条：选材排除/窗口/防重/失败不落账/锚点/接线闸门）

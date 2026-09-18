@@ -50,6 +50,7 @@ from attention.care.watching import WatchingCheck
 from attention.events import ExperienceEvent
 from attention.dejection import looks_like_giving_up
 from attention import appraisal_llm
+from attention import dream as dream_loop
 from attention.appraisal import ANCHOR_PREFIX, RuleAppraiser
 from attention.appraisal_llm import LLMAppraiser
 from tools import luckin as luckin_tools
@@ -806,6 +807,38 @@ def _build_moments(core: Any, attention: Any, meter: Any) -> dict | None:
         return None
 
 
+def _build_dream(core: Any, meter: Any) -> dict | None:
+    """Dream shadow 的接线（夜间做梦，先只记日志）。关掉/缺件就 None。
+
+    抄 `_build_moments` 的先例：缺件宁可不起，不许起一个半残的循环 ——
+    少 utility 是梦永远生成不出来，所以它是必需件。返回的字典直接
+    `run_dream_loop(**parts)`。
+
+    ## 🔴 这一层不许碰的东西（attention/dream.py 的边界）
+
+    梦不是开口：不走 Orchestrator、不碰 push/send、不写 OB、不占 Care
+    额度。影子期的全部产出是 data 目录下的一个 JSONL，一周后她看完
+    「都会梦到什么」再拍产出形式。
+    """
+    if dream_loop.mode() == "off":
+        logger.debug("Dream shadow 是 off（NOX_DREAM_SHADOW 没开），这条线不跑")
+        return None
+    try:
+        utility = core.router.light_adapter if core.router else None
+        if utility is None:
+            logger.warning("没有 utility 模型，Dream shadow 不起")
+            return None
+        utility = meter.tag(utility, "dream-shadow")
+        return {
+            "utility": utility,
+            "data_dir": os.path.dirname(str(core.cfg.db_path)),
+            "buckets_dir": dream_loop.buckets_dir(),
+        }
+    except Exception:  # noqa: BLE001
+        logger.exception("Dream 接线装配失败，这条线不跑")
+        return None
+
+
 def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
     started = datetime.now(timezone.utc)
 
@@ -1002,6 +1035,20 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
                 logger.info("Moments 循环启动：mode=%s", moments_loop.mode())
         except Exception:  # noqa: BLE001
             logger.exception("Moments 接线失败，这条线不跑")
+        # Dream shadow（2026-09-18）—— 夜里他自己的梦，先只落日志一周，
+        # 她看完「都会梦到什么」再拍产出形式。整段 try 照 Moments 的理由：
+        # 接线里一个 AttributeError 不能拖垮整个 Core，而这分支本地不活。
+        try:
+            _dream = _build_dream(core, meter)
+            if _dream is not None:
+                # 🔴 先 declare 再起循环（审计 1.4）：从没成功过的循环
+                # 也要在台账里存在。梦一晚至多一次，节奏见
+                # dream.DECLARE_EVERY_S；beat 在 night_tick 成功后打
+                heartbeat.declare("dream_tick", every_s=dream_loop.DECLARE_EVERY_S)
+                tasks.append(asyncio.create_task(dream_loop.run_dream_loop(**_dream)))
+                logger.info("Dream shadow 循环启动")
+        except Exception:  # noqa: BLE001
+            logger.exception("Dream 接线失败，这条线不跑")
         try:
             yield
         finally:
