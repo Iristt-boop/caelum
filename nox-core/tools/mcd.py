@@ -216,7 +216,12 @@ CREATE_ORDER = _spec(
     "创建麦当劳订单。🔴 **确认制**：调用前必须先用 mcd_price 算出总价，把"
     "门店、餐品明细、总价完整复述给她，得到她明确的「确认/下单」答复后才能调；"
     "她没确认就不许调。外送(orderType=2)还需 addressId；到店(orderType=1)还需 takeWayCode（门店查询返回里拿）。"
-    "创建成功后把订单号和取餐/配送信息告诉她。",
+    "创建成功后把订单号和取餐/配送信息告诉她。"
+    "
+⚠️ **上游阻断（2026-09-16 探测）**：query-meals 的商品节点只有"
+    " name/currentPrice/originalPrice/image，**没有 productCode**——"
+    "文档说「菜单里拿」但菜单里没有。productCode 的真实来源待确认"
+    "（抓包 App 下单 / 问 MCP 维护方），确认前本工具不要调。",
     {
         "type": "object",
         "properties": {

@@ -1898,6 +1898,13 @@ touch-server 现在要 token 了。**没更新 `wifi_secrets.h` 就刷固件，�
       「确认制」只活在工具描述的文字里 —— 靠模型自觉，没有任何硬闸。
       真实剩余：照瑞幸的形状（tools/luckin.py + orders/luckin.py）改成出卡 +
       confirm 真下单。
+      🛑 **上游阻断（09-16 探测）**：query-nearby-stores 必须 searchType=2
+      （=1 是查收藏，收藏空就报 600050——文档没写）；query-meals 的商品节点
+      只有 name/currentPrice/originalPrice/image，**没有 create-order 要求的
+      productCode**——「菜单里拿」不成立。解锁路径：糖糖在麦当劳 App 下单一单
+      抓包看 productCode 来源，或问 MCP 维护方；确认前 3.3 无法继续。
+      ✅ 已交付的地基：`_extract_json`（文档+JSON 混杂返回的健壮提取，
+      全部麦当劳工具受益，已上线）；searchType=2 与菜单节点结构已记录。
 - [·] ~~3.4 `toy_set` / galatea 公开发帖 / 淘宝 同类处理（1 天）~~
       🚫 **2026-09-13 她定：不做。** 原话「那三个也多余。其实有跳转链接，
       别人没我微信也跳转不过去。没必要再加」。
