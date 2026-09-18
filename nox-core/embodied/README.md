@@ -179,16 +179,8 @@ Validator 只给**机器可读的 alternative**（如 `cooling_possible`）和�
 
 ---
 
-## 6. 未来路线（不在 v0.x）
 
-- 室内温湿度传感器（**采购建议，A 类地基**）→ 事实进 World Model → validator 切读
-- 设备生态 → DEVICE_MODEL 外置 YAML + `hass_list_devices` 自动生成草稿
-- 机器人/摄像头 → 新 Perception Source + 新 executor，本模块只加 device_model 条目
-- 独立 Planner（候选枚举评估）→ 等真实动作空间需要时再说
-
----
-
-## 7. 版本路线（本文件是 v0.x 的文档，兼记终局设计）
+## 6. 版本路线（本文件是 v0.x 的文档，兼记终局设计）
 
 **⚠️ v0.2 以下是启动卡片，不是施工图**——每张只回答「何时动手 / 做成什么样算对」。
 动手前必须像 v0.1 一样重写成完整施工图（世界会变，远期设计写细了就是会漂移的假设计）。
@@ -236,7 +228,7 @@ Validator 只给**机器可读的 alternative**（如 `cooling_possible`）和�
 
 ---
 
-## 8. v0.1 交付记录（2026-09-16）
+## 7. v0.1 交付记录（2026-09-16）
 
 - [x] 文档（本文件）
 - [x] embodied/ 四文件（`__init__` / `device_model` / `validator` / `result`）
