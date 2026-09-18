@@ -200,6 +200,13 @@ Validator 只给**机器可读的 alternative**（如 `cooling_possible`）和�
 | v0.3 | DEVICE_MODEL 外置 `devices.yaml`，新设备自动草稿 | 设备变多时 |
 | v0.4+ | 新 Perception Source（摄像头/机器人）+ 新 executor；独立 Planner | 远期 |
 
+⚠️ **读这份文档的正确姿势**：第 0-2 节的「定位 / Unknown 原则 / Device Model 语义结构」是**终局设计**，
+不会随版本变；第 3-5 节的规则链细节、World 快照来源、数据结构是 **v0.1 现状**，
+升级时以对应版本的改动为准。三不做（Planner / 新 World State / YAML 自动化）
+在 v0.2、v0.3 会各解禁一条，但「Unknown 一等公民」和「闸门位置」永不解禁——
+它们是这套东西存在的原因。
+
+
 ### v0.2 启动卡片
 
 - **触发条件**：家里装了温湿度传感器并在 HA 里可见（几十块的蓝牙件，A 类地基）。
@@ -227,19 +234,14 @@ Validator 只给**机器可读的 alternative**（如 `cooling_possible`）和�
 - **验收判据**：新主体的任何行动都要能回答「闸门拦过它什么」——拦不出记录的接入是错的。
 - **已知约束**：独立 Planner 只在「候选多到 LLM 排不过来」时才有意义，别提前建。
 
-⚠️ **读这份文档的正确姿势**：第 0-2 节的「定位 / Unknown 原则 / Device Model 语义结构」是**终局设计**，
-不会随版本变；第 3-5 节的规则链细节、World 快照来源、数据结构是 **v0.1 现状**，
-升级时以对应版本的改动为准。三不做（Planner / 新 World State / YAML 自动化）
-在 v0.2、v0.3 会各解禁一条，但「Unknown 一等公民」和「闸门位置」永不解禁——
-它们是这套东西存在的原因。
-
 ---
 
-## 7. 状态
+## 8. v0.1 交付记录（2026-09-16）
 
-- [ ] 文档（本文件）
-- [ ] embodied/ 四文件
-- [ ] ToolContext.user_text + loop 两处填充
-- [ ] ha.py 挂接 + nox.py world_ref
-- [ ] 测试 8 条 + 变异三连
-- [ ] 部署（nox-core 逐文件，走 deploy-vps.sh 留指纹）
+- [x] 文档（本文件）
+- [x] embodied/ 四文件（`__init__` / `device_model` / `validator` / `result`）
+- [x] ToolContext.user_text + loop 两处填充
+- [x] ha.py 挂接（switch / set_climate / set_light 过闸，DENY 不 raise）+ nox.py world_ref
+- [x] 测试 17 条 + 变异三连全红（deny_when / unknown / 域白名单）
+- [x] 部署：8 文件走 deploy-vps.sh，指纹 93e784c 已记录（/root/DEPLOY_INFO/nox-core.summary）
+- [x] 顺带落地排期 3.5（forbidden_domain）；全量回归 1913 passed
