@@ -1657,11 +1657,11 @@ touch-server 现在要 token 了。**没更新 `wifi_secrets.h` 就刷固件，�
   - [x] **OpenRouter**（最高优先）— 在 `origin/master` 上、且与本机在用 key **逐字节相同**：`vps-scripts/update-bridge-env.py:46`
   - [x] **HA 长期令牌**（至少 2 把在役）— tracked 脚本 `scratch/tmp_check_ha.sh`、`tmp_check_ha2.sh`、`tmp_fix_zone.sh`、`tmp_ha_user.sh`、`tmp_zone.sh`
         ⚠️ **要同时改三处**：`ha-mcp` / `nox-core` / `bridge`。只改一处，灯就控不了。
-  - [ ] **家庭 WiFi SSID + 密码** — `fsr402-wifi/fsr402-wifi.ino:15`、`fsr402-test/fsr_wifi.py:26`
+  - [x] ~~**家庭 WiFi SSID + 密码**~~ 🚫 **2026-09-18 划掉（她定）**：改密则全家 IoT 设备都要重连，折腾远超收益；仓库私有 + 删库重建过 + 进 WiFi 得先进门，实际风险趋近于零
   - [x] **DeepSeek + Gemini** — tracked 的 `vps-scripts/ob.tar.gz` / `full-ob.tar.gz`（内含 `ombre-brain/config.yaml`）、`vps-scripts/config-tmp.yaml:8,16`
   - [~] **智谱** — 明文在本机 PowerShell 历史里（`ConsoleHost_history.txt:185`）
   - [ ] **工作机当已失守处理**：清 PowerShell 历史、凭据移进 DPAPI/WinCred、收窄 `D:\claude-code` 的 ACL（现在是 Users 可读 / Authenticated Users 可改）、给免密 SSH 私钥加口令
-  - [ ] **旧 VPS root 口令** — 历史提交 `5144121`；两台旧机（`47.84.92.71` / `47.93.219.252`）无条件改密
+  - [x] ~~**旧 VPS root 口令 / 两台旧机改密**~~ 🚫 **划掉**：两台旧实例（`47.84.92.71` / `47.93.219.252`）**她已多次确认删除**——机器不存在，密码泄了也无门可入。此条反复出现是排期没跟上她说过的话，不是新风险
   - [x] **VAPID 密钥对** — `bridge/server.js:536-537`（**留到最后做**）
         ⚠️ 换密钥会让**所有推送订阅失效**，你要在 App 里重新授权一次通知
   - [~] **NOX_TOKEN** — `bridge/server.js` 的兜底值 + 本机 `.claude/settings.local.json`
