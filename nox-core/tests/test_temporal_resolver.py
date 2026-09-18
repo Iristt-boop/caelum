@@ -226,7 +226,11 @@ def test_kind_是封闭集合():
     所以反过来断言 —— 把允许的集合写死，多一个就红。
     """
     assert KINDS == {"day_offset", "weekday_next", "weekday_bare",
-                     "month_end", "duration", "deadline"}
+                     "month_end", "duration", "deadline",
+                     # 2026-09-18 加的两条，都是看 shadow 真数据加的，不是设计出来的：
+                     "last_night",   # 「昨晚」跨午夜，当日历日会差一天
+                     "vague",        # 「一会」= 可能不做，不许折算成 30 分钟
+                     }
 
 
 def test_表外的kind直接抛():
@@ -372,3 +376,94 @@ def test_时刻类问不了落不落在里面():
     r = resolve(Intent(kind="duration", hours=2), ref())
     with pytest.raises(ValueError, match="是一个时刻"):
         r.within(ref())
+
+
+# ---------------------------------------------------------------- last_night
+#
+# 🔴 这一组是 2026-09-18 看 shadow 数据抓出来的真 bug。
+#    「昨晚」原来被认成 `day_offset n=-1`，日期看着对，
+#    但睡眠数据按**醒来那天**落库，于是下游查睡眠**差一天**，
+#    而且不报错 —— 只表现成「他说没有你昨晚的数据」。
+
+def test_昨晚_早上说归今天():
+    """09-16 早上 09:41 说「昨晚老醒」—— 那一觉今天早上才结束。
+
+    睡眠记录落在 09-16，所以 date 必须是 09-16。
+    """
+    r = resolve(Intent(kind="last_night"), ref(2026, 9, 16, 9, 41))
+    assert r.date == date(2026, 9, 16), "归到了昨天 —— 查睡眠会差一天"
+
+
+def test_昨晚_深夜说归昨天():
+    """凌晨 1:30 她还没睡，「昨晚」指的是上一次睡醒的那一夜。
+
+    判据是 05:00（第一层 SLOTS 里 morning 的起点，按她真实作息划的）。
+    """
+    r = resolve(Intent(kind="last_night"), ref(2026, 9, 16, 1, 30))
+    assert r.date == date(2026, 9, 15), "凌晨说「昨晚」被当成了今夜"
+
+
+def test_昨晚_边界就在五点():
+    """04:59 还算「今夜没结束」，05:00 就算结束了。差一分钟，差一天。"""
+    assert resolve(Intent(kind="last_night"), ref(2026, 9, 16, 4, 59)).date \
+        == date(2026, 9, 15)
+    assert resolve(Intent(kind="last_night"), ref(2026, 9, 16, 5, 0)).date \
+        == date(2026, 9, 16)
+
+
+def test_昨晚_晚上说也归今天():
+    """09-15 22:43 说「昨晚我就醒了18分钟」—— 指的是今天早上结束的那一夜。
+
+    ⚠️ 这条容易想反：晚上说「昨晚」，直觉是"昨天那个晚上"，
+    但她指的是**最近一次睡醒**，那一觉结束在今天早上。
+    """
+    r = resolve(Intent(kind="last_night"), ref(2026, 9, 15, 22, 43))
+    assert r.date == date(2026, 9, 15)
+
+
+def test_昨晚_range跨午夜():
+    """🔴 `date` 和 `range` 故意不是同一天 —— 这不是 bug。
+
+    date  = 醒来那天（数据落在这天）
+    range = 昨天 18:00 → 醒来那天 05:00（真正的那段时间）
+    """
+    r = resolve(Intent(kind="last_night"), ref(2026, 9, 16, 9, 41))
+    lo, hi = r.range
+    assert lo == datetime(2026, 9, 15, 18, tzinfo=CST)
+    assert hi == datetime(2026, 9, 16, 5, tzinfo=CST)
+    # 判「是不是发生在昨晚」要走 range，不是拿 date 比
+    assert r.within(datetime(2026, 9, 15, 23, 30, tzinfo=CST)) is True
+    assert r.within(datetime(2026, 9, 16, 2, 0, tzinfo=CST)) is True
+    assert r.within(datetime(2026, 9, 16, 9, 0, tzinfo=CST)) is False
+
+
+def test_昨晚_不许带slot():
+    """「昨晚 + 上午」是自相矛盾的组合，契约层就该拦掉。"""
+    with pytest.raises(ValueError, match="不能带 slot"):
+        Intent(kind="last_night", slot="morning")
+
+
+# ---------------------------------------------------------------- vague
+
+def test_一会是模糊_不给时刻():
+    """🔴 糖糖 2026-09-18：「『一会』的意思就是可能不做…一种拖延…
+    不一定是要做的意思。标成模糊不设提醒就行」
+
+    原来它被认成 `duration minutes=30`，解析出秒级精度的假精确。
+    """
+    r = resolve(Intent(kind="vague"), ref())
+    assert r.ok is False
+    assert r.unresolved_reason == "vague_no_reminder"
+    assert r.at is None and r.date is None, "模糊表达不许落到任何具体时间上"
+
+
+def test_一会不许被消费():
+    """和 weekday_bare 同一个形状：消费一个没解析的结果要抛。"""
+    r = resolve(Intent(kind="vague"), ref())
+    with pytest.raises(ValueError, match="不该被消费"):
+        r.within(ref())
+
+
+def test_vague不许带slot():
+    with pytest.raises(ValueError, match="不能带 slot"):
+        Intent(kind="vague", slot="evening")

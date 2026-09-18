@@ -34,6 +34,8 @@ KINDS = frozenset({
     "month_end",       # 月底
     "duration",        # 两个小时后 / 十分钟后
     "deadline",        # 「……之前」，包住另一个 intent
+    "last_night",      # 昨晚 —— **跨午夜**，不是一个日历日，见 resolver
+    "vague",           # 一会 / 回头 / 改天 —— 识别得出，但**故意不解析**，见下
 })
 
 #: 时段修饰符。边界在 `temporal.SLOTS`（第一层），这里只认名字。
@@ -48,6 +50,8 @@ _FIELDS: dict[str, frozenset[str]] = {
     "month_end":    frozenset(),
     "duration":     frozenset({"days", "hours", "minutes"}),   # 至少一个
     "deadline":     frozenset({"before"}),
+    "last_night":   frozenset(),
+    "vague":        frozenset(),
 }
 
 
@@ -103,6 +107,10 @@ class Intent:
             # slot 是「那天的哪一段」，挂在本身就带时刻的 kind 上没有意义
             if self.kind in ("duration", "deadline"):
                 raise ValueError(f"{self.kind} 不能带 slot —— 它本身就落在一个时刻上")
+            # `last_night` 自己就是一段夜；`vague` 根本不落在任何一段上。
+            # 允许带 slot 会让「昨晚 + morning」这种自相矛盾的组合通过校验。
+            if self.kind in ("last_night", "vague"):
+                raise ValueError(f"{self.kind} 不能带 slot")
 
     # ------------------------------------------------------------ 序列化
 

@@ -85,13 +85,18 @@ _PROMPT = """你要从一句中文里认出**时间关系**，只认关系，不
 · month_end    —— 月底、这个月底。没有字段
 · duration     —— 「两个小时后」「十分钟后」「三天后」。字段 days / hours / minutes（给用到的那个）
 · deadline     —— 「……之前」「……前」。字段 before，里面装另一个上面的对象
+· last_night   —— 「昨晚」「昨天晚上」「昨儿晚上」。没有字段。**不要用 day_offset 表示它**
+· vague        —— 「一会」「待会」「回头」「晚点」「改天」「有空」。没有字段
 
 可选修饰符 slot（一天里的哪一段），只能配 day_offset / weekday_next / weekday_bare / month_end：
 morning（上午）/ afternoon（下午）/ evening（晚上）/ late_night（深夜、凌晨）
 
 例子：
 「明天去练腿」        → {"kind": "day_offset", "n": 1}
-「昨天晚上没睡好」    → {"kind": "day_offset", "n": -1, "slot": "evening"}
+「昨天晚上没睡好」    → {"kind": "last_night"}
+「昨晚老醒」          → {"kind": "last_night"}
+「我一会再煎个鸡蛋」  → {"kind": "vague"}
+「回头再说」          → {"kind": "vague"}
 「下周三见」          → {"kind": "weekday_next", "weekday": 3}
 「周五去」            → {"kind": "weekday_bare", "weekday": 5}
 「月底交」            → {"kind": "month_end"}
@@ -102,7 +107,17 @@ morning（上午）/ afternoon（下午）/ evening（晚上）/ late_night（�
 
 ⚠️ 分不清「下周三」和「周三」时，按她原话有没有「下」字来判，不要猜。
 ⚠️ 一句话里有多个时间时，取**她要做的那件事**的时间
-（「今天不去，明天再去」取「明天」）。"""
+（「今天不去，明天再去」取「明天」）。
+
+🔴 **「一会」「回头」「晚点」绝对不要折算成 duration。**
+它们不是「30 分钟后」，是「可能根本不做」—— 一种拖延，不一定是要做的意思。
+给一个具体分钟数就是把模糊伪装成精确。一律 vague。
+
+🔴 **「昨晚」用 last_night，不要写成 day_offset -1 + evening。**
+那一夜跨午夜，而睡眠数据按醒来那天归档，当成日历日会差一天。
+
+⚠️ 招呼语里的时间词不算时间表达：
+「早安」「晚安」「早上好」是打招呼，不是在说「今天早上」→ {"kind": null}。"""
 
 _TURN = "她说：{text}"
 

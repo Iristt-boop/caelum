@@ -170,6 +170,59 @@ def resolve(intent: Intent, reference_time: datetime) -> Resolution:
         week_start = ref.date() - timedelta(days=ref.weekday())   # 本周一
         day = week_start + timedelta(days=7 + (intent.weekday or 1) - 1)
 
+    elif kind == "last_night":
+        # 🔴 「昨晚」**不是一个日历日**，是一段跨午夜的时间。
+        #    2026-09-18 shadow 实测抓到的：它原来被认成 `day_offset n=-1`，
+        #    日期看着对，但下游查睡眠会**差一天**。
+        #
+        # ## 为什么会差一天
+        #
+        # 睡眠数据按**醒来那天**落库（world.db 实查）：
+        #     observed_at 2026-09-16 → 09-15 夜里那一觉
+        # 而她 09-16 早上说「昨晚老醒」，按日历「昨天」= 09-15。
+        # **差一天，查不到，而且不报错** —— 只表现成「他说没有你昨晚的数据」。
+        #
+        # ## 判据：最近一次**已经结束**的夜
+        #
+        #     现在 ≥ 05:00  → 那一夜今天早上结束  → 归今天
+        #     现在 < 05:00  → 她还在今夜里没睡醒  → 归昨天
+        #
+        # 05:00 不是随手挑的，是第一层 `SLOTS` 里 morning 的起点
+        # （按她真实作息划的：凌晨 1-2 点睡、9-11 点起）。
+        #
+        # ## ⚠️ `date` 和 `range` 故意不是同一天，这不是 bug
+        #
+        #     date  = 醒来那天  ← 睡眠/健康数据落在这天，查它用这个
+        #     range = 昨天 18:00 → 醒来那天 05:00  ← 真正的那段时间
+        #
+        # 要问「某件事是不是发生在昨晚」**用 `within()`**（走 range），
+        # 别拿 `date` 去比 —— 那个字段是为了对上数据的归档口径，
+        # 不是那段时间本身。
+        woke = ref.date() if ref.hour >= 5 else ref.date() - timedelta(days=1)
+        night = woke - timedelta(days=1)
+        return Resolution(
+            precision="slot",
+            date=woke,
+            range=(datetime.combine(night, time(18), tz),
+                   datetime.combine(woke, time(5), tz)),
+        )
+
+    elif kind == "vague":
+        # 🔴 「一会」「回头」「改天」—— **故意不解析**。
+        #
+        # 糖糖 2026-09-18 的原话：
+        #   「『一会』的意思就是可能不做…一种拖延…不一定是要做的意思。
+        #     标成模糊不设提醒就行」
+        #
+        # 在这之前它被认成 `duration minutes=30`，于是
+        # 「那我一会再煎个鸡蛋」解析出 `2026-09-16T11:50:41` ——
+        # **秒级精度的假精确**。真接上待办的话，11:50 准点问
+        # 「鸡蛋煎了吗」正好踩在她最不想被问的那件事上。
+        #
+        # 所以它和 `weekday_bare` 同一个形状：**识别得出，但不猜**。
+        # 区别在于 weekday_bare 是"系统不知道"，这条是"她自己也没定"。
+        return _unresolved("vague_no_reminder")
+
     elif kind == "weekday_bare":
         # 光秃秃的「周三」：今天周二时指明天，今天周四时多半指下周 ——
         # 系统无从知道她心里是哪个。**不猜。**
