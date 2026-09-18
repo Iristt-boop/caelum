@@ -39,6 +39,38 @@ SERVER_TOOLS = {
 ACTION_TOOLS = ("mcd_create_order", "mcd_draw_lottery", "mcd_bind_coupons", "mcd_create_address")
 
 
+import json as _json
+
+
+def _extract_json(text: str) -> dict | None:
+    """从「API 文档 + 真实 JSON」混杂的返回里抠出最大的合法 JSON 对象。
+
+    🔴 麦当劳 MCP 的每个返回都是这个形状：前面一大段字段说明文档
+    （**文档里就有 `{}` 样例**），后面跟真实 JSON。`find("{")` 抠到的
+    第一个花括号是文档的样例，解析出来是碎片 —— 2026-09-16 实测
+    query-meals 的返回 24KB、第一个 `{` 在文档第 1 行。
+    这里用 raw_decode 从每个 `{` 位置尝试，取**解析成功且最长**的块
+    —— 文档样例再怎么干扰，真实 JSON 永远是最大的那个。
+
+    解析不出来返回 None，绝不抛。第二个使用场景出现时再上提到公共模块。
+    """
+    if not text:
+        return None
+    decoder = _json.JSONDecoder()
+    best = None
+    best_len = 0
+    idx = text.find("{")
+    while idx != -1:
+        try:
+            obj, end = decoder.raw_decode(text, idx)
+            if end - idx > best_len:
+                best, best_len = obj, end - idx
+            idx = text.find("{", end)
+        except (_json.JSONDecodeError, ValueError):
+            idx = text.find("{", idx + 1)
+    return best if isinstance(best, dict) else None
+
+
 #: 每个工具的副作用声明（审计 3.1）。**新加工具必须在这里登记**，
 #: 否则 `_spec()` 直接抛 —— 炸在启动，好过某天悄悄下了一单。
 _EFFECTS: dict[str, tuple[str, str | None]] = {
