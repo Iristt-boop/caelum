@@ -190,12 +190,42 @@ Validator 只给**机器可读的 alternative**（如 `cooling_possible`）和�
 
 ## 7. 版本路线（本文件是 v0.x 的文档，兼记终局设计）
 
+**⚠️ v0.2 以下是启动卡片，不是施工图**——每张只回答「何时动手 / 做成什么样算对」。
+动手前必须像 v0.1 一样重写成完整施工图（世界会变，远期设计写细了就是会漂移的假设计）。
+
 | 版本 | 内容 | 状态 |
 |---|---|---|
 | **v0.1（现在）** | Device Model 十设备硬编码 + Validator 规则链 + user_text 就绪证据；env_temp 来自天气缓存（室外近似） | ✅ 已上线 |
-| v0.2 | 室内温湿度传感器接入 HA → 事实进 World Model → validator 的 env_temp **切读 World Model**（从「室外近似」变「室内实测」） | 等硬件 |
-| v0.3 | DEVICE_MODEL 外置 `devices.yaml`；`hass_list_devices` 自动生成契约草稿，人工只补 category | 设备变多时 |
-| v0.4+ | 新 Perception Source（摄像头/机器人）+ 新 executor；独立 Planner（候选枚举评估）——等真实动作空间需要 | 远期 |
+| v0.2 | 室内温湿度进 World Model，env_temp 切读室内实测 | 等硬件 |
+| v0.3 | DEVICE_MODEL 外置 `devices.yaml`，新设备自动草稿 | 设备变多时 |
+| v0.4+ | 新 Perception Source（摄像头/机器人）+ 新 executor；独立 Planner | 远期 |
+
+### v0.2 启动卡片
+
+- **触发条件**：家里装了温湿度传感器并在 HA 里可见（几十块的蓝牙件，A 类地基）。
+  没有它，v0.2 没有存在的意义——不是代码问题，是事实问题。
+- **做什么**：① 温湿度事实进 World Model（home/environment section）；
+  ② `world_snapshot()` 的 env_temp 改读 World Model（天气缓存降级为兜底）；
+  ③ 电热毯 deny_when 阈值从「拍脑袋 26」改为可配置。
+- **验收判据**：夏天再对他说「我想暖一下」，闸门拒的时候引用的是**室内实测温度**。
+- **已知约束**：deny_when 的阈值语义会变——室外温度和室内温度是两个数，阈值要重新标。
+
+### v0.3 启动卡片
+
+- **触发条件**：家里可控设备 ≥ 15 个，或半年内加过 ≥ 3 个新设备没及时补语义
+  （not_in_model 的 DENY 开始频繁出现，说明硬编码跟不上现实了）。
+- **做什么**：DEVICE_MODEL 外置 `devices.yaml`；`hass_list_devices` 对新设备自动生成
+  契约草稿（category=unknown，即默认降权限），人工只补 category 和 requires。
+- **验收判据**：新增一台设备，**不改代码**，只改 yaml 一段，闸门对它的行为正确。
+- **已知约束**：自动草稿的 category=unknown 是保守默认——别让「自动化」变成「自动放行」。
+
+### v0.4+ 启动卡片（远期，方向性）
+
+- **触发条件**：真实出现「机器人/摄像头在物理空间里行动」的需求，而不是想象。
+- **做什么**：每个新物理主体 = 一个 Perception Source（进 World Model）+ 一个 executor
+  （走同一个 Gate）。闸门位置和 Unknown 原则不变。
+- **验收判据**：新主体的任何行动都要能回答「闸门拦过它什么」——拦不出记录的接入是错的。
+- **已知约束**：独立 Planner 只在「候选多到 LLM 排不过来」时才有意义，别提前建。
 
 ⚠️ **读这份文档的正确姿势**：第 0-2 节的「定位 / Unknown 原则 / Device Model 语义结构」是**终局设计**，
 不会随版本变；第 3-5 节的规则链细节、World 快照来源、数据结构是 **v0.1 现状**，
