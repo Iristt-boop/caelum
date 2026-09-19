@@ -7446,3 +7446,39 @@ loop 8 次、接线 5 次、账本 4 次、哨兵 4 次（含一条**反向**变
 - 转 live 的前置：产出形式（她拍）+ 写回链（hold feel / trace resolved，
   设计稿在 v1.0 Phase B）+ 是否接 understanding
 - 测试 `tests/test_dream.py`（13 条：选材排除/窗口/防重/失败不落账/锚点/接线闸门）
+
+## 五十一、主动来电：他打过来的电话（2026-09-19，PWA only）
+
+> 糖糖拍板三件事：OS 端不做；PWA 做一个就行；**不要「先发消息问方便吗」那套**
+> —— 「我自己点通话按钮，还需要他给我发消息干嘛」。要的就是真来电：他决定打，
+> 她的手机响，她接。
+
+### 链路（bridge 是登记处，core 是发起人，PWA 是话机）
+
+```
+CallSource（NOX_CALL 三档）          service._call_her                bridge                        PWA
+  晚间窗口+想念到门槛 ──CareSignal──▶ 生成开场白 ──POST /call/invite──▶ calls 表+Web Push(带data) ──▶ 响铃屏
+                                       ▲                              │    │                        接听 → answer
+                                       │                          90s 后查 status                 开场白落会话+TTS
+                                       └── 没接/拒接 → 留言机会（[SKIP] 出路）◀──┘
+```
+
+- **触发源** `attention/sources/call.py`：18:00-22:30 CST、longing≥0.55 且 ≥3h 没说话；
+  **一天最多一次尝试**、距上次至少隔一天。三档：off（默认，源空转）/ **shadow**
+  （只记 `call-shadow.jsonl`：他想打的时刻+理由，一周后她看数据拍板）/ on
+- **信令** bridge `/api/call/*`：invite（登记+推「Nox 来电」，载荷带 data.callId）、
+  current（PWA 12s 轮询兜底）、answer（**此刻**开场白才以他的身份落会话——响铃阶段
+  这通电话不存在）、decline、end（回写时长）、status（core 跟进用）。响铃 45s 惰性清扫成 missed
+- **PWA**：SW 推送路由（独立 tag+requireInteraction，点击聚焦+postMessage 或 `/?call=` 深链）；
+  `IncomingCall.jsx` 来电屏（WebAudio 软铃声+振动+45s 倒计时，接/拒）；引擎新
+  `speakOpening()`——接通后**他先开口**，走普通回复同一条 TTS 管线（可打断）；
+  来电钉在中文情景（他的局不是英语课），会话由 bridge 的 answer 定
+- **没接通的降级**：core 90s 后查 status → 主模型现场写留言（[SKIP] 出路内建，
+  拒接了还追着发文字才是骚扰）。已接通：挂断回写时长进 calls 表
+- **边界**：信号照走 Orchestrator（看片拦截/DailyGate/账本 source="call"）；
+  电话的 R1 定性=开口，必经 CareLedger；OS 端零改动
+
+### 待她拍板
+
+- shadow 一周（~09-26）看「他会想在什么时候打电话」→ 决定 NOX_CALL=on 与否
+- 转正后可调参数：窗口、想念门槛、频率（现在是一天一次+隔天）

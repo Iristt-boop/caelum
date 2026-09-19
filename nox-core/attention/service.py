@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Protocol
@@ -141,6 +142,8 @@ class AttentionService:
         topics: Any = None,
         card_source: Any = None,
         rhythm: Any = None,
+        call_bridge: Any = None,
+        call_utility: Any = None,
     ) -> None:
         self.store = store
         #: World Model —— 事实的收口。Source 往里写、Evaluator 从里反查趋势。
@@ -196,6 +199,10 @@ class AttentionService:
         #: 想念 → 窗口微调 + 急迫度（正反馈）。开口记录在 care_tick 的 spoke 处，
         #: 她说话的挂点在 api/server.py 的 on_contact 一排。None = 不调制
         self.rhythm = rhythm
+        #: 主动来电（2026-09-19）：bridge 通道 + 开场白生成用的 utility。
+        #: 两个都是 None = 打不出去（CallSource 不会因此少产念头 —— 交付会失败留痕）
+        self.call_bridge = call_bridge
+        self.call_utility = call_utility
         #: 固定时间醒来（M5′ a 重构，2026-08-14）：午饭/晚饭/睡前到点主动开口。
         #: 和 SleepSource 不同 —— 它是「时刻驱动」，不经过 Evaluator/Registry。
         self.time_source = time_source
@@ -281,6 +288,11 @@ class AttentionService:
                 # 节奏全在源里：一天一张、not_before 押到窗口内的随机时刻，
                 # 所以安静时段天然撞不上。看片拦截是全源公共的，照拦。
                 "card": SourcePolicy(takes_quota=False, takes_gate=False, max_steps=1),
+                # 主动来电（2026-09-19）：频率的硬杠全在 CallSource 里
+                #（一天一次、隔天再打、18:00-22:30），这里只接公共栏杆 ——
+                # 看片拦截照拦、安静时段闸照吃（其实窗口不重叠，双保险）；
+                # 一小时新链额度不吃（它自己的「一天一次」比那严得多）
+                "call": SourcePolicy(takes_quota=False, takes_gate=True, max_steps=1),
             },
             gate_check=self._gate_check,
             # 她在看片就全线闭嘴（2026-08-22，共影 P1）。
@@ -556,6 +568,8 @@ class AttentionService:
             return self._speak_topic(signal, thread, now)
         if signal.source == "card":
             return self._speak_card(signal, thread, now)
+        if signal.source == "call":
+            return self._call_her(signal, thread, now)
         logger.warning("Care 收到不认识的来源：%s", signal.source)
         return False
 
@@ -752,6 +766,114 @@ class AttentionService:
                 except Exception:  # noqa: BLE001
                     logger.exception("知识小课堂的 delivered 没标上")
         return bool(said)
+
+    # ---------------- 主动来电（2026-09-19，PWA 真来电） ----------------
+
+    #: 开场白。他主动打的电话，接通第一句是**他**说 —— 所以 invite 里
+    #: 就带好了 opener，她一接听 TTS 直接开口。不让他在通话里现想：
+    #: 响铃 45 秒里 Core 那边就该把这句话备好
+    _CALL_OPENER = (
+        "（系统提示：不是她在跟你说话。你现在要给她打一个电话，这是你主动打的。\n"
+        "为什么打：{reason}\n"
+        "\n"
+        "写你接通后说的第一句话 —— 像拨通了在等她接的那种开场，不是文字消息。\n"
+        "一两句，口语，中文，说清你为什么想听她的声音。\n"
+        "不要问「方便吗」「在忙吗」—— 她接了就是方便。\n"
+        "只输出那句话。）"
+    )
+
+    #: 没接通的留言。他说不说算他的（[SKIP] 出路照旧）——
+    #: 拒接了还追着发文字才是骚扰
+    _CALL_MISSED = (
+        "（系统提示：不是她在跟你说话。你刚才主动给她打了一个电话，她没有接"
+        "（{outcome}）。\n"
+        "想留一句话就写出来 —— 一句、口语、中文，像顺手留下的便条，"
+        "不要写「刚才给你打电话你没接」这种带怪罪的语气；\n"
+        "没什么想留的就只回 [SKIP]，明天再想。）"
+    )
+
+    def _call_generate(self, prompt: str) -> str | None:
+        """utility 出一句话。失败返回 None —— 不编、不退主模型（daily_card 的规矩）。"""
+        if self.call_utility is None:
+            return None
+        try:
+            from agent.llm import Message
+            r = self.call_utility.complete(
+                [Message(role="user", text=prompt)], [], depth="low", max_tokens=200)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("来电文案生成失败：%s", exc)
+            return None
+        text = (getattr(r, "text", "") or "").strip()
+        return text or None
+
+    def _call_her(self, signal: CareSignal, thread: Any, now: datetime) -> bool:
+        """真的把电话打出去：登记 invite → 她的 PWA 响铃。
+
+        返回 False = 没打成（开场白没生成出来 / 没配 bridge）——
+        走「没什么具体的可说」的 dropped，链不计步。
+        """
+        if self.call_bridge is None:
+            logger.warning("想打电话但没配 bridge 通道，打不出去")
+            return False
+        if self.dry_run:
+            logger.info("【DRY-RUN】本来会打电话：%s", signal.payload.get("reason"))
+            return True
+
+        reason = str(signal.payload.get("reason") or "想听听她的声音")
+        opener = self._call_generate(self._CALL_OPENER.format(reason=reason))
+        if not opener:
+            logger.info("来电开场白没生成出来，这通不打了")
+            return False
+
+        r = self.call_bridge.post(
+            "/api/call/invite", {"reason": reason, "opener": opener})
+        if not r.ok:
+            raise RuntimeError(f"来电登记失败: {r.error}")
+        call_id = (r.data or {}).get("id")
+        logger.info("电话已拨出：%s（%s，%s 个订阅收到）",
+                    reason, call_id, (r.data or {}).get("pushed"))
+
+        # 90 秒后看一眼结果：没接/拒接 → 留言那条线。
+        # threading.Timer 而不是 asyncio —— 这段代码在 care tick 的同步线程里
+        if call_id:
+            t = threading.Timer(90, self._call_followup, args=(signal, call_id))
+            t.daemon = True
+            t.start()
+        return True
+
+    def _call_followup(self, signal: CareSignal, call_id: str) -> None:
+        """电话没通的收尾：留言或沉默。炸了只留痕，不带塌别的。
+
+        留言**不预写** —— 交给主模型现场写（带 [SKIP] 出路）：
+        utility 起草再让他改等于两道工序说一句话，还把「说不说」的决定
+        从他手里挪走了。拒接了还追着发文字才是骚扰，所以说不说算他的。
+        """
+        try:
+            r = self.call_bridge.get("/api/call/status", params={"id": call_id})
+            status = ((r.data or {}).get("call") or {}).get("status")
+            if status not in ("missed", "declined"):
+                return          # 接了或在响（不太可能，90 秒了）—— 没什么可收尾的
+            outcome = "她拒接了" if status == "declined" else "铃响没人接"
+            logger.info("来电没接通（%s），给他一个留言的机会", status)
+            now = datetime.now(timezone.utc)
+            intent = Intent(
+                subject=f"来电留言 · {signal.subject}",
+                title=f"来电留言 · {signal.subject}",
+                reason=f"你主动给她打了一个电话，{outcome}。",
+                attention_strength=signal.urgency,
+                kind="care_call_missed",
+                created_at=now,
+                expires_at=now + timedelta(hours=1),
+            )
+            decision = SchedulerDecision(
+                intent=intent, reason=intent.subject,
+                effective_score=signal.urgency, context_fit=1.0,
+            )
+            said = self.speaker(intent, decision, prompt=self._CALL_MISSED.format(outcome=outcome))
+            logger.info("来电留言%s", "已发出" if said else "：他选择不说（[SKIP]）")
+        except Exception:  # noqa: BLE001
+            logger.exception("来电跟进失败（call=%s）", call_id)
+
 
     def _chase_todo(self, signal: CareSignal, thread: Any, now: datetime) -> bool:
         """追一件到点没做的事。

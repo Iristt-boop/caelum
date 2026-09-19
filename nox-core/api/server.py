@@ -669,13 +669,41 @@ def _build_attention(core: Nox, sessions: "Sessions", db: Store) -> AttentionSer
             except Exception:  # noqa: BLE001
                 logger.exception("知识小课堂装配失败，这条线不跑")
 
+        # 主动来电（2026-09-19，她拍板：PWA 真来电、OS 不做）。
+        # NOX_CALL 三档：off（默认，源空转零开销）/ shadow（只记他想打的时机）/ on。
+        # 快源 60 秒一 tick，频率的硬杠（一天一次、隔天、18:00-22:30）全在源里
+        _call_source = None
+        _call_utility = None
+        try:
+            from attention.sources.call import CallSource, mode as _call_mode
+            _call_source = CallSource(
+                astore,
+                log_dir=os.path.dirname(str(core.cfg.db_path)),
+            )
+            fast_sources.append(_call_source)
+            if _call_mode() != "off":
+                _call_cfg = getattr(core.cfg, "utility", None)
+                if _call_cfg is not None and getattr(_call_cfg, "usable", False):
+                    from agent.adapters import make_adapter as _make_call_adapter
+                    _call_utility = meter.tag(_make_call_adapter(_call_cfg), "call")
+            logger.info("主动来电接线：mode=%s（shadow 只记不打，on 才真响铃）",
+                        _call_mode())
+        except Exception:  # noqa: BLE001
+            logger.exception("主动来电装配失败，这条线不跑")
+
         svc = AttentionService(astore, provider, speaker=speaker, waker=waker,
                                todo_source=todo_source, fast_sources=fast_sources,
                                gate=gate, time_source=time_source, world=world,
                                watching=watching, shared_sources=[shared_source],
                                self_sources=self_sources,
                                topics=topics_pool, card_source=card_source,
-                               rhythm=rhythm)
+                               rhythm=rhythm,
+                               call_bridge=core.bridge,
+                               call_utility=_call_utility)
+        # svc 建完才有 longing —— 回填取值函数（rhythm.gap_window 每次现取）
+        rhythm.longing_ref = lambda: getattr(svc, "longing", None)
+        if _call_source is not None:
+            _call_source.longing_ref = svc.longing
         # svc 建完才有 longing —— 回填取值函数（rhythm.gap_window 每次现取）
         rhythm.longing_ref = lambda: getattr(svc, "longing", None)
 
