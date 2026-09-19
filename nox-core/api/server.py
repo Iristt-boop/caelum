@@ -835,6 +835,40 @@ def _build_moments(core: Any, attention: Any, meter: Any) -> dict | None:
         return None
 
 
+def _read_dream_log(data_dir: str, limit: int = 5) -> list[dict]:
+    """读 Dream shadow 的 JSONL，**新的在前**。
+
+    ⚠️ 只读：不生成、不缓存、不碰任何状态。梦是影子期的产物（2026-09-18 她
+    拍板：不开口、不推送、不写 OB），全部产出就这一个文件 —— 她要看的时候
+    自己来看（World 页「梦」那一块）。
+
+    两条容错，都是实测会遇到的：
+      · 文件不在 / 是空的 → 回空列表（**这不是故障**，是还没做过梦）
+      · 半截行（写到一半被杀）→ 跳过那一行，不整份挂掉
+    """
+    path = dream_loop._log_path(data_dir)
+    try:
+        if not path.exists():
+            return []
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:  # noqa: BLE001
+        logger.warning("读 dream 日志失败：%s", exc)
+        return []
+
+    out: list[dict] = []
+    for line in reversed(lines):          # 从最后一行往前：日志会一直长
+        if len(out) >= limit:
+            break
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            out.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return out
+
+
 def _build_dream(core: Any, meter: Any) -> dict | None:
     """Dream shadow 的接线（夜间做梦，先只记日志）。关掉/缺件就 None。
 
@@ -2444,6 +2478,30 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
         if pool is None:
             raise HTTPException(status_code=503, detail="话题池没启用")
         return {"ok": True, "items": pool.topics_for_ui()}
+
+    @app.get("/api/nox/dreams")
+    def nox_dreams(limit: int = 5) -> dict:
+        """他夜里做的梦 —— Dream shadow 的 JSONL，只读投影（2026-09-19 接给 World）。
+
+        每一条的形状（`attention/dream.py` 写的）：
+
+            date       哪一晚
+            dream      梦的正文
+            materials  取材：从哪些记忆里挑的（name / age_h / importance / arousal）
+            echo       回响：那条更老的、被这个梦勾起来的记忆
+
+        ⚠️ 影子期（2026-09-18 她拍板）：梦不开口、不推送、不写 OB —— 产出就
+        这一个文件。所以这里**只读文件**：不生成、不缓存、不碰状态。
+        没有文件/没有记录 → 空列表 + mode，让前端如实说「还没做过梦」；
+        那不是故障，是还没到那一步。
+        """
+        data_dir = os.path.dirname(str(core.cfg.db_path))
+        n = max(1, min(int(limit or 5), 30))
+        return {
+            "ok": True,
+            "mode": dream_loop.mode(),
+            "items": _read_dream_log(data_dir, n),
+        }
 
     @app.post("/api/nox/topics/{topic_id}/status")
     def nox_topic_status(topic_id: str, body: dict) -> dict:
