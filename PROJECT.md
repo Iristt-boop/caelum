@@ -7543,18 +7543,65 @@ PWA Chat.jsx   ToolTrace 卡片：摘要行(Ran N tools, total M steps, 尾部�
 - 附产：`/api/api` 双前缀 404（来电轮询）同日修正；诊断探针 `window.__SSE_LINES`
   留在 Chat.jsx（读流循环的字节级日志，以后排查直接看）
 
-### 52.3 真正的根因补遗（同日深夜）：**vite 构建缓存发旧 chunk**
+### 52.3 真正的根因（09-20 复核补正）：**v3 漏删的一行孤儿调用**
 
-52.2 的修复当晚"没修好"——她 19:07/19:57 依旧卡死。20:10 排查实锤：
-**vite（rolldown-vite 8）的构建缓存坏了**——18:2x 起 `npx vite build` 一直
-"✓ built"却反复吐**旧的 Chat chunk**（hash 不变、内容是修复前的代码）。
-于是：index 新（HUD 徽章都在）+ Chat 旧（看门狗根本没有）——她跑的永远是
-**没有自愈能力的版本**，52.2 的看门狗一晚都没真正上线过。
+> ⚠️ **本节原先的结论已作废。** 原写的是"vite 构建缓存反复吐旧 Chat chunk，
+> 看门狗一晚没真正上线"。09-20 用真渲染测试复核，抓到的是别的东西 ——
+> 一个未声明的全局引用。
 
-- 修复：删 `node_modules/.vite` 强制重建，hash 立即变化（Chat-BWD2w2l8 → Ca5sx4Zn）
-- **新铁律**：前端部署后必须 `grep <本次新代码标记> dist/assets/<chunk>.js`
-  验证产物真的包含本次改动，再发上线。构建快得可疑（<400ms）本身就是信号
-- 当晚时间线：17:55 首次卡死（上游静默挂起+无自愈）→ 18:2x 看门狗写完但
-  被构建缓存吃掉 → 18:23-18:32 keepalive 首版解构 bug 又打断所有聊天 →
-  20:10 清缓存真修复上线。她 19:07「开风扇」、19:57「111」两次卡死
-  = 旧 chunk 无看门狗，完全对上
+`d75d23a`（**工具展示 v3，17:48**）删「割裂的底部现场卡」时，连带删了
+`const [liveTrace, setLiveTrace] = useState([])` 和全部渲染点，**唯独漏了
+`send()` 里那一行 `setLiveTrace([])`**。它成了未声明的全局标识符，ESM 是
+严格模式，当场抛 `ReferenceError`。它的**执行位置**决定了全部症状：
+
+```
+setMessages(…她的气泡…)    ← 乐观 UI，在抛之前 → 「消息发得出去」
+setLoading(true)           ← 在抛之前          → 一直转圈、发送键 disabled
+setLiveTrace([])           ← 在这里炸
+fetch(`${API_BASE}/chat`)  ← 永远不执行        → 请求根本没派发
+```
+
+于是那晚"请求没到服务器"的取证链每一条都成立、且成因明确：Caddy 无 chat
+POST、bridge 无 `Chat request` 行、core 无记录、py-spy 全 idle —— **不是
+链路丢了，是代码根本没发**。而 60s 看门狗是在这一行**之后**才 `setInterval`
+的，所以它连创建都没创建：18:23/18:41 那两轮看门狗改动在这个场景里是死代码。
+
+- 同一晚的第二处同类：`recovered` 在 18:23 写看门狗时 `let` 在了 try 块
+  **内部**，回调与 catch 都读不到它 —— 严格模式下 `recovered = true` 抛
+  ReferenceError，把紧跟其后的 `setLoading(false)` 一起带走。**看门狗响了
+  也不解锁**。
+- 第三处（机制性）：看门狗数的是"多久没有**字节**"，而 bridge 的 `: ka`
+  心跳就是字节 —— 上游越静默心跳越密，计时器越不会到期。它一次都不会响。
+- 时间线：17:48 v3 提交（PWA 有缓存，她手机换到这一版才发病）→ 17:55 首次
+  卡死 → 18:23/18:41 看门狗（未生效）→ 19:58 构建的 `Chat-Ca5sx4Zn.js`
+  **确实含 v1 看门狗**（复核 grep 命中 `60 秒无字节`），所以"看门狗一晚都没
+  上线过"不成立 —— 它上线了，只是上面三条各自都足以让它白给。
+- **vite 构建缓存那条**保留在案但降级为旁枝：删 `.vite` 后 hash 确实变了
+  （BWD2w2l8 → Ca5sx4Zn），可它不是主因 —— 她实际跑的那个 chunk 里 v1
+  看门狗是在的。
+- **新增铁律**（与"grep 产物标记"并存）：改完 `Chat.jsx` 跑一次
+  `npx eslint src/pages/Chat.jsx`。`js.configs.recommended` 自带 `no-undef`，
+  这一整类孤儿标识符一次全照出来 —— 上面三处 bug 它都能拦下。
+
+### 52.4 卡死修复 v2（09-20）：**判死交给离上游最近的那一层**
+
+- **bridge 加静默看门狗**（`server.js` coreMode）：**数帧不数字节** ——
+  `lastFrameAt` 只在真解析出一帧 `data:` 时更新（心跳不算、半截缓冲不算）；
+  静默满 45s 起每 15s 补一帧 `{"type":"slow"}`（**真事件**，前端据此显示
+  "他那边有点慢，还在等 N 秒"，而不是无信息量的转圈）；静默超 180s 判定
+  卡死：掐上游 → 补 `error` 帧 → 走统一收尾补 `done`。**保证前端一定收到
+  终态**，loading 一定落得下来。阈值可调：`NOX_BRIDGE_{KA,SLOW,STALL}_MS`
+- **前端看门狗改双时钟**（`Chat.jsx`）：字节 60s 只判**连接**死活；真事件
+  300s 才判**上游**死活。两个阈值有意错开 —— 5 分钟那只手必须晚于 bridge
+  的 3 分钟收口，否则会抢在前面掐、她就看不到那句人话。`recovered` 挪到
+  与 `settled` 同层；`setLoading(false)` 移进 `finally`（收尾不再会被异常
+  带走）；`send()` 顶部加 `send-enter` 探针（HUD 当初就是为这个 bug 建的，
+  可它第一个 `dbg` 坐在抛异常那行**后面**，于是永远是空的）
+- **顺手修掉 52.3 的两处孤儿**：`setLiveTrace([])` 删除、`recovered` 归位
+- 验收（都做了反证，不是自说自话）：
+  - 新增 `bridge/test/chat-stall.test.js` 3 条 —— 假上游复刻"工具帧之后
+    一个字都不吐"；把 stall 阈值关掉，流 3 秒内收不了口（= 复刻修复前的
+    无限 loading），证明收口确实由新逻辑承重
+  - 新增 `frontend/src/pages/__tests__/ChatWatchdog.test.jsx` 3 条 —— 真渲染 +
+    假定时器 + 假 SSE；把看门狗退回"只数字节"，心跳一喂当场失败
+  - 修复前的代码跑这条前端测试，直接 `ReferenceError: setLiveTrace` 命中真凶

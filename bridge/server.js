@@ -1144,24 +1144,73 @@ async function coreMode(req, res, requestId) {
     const decoder = new TextDecoder();
     let buf = "";
 
+    /* 🔴 上游静默看门狗（2026-09-19 卡死事故，二版修复）。
+     *
+     * 心跳（下面那行 `: ka`）解决的是「链路上某一环掐静默连接」，但它顺手
+     * 把**前端**那双"多久没字节"的眼睛喂活了 —— 上游卡 5 分钟，前端就跟着
+     * 转 5 分钟，因为每 5 秒都有字节到达。所以"判死"必须由离上游最近的这层
+     * 来做，规矩是**数帧不数字节**：
+     *
+     *   · lastFrameAt 只在真的解析出一帧 `data:` 时更新 —— 心跳不算，
+     *     TCP 上的半截缓冲也不算；
+     *   · 静默满 SLOW_AFTER_MS 起，每 SLOW_EVERY_MS 补一帧
+     *     `{"type":"slow"}`：它是**真事件**，前端据此能显示"还在等"，
+     *     而不是一个无信息量的转圈；同时它把前端的判活时钟喂着 ——
+     *     这样两头不会互相打架；
+     *   · 静默超过 STALL_MS 判定卡死：掐上游 → 补一帧 error → 走统一收尾
+     *     补 done。**保证前端一定收到终态**，loading 一定落得下来。
+     *
+     * ⚠️ STALL_MS 别往下调太多：GLM-5 是关不掉思考的模型，而 core 目前
+     * 只转发 `delta.content`，thinking 那段是真的一个字都不吐（adapters.py
+     * 只认 content）。等哪天把 reasoning_content 也转出来，这个阈值才能
+     * 安全地收到 60 秒级。现在 180 秒 = core 自己那轮的墙钟预算。
+     */
+    // 三个阈值都可调：线上按默认值跑，测试把它们压到毫秒级才验得动
+    // （bridge/test/chat-stall.test.js 就是靠这个把「静默 3 分钟」缩成 1 秒的）
+    const KA_EVERY_MS = Number(process.env.NOX_BRIDGE_KA_MS || 5000);      // 心跳间隔
+    const SLOW_AFTER_MS = Number(process.env.NOX_BRIDGE_SLOW_MS || 45000);  // 静默多久开始告诉她"上游有点慢"
+    const SLOW_EVERY_MS = 15000;   // slow 帧之间的最小间隔
+    const STALL_MS = Number(process.env.NOX_BRIDGE_STALL_MS || 180000);     // 静默多久判定卡死
+    let lastFrameAt = Date.now();
+    let lastSlowAt = 0;
+    let stalled = false;
+
     while (true) {
-      // 🔴 keepalive（2026-09-19 卡死事故）：上游偶发在工具与下一段文字之间
-      // 静默 8~300 秒（bigmodel 挂起）。链路上任何一环掐静默连接的话，
-      // 她那头就是「回复卡住」且 loading 永真。规矩：15 秒没等到下一帧
-      // 就写一行 SSE 注释（`: ka`）—— 浏览器/代理都当心跳，前端解析器
-      // 天然忽略它，但字节到达会把前端的看门狗喂活。
+      // 🔴 keepalive（2026-09-19 卡死事故，二版调参）：她实测卡死点在
+      // **工具执行后 5~12 秒的静默窗口**（17:55:07 工具完 → 17:55:14 页面断开）。
+      // 工具跑完到第二轮文字开始之间天生有一段无字节期，链路上任何一环
+      // 掐静默连接的话，她那头就是「调用完工具就断」。规矩：**5 秒**没等到
+      // 下一帧就写一行 SSE 注释（`: ka`）—— 比观测到的最短致死静默（~12s）
+      // 更密；浏览器/代理都当心跳，前端解析器天然忽略，但字节到达会喂活看门狗。
       const readPromise = reader.read().then((v) => ({ v }), (e) => ({ err: e }));
       let r;
       do {
         r = await Promise.race([
           readPromise,
-          new Promise((res) => setTimeout(() => res({ ka: true }), 15000)),
+          new Promise((res) => setTimeout(() => res({ ka: true }), KA_EVERY_MS)),
         ]);
         if (r.ka) {
           if (clientGone) { upstreamAbort.abort(); break; }
+          const silent = Date.now() - lastFrameAt;
+          if (silent >= STALL_MS) {
+            stalled = true;
+            console.log(
+              `[Bridge] ${requestId.slice(0, 6)} 上游静默 ${Math.round(silent / 1000)}s，` +
+              `判定卡死，掐断上游`
+            );
+            try { upstreamAbort.abort(); } catch { /* 已经断了 */ }
+            break;
+          }
           res.write(": ka\n\n");
+          if (silent >= SLOW_AFTER_MS && Date.now() - lastSlowAt >= SLOW_EVERY_MS) {
+            lastSlowAt = Date.now();
+            res.write(`data: ${JSON.stringify({
+              type: "slow", seconds: Math.round(silent / 1000),
+            })}\n\n`);
+          }
         }
       } while (r.ka);
+      if (stalled) break;           // 上游卡死 → 跳出读循环，走下面那段统一收口
       if (r.ka) break;              // 她先断开 → 这条流跟着收摊（不落库，见外层 catch 的同款处理）
       if (r.err) throw r.err;       // 读挂了 → 外面 catch 走「连不上脑子」
       const { done, value } = r.v;
@@ -1177,6 +1226,8 @@ async function coreMode(req, res, requestId) {
         if (!line) continue;
         let ev;
         try { ev = JSON.parse(line.slice(6)); } catch { continue; }
+        // 真事件到了：上游还活着（这才是判活的那只时钟）
+        lastFrameAt = Date.now();
 
         if (ev.type === "text") {
           fullReply += ev.text;
@@ -1331,6 +1382,21 @@ async function coreMode(req, res, requestId) {
           );
         }
       }
+    }
+
+    /* 上游卡死的收口（2026-09-19）。上面跳出读循环时这一轮**还没有终态**，
+     * 前端那边 loading 就还挂着 —— 所以必须补一帧 error 让话术落到屏幕上，
+     * 后面的统一收尾再补 done，loading 才落得下来。
+     *
+     * ⚠️ 这里没走 catch：catch 是「连不上脑子」那条路（连接层就失败了），
+     * 我们现在是**连上了但上游不回话**，语义不同，得让她分得清 ——
+     * 前者多半是他那边网络/服务的事，后者是模型/上游在拖。 */
+    if (stalled) {
+      const friendly = "我这边卡在上游了（跑完工具之后一直没等到回音），先停在这儿。再说一次，我接着。";
+      console.log(`[Bridge] ${requestId.slice(0, 6)} 已掐断上游，回一帧 error 让前端解锁`);
+      res.write(`data: ${JSON.stringify({ type: "error", message: friendly })}\n\n`);
+      // 有半句就留半句（跟她屏幕上看到的一致），一个字都没有才用这句话术兜底
+      fullReply = fullReply || friendly;
     }
   } catch (e) {
     /* 她自己打断的，不是故障 —— 别往她屏幕上写「连不上脑子」。
