@@ -2691,9 +2691,20 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
                     elif ev.type == "tool_start":
                         # 他要动手了。**通话期间唯一的进度信号** ——
                         # 工具跑十几秒，这条流在那段时间里什么都不吐（见 agent/llm.py）
-                        yield _sse({"type": "tool_start", "tool": ev.tool})
+                        # 2026-09-19 起带入参预览（工具调用展示）
+                        frame = {"type": "tool_start", "tool": ev.tool}
+                        if getattr(ev, "args", None):
+                            frame["args"] = ev.args
+                        yield _sse(frame)
                     elif ev.type == "tool_end":
-                        yield _sse({"type": "tool_end", "tool": ev.tool, "ok": ev.ok})
+                        # 2026-09-19 起带结果摘要/耗时/子步骤 —— 没有就不进帧，
+                        # 前端对「缺字段」和「空」一视同仁
+                        frame = {"type": "tool_end", "tool": ev.tool, "ok": ev.ok}
+                        for k in ("summary", "duration_ms", "sub_commands"):
+                            v = getattr(ev, k, None)
+                            if v:
+                                frame[k] = v
+                        yield _sse(frame)
                     elif ev.type == "done":
                         final = getattr(ev, "result", None)
             except Exception as exc:  # noqa: BLE001

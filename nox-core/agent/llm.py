@@ -188,6 +188,16 @@ class StreamEvent:
     tool: str = ""
     #: 这次调用成没成。只有 tool_end 用（失败也要报 —— 她该知道他没做成）
     ok: bool = True
+    #: ---- 工具调用展示的扩展字段（2026-09-19，只有 tool_start/tool_end 用）----
+    #: 入参预览（tool_start）。值截断、下划线键滤掉 —— 给人看的卡片不是审计日志
+    args: dict = field(default_factory=dict)
+    #: 结果一行摘要（tool_end），拼在工具条目尾部
+    summary: str = ""
+    #: 耗时毫秒（tool_end）
+    duration_ms: int = 0
+    #: 工具内部子步骤（tool_end）。工具经 ToolContext.report_step 上报，
+    #: 没上报就是空 —— 前端不画第二层
+    sub_commands: list = field(default_factory=list)
 
 
 class LLMAdapter(Protocol):

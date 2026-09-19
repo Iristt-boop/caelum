@@ -74,6 +74,31 @@ class ToolContext:
     #: 谁往里加东西，谁就要能回答「她是在哪一次点击里同意的」。
     confirmed: set[str] = field(default_factory=set)
 
+    #: **当前这件工具**的子步骤（工具调用展示的第二层，2026-09-19）。
+    #: 工具经 `report_step()` 上报「我内部做了哪几步」，loop 在每件工具
+    #: 执行前清空、执行后收走装进 tool_end 帧（agent/loop.py）。
+    #: 挂在 ctx 上而不是工具返回值上，是为了**工具不用改签名** ——
+    #: 不上报的工具有空列表，前端就不画第二层，谁都不受伤。
+    pending_steps: list[dict[str, Any]] = field(default_factory=list)
+
+    def report_step(self, desc: str, *, status: str = "success",
+                    raw_cmd: str | None = None, diff: str | None = None) -> None:
+        """上报一条工具内部子步骤（⌨️ run_command 那一层）。
+
+        `desc` 是给人看的友好描述，平时只显示它；`raw_cmd` 是底层命令，
+        前端悬停才看（调试用）；失败/警告用 status 标，前端会高亮。
+        展示层的事不该带塌工具本身 —— 所以这里什么都不抛。
+        """
+        entry: dict[str, Any] = {"desc": desc, "type": "run_command", "status": status}
+        if raw_cmd:
+            entry["raw_cmd"] = raw_cmd
+        if diff:
+            entry["diff"] = diff
+        try:
+            self.pending_steps.append(entry)
+        except Exception:  # noqa: BLE001
+            pass
+
     def wrote(self, *providers: str) -> None:
         """登记「我刚改了这些 Provider 管的状态」。
 

@@ -7482,3 +7482,30 @@ CallSource（NOX_CALL 三档）          service._call_her                bridge
 
 - shadow 一周（~09-26）看「他会想在什么时候打电话」→ 决定 NOX_CALL=on 与否
 - 转正后可调参数：窗口、想念门槛、频率（现在是一天一次+隔天）
+
+## 五十二、工具调用展示：两级折叠轨迹（2026-09-19，糖糖定的规格）
+
+她拿一张 Agent 面板截图定的验收：**大任务概括 → 工具列表 → 工具内部子步骤**，
+不是现在这一行「N 个工具调用」。
+
+### 数据契约（三层共建）
+
+```
+ToolContext.report_step(desc, status, raw_cmd, diff)   ← 工具内部上报子步骤
+agent/loop.py  tool_start{args预览} / tool_end{summary,duration_ms,sub_commands}
+api/server.py  帧透传新字段（没有就不进帧）
+bridge         tool_start 压入 running、tool_end 补全 → done 补发 tools_trace
+               帧 + 随消息落 metadata.toolsTrace（翻历史可回看，不只当场看）
+PWA Chat.jsx   ToolTrace 卡片：摘要行(Ran N tools, total M steps, 尾部结果)
+               → 🔧 use_tool 行(✅/⭐/❌+耗时) → ⌨️ run_command 行(⚠️/❌高亮,
+               raw_cmd 悬停才看, diff 绿徽标 +36 -0)
+```
+
+- 子步骤通道挂在 `ToolContext.pending_steps` 上（工具**不改签名**：不上报的
+  工具=空列表=前端不画第二层，谁都不受伤）；loop 每件工具执行前清空、执行后收走
+- 收起=不挂 DOM（「看不到」是真的看不到）；mountedOnce 让后续开合走
+  grid-rows 0fr→1fr 柔和动画；流式有 running 条目时第一层强制展开+转圈
+- OS 端没做（她的主战场是 PWA 聊天）；stackchan/小智线同样未接（她在 09-19
+  拍板：设备线回头统一接给 nox，现在断联）
+- 测试：core `test_tool_trace_events.py`（载荷形状+预览截断）+ 前端
+  `ToolTrace.test.jsx`（摘要/折叠/状态高亮/diff/raw_cmd/running）
