@@ -428,6 +428,39 @@ dbTry(`ALTER TABLE usage_log ADD COLUMN task TEXT`)
 // Web Push 订阅（iOS PWA 锁屏推送）
 db.run(`CREATE TABLE IF NOT EXISTS push_subs (endpoint TEXT PRIMARY KEY, sub TEXT, created_at TEXT)`);
 
+// ============ 主动来电（2026-09-19，她拍板：PWA 真来电，不要先发消息问） ============
+//
+// 他（nox-core 的 Care 体系）决定打 → POST /api/call/invite 登记一通电话
+// → Web Push 弹「来电」+ App 内轮询兜底 → 她接听 → 通话引擎以接听方启动
+// → 挂断回写时长。没接/拒接的降级（发条留言）是 core 侧跟进的事，bridge 只记账。
+//
+// 🔴 invite 不落 conversations —— 响铃阶段「这通电话还不存在」：
+//    她接了，开场白才以他的身份落进会话（answer 里做）；
+//    她没接，这通电话只留在这张表 + core 的跟进留言里。
+db.run(`CREATE TABLE IF NOT EXISTS calls (
+  id TEXT PRIMARY KEY, created_at TEXT, status TEXT,
+  reason TEXT, opener TEXT,
+  answered_at TEXT, ended_at TEXT, duration_s INTEGER)`);
+
+const CALL_RING_SECONDS = 45;
+
+function sweepCalls(now = Date.now()) {
+  // 响铃超时 = 没接。惰性清扫：任何读呼叫状态的入口顺手做，
+  // 不挂定时器（这表一天写不了几行，没必要养一个后台循环）
+  const rows = dbAll("SELECT id, created_at FROM calls WHERE status='ringing'");
+  for (const r of rows) {
+    const age = (now - Date.parse(r.created_at)) / 1000;
+    if (Number.isFinite(age) && age > CALL_RING_SECONDS) {
+      dbRun("UPDATE calls SET status='missed' WHERE id=?", [r.id]);
+    }
+  }
+}
+
+function latestSessionId() {
+  const r = dbAll("SELECT id FROM conversations WHERE role='user' AND content != '' ORDER BY rowid DESC LIMIT 1");
+  return r[0]?.id || "";
+}
+
 // 订阅清单（Settings → Notifications 页）：endpoint 掩码，别把整条
 // 订阅地址甩到前端 —— 它等同一把推送凭证
 app.get("/api/push/subscriptions", (req, res) => {
@@ -681,7 +714,7 @@ if (PUSH_ENABLED) {
   );
 }
 
-async function sendPushAll(title, body) {
+async function sendPushAll(title, body, data) {
   if (!PUSH_ENABLED) {
     console.error("[Bridge] sendPushAll 被调用但推送未启用，跳过:", title);
     return { sent: 0, failed: 0, results: [], error: "push disabled" };
@@ -689,9 +722,12 @@ async function sendPushAll(title, body) {
   const rows = dbAll("SELECT endpoint, sub FROM push_subs");
   const results = [];
   let sent = 0, failed = 0;
+  // data：结构化载荷（来电是 {type:"call", callId}）—— SW 靠它做点击路由。
+  // 老调用不传就原样只带 title/body，行为不变
+  const payload = JSON.stringify(data ? { title, body, data } : { title, body });
   for (const r of rows) {
     try {
-      const res = await webpush.sendNotification(JSON.parse(r.sub), JSON.stringify({ title, body }));
+      const res = await webpush.sendNotification(JSON.parse(r.sub), payload);
       sent += 1;
       results.push({ endpoint: r.endpoint, ok: true, status: res?.statusCode });
     } catch (e) {
@@ -3825,6 +3861,91 @@ app.post("/api/push/send", async (req, res) => {
   await sendPushAll(title, body);
   console.log(`[Push] 主动推送 -> ${subs} 个订阅${saved ? ` (session=${sid})` : ""}: ${body.slice(0, 40)}`);
   res.json({ ok: true, subs, saved });
+});
+
+// ============ 主动来电：端点 ============
+// 调用方：core（invite/status，带 NOX_TOKEN）和 PWA（current/answer/decline/end，
+// main.jsx 全局 fetch 已带 X-Nox-Token）。这组端点和 push/send 同一鉴权档。
+
+// core 决定打了 → 登记 + 弹「来电」推送。opener 是他开口的第一句（core 生成好的），
+// 她接听的那一刻才落进会话 —— 响铃阶段这通电话还不存在
+app.post("/api/call/invite", async (req, res) => {
+  const reason = (req.body?.reason || "").toString().slice(0, 300);
+  const opener = (req.body?.opener || "").toString().slice(0, 500);
+  if (!reason.trim()) return res.status(400).json({ error: "reason is required" });
+  sweepCalls();
+  const id = `call-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const created = new Date().toISOString();
+  dbRun("INSERT INTO calls (id, created_at, status, reason, opener) VALUES (?,?,?,?,?)",
+    [id, created, "ringing", reason, opener]);
+  // 推送载荷带 data.callId —— SW 靠它把点击路由成「进来电屏」；
+  // 通知本身就是铃声（系统通知音 + vibrate），页面活着时 App 内轮询兜底
+  const r = await sendPushAll("Nox 来电", reason.slice(0, 120) || "他想跟你说两句话", { type: "call", callId: id });
+  console.log(`[Call] 来电 ${id} -> ${r.sent} 个订阅: ${reason.slice(0, 40)}`);
+  res.json({ ok: true, id, expires_in: CALL_RING_SECONDS, pushed: r.sent });
+});
+
+// App 内轮询 / SW 深链进来取当前来电。没有就是 null —— 12 秒一次的心跳，别让它贵
+app.get("/api/call/current", (req, res) => {
+  sweepCalls();
+  const r = dbAll("SELECT id, reason, opener, created_at FROM calls WHERE status='ringing' ORDER BY created_at DESC LIMIT 1");
+  if (!r[0]) return res.json({ ok: true, call: null });
+  const expires_in = Math.max(0, CALL_RING_SECONDS - (Date.now() - Date.parse(r[0].created_at)) / 1000);
+  res.json({ ok: true, call: { ...r[0], expires_in: Math.round(expires_in) } });
+});
+
+// 她接了。开场白此刻才以他的身份落进会话（跟早报同一套：
+// 先落库再推送，她回话时他得知道自己打过这通电话）
+app.post("/api/call/answer", (req, res) => {
+  sweepCalls();
+  const id = (req.body?.id || "").toString().slice(0, 64);
+  const r = dbAll("SELECT * FROM calls WHERE id=?", [id]);
+  if (!r[0]) return res.status(404).json({ error: "no such call" });
+  if (r[0].status !== "ringing") return res.status(409).json({ error: `call is ${r[0].status}` });
+  dbRun("UPDATE calls SET status='answered', answered_at=? WHERE id=?", [new Date().toISOString(), id]);
+  const sid = latestSessionId();
+  let saved = null;
+  if (r[0].opener && sid) {
+    saveMessage(sid, "assistant", r[0].opener, { proactive: true, call: id });
+    saved = sid;
+  }
+  console.log(`[Call] ${id} 已接听${saved ? ` (session=${sid})` : "（无会话可落）"}`);
+  res.json({ ok: true, sid, opener: r[0].opener || "" });
+});
+
+// 她拒接。core 的跟进定时器稍后会看到这个状态，把「留言」发出来
+app.post("/api/call/decline", (req, res) => {
+  const id = (req.body?.id || "").toString().slice(0, 64);
+  const r = dbAll("SELECT status FROM calls WHERE id=?", [id]);
+  if (!r[0]) return res.status(404).json({ error: "no such call" });
+  if (r[0].status === "ringing") {
+    dbRun("UPDATE calls SET status='declined' WHERE id=?", [id]);
+    console.log(`[Call] ${id} 被拒接`);
+  }
+  res.json({ ok: true });
+});
+
+// 通话页挂断时回写时长（fire-and-forget，失败不重试 —— 记账件，不是业务件）
+app.post("/api/call/end", (req, res) => {
+  const id = (req.body?.id || "").toString().slice(0, 64);
+  const dur = Math.max(0, Math.round(Number(req.body?.duration) || 0));
+  dbRun("UPDATE calls SET status=CASE WHEN status='answered' THEN 'ended' ELSE status END, ended_at=?, duration_s=? WHERE id=?",
+    [new Date().toISOString(), dur, id]);
+  console.log(`[Call] ${id} 结束，${dur}s`);
+  res.json({ ok: true });
+});
+
+// core 的跟进定时器用。传 id 精确查；也用于验收时看状态
+app.get("/api/call/status", (req, res) => {
+  sweepCalls();
+  const id = (req.query?.id || "").toString().slice(0, 64);
+  if (id) {
+    const r = dbAll("SELECT id, status, reason, opener, duration_s FROM calls WHERE id=?", [id]);
+    if (!r[0]) return res.status(404).json({ error: "no such call" });
+    return res.json({ ok: true, call: r[0] });
+  }
+  const r = dbAll("SELECT id, status, reason, created_at, duration_s FROM calls ORDER BY created_at DESC LIMIT 10");
+  res.json({ ok: true, calls: r });
 });
 
 // ============ 设备控制（二十七章遗留项目：state 中继模式）============

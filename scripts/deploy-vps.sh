@@ -29,15 +29,15 @@ BASE_LOCAL="/d/claude-code"
 INFO_DIR="/root/DEPLOY_INFO"
 
 # 服务名 → (本地仓库目录, 线上目录)。文件路径相对仓库根。
-# ⚠️ nox-core 线上是 release 原子切换模式（/root/nox-core/code →
-# /root/releases/nox-core/<日期>-<sha>，CURRENT 文件跟着记）。
+# ⚠️ nox-core 和 bridge 线上都是 release 原子切换模式（/root/<svc>/code 是
+# symlink → /root/releases/<svc>/<日期>-<sha>，nox-core 另有 CURRENT 记录文件）。
 # 日常单文件修从这里 scp 进「当前 release」；切整版要复制旧 release
-# → 覆盖 → 冒烟 → 翻 symlink（2026-09-18 首次踩坑：映射成 /root/nox-core
-# 会把文件传到野目录，服务根本不读）。
+# → 覆盖 → 冒烟 → 翻 symlink（2026-09-19 bridge 也踩了同一坑：映射成
+# /root/bridge 会把文件传到野目录，服务根本不读——它 09-15 起就换了 release 布局）。
 service_dir() {
   case "$1" in
     nox-core)     echo "$BASE_LOCAL/nox-core /root/nox-core/code" ;;
-    bridge)       echo "$BASE_LOCAL/bridge /root/bridge" ;;
+    bridge)       echo "$BASE_LOCAL/bridge /root/bridge/code" ;;
     ombre-brain)  echo "$BASE_LOCAL/Ombre-Brain /root/ombre-brain" ;;
     *) echo "" ;;
   esac
