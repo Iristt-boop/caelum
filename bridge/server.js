@@ -1070,6 +1070,10 @@ async function coreMode(req, res, requestId) {
   // 工具调用名列表。从 Core 的 done 事件里收，存进 metadata.toolsUsed
   // 和 segments 一起落库 —— 前端不管当场看还是翻历史都能展开看。
   let toolsUsed = [];
+  // 工具调用轨迹（2026-09-19）：两级结构 {tool_name, arguments, sub_commands...}。
+  // tool_start 压入、tool_end 补全，done 时随消息落 metadata.toolsTrace ——
+  // 她翻历史时能看到每次调用的入参和子步骤，不只是工具名清单
+  let toolsTrace = [];
   // Core 收不到 session_id 时会自己 uuid4 生成一个，并在 done 帧里报出来。
   // 这里必须接住它回传给前端 —— 否则前端下一轮又传空，Core 又建一个新会话，
   // 表现成「每说一句话就多一个 Recents 窗口，而且他永远记不住上一句」。
@@ -1141,7 +1145,26 @@ async function coreMode(req, res, requestId) {
     let buf = "";
 
     while (true) {
-      const { done, value } = await reader.read();
+      // 🔴 keepalive（2026-09-19 卡死事故）：上游偶发在工具与下一段文字之间
+      // 静默 8~300 秒（bigmodel 挂起）。链路上任何一环掐静默连接的话，
+      // 她那头就是「回复卡住」且 loading 永真。规矩：15 秒没等到下一帧
+      // 就写一行 SSE 注释（`: ka`）—— 浏览器/代理都当心跳，前端解析器
+      // 天然忽略它，但字节到达会把前端的看门狗喂活。
+      const readPromise = reader.read().then((v) => ({ v }), (e) => ({ err: e }));
+      let r;
+      do {
+        r = await Promise.race([
+          readPromise,
+          new Promise((res) => setTimeout(() => res({ ka: true }), 15000)),
+        ]);
+        if (r.ka) {
+          if (clientGone) { upstreamAbort.abort(); break; }
+          res.write(": ka\n\n");
+        }
+      } while (r.ka);
+      if (r.ka) break;              // 她先断开 → 这条流跟着收摊（不落库，见外层 catch 的同款处理）
+      if (r.err) throw r.err;       // 读挂了 → 外面 catch 走「连不上脑子」
+      const { done, value } = r.v;
       if (done) break;
       buf += decoder.decode(value, { stream: true });
 
@@ -1231,13 +1254,35 @@ async function coreMode(req, res, requestId) {
           }
         } else if (ev.type === "tool_start" || ev.type === "tool_end") {
           // 他动手的实时进度（2026-09-07）。原样透传，**不落库** ——
-          // 这是过程不是内容，翻历史时该看到的是 done 里那份 toolsUsed 清单。
+          // 这是过程不是内容，翻历史时该看到的是落库的 toolsTrace。
           //
           // 🔴 它的用处几乎全在语音通话上：工具跑十几秒，这条流在那段时间里
           // 一个字都不吐，电话里就是一段纯粹的死寂。有了这两帧，
           // 界面能说出「他在写文件」，她才分得清干活和卡死。
+          //
+          // 2026-09-19 起顺带攒轨迹：tool_start 压入一条 running，
+          // tool_end 按工具名补全（同轮同名工具连续调用不会串 —— 串行执行）。
+          if (ev.type === "tool_start") {
+            toolsTrace.push({
+              tool_name: ev.tool || "", type: "use_tool", status: "running",
+              arguments: ev.args || {}, sub_commands: [],
+            });
+          } else {
+            const entry = [...toolsTrace].reverse()
+              .find((t) => t.tool_name === (ev.tool || "") && t.status === "running");
+            if (entry) {
+              entry.status = ev.ok === false ? "error" : "success";
+              if (ev.summary) entry.summary = ev.summary;
+              if (ev.duration_ms) entry.duration_ms = ev.duration_ms;
+              if (Array.isArray(ev.sub_commands)) entry.sub_commands = ev.sub_commands;
+            }
+          }
           res.write(`data: ${JSON.stringify({
             type: ev.type, tool: ev.tool || "", ok: ev.ok !== false,
+            ...(ev.type === "tool_start" && ev.args ? { args: ev.args } : {}),
+            ...(ev.type === "tool_end" && ev.summary ? { summary: ev.summary } : {}),
+            ...(ev.type === "tool_end" && ev.duration_ms ? { duration_ms: ev.duration_ms } : {}),
+            ...(ev.type === "tool_end" && ev.sub_commands ? { sub_commands: ev.sub_commands } : {}),
           })}\n\n`);
         } else if (ev.type === "error") {
           res.write(`data: ${JSON.stringify({ type: "error", message: ev.message })}\n\n`);
@@ -1251,6 +1296,13 @@ async function coreMode(req, res, requestId) {
             toolsUsed = ev.tools_used;
             res.write(`data: ${JSON.stringify({
               type: "tools", tools: ev.tools_used,
+            })}\n\n`);
+          }
+          // 工具调用轨迹（2026-09-19）：收尾帧 —— 前端把 running 状态
+          // 定格成最终态；轨迹随消息落 metadata.toolsTrace，翻历史能回看
+          if (toolsTrace.length) {
+            res.write(`data: ${JSON.stringify({
+              type: "tools_trace", trace: toolsTrace,
             })}\n\n`);
           }
           // Core 内部有六种结局，失败时它已经把人话放进 message 了
@@ -1312,6 +1364,9 @@ async function coreMode(req, res, requestId) {
     }
     if (toolsUsed.length) {
       meta.toolsUsed = toolsUsed;
+    }
+    if (toolsTrace.length) {
+      meta.toolsTrace = toolsTrace;
     }
     saveMessage(coreSid, "assistant", fullReply,
                 Object.keys(meta).length ? meta : "");
