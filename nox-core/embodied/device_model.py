@@ -41,6 +41,9 @@ DEVICE_MODEL: dict[str, dict] = {
     "climate.lumi_mcn02_d7b8_air_conditioner": {
         "name": "客厅空调", "category": "hvac",
     },
+    "switch.gun_tong_xi_yi_ji_kai_guan_zhuang_tai": {
+        "name": "滚筒洗衣机", "category": "appliance",
+    },
     # ---- C 类：在场/时间型（只警告不拦 —— 半夜她醒了开灯是合理的，
     #      validator 看不到对话，拦了会把正当关怀一起拦掉）----
     "light.yeelink_mbulb3_0170_light": {

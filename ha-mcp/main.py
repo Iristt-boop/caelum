@@ -30,6 +30,12 @@ DEVICES = {
     "主卧 空调": "climate.lumi_mcn02_d2c3_air_conditioner",
     "客厅 空调": "climate.lumi_mcn02_d7b8_air_conditioner",
     "主卧 床头灯": "light.yeelink_mbulb3_0170_light",
+    # 滚筒洗衣机（海尔，2026-09-19 经 banto6/haier 集成入 HA）。
+    # 它在 HA 里有 120+ 个实体，只挑常用的四个 —— 全进清单是给模型的噪音
+    "洗衣机 开关机": "switch.gun_tong_xi_yi_ji_kai_guan_zhuang_tai",
+    "洗衣机 洗涤阶段": "sensor.gun_tong_xi_yi_ji_xi_di_jie_duan",
+    "洗衣机 剩余时间(分)": "sensor.gun_tong_xi_yi_ji_dang_qian_sheng_yu_yu_yue_shi_jian_fen_zhong",
+    "洗衣机 门锁": "binary_sensor.gun_tong_xi_yi_ji_men_suo_zhuang_tai",
 }
 
 def _h():

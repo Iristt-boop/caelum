@@ -113,10 +113,11 @@ def test_未收录设备_降权限不是放行():
     assert "什么" in g.ask, "降权限的出口是问她，不是默默拒绝"
 
 
-def test_模型里确实有九个设备():
-    """清单 10 行里 automation 故意不入表（forbidden_domain）。
-    家里真加了设备 → 给它补语义并改这个数；数量变了说不清原因就是误删。"""
-    assert len(DEVICE_MODEL) == 9
+def test_模型里确实有十个设备():
+    """清单 11 行里 automation 故意不入表（forbidden_domain）。
+    家里真加了设备 → 给它补语义并改这个数；数量变了说不清原因就是误删。
+    2026-09-19 9→10：滚筒洗衣机（海尔，banto6/haier 集成接入）。"""
+    assert len(DEVICE_MODEL) == 10
 
 
 # ---------------------------------------------------------------- quiet hours
