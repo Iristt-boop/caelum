@@ -7526,3 +7526,19 @@ PWA Chat.jsx   ToolTrace 卡片：摘要行(Ran N tools, total M steps, 尾部�
   要历史也交错得 bridge 按轮落 timeline，暂缓）
 - 她问「长任务循环是不是没有」：**有** —— AgentLoop 本来就是同一条回复里
   文字→工具→文字 多轮迭代，之前是展示没演出来
+
+### 52.2 「回复卡住」事故与修复（同日晚，她实测抓到）
+
+她实测时回复卡死。排查（受控浏览器实地复现 + 探针 + py-spy + ss）结论：
+
+- **上游偶发静默**：bigmodel 偶发在工具与下一段文字之间挂起 8~300 秒无字节，
+  链路（Caddy/浏览器）掐死静默连接 → 页面 loading 永真、聊天整体锁死
+  （她 17:55 那轮在 core 悬了 5 分 49 秒；py-spy 全 idle——asyncio 挂起线程视图看不见）
+- **四层修复**：① bridge 静默期 15s keepalive 注释帧（喂狗+保活）；② 首版 keepalive
+  自带解构 bug（read 成功解裸结果）当场被她的一条「啊？」抓到，已修；③ 前端看门狗
+  升级**强制恢复**——60s 无字节先 abort，僵尸连接掐不死就直接解锁+断线话术；
+  ④ core 新增 `/debug/tasks`（asyncio 任务栈掏栈诊断，仅 127.0.0.1）
+- 教训：`textStarted`/探针/promise 包装每一步都验证过，最后 bug 在自己的 keepalive——
+  **新代码上线必须过一轮真实端到端**（铁律的第 N 次应验）
+- 附产：`/api/api` 双前缀 404（来电轮询）同日修正；诊断探针 `window.__SSE_LINES`
+  留在 Chat.jsx（读流循环的字节级日志，以后排查直接看）
