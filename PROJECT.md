@@ -7509,3 +7509,20 @@ PWA Chat.jsx   ToolTrace 卡片：摘要行(Ran N tools, total M steps, 尾部�
   拍板：设备线回头统一接给 nox，现在断联）
 - 测试：core `test_tool_trace_events.py`（载荷形状+预览截断）+ 前端
   `ToolTrace.test.jsx`（摘要/折叠/状态高亮/diff/raw_cmd/running）
+
+### 52.1 二版重做（同日，她的三条反馈）
+
+「妈呀你这个设计」——参考她给的三张图重做：**竖向时间线**（图标列+行间连接线）、
+**两行式条目**（粗标题「调用工具：name」一行、灰摘要另一行，不挤一行）、
+点开看参数 k:v + 子步骤（raw_cmd 悬停/diff 绿徽标）。
+
+- **工具卡长在消息流里**：和语音卡/图片卡同待遇的消息条目——连续工具挤一张卡
+  就地长大，文字一来 flush 自然另起新气泡，下一件工具再开新卡 =
+  **文字↔工具交错时间线**（loop 本来就是 文字→工具→文字 的迭代，展示终于如实）。
+  割裂的底部「现场卡」删除——一张卡就地长大，不再有两张
+- **typing 三点动效**（经典 chat typing indicator）替代裸文本「typing」；
+  工具执行中不显示 typing（工具卡自己在长）；prefers-reduced-motion 全静止
+- 历史回看仍是汇总卡（meta.toolsTrace 无逐轮边界，交错时间线只在直播时——
+  要历史也交错得 bridge 按轮落 timeline，暂缓）
+- 她问「长任务循环是不是没有」：**有** —— AgentLoop 本来就是同一条回复里
+  文字→工具→文字 多轮迭代，之前是展示没演出来
