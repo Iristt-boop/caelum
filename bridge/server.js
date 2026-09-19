@@ -3873,8 +3873,25 @@ app.get("/api/messages", (req, res) => {
       [sid]
     ).reverse()));
   }
-  // test- 前缀 = 小克(CC)的测试专用频道，不进糖糖的时间线
-  res.json(signMsgRows(dbAll("SELECT rowid AS id, id AS sessionId, role, content, timestamp, metadata FROM conversations WHERE id NOT LIKE 'test-%' ORDER BY rowid DESC LIMIT 200").reverse()));
+  /* 🔴 不带 sessionId 的那条（「最近 200 条」）**必须和 /api/conv-sessions
+   * 用同一把尺子**：只认 32 位纯小写 hex（2026-09-19 会话不同步事故）。
+   *
+   * 这里原来只排除 `test-` 前缀（小克的测试频道）。而 PWA 的「恢复会话」兜底
+   * 就是拿这条列表的**最后一条**的 sessionId 当自己的会话 —— 上一晚端到端
+   * 验证留下的 `sse-verify-final` 不在 `test-` 之列，于是她那台设备把它捡成了
+   * 自己的对话：捡走之后它不在 Recents 里（白名单挡着）、界面上删不掉、
+   * OS 也永远追不上 —— 表现成「OS 的会话和 pwa 不同步」，她 20:32–20:46
+   * 说的话全落在那个影子会话里。
+   *
+   * 现在的白名单顺带把 `test-` 那类也挡住了（它们都不是 hex），所以原来那句
+   * 注释里的意图还在，只是不再靠前缀。**别把它改回前缀判断。**
+   */
+  res.json(signMsgRows(dbAll(
+    "SELECT rowid AS id, id AS sessionId, role, content, timestamp, metadata " +
+    "FROM conversations " +
+    "WHERE length(id) = 32 AND id NOT GLOB '*[^0-9a-f]*' " +
+    "ORDER BY rowid DESC LIMIT 200"
+  ).reverse()));
 });
 
 // 设置 KV（头像等）
