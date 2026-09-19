@@ -39,6 +39,7 @@ service_dir() {
     nox-core)     echo "$BASE_LOCAL/nox-core /root/nox-core/code" ;;
     bridge)       echo "$BASE_LOCAL/bridge /root/bridge/code" ;;
     ombre-brain)  echo "$BASE_LOCAL/Ombre-Brain /root/ombre-brain" ;;
+    ha-mcp)       echo "$BASE_LOCAL/ha-mcp /root/ha-mcp" ;;
     *) echo "" ;;
   esac
 }
