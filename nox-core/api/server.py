@@ -1614,6 +1614,34 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
     else:
         logger.info("没配 CAELUM_LINK_SECRET，本地执行端不启用")
 
+    @app.get("/debug/tasks")
+    async def debug_tasks() -> dict:
+        """卡死诊断（2026-09-19）：列出所有 asyncio 任务悬在哪里。
+
+        背景：回复卡死那轮，请求在 core 里静默悬了 5 分 49 秒而 py-spy
+        只看得到 MainThread idle —— asyncio 任务挂在 await 上时线程视图
+        是看不见的。这个端点把每个任务挂起点的栈直接掏出来看。
+        只绑 127.0.0.1，不出公网。
+        """
+        import asyncio as _asyncio
+        import traceback as _traceback
+        tasks = []
+        for t in _asyncio.all_tasks():
+            if t is _asyncio.current_task():
+                continue
+            try:
+                stack = "".join(_traceback.format_stack(t.get_stack()))[-2000:] if t.get_stack() else ""
+            except Exception:  # noqa: BLE001
+                stack = "(栈取不到)"
+            tasks.append({
+                "name": t.get_name(),
+                "coro": str(t.get_coro())[:120],
+                "done": t.done(),
+                "stack": stack,
+            })
+        tasks.sort(key=lambda x: -len(x["stack"]))
+        return {"count": len(tasks), "tasks": tasks}
+
     @app.get("/health")
     def health() -> dict:
         return {

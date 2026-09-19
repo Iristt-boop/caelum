@@ -3,7 +3,7 @@
   "configurations": [
     {
       "name": "caelum-os-ui",
-      "runtimeExecutable": "C:\\Users\\14372\\.workbuddy\\binaries\\node\\versions\\22.22.2-2\\node.exe",
+      "runtimeExecutable": "node",
       "runtimeArgs": [
         "nox-app/caelum-os-ui/node_modules/vite/bin/vite.js",
         "nox-app/caelum-os-ui"
@@ -12,7 +12,7 @@
     },
     {
       "name": "caelum-app",
-      "runtimeExecutable": "C:\\Users\\14372\\.workbuddy\\binaries\\node\\versions\\22.22.2-2\\node.exe",
+      "runtimeExecutable": "node",
       "runtimeArgs": [
         "nox-app/frontend/node_modules/vite/bin/vite.js",
         "nox-app/frontend"
@@ -21,7 +21,7 @@
     },
     {
       "name": "caelum-os-dist",
-      "runtimeExecutable": "C:\\Users\\14372\\.workbuddy\\binaries\\node\\versions\\22.22.2-2\\node.exe",
+      "runtimeExecutable": "node",
       "runtimeArgs": [
         "nox-app/caelum-os-ui/node_modules/vite/bin/vite.js",
         "preview",
