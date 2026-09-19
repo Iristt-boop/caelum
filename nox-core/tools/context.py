@@ -82,18 +82,26 @@ class ToolContext:
     pending_steps: list[dict[str, Any]] = field(default_factory=list)
 
     def report_step(self, desc: str, *, status: str = "success",
-                    raw_cmd: str | None = None, diff: str | None = None) -> None:
+                    raw_cmd: str | None = None, diff: str | None = None,
+                    url: str | None = None, type: str = "run_command") -> None:
         """上报一条工具内部子步骤（⌨️ run_command 那一层）。
 
         `desc` 是给人看的友好描述，平时只显示它；`raw_cmd` 是底层命令，
         前端悬停才看（调试用）；失败/警告用 status 标，前端会高亮。
         展示层的事不该带塌工具本身 —— 所以这里什么都不抛。
+
+        `url` 是**这一步的来源**（2026-09-19 加，糖糖：「web_search … 下方要列
+        都搜索了哪些网址，要有来源」）。现在只有 web_search 用：每搜到一条网页
+        报一条。不塞进 `desc` 里是因为那是个「给人看的一句话」—— 链接要能被
+        点开、能被复制，才算来源。
         """
-        entry: dict[str, Any] = {"desc": desc, "type": "run_command", "status": status}
+        entry: dict[str, Any] = {"desc": desc, "type": type, "status": status}
         if raw_cmd:
             entry["raw_cmd"] = raw_cmd
         if diff:
             entry["diff"] = diff
+        if url:
+            entry["url"] = url
         try:
             self.pending_steps.append(entry)
         except Exception:  # noqa: BLE001
