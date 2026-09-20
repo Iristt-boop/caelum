@@ -2306,7 +2306,11 @@ if (fs.existsSync(frontendDist)) {
     maxAge: "1y",
     immutable: true,
     setHeaders(res, filePath) {
-      if (filePath.endsWith("index.html")) {
+      // 🔴 .html **全部** no-cache，不只 index.html：toy.html / nox-voice.html
+      // 这些 public/ 下的手写页没有内容哈希，文件名永远不变 —— 上面的
+      // maxAge 1y + immutable 会把它们按年缓存，改了页面她手机上永远拿旧的，
+      // 而且移动端没有顺手硬刷新这回事。2026-09-20 中继页改 SSE 就差点被吞。
+      if (filePath.endsWith(".html")) {
         res.setHeader("Cache-Control", "no-cache, must-revalidate");
       }
     },
@@ -4087,9 +4091,42 @@ app.get("/api/call/status", (req, res) => {
 });
 
 // ============ 设备控制（二十七章遗留项目：state 中继模式）============
-// 小克调 toy_set/toy_stop → 状态落库 → 中继页(/toy.html)轮询 → Web Bluetooth → 设备
+// 小克调 toy_set/toy_stop → 状态落库 → 中继页(/toy.html)收 SSE 推送 → Web Bluetooth → 设备
 const getToyState = () => { try { return JSON.parse(dbAll("SELECT value FROM settings WHERE key='toy_state'")[0]?.value || "{}"); } catch { return {}; } };
-const setToyState = (s) => dbRun("INSERT OR REPLACE INTO settings VALUES ('toy_state', ?)", [JSON.stringify({ ...s, updated_at: Date.now() })]);
+
+// 状态推送（SSE，2026-09-20）。原来中继页只能 setInterval 每秒轮询，而浏览器
+// 对后台页的定时器狠得很：隐藏约 5 分钟后降到一分钟一次 —— 她的体感是
+// 「Nox 调了 toy_set，要切回中继页设备才动」。SSE 是网络事件，不吃定时器
+// 节流，状态落库的同一刻就推给页面，页面挂在后台也照收。
+// 🔴 EventSource 带不了自定义 header —— token 走 ?token=（readAuthToken 的三个来源之一）。
+const toySseClients = new Set();
+function broadcastToyState(s) {
+  const frame = `data: ${JSON.stringify(s)}\n\n`;
+  for (const c of toySseClients) {
+    try { c.write(frame); } catch { toySseClients.delete(c); }
+  }
+}
+const setToyState = (s) => {
+  const next = { ...s, updated_at: Date.now() };
+  dbRun("INSERT OR REPLACE INTO settings VALUES ('toy_state', ?)", [JSON.stringify(next)]);
+  broadcastToyState(next);
+};
+app.get("/api/toy/stream", (req, res) => {
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no");   // 不然 Caddy 把流攒成一坨，「推送一顿一顿」
+  res.write(`data: ${JSON.stringify(getToyState())}\n\n`);   // 先补发当前状态，页面重连不丢最后一条指令
+  toySseClients.add(res);
+  req.on("close", () => toySseClients.delete(res));
+});
+// 心跳用注释行（": ping"）—— 不触发客户端 onmessage，只防中间层掐闲连接。
+// 写坏了的连接等它自己的 close 事件清场；unref 保证它永远不挡进程退出。
+setInterval(() => {
+  for (const c of toySseClients) {
+    try { c.write(": ping\n\n"); } catch { toySseClients.delete(c); }
+  }
+}, 25000).unref();
 
 // 这里原来有 /api/obsidian —— Core 够不着本机 Agent 那条 WS，
 // 所以开个 REST 口子让它转发，由她电脑上的 Agent 写 Obsidian 文件。
