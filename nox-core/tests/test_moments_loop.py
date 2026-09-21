@@ -897,6 +897,40 @@ def test_a_context_failure_does_not_stop_the_post(monkeypatch, caplog):
     assert any("素材" in m for m in messages), "素材读失败要留痕（不许静默）"
 
 
+def test_那句人话在一行日志里只出现一次(monkeypatch, caplog):
+    """🔴 `why_not_posted` 不许把 `impulse.why` 拼进去。
+
+    `record.log()` 的格式串里这两段是**相邻的两格**（`…｜%s｜%s｜body=%s`），
+    所以谁把 why 拼进 why_not_posted，那句中文就在同一行里出现两遍。
+    2026-09-21 线上就是这样：below_threshold 占了一天 96 个 tick 的一半，
+    半天的 journalctl 都在重复同一句话。
+
+    判据是「整句 `why` 出现几次」，不是找某几个字 ——
+    `why` 本身以「，没到阈值 0.45」结尾，而 `why_not_posted` 也该提阈值，
+    按字找会把这种正常的重叠误判成重复。
+
+    能挡：在任何一个 not-posted 分支里顺手 `：{imp.why}`。
+    不能挡：换个说法把 why 的内容手抄一遍（那得靠 review）。
+    """
+    #: longing 0.1 → inner 约 0.1，乘上时机也到不了 0.45，走 below_threshold
+    rig = Rig(monkeypatch, mode="shadow", drives={"longing": 0.1})
+    rec = rig.run()
+    assert rec is not None and rec.reason == "below_threshold"
+    assert rec.impulse.why, "空的 why 会让下面那个 count 恒等于 0，白测"
+
+    caplog.clear()
+    with caplog.at_level(logging.INFO):
+        rec.log(logging.getLogger("test_moments_loop"))
+    lines = [r.getMessage() for r in caplog.records if "Moments｜" in r.getMessage()]
+    assert len(lines) == 1, f"该恰好打一行，打了 {len(lines)} 行"
+
+    got = lines[0].count(rec.impulse.why)
+    assert got == 1, (
+        f"那句人话在一行里出现了 {got} 次（该 1 次）：{rec.impulse.why!r}\n"
+        f"整行：{lines[0]}"
+    )
+
+
 def test_loop_source_stays_inside_its_boundaries():
     """🔴 R9 / R10 的源码哨兵（读的是**文本**，不是调用图）。
 

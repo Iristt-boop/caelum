@@ -334,7 +334,13 @@ def post_tick(*, mode: str, store: Any, attention: Any, sessions: Any,
             at=now, mode=mode, signals=signals, impulse=imp, threshold=THRESHOLD,
             dice=None, dice_p=None, posted=False, post_id=None,
             reason="below_threshold",
-            why_not_posted=f"冲动 {imp.value:.2f} 没到阈值 {THRESHOLD}：{imp.why}",
+            #: 🔴 **别把 `imp.why` 拼进来**（2026-09-21 摘掉的）：
+            #: `record.log()` 的格式串里 `why_not_posted` 和 `impulse.why`
+            #: 是**相邻的两段**，拼进来那句人话就在同一行里出现两遍 ——
+            #: below_threshold 占了一天 96 个 tick 里的一半，半天的日志都在重复。
+            #: 两个 sink 都不缺这份信息：`to_dict()` 里 `why` 是独立的键，
+            #: 日志里它就跟在后面一格。
+            why_not_posted=f"冲动 {imp.value:.2f} 没到阈值 {THRESHOLD}",
         ))
 
     #: ④ 今天发满了。计数从 `source_state` 来，所以**重启也记得** ——
