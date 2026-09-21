@@ -2833,6 +2833,39 @@ app.get("/api/music/recent", async (req, res) => {
 });
 
 // ==============================================================
+// ==============================================================
+// 🌍 World 页的两个只读出口（2026-09-21 补桥）
+//
+// 数据源住在 Nox Core :8100（/api/nox/topics 话题池投影、/api/nox/dreams
+// Dream shadow 的 JSONL 只读投影），但 R7 写死「前端只打 bridge」——
+// 这半截一直没人接，World 页「外面」「梦」两块一起 404。
+// 纯透传：不改形不缓存，Core 挂了 502，前端说人话。
+app.get("/api/nox/topics", async (req, res) => {
+  try {
+    const r = await fetch(`${NOX_CORE_URL}/api/nox/topics`, {
+      signal: AbortSignal.timeout(8000),
+    });
+    res.status(r.status).json(await r.json());
+  } catch (e) {
+    console.warn("[world] 话题池透传失败:", e.message);
+    res.status(502).json({ ok: false, error: `core 不可达: ${e.message}` });
+  }
+});
+
+app.get("/api/nox/dreams", async (req, res) => {
+  try {
+    const limit = Math.min(Math.max(parseInt(req.query.limit) || 5, 1), 30);
+    const r = await fetch(`${NOX_CORE_URL}/api/nox/dreams?limit=${limit}`, {
+      signal: AbortSignal.timeout(8000),
+    });
+    res.status(r.status).json(await r.json());
+  } catch (e) {
+    console.warn("[world] 梦透传失败:", e.message);
+    res.status(502).json({ ok: false, error: `core 不可达: ${e.message}` });
+  }
+});
+
+// ==============================================================
 // 🎬 共影观影状态 / 记录（2026-08-22，技术方案 v2.0 的 P1）
 //
 // 在这之前共影是一座孤岛：Movies.jsx 自己拼一段字符串塞进 /api/chat，
