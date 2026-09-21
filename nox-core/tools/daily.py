@@ -383,6 +383,7 @@ def make_handlers(bridge: BridgeClient) -> dict[str, object]:
         "favorite_image": favorite,
         "add_todo": add_todo,
         "complete_todo": complete_todo,
+        "delete_todo": delete_todo,
         "get_todos": get_todos,
         "write_diary": write_diary,
     }
