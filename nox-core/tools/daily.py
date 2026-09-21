@@ -125,6 +125,25 @@ COMPLETE_TODO_SPEC = ToolSpec(
     },
 )
 
+DELETE_TODO_SPEC = ToolSpec(
+    side_effect="write",
+    name="delete_todo",
+    description=(
+        "从清单里**删掉**一条待办 —— 记错了、不用了、想撤回的时候用。\n"
+        "keyword 给几个能认出那条的字就行，不用抄全。\n"
+        "\n"
+        "⚠️ 删了就是没了，不可恢复。她只是想说「这个做完了」的话，"
+        "用 complete_todo，别用这个 —— 循环任务被删掉就再也不会回来了。"
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "keyword": {"type": "string", "description": "能认出那条的几个字"},
+        },
+        "required": ["keyword"],
+    },
+)
+
 GET_TODOS_SPEC = ToolSpec(
     side_effect="read",
     name="get_todos",
@@ -296,6 +315,35 @@ def make_handlers(bridge: BridgeClient) -> dict[str, object]:
             return f"「{d.get('text')}」今天这次记上了{extra}。它是循环的，明天还会回来。"
         return f"「{d.get('text')}」划掉了。"
 
+    def delete_todo(args: dict) -> str:
+        kw = str(args.get("keyword", "")).strip()
+        if not kw:
+            return "没给关键词，没删。"
+        # 先在没做完的里找（正常情况）；找不到再翻今天的全部（含已划掉的，清账用）
+        r = bridge.get("/api/todo/list")
+        if not r.ok:
+            raise RuntimeError(f"读待办失败: {r.error}")
+        items = (r.data or {}).get("items", [])
+        hit = next((t for t in items if kw in str(t.get("text", ""))), None)
+        if not hit:
+            r2 = bridge.get("/api/today")
+            if not r2.ok:
+                raise RuntimeError(f"读待办失败: {r2.error}")
+            rows = r2.data if isinstance(r2.data, list) else []
+            done_hit = [t for t in rows if kw in str(t.get("text", ""))]
+            if not done_hit:
+                return f"清单里没找到含「{kw}」的待办。先用 get_todos 看一眼？"
+            hit = done_hit[0]
+        rid = hit.get("id")
+        rd = bridge.delete(f"/api/today/{rid}")
+        if not rd.ok:
+            raise RuntimeError(f"删待办失败: {rd.error}")
+        # 清单变了，让他手上的缓存作废
+        context.wrote("todo")
+        repeat = str(hit.get("repeat") or "")
+        extra = "（那条是循环任务，删掉后它不会再回来了）" if repeat not in ("", "once", "anytime") else ""
+        return f"「{hit.get('text')}」删掉了，清单里没有它了。{extra}"
+
     def get_todos(args: dict) -> str:
         r = bridge.get("/api/today", {"date": args.get("date")})
         if not r.ok:
@@ -341,7 +389,7 @@ def make_handlers(bridge: BridgeClient) -> dict[str, object]:
 
 
 def register_all(loop, bridge: BridgeClient) -> None:
-    """注册六个日常工具。顺序固定 —— 工具定义是缓存前缀的一部分。
+    """注册七个日常工具。顺序固定 —— 工具定义是缓存前缀的一部分。
 
     `complete_todo` 2026-08-18 从 `tools/todo.py`（写 GitHub 的那套）
     搬到这里，改成走 bridge —— GitHub todo.md 那天退役为只读存档。
@@ -349,5 +397,5 @@ def register_all(loop, bridge: BridgeClient) -> None:
     """
     handlers = make_handlers(bridge)
     for spec in (SEND_IMAGE_SPEC, FAVORITE_SPEC, ADD_TODO_SPEC,
-                 COMPLETE_TODO_SPEC, GET_TODOS_SPEC, WRITE_DIARY_SPEC):
+                 COMPLETE_TODO_SPEC, DELETE_TODO_SPEC, GET_TODOS_SPEC, WRITE_DIARY_SPEC):
         loop.register(spec, handlers[spec.name])  # type: ignore[arg-type]
