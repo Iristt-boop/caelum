@@ -17,7 +17,7 @@
 # 退出码：0 上线并验过 / 1 找不到能用的 bash / 其余原样透传 .sh 的退出码
 #   （2 = 线上文件里没有 body=%s；3 = 没等到带 body= 的 tick）
 
-param([switch]$Wait)
+param([switch]$Wait, [switch]$Check)
 
 $ErrorActionPreference = "Stop"
 # 控制台是 gb2312，脚本吐的是 UTF-8。不改这个中文全是乱码，
@@ -77,17 +77,18 @@ Write-Host "── 用这个 bash：$bash ──"
 Write-Host ""
 
 # ---------------------------------------------------------------- 跑
-$argv = @("-lc", $(if ($Wait) { "bash '$Sh' --wait" } else { "bash '$Sh'" }))
-& $bash @argv
+$flag = if ($Check) { " --check" } elseif ($Wait) { " --wait" } else { "" }
+& $bash -lc "bash '$Sh'$flag"
 $code = $LASTEXITCODE
 
 Write-Host ""
 # 判据挑**退出码**，不挑中文输出（memory: dont-judge-success-by-text）
 switch ($code) {
-  0 { Write-Host "✅ 退出码 0 —— 上线了，线上文件已回读验过" }
+  0 { Write-Host "✅ 退出码 0 —— 新代码在跑，已经回读线上文件 + 看过重启后的 tick" }
   1 { Write-Host "🔴 退出码 1 —— 部署或重启失败，线上还是旧的" }
   2 { Write-Host "🔴 退出码 2 —— 线上那份 record.py 里没有 body=%s：传上去的不是新代码，或者进了野目录" }
-  3 { Write-Host "🔴 退出码 3 —— 没等到带 body= 的 tick，跑着的可能还是旧代码" }
+  3 { Write-Host "🔴 退出码 3 —— 重启后的 tick 没带 body=，跑着的确实还是旧代码（上面有排障信息）" }
+  4 { Write-Host "⏳ 退出码 4 —— 重启后还没出现 tick，**不是失败**。过 15 分钟再跑一次 -Check" }
   default { Write-Host "未知退出码 $code" }
 }
 exit $code
