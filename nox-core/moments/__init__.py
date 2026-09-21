@@ -49,4 +49,6 @@ DRIVE_WORDS = {
     "dejection": "提不起劲",
     "concern": "担心她",
     "curiosity": "被一件事勾着",
+    # 梦（2026-09-21 她拍板：梦常态发 Moments，他自己发言的地方）
+    "dream": "梦里见的",
 }

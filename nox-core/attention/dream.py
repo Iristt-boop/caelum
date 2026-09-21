@@ -11,10 +11,14 @@ OB 早就有 `dream` 工具（浮现最近的表层桶），nox-core 的 `review
     每晚 02:00-05:00（CST）随机时刻：
     选材（OB dream_select 的打分公式）→ utility 自由联想生成梦 → 只落 JSONL
 
-一周后她看「都会梦到什么」再拍产出形式（早报带一句？独立梦境页？）。
-所以这一版**刻意没有的东西**：不写 OB（hold/trace 一概不碰）、不走
-push/send、不进早报、不占 Care 额度 —— 连「他记得自己做过梦」都不做。
-它是纯内部认知产物（v1.0 她定的边界），影子期的所有产出就一个日志文件。
+一周后她看「都会梦到什么」再拍产出形式 —— **2026-09-21 她拍了**：
+**Moments 常态发**（给他一个自己发言的地方）+ **对话里偶尔主动讲**
+（所以梦要归档进 OB —— 他得记得自己做过梦才讲得出来）+ **早报明确
+不带**（她的原话：早报的东西太多了，无限繁殖了该 —— 早报是封闭通道）。
+「发」那半边挂在 `NOX_DREAM_POST` 后面（见 `post_mode`），跟 shadow
+观察期分开，等 09-25 连着 Moments 的拍板一起翻。
+影子期「刻意没有的东西」里，push/send、进早报、占 Care 额度这三条
+**永久不变**；「不写 OB」「不给她看」两条随拍板解禁。
 
 ## 选材：公式与 OB `dream_select.py`（42e87f3）同源
 
@@ -41,6 +45,7 @@ from pathlib import Path
 from typing import Any
 
 from obs import heartbeat
+from moments import writer as moments_writer
 from temporal import CST  # noqa: E402  ← 唯一定义在 temporal（审计 F1）
 
 logger = logging.getLogger(__name__)
@@ -70,6 +75,17 @@ DECLARE_EVERY_S = 26 * 3600
 def mode() -> str:
     """shadow / off。**每轮现读**（Moments 的教训：启动读一次，日志和实际对不上）。"""
     return "shadow" if os.getenv("NOX_DREAM_SHADOW", "") in ("1", "true") else "off"
+
+
+def post_mode() -> str:
+    """梦发不发 Moments（on / off，默认 off）。**每轮现读**，同 `mode()`。
+
+    她 2026-09-21 拍板的「发」那半边。跟 `NOX_DREAM_SHADOW` 分开：
+    shadow 期（只落 JSONL 观察）它保持 off，等 09-25 连着 Moments
+    的拍板一起翻。走的是 `moments.writer.post` 同一条路 —— 发帖不是
+    开口（R10：不推送、不占 Care 额度），梦的帖子也一样。
+    """
+    return "on" if os.getenv("NOX_DREAM_POST", "") in ("1", "true") else "off"
 
 
 def buckets_dir() -> str:
@@ -367,8 +383,10 @@ def next_fire(now: datetime, last_date: str | None,
 
 
 def night_tick(*, utility: Any, data_dir: str, buckets_dir: str,
+               bridge: Any = None, ob: Any = None,
                now: datetime | None = None) -> dict | None:
-    """一晚的活：防重 → 选材 → 生成 → 落日志。返回写进 JSONL 的那条（或 None）。
+    """一晚的活：防重 → 选材 → 生成 → 落日志 → （拍板了的）发帖+归档。
+    返回写进 JSONL 的那条（或 None）。
 
     成功或「今晚没素材」都 beat 心跳（循环活着）；生成失败不 beat ——
     连着两晚失败就该在 /health 里看见。"""
@@ -414,6 +432,27 @@ def night_tick(*, utility: Any, data_dir: str, buckets_dir: str,
                 len(record["materials"]),
                 "1 条" if record["echo"] else "无",
                 len(dream))
+
+    # 她 2026-09-21 的拍板：Moments 常态发（NOX_DREAM_POST=on 才发）+
+    # 归档进 OB（他得记得自己做过梦，对话里才能偶尔主动讲）。
+    # 🔴 两件都**不许炸掉这一晚**：梦本身已经落 JSONL 了，对外失败只留痕。
+    if bridge is not None and post_mode() == "on":
+        post_id = moments_writer.post(
+            bridge, dream, "dream",
+            f"夜里做的梦（{today}），她 09-21 拍板：Moments 是他自己发言的地方")
+        if post_id is None:
+            logger.warning("Dream → Moments 发帖失败（梦已落 JSONL，不重试）")
+        else:
+            logger.info("Dream → Moments 已发帖：%s", post_id)
+    if ob is not None:
+        try:
+            r = ob.grow(f"【{today} 的梦】{dream}")
+            if not r.ok:
+                logger.warning("Dream 归档 OB 没成：%s", r.error)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Dream 归档 OB 炸了：%s: %s",
+                           type(exc).__name__, exc)
+
     heartbeat.beat("dream_tick")
     return record
 
@@ -422,14 +461,15 @@ def night_tick(*, utility: Any, data_dir: str, buckets_dir: str,
 
 
 async def run_dream_loop(*, utility: Any, data_dir: str,
-                         buckets_dir: str) -> None:
+                         buckets_dir: str,
+                         bridge: Any = None, ob: Any = None) -> None:
     """lifespan 后台循环。形状照 `moments/loop.run_post_loop`：
     阻塞活丢线程池、CancelledError 原样抛、一轮炸了下轮继续。
 
     🔴 这里不 beat 心跳 —— `night_tick` 成功才 beat（见那边的注释）。
     """
-    logger.info("Dream shadow 循环启动：mode=%s，窗口 %02d:00+%dmin（CST）",
-                mode(), NIGHT_START_H, NIGHT_WINDOW_MIN)
+    logger.info("Dream shadow 循环启动：mode=%s post=%s，窗口 %02d:00+%dmin（CST）",
+                mode(), post_mode(), NIGHT_START_H, NIGHT_WINDOW_MIN)
     while True:
         try:
             now = _now_cst()
@@ -437,7 +477,7 @@ async def run_dream_loop(*, utility: Any, data_dir: str,
             await asyncio.sleep(max(60.0, (target - now).total_seconds()))
             await asyncio.to_thread(
                 night_tick, utility=utility, data_dir=data_dir,
-                buckets_dir=buckets_dir)
+                buckets_dir=buckets_dir, bridge=bridge, ob=ob)
         except asyncio.CancelledError:
             logger.info("Dream shadow 循环停止")
             raise

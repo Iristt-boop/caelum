@@ -225,3 +225,87 @@ def test_next_fire_already_dreamed_tonight():
     now = datetime(2026, 9, 18, 3, 0, tzinfo=CST)   # 还在窗口内，但做过
     t = dream.next_fire(now, now.date().isoformat(), rand=lambda a, b: 0)
     assert t.date() == now.date() + timedelta(days=1)
+
+
+# ------------------------------------------------- 发帖+归档（她 09-21 拍板）
+
+
+class _Bridge:
+    """够 writer.post 用的假 bridge：post(path, body) → 带 id 的 ok。"""
+
+    def __init__(self):
+        self.posts = []
+
+    def post(self, path, body=None):
+        self.posts.append((path, body))
+        return SimpleNamespace(ok=True, data={"id": "mom-1"}, error=None)
+
+
+class _OB:
+    def __init__(self):
+        self.grown = []
+
+    def grow(self, content):
+        self.grown.append(content)
+        return SimpleNamespace(ok=True, text="已归档", error=None)
+
+
+def test_night_tick_post_off_sends_nothing_but_archives(buckets, night_env):
+    """NOX_DREAM_POST 默认 off：不发帖；OB 归档照做（他要记得自己做过梦）。"""
+    bridge, ob = _Bridge(), _OB()
+    now = datetime.now(CST)
+    rec = dream.night_tick(utility=_Utility(), buckets_dir=buckets,
+                           data_dir=night_env["data_dir"],
+                           bridge=bridge, ob=ob, now=now)
+    assert rec is not None
+    assert bridge.posts == []
+    assert len(ob.grown) == 1
+    assert ob.grown[0].startswith(f"【{now.date().isoformat()} 的梦】")
+
+
+def test_night_tick_post_on_posts_via_writer_path(buckets, night_env, monkeypatch):
+    """开闸：梦走 moments.writer.post 同一条路（drive=dream，不推送）。"""
+    monkeypatch.setenv("NOX_DREAM_POST", "1")
+    bridge, ob = _Bridge(), _OB()
+    rec = dream.night_tick(utility=_Utility(), buckets_dir=buckets,
+                           data_dir=night_env["data_dir"],
+                           bridge=bridge, ob=ob, now=datetime.now(CST))
+    assert rec is not None
+    assert len(bridge.posts) == 1
+    path, body = bridge.posts[0]
+    assert path == "/api/diary"
+    assert body["kind"] == "moment" and body["author"] == "Nox"
+    assert body["drive"] == "dream"
+    assert body["content"] == rec["dream"]
+    # 梦也归了档
+    assert len(ob.grown) == 1
+
+
+def test_night_tick_post_failure_does_not_kill_the_night(buckets, night_env,
+                                                         monkeypatch):
+    """发帖炸了/没拿到 id：梦已落 JSONL，这一晚照样算成功。"""
+    monkeypatch.setenv("NOX_DREAM_POST", "1")
+
+    class _DeadBridge:
+        def post(self, path, body=None):
+            raise RuntimeError("bridge 不在家")
+
+    rec = dream.night_tick(utility=_Utility(), buckets_dir=buckets,
+                           data_dir=night_env["data_dir"],
+                           bridge=_DeadBridge(), ob=_OB(),
+                           now=datetime.now(CST))
+    assert rec is not None
+    log = Path(night_env["data_dir"]) / "dream-shadow.jsonl"
+    assert len(log.read_text(encoding="utf-8").strip().splitlines()) == 1
+
+
+def test_ob_grow_failure_does_not_kill_the_night(buckets, night_env):
+    class _DeadOB:
+        def grow(self, content):
+            raise RuntimeError("OB 睡了")
+
+    rec = dream.night_tick(utility=_Utility(), buckets_dir=buckets,
+                           data_dir=night_env["data_dir"],
+                           bridge=_Bridge(), ob=_DeadOB(),
+                           now=datetime.now(CST))
+    assert rec is not None

@@ -870,17 +870,23 @@ def _read_dream_log(data_dir: str, limit: int = 5) -> list[dict]:
 
 
 def _build_dream(core: Any, meter: Any) -> dict | None:
-    """Dream shadow 的接线（夜间做梦，先只记日志）。关掉/缺件就 None。
+    """Dream 的接线（夜间做梦）。关掉/缺件就 None。
 
     抄 `_build_moments` 的先例：缺件宁可不起，不许起一个半残的循环 ——
     少 utility 是梦永远生成不出来，所以它是必需件。返回的字典直接
     `run_dream_loop(**parts)`。
 
-    ## 🔴 这一层不许碰的东西（attention/dream.py 的边界）
+    ## 产出形式（她 2026-09-21 拍板，改了 shadow 期的边界）
 
-    梦不是开口：不走 Orchestrator、不碰 push/send、不写 OB、不占 Care
-    额度。影子期的全部产出是 data 目录下的一个 JSONL，一周后她看完
-    「都会梦到什么」再拍产出形式。
+    Moments 常态发（`NOX_DREAM_POST=on` 才发，走 `moments.writer.post`
+    同一条路：不推送、不占 Care 额度）+ 归档进 OB（他得记得自己做过
+    梦，对话里才能偶尔主动讲）。**早报明确不带** —— 她的原话：早报
+    东西太多了，无限繁殖了该。
+
+    ## 🔴 仍然不许碰的东西
+
+    梦不是开口：不走 Orchestrator、不碰 push/send、不占 Care 额度、
+    不进早报。bridge/ob 只是「发帖」和「归档」两只手，不是说话的嘴。
     """
     if dream_loop.mode() == "off":
         logger.debug("Dream shadow 是 off（NOX_DREAM_SHADOW 没开），这条线不跑")
@@ -895,6 +901,8 @@ def _build_dream(core: Any, meter: Any) -> dict | None:
             "utility": utility,
             "data_dir": os.path.dirname(str(core.cfg.db_path)),
             "buckets_dir": dream_loop.buckets_dir(),
+            "bridge": getattr(core, "bridge", None),
+            "ob": getattr(core, "ob", None),
         }
     except Exception:  # noqa: BLE001
         logger.exception("Dream 接线装配失败，这条线不跑")
