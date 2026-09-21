@@ -623,6 +623,68 @@ V2 那条注释（subject 不能叫「糖糖的状态」，那个被 HRV 占了�
 - 关系状态可写可落盘 + 她点头的确认界面
 - MemoryProvider 由理解层驱动解禁
 
+### V4.5：情绪向量与 Resonance v4（📋 方向她 2026-09-21 拍板）
+
+她看着 Moments 影子数据（09-17→09-21，452 tick，23 次想发里 22 次是
+「担心她」领头、强度 0.58→0.85 一路爬）说的：
+
+> 现在 Resonance 不是「感情丰富的人格」，更像一个被几个传感器绑架的
+> 情绪系统。……这不是 Nox「选择担心」，而是系统统计学上必然担心。
+
+核心转向：**Resonance 不该代表「当前最强情绪」，而是心理空间里的
+情绪状态分布。** 一个人今天 70% 担心工作、20% 开心、10% 想念某人——
+不是「因为工作压力最大，所以这个人只能焦虑」。
+
+```text
+旧：Source → Emotion → Strength → Expression 取 max
+新：Source → Emotion Drive → Temporal Dynamics → Emotion State Vector
+                                                 → Expression Selection（采样）
+```
+
+#### 她点的三个新机制
+
+| 机制 | 内容 | 备注 |
+|---|---|---|
+| Decay | 情绪自然消散，**各情绪时间常数不同**：concern 快涨慢落（担心容易产生不会马上消失）、curiosity 快涨快散（话题没聊几天就归零）、longing 不走事件——它是 距离+互动频率+关系状态 | 实体级衰减已有（registry 指数衰减 + 语义消解），**聚合层（Drive=f(各 Concern)）没有自己的衰减和上限**——0.58→0.85 的单调爬就是从这里漏的 |
+| Saturation | 单个情绪有上限，concern 必须有 cap | 没有恢复机制的负反馈情绪（担心→记录→更容易注意问题→更担心）最后会变成「每天观察你健康的监控系统」，不是陪伴者 |
+| Diversity pressure | 情绪稳态（Emotional Homeostasis）：`concern > 0.75 且其余 < 0.2` → apply_balance()——**不是压 concern，是抬其他可能** | 她的例子：连着五帖「希望你照顾自己」是错的；第五帖该是「突然看到你之前发的小猫照片，想起你当时开心的样子」。他的关注不该只停在风险上 |
+
+#### Playfulness 缺的不是 source，是机会机制
+
+现有 source 全是「检测问题」（睡眠/位置/压力），天然偏 concern。
+但人的快乐很多时候不是检测来的：看到猫视频、想起你喜欢的东西、
+翻到老照片、聊到一个梗。所以促狭该接的是
+**Memory + Curiosity（话题）+ Relationship Memory（共活动）**，
+不是设备。
+
+#### 深层拆分（中期）：Resonance 该分成两族
+
+> Concern 属于 Care System（「什么时候 Nox 应该担心糖糖」）。
+> Playfulness / Curiosity / Longing 属于 Relationship Expression System
+> （「什么时候 Nox 只是想和糖糖分享一些东西」）。这两个不是一个系统。
+> 全塞进 Resonance，最后 Resonance 会被 Care 吃掉。
+
+```text
+Resonance
+├── Care Drives：concern / regret
+└── Bond Drives：longing / playfulness / curiosity
+```
+
+#### 短期清单的落地状态
+
+| 她的短期项 | 状态 |
+|---|---|
+| Moments 不取 max，采样情绪向量 | ✅ 本次落地（`moments/loop._sample_mood`，concern 不在采样池，帖子与账本同一次采样） |
+| 所有 emotion 加 decay | 🟡 大半已有：实体级指数衰减、语义消解、各 drive 自带形状（想念时间涨/低落记一笔过期/促狭滑窗）。**缺的是聚合层的衰减与上限** |
+| concern 加 cap | 🟡 Moments 侧已由更强的形式解决（173e451：concern 整个不进 inner）；**Care 侧聚合 cap 待做** |
+
+#### 她说的「早报无限繁殖」也记在这里
+
+> 早报的东西太多了。无限繁殖了该。
+
+通道是会长器官的——每加一个「顺便带上」它就胖一圈。早报从此封口，
+新的表达一律走自己的通道（梦走 Moments、念头走对话）。
+
 ### V5：主动内心活动
 
 ```text

@@ -554,6 +554,8 @@ def test_a_successful_post_is_written_to_the_store(monkeypatch):
           `at` 和 `last_post_at` 用了两个不同的时刻。
     不能挡：落盘失败怎么办（那是 `logger.warning` 之后照样返回，走不出去红）。
     """
+    #: v4 起心情是采样的 —— 钉住随机源，uniform=0 落在第一个（longing）
+    monkeypatch.setattr("moments.loop.random.uniform", lambda a, b: 0.0)
     rig = Rig(monkeypatch, messages=[
         {"role": "user", "text": "在吗", "created_at": "2026-09-15T11:00:00+00:00"},
         {"role": "assistant", "text": "在", "created_at": "2026-09-15T11:01:00+00:00"},
@@ -592,9 +594,10 @@ def test_the_posted_drive_never_names_an_excluded_drive(monkeypatch):
     「担心她」，糖糖就以为他是因为担心她才写的，而正文根本不是那件事。
     账本（`note_moment`）用的也是这个字段，一起受影响。
 
-    能挡：`_lead_drive` 从全部 drives 里挑（这条会红成 `concern`）。
+    能挡：`_sample_mood` 的采样池只含参与算分的 drive（这条会红成 `concern`）。
     不能挡：正文内容对不对 —— 那只能人看。
     """
+    monkeypatch.setattr("moments.loop.random.uniform", lambda a, b: 0.0)
     rig = Rig(monkeypatch, drives={"concern": 0.9, "longing": 0.7,
                                    "playfulness": 0.6})
 
@@ -603,6 +606,32 @@ def test_the_posted_drive_never_names_an_excluded_drive(monkeypatch):
     assert rec.posted is True
     assert rig.calls["post"][0]["drive"] == "longing", (
         "concern 没参与算分，不该被记成这条帖子的 drive")
+
+
+def test_the_mood_is_sampled_from_the_vector_not_argmax(monkeypatch):
+    """她 09-21 的 v4：心情是**采样**出来的，不是取最大。
+
+    心里 longing 0.7 / playfulness 0.6 的人，那 0.6 的促狭也该有
+    说话的时候 —— uniform 落进 playfulness 的累计区间就归它。
+    """
+    monkeypatch.setattr("moments.loop.random.uniform", lambda a, b: 0.71)
+    rig = Rig(monkeypatch, drives={"longing": 0.7, "playfulness": 0.6})
+
+    rec = rig.run()
+
+    assert rec.posted is True
+    # total=1.3，r=0.71 越过 longing 的 [0, 0.7] 区间 → 落在 playfulness
+    assert rig.calls["post"][0]["drive"] == "playfulness"
+
+
+def test_the_mood_sampling_pool_excludes_concern(monkeypatch):
+    """concern 权重再大也不在采样池里：池子只含参与算分的 drive。"""
+    seen = set()
+    for _ in range(30):
+        seen.add(loop._sample_mood(
+            {"concern": 0.95, "longing": 0.4, "curiosity": 0.3}))
+    assert "concern" not in seen
+    assert seen <= {"longing", "curiosity"}
 
 
 def test_the_count_resets_when_the_day_rolls_over(monkeypatch):

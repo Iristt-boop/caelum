@@ -233,25 +233,38 @@ def _turns_today(sessions: Any, now: datetime) -> int:
         return 0
 
 
-def _lead_drive(drives: Mapping[str, float]) -> str:
-    """压着的那几件事里最重的那件 —— `writer.post` 要的是**名字**，不是数值。
+def _sample_mood(drives: Mapping[str, float]) -> str:
+    """这一帖的心情从**情绪向量里抽**出来，不取 argmax（她 09-21 的 v4）。
 
-    认不出来（空集）就回空串：这里**不编**一个名字出来。空集在冲动过阈值时
-    不可能出现（`value = inner × timing`，inner 算法是空集 → 0），所以走到这儿
-    空串成不了「有 drive 但说不出是哪条」的假象。
+    她 2026-09-21 的原话：Resonance 不该代表「当前最强情绪」，而是
+    「心理空间里的情绪状态分布」。一个 70% 担心 + 20% 想念 + 10% 好奇
+    的人，说出口的那句完全可能是那 20% —— 心情是**采样**出来的。
+    正文那边不用改：`writer._background` 本来就把整条向量的气氛都喂给了
+    模型，这里只决定**帖子的标签和账本来源**。
 
-    🔴 领头只从**参与算分**的 drive 里挑（和 `impulse._lead` 同一条规矩）：
-    concern 0.9 但不参与算分时，这一条帖子可能是 longing 压出来的 ——
-    报成 `concern` 会让前端渲染成「担心她」，账本里也记成那个来源，
-    而正文根本不是那件事。
+    权重 = 各自强度。🔴 只在**参与算分**的 drive 里抽（concern 被排除，
+    同 `impulse._lead` 的规矩）：concern 0.9 不参与算分时，这一帖不是它
+    压出来的，标签也就不能是它 —— 不然前端渲染成「担心她」，账本记成
+    那个来源，而正文根本不是那件事。空集回空串（冲动过阈值时空集不可能
+    出现，同 `_lead_drive` 时代的论证）。
+
+    🔴 **一次采样，两处同用**：帖子的 `drive` 和 `note_moment` 的
+    `drive` 必须是同一个值 —— 抽两次可能不一致，账本就和帖子对不上了。
     """
     scored = {
         name: value for name, value in drives.items()
-        if name not in EXCLUDED_FROM_INNER
+        if name not in EXCLUDED_FROM_INNER and value > 0
     }
     if not scored:
         return ""
-    return max(scored.items(), key=lambda kv: kv[1])[0]
+    total = sum(scored.values())
+    r = random.uniform(0, total)
+    acc = 0.0
+    for name, value in scored.items():
+        acc += value
+        if r <= acc:
+            return name
+    return next(reversed(list(scored.keys())))
 
 
 def post_probability(value: float, *, threshold: float = THRESHOLD,
@@ -444,7 +457,9 @@ def post_tick(*, mode: str, store: Any, attention: Any, sessions: Any,
         ))
 
     try:
-        post_id = writer.post(bridge, body, _lead_drive(signals.drives), imp.why)
+        #: 一次采样两处同用（帖子的 drive 和账本的 drive 必须一致，见 _sample_mood）
+        mood = _sample_mood(signals.drives)
+        post_id = writer.post(bridge, body, mood, imp.why)
     except Exception as exc:  # noqa: BLE001
         logger.warning("发帖落库炸了：%s: %s", type(exc).__name__, exc)
         post_id = None
@@ -484,8 +499,7 @@ def post_tick(*, mode: str, store: Any, attention: Any, sessions: Any,
         logger.warning("attention 上没有 note_moment（假对象 / 老版本），这条帖子不进账本")
     else:
         try:
-            note_moment(post_id=post_id, drive=_lead_drive(signals.drives),
-                        why=imp.why)
+            note_moment(post_id=post_id, drive=mood, why=imp.why)
         except Exception as exc:  # noqa: BLE001
             logger.warning("Moments 记账炸了（帖子已经发出去了，账本里少一笔）：%s: %s",
                            type(exc).__name__, exc)
