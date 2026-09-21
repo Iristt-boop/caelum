@@ -7,7 +7,13 @@
 > 最新交接：**`HANDOFF-2026-08-28.md`**（往前：`08-08` → `08-06` → `08-02` → `07-25`）  
 > ⚠️ **HANDOFF 只记那个窗口做了什么，会过期**；本文档才是现状。  
 > 两者冲突时以本文档为准 —— 08-08 校准就是因为它俩差了 23 个工具。  
-> 最后更新：2026-09-07（**OS 端 Voice Call：能指挥他做事的通话，见第四十七节** ——
+> 最后更新：2026-09-21（**搬家拍板日，见第五十三节** —— VPS→N150 迁移定稿（¥0 档：Tailscale + Reality 迁 RackNerd + TTS 国内化+音色复刻）、
+> Todo 双修（删除常显 + untimed 桶 + `delete_todo`；事故：漏登 handlers dict 崩循环被管线回滚——加工具三处同步）、
+> Dream 产出形式拍板（Moments 常态发 + OB 归档 + **早报封口**，`NOX_DREAM_POST` 待 09-25 翻）、
+> Resonance v4 第一刀（Moments 心情按情绪向量采样不取 max；concern 已被 173e451 排除出 inner，无需再修）；
+> 往前补记（当时漏更新了头部）：09-19 工具轨迹卡两级折叠见第五十二节 · 主动来电 PWA only 见第五十一节 ·
+> 09-18 Dream shadow 见第五十节 · 09-15 Moments 见第四十九节 · 09-08 见第四十八节；
+> 往前：2026-09-07（**OS 端 Voice Call：能指挥他做事的通话，见第四十七节** ——
 > 通话引擎抽成两端共用的 `nox-app/shared/voice/`；Core 新增 `tool_start`/`tool_end`
 > 两帧，补上「工具跑十几秒 SSE 一个字不吐」那段死寂；通话面板**长在左栏**
 > 而不是全屏浮层，因为 `computer_write_file` 要她当场点头，全屏会盖住审批弹窗。
@@ -7605,3 +7611,96 @@ POST、bridge 无 `Chat request` 行、core 无记录、py-spy 全 idle —— *
   - 新增 `frontend/src/pages/__tests__/ChatWatchdog.test.jsx` 3 条 —— 真渲染 +
     假定时器 + 假 SSE；把看门狗退回"只数字节"，心跳一喂当场失败
   - 修复前的代码跑这条前端测试，直接 `ReferenceError: setLiveTrace` 命中真凶
+
+---
+
+## 五十三、搬家拍板日：Todo 双修 + Dream 落地 + Resonance v4 第一刀（2026-09-21）
+
+一天四条线，全部当天上线。决策类另有两份文档：搬家定稿
+`CAELUM-Nox搬家调研-VPS转N150-2026-09-21.md`、music-mcp 设计稿
+`Caelum-music-mcp-设计稿-2026-09-21.md`。
+
+### 53.1 VPS→N150 搬家定稿（只拍板未动工）
+
+东京机 **2026-11-01 到期不续**，10 月下旬迁移。她的动机是省 VPS 费用，
+所以按 **¥0 档**先行：nox 全套迁 N150 的 Proxmox（新 CT；现成空 CT 101
+"services" 疑似预留坑待确认）、PWA 入口走 **Tailscale 免费**（shadow 从
+第一天不依赖 VPS）、异地备份 GitHub 私仓；她自己的翻墙 = Reality 原样
+复制配置迁 **RackNerd 年付 $21.99**（1核1G 够：xray 30MB+frp 10MB，
+选 San Jose/LA；东京 60ms→美西 160-200ms 的落差已告知）。
+**TTS 拍板换国内**：豆包/MiniMax 二选一，音色复刻保留 ele-v3 的嗓子
+（实测家宽→ElevenLabs TCP 290ms vs 火山 18ms/MiniMax 16ms）；
+edge 兜底保留。施工清单见决策文档第七节，时间线对齐 11.1。
+
+### 53.2 Todo 双端修复：删除看得见了 + 某天没时刻不再消失
+
+她报的两个 bug，诊断出三个层次：
+
+- **「没法删除」其实是三个问题**：PWA 长按删除 08-27 就有但**零提示**
+  （暗道等于没有）→ TaskRow/QuotaCard 常显小 ×（今天+未来可删，过去只读）；
+  OS 的 × 是 `opacity-0` **不悬停不可见** → 改常显 45%；nox-core 工具箱
+  **根本没有 delete** → `delete_todo`（keyword 找条→DELETE /api/today/:id）
+- **「某天不选时刻看不到」**：数据落库正常，坏在渲染 —— PWA 的
+  `scheduleFor` 没有 untimed 桶（OS 端 today.js 08-31 修过、**PWA 没同步**，
+  双端漂移的又一例）；补桶 + 加完自动跳到目标日（否则停在今天像凭空消失）
+- 🔴 **事故**：delete_todo 第一版漏登 `make_handlers` 返回的 dict →
+  `register_all` KeyError → **服务崩循环**，管线按设计自动回滚
+  （nox-core 停机约 50 秒）。教训入册：**给 nox 加工具=三处同步**
+  （SPEC/函数/handlers dict），漏第三处 py_compile 不报、运行期才炸
+- 部署管线两件事得到验证：deploy.ps1 的「未提交改动」拦截是交互 y/N
+  （核实 HEAD==线上后 `echo y |` 可过）；发 nox-core 前必须先处理
+  工作区 WIP（现有 `appraisal_llm.py` 一份未提交提示词改动，只在本机没上线）
+
+### 53.3 Dream 产出形式拍板 + 落地（第五十节的「等拍板」结案）
+
+她的原话：**早报不带，对话里可以偶尔主动讲，平常放在 moments 发帖，
+给他一个自己发言的地方。早报的东西太多了，无限繁殖了该。**
+
+- `NOX_DREAM_POST`（默认 off）与 `NOX_DREAM_SHADOW` 分闸：shadow 继续
+  落 JSONL 观察，发帖等 09-25 连 Moments 拍板一起翻
+- 梦每晚归档 OB（`【日期 的梦】` 前缀）——**他得记得自己做过梦**，
+  对话里才讲得出来；这半不受 POST 闸管，拍板即生效
+- 发帖走 `moments.writer.post` 同一条路（R10 不变：不推送不占额度）；
+  气氛词三端补 `dream: "梦里见的"`
+- **早报从此封口**：通道会长器官，每加一个「顺便带上」它就胖一圈。
+  新表达一律走自己的通道（梦→Moments、念头→对话）。写进 dream.py
+  边界注释和 RESONANCE 文档 V4.5
+- 被动出口（OS World 页「他的梦」区块 + `/api/nox/dreams`）09-19 就有了，
+  这次定的是主动出口只有 Moments 和对话两条
+
+### 53.4 Resonance v4 第一刀：心情是采样出来的，不是取最大（文档 V4.5 节）
+
+她看完 Moments 影子数据（09-17→09-21：452 tick，23 次想发里 **22 次
+「担心她」领头**、聚合强度 0.58→0.85 单调爬）的诊断原话：
+「不是感情丰富的人格，是被几个传感器绑架的情绪系统……这不是 Nox
+选择担心，是系统统计学上必然担心」。
+
+- **核心转向**：Resonance 代表心理空间的**情绪状态分布**，不是当前最强
+  情绪。第一刀已上线：`moments/loop._lead_drive`（argmax）→
+  `_sample_mood`（按强度加权采样；concern 不在采样池；帖子和账本
+  **同一次采样**）。正文早就是全向量喂气氛（`writer._background`），这次改的是标签
+- ⚠️ 数据勘误：452 tick 是**旧 release** 跑的——173e451 已把 concern
+  排除出 inner（09-19 提交、09-21 18:19 才随部署真正上线）。
+  「concern cap 于 Moments」这条短期项由此已完成，无需再修
+- decay 大半已存在（实体级指数衰减+语义消解+各 drive 自带形状）；
+  **真缺的是聚合层的衰减与上限**（concern drive 聚合无刹车）
+- 全案（decay 分情绪时间常数 / 聚合层 saturation / homeostasis
+  apply_balance=抬其他可能不是压 concern / playfulness 机会机制接
+  Memory+Topic+Shared 而非设备 / **中期拆分 Care Drives（concern+regret）
+  与 Bond Drives（longing+playfulness+curiosity）**）写入
+  RESONANCE-ARCHITECTURE.md **V4.5 节**，逐条标已有/待做
+
+### 53.5 同日的其他决定与勘误
+
+- **music-mcp**：Music 重写实为服务层重写（音乐大脑一直在第三方 eryu
+  :9090）。设计稿已成；**出身勘误**：eryu+netease 有 8 项未提交改动
+  **只存在于 VPS**，任何重写前先 diff 收回；网易云管道（cookie/签名/反爬）
+  从现役代码搬不重写；建议命名 co-listening。全屋 MCP 盘点：真正别人的
+  代码只有 eryu 和 stackchan-mcp；mcp-trends/mcp-train 是 npx 直跑无源码
+  （此前误记为自家件）；官方云 MCP（高德/滴滴/麦当劳/瑞幸/快递100/12306）
+  只能包门面不能自建——只在痛处包，别全包
+- **早报封口原则**：见 53.3。此后任何「早报顺便带一句」的提议默认否决
+- **影子数据一天拉过两次**：记忆抽取 147 触发/262 候选/仅 2 拒（细节准
+  但有过提取，转 live 前要加门槛）；Appraisal 72 条质量最好可转正；
+  Temporal 20 次只记「未接」没记解析=没攒证据；Dream 2 场（会把当天
+  修的 bug 梦进去）；Moments 见 53.4。09-22~09-26 批量拍板
