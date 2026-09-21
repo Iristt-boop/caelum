@@ -28,7 +28,13 @@ $Key     = "$env:USERPROFILE\.ssh\id_ed25519"
 # 🔴 认名字不认 IP：43.133.211.140 已经不是这台机器了（2026-09-15 踩过）
 $Vps     = "root@noxtang.com"
 $OutDir  = "D:\claude-code\scratch\moments-shadow"
-$Local   = "D:\claude-code\.claude\worktrees\awesome-sanderson-1e4889\scripts\moments-shadow-digest.py"
+# 🔴 指主检出，不指 worktree（2026-09-21 修）：原来指着
+# `.claude\worktrees\awesome-sanderson-1e4889\`，于是每天往 VPS 推的是那条
+# 分支上的**新** digest（它找 `body=`），而线上 nox-core 跑的是 master 的**旧**
+# 代码（`record.py` 里连 body 字段都没有）—— 报告不报错，只是「正文」那一段
+# 永远空着，糖糖要的两个问题里第二个三天都没观测到。
+# worktree 还会被删掉，路径一没了就静默退回 VPS 上那份陈年脚本。
+$Local   = "D:\claude-code\scripts\moments-shadow-digest.py"
 
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 $stamp = Get-Date -Format "yyyy-MM-dd"
