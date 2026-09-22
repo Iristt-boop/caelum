@@ -1334,6 +1334,9 @@ async function coreMode(req, res, requestId) {
             ...(ev.type === "tool_end" && ev.summary ? { summary: ev.summary } : {}),
             ...(ev.type === "tool_end" && ev.duration_ms ? { duration_ms: ev.duration_ms } : {}),
             ...(ev.type === "tool_end" && ev.sub_commands ? { sub_commands: ev.sub_commands } : {}),
+            // 详情页的 Output（2026-09-22）：原始返回（core 侧已截 2000 字）
+            ...(ev.type === "tool_end" && ev.result !== undefined ? { result: ev.result } : {}),
+            ...(ev.type === "tool_end" && ev.result_truncated ? { result_truncated: true } : {}),
           })}\n\n`);
         } else if (ev.type === "error") {
           res.write(`data: ${JSON.stringify({ type: "error", message: ev.message })}\n\n`);

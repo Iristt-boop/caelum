@@ -193,6 +193,10 @@ class StreamEvent:
     args: dict = field(default_factory=dict)
     #: 结果一行摘要（tool_end），拼在工具条目尾部
     summary: str = ""
+    #: 原始返回 + 是否截断（tool_end，2026-09-22）：详情页的 Output 用。
+    #: 发之前就在 loop 那层截到 2000 字 —— 落库的 metadata 不能被撑爆
+    result: str = ""
+    result_truncated: bool = False
     #: 耗时毫秒（tool_end）
     duration_ms: int = 0
     #: 工具内部子步骤（tool_end）。工具经 ToolContext.report_step 上报，

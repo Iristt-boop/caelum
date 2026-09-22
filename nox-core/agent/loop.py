@@ -468,11 +468,17 @@ class AgentLoop:
                 steps = list(ctx.pending_steps) if ctx is not None else []
                 if ctx is not None:
                     ctx.pending_steps = []
+                # 详情页的 Output（她 09-22 的三层导航需求）：原始返回
+                # 截到 2000 字 —— 整段塞进 toolsTrace 会把落库的
+                # metadata 撑爆，详情页「结果太长」的提示就是给它配的
+                result_text = (getattr(outcome.result, "content", "") or "").strip()
                 yield StreamEvent(
                     "tool_end", tool=c.name, ok=not outcome.failed,
                     summary=_outcome_summary(outcome),
                     duration_ms=int((time.monotonic() - started) * 1000),
                     sub_commands=steps,
+                    result=result_text[:2000],
+                    result_truncated=len(result_text) > 2000,
                 )
                 outcomes.append(outcome)
             messages.append(
