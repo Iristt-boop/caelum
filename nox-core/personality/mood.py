@@ -77,7 +77,10 @@ _RESPONSE: dict[str, str] = {
 # 用方括号加固定前缀，避免和正常内容混淆。
 # ⚠️ IGNORECASE：模型偶尔写 [Mood:平静]（大写 M），生产库漏过 3 次
 # （2026-09-06 查证）—— 不剥的话她屏幕上就是一行裸文字。
-_MOOD_TAG = re.compile(r"\[mood:\s*([^\]]{1,12})\]\s*$", re.MULTILINE | re.IGNORECASE)
+# ⚠️ '[' 后和 ']' 前的空白也容忍：`[ mood:开心 ]` 曾整条漏过 ——
+#   speaker 主动消息走非流式，兜底只有这里（流式那边 MoodTagFilter
+#   同款变体 2026-09-22 已修），这层不认它就原样落库+推送了。
+_MOOD_TAG = re.compile(r"\[\s*mood:\s*([^\]]{1,12}?)\s*\]\s*$", re.MULTILINE | re.IGNORECASE)
 
 # 二级兜底：模型偶尔连方括号都不写，直接一行「mood: 撒娇」
 # （2026-09-06 截图实锤）。只认她的七个情绪词、只认整行 —— 零误伤。
@@ -89,7 +92,8 @@ _MOOD_LINE = re.compile(
 # 三级兜底：标记写在**任意位置**（行首还跟着正文）——主动消息实锤
 # （2026-09-07：「[mood:开心]18:34了…」，上面两个 pattern 都够不着，
 # 她锁屏上就是裸的）。不限行尾、词不限七个，带前导空白一起吃。
-_MOOD_TAG_ANY = re.compile(r"\s*\[mood:\s*([^\]]{1,12})\]", re.IGNORECASE)
+# 方括号内侧空白同 `_MOOD_TAG` 的教训。
+_MOOD_TAG_ANY = re.compile(r"\s*\[\s*mood:\s*([^\]]{1,12}?)\s*\]", re.IGNORECASE)
 
 # 让模型顺带判断的指令。挂在动态块里，不进缓存前缀。
 MOOD_INSTRUCTION = (
