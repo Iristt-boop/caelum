@@ -7,7 +7,12 @@
 > 最新交接：**`HANDOFF-2026-08-28.md`**（往前：`08-08` → `08-06` → `08-02` → `07-25`）  
 > ⚠️ **HANDOFF 只记那个窗口做了什么，会过期**；本文档才是现状。  
 > 两者冲突时以本文档为准 —— 08-08 校准就是因为它俩差了 23 个工具。  
-> 最后更新：2026-09-21（**搬家拍板日，见第五十三节** —— VPS→N150 迁移定稿（¥0 档：Tailscale + Reality 迁 RackNerd + TTS 国内化+音色复刻）、
+> 最后更新：2026-09-22（**增量见 `HANDOFF-2026-09-22.md`**：工具调用展示 v4
+> 三层导航（一行入口→底部弹层→详情，弹层必须 Portal 到 body）、Resonance v4
+> 第一批（聚合层 concern cap 0.80 + 促狭图片轮机会源 + Moments 心情采样与
+> 正文重摇）、Todo 双修、mood 标签双端剥离、Dream 产出形式落地（早报封口）、
+> World 页编辑式重排；**长任务循环 v1 设计已成**：`Nox-长任务循环-v1-设计.md`，
+> 待三决策拍板后新窗口施工；往前：2026-09-21（**搬家拍板日，见第五十三节** —— VPS→N150 迁移定稿（¥0 档：Tailscale + Reality 迁 RackNerd + TTS 国内化+音色复刻）、
 > Todo 双修（删除常显 + untimed 桶 + `delete_todo`；事故：漏登 handlers dict 崩循环被管线回滚——加工具三处同步）、
 > Dream 产出形式拍板（Moments 常态发 + OB 归档 + **早报封口**，`NOX_DREAM_POST` 待 09-25 翻）、
 > Resonance v4 第一刀（Moments 心情按情绪向量采样不取 max；concern 已被 173e451 排除出 inner，无需再修）；
