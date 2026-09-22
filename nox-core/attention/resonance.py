@@ -62,6 +62,16 @@ logger = logging.getLogger(__name__)
 #: 让它们参与叠加会让 Drive 被一堆将死的陈年关心慢慢垫高。
 _MIN_CONTRIB = FLOOR
 
+#: 🔴 V4.5 saturation（她 2026-09-22 拍板）：聚合强度按 kind 设上限。
+#: concern 是负反馈情绪 —— 源头（睡眠/吃饭/位置）天天有新事件，
+#: 1-Π(1-s) 只会单调涨，没有上限它会一路顶到 0.85+，
+#: 把别的 Drive 全挤出情绪空间（09-17→09-21 影子数据：22/23 担心她领头）。
+#: 上限只压 intensity；load（压着多少）照实报，两个数各管各的。
+#: V4.5 的 homeostasis 触发线（0.75）留在这个 cap 之下，可达。
+#: 「聚合层的 decay」由实体级指数衰减承担（这里不存状态，V3 边界不破）。
+_DRIVE_CAPS = {"concern": 0.80}
+_DRIVE_CAP_DEFAULT = 0.95
+
 #: `because` / `evidence` 各留几条。
 #: 这两个字段是给人看的（日志、自省），不是给机器算的 ——
 #: 列满二十条没人读得下去
@@ -195,7 +205,7 @@ class ResonanceState:
             strengths = [a.current_strength(now) for a in items]
             drives[kind] = Drive(
                 name=kind,
-                intensity=_combine(strengths),
+                intensity=min(_combine(strengths), _DRIVE_CAPS.get(kind, _DRIVE_CAP_DEFAULT)),
                 load=sum(strengths),
                 because=[a.subject for a in items[:_TOP_N]],
                 #: 每条 Concern 取**最新**那条证据 —— 旧的那些已经

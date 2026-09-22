@@ -1230,7 +1230,8 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
             logger.exception("卡片声称检查失败（不影响对话）")
 
     def _turn_ends(sid: str, text: str = "", reply: str = "",
-                   message_time: Any = None) -> None:
+                   message_time: Any = None,
+                   shared_image: bool = False) -> None:
         """一轮结束、消息真的落库之后，把这轮新留的纸条基准线校准到现在。
 
         ⚠️ **不做这一步，整条唤醒链永远不会触发，而且是静默的。**
@@ -1361,6 +1362,40 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
         # 这是**故意的**：V1 只打通管道，先证明事件在流动，
         # 规则留到 V2（见架构文档第七节的演进路线）。
         #
+        # 促狭（2026-08-27）：喂这一轮的 valence。
+        #
+        # 🔴 **每一轮都要喂，不管是什么 valence。**
+        # 只喂 playful 的话，她「哈哈哈」之后说十句正事，
+        # 窗口里还是三条 playful —— 他会一直贫下去。
+        # 正经的那些正是让气氛散掉的东西（见 playfulness.py）。
+        #
+        # 🔴 v4 机会机制第一批（她 09-22 拍板）：喂点提到文字闸门**之前**——
+        # 她甩表情包/发图片的轮次没有字，旧代码在 `if not text: return`
+        # 直接走了，促狭永远看不到她分享图片的时刻。
+        try:
+            if text:
+                #: ⚠️ appraiser 挂在 **evaluator** 上，不是 engine 上。
+                #: 写错属性路径的话 AttributeError 会被下面那个 except 吞掉，
+                #: 于是促狭永远是 0 —— 今天已经被同类问题咬过两次了
+                ap = _appraiser().appraise(text)
+                valence = ap.valence if ap is not None else "neutral"
+                cue = ap.cue if ap is not None else ""
+            elif shared_image:
+                #: ⚠️ 照片和表情包在这一层还分不开（bridge 的 meme 元数据
+                #: 没传进来）—— 第一批先都记成 playful：分享图片本身就是
+                #: 「想给你看个东西」的促狭行为。20 分钟窗口 + MAX 0.5
+                #: 压在开口阈值下，判错的代价有界
+                valence, cue = "playful", "发了个图片"
+            else:
+                valence, cue = None, ""
+            if valence is not None:
+                attention.playfulness.on_turn(_now_utc, valence=valence, cue=cue)
+                attention.store.set_source_state(
+                    PLAYFUL_KEY, attention.playfulness.to_dict()
+                )
+        except Exception:  # noqa: BLE001
+            logger.exception("促狭更新失败（不影响对话）")
+
         # 纯图片消息不造空事件。
         if not text:
             return
@@ -1374,28 +1409,6 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
                     origin_context={"sid": sid},
                 )
             )
-            # 促狭（2026-08-27）：喂这一轮的 valence。
-            #
-            # 🔴 **每一轮都要喂，不管是什么 valence。**
-            # 只喂 playful 的话，她「哈哈哈」之后说十句正事，
-            # 窗口里还是三条 playful —— 他会一直贫下去。
-            # 正经的那些正是让气氛散掉的东西（见 playfulness.py）。
-            try:
-                #: ⚠️ appraiser 挂在 **evaluator** 上，不是 engine 上。
-                #: 写错属性路径的话 AttributeError 会被下面那个 except 吞掉，
-                #: 于是促狭永远是 0 —— 今天已经被同类问题咬过两次了
-                ap = _appraiser().appraise(text)
-                attention.playfulness.on_turn(
-                    _now_utc,
-                    valence=ap.valence if ap is not None else "neutral",
-                    cue=ap.cue if ap is not None else "",
-                )
-                attention.store.set_source_state(
-                    PLAYFUL_KEY, attention.playfulness.to_dict()
-                )
-            except Exception:  # noqa: BLE001
-                logger.exception("促狭更新失败（不影响对话）")
-
             logger.info(
                 "ConversationEvent 进入 Attention：%.40s｜%s（%s）",
                 text, decision.action, decision.reason,
@@ -2708,7 +2721,8 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
         # ⚠️ 完整历史 + 这轮新增。只传 r.messages 的话，通话轮会把
         # 内存缓存削成截断后那几条，下一次文字聊天跟着丢上下文（见 _for_voice）
         sessions.put(sid, list(history) + r.messages[len(sent):])
-        _turn_ends(sid, req.text or "", r.text or "", message_time=msg_at)
+        _turn_ends(sid, req.text or "", r.text or "", message_time=msg_at,
+                   shared_image=bool(req.images))
 
         result = r.result
         # 失败时给人话；但如果模型已经说了什么（比如截断的半截），
