@@ -1,8 +1,8 @@
 # Nox 长任务循环 v1 —— 设计与施工文档
 
-> 2026-09-22 定稿 · 新窗口照此施工
+> 2026-09-22 定稿 · **同日已照此施工完成**（实现/测试/三端接线，见 §八施工记录）
 > 她的需求：nox 能接「帮我把 481 本书理一遍」这种活——**活过单条回复**的长任务。
-> 三待拍板决策在 §六（开工前先问她）。
+> §六的三决策已随「做这个」按建议方案落定：**全出确认卡 / 完成默认安静 / 并发 = 1**。
 
 ---
 
@@ -73,12 +73,14 @@ task_cancel(task_id)                 → 取消（running 的优雅停：置 can
 
 ## 四、验收清单
 
-- [ ] 「帮我把记忆里的书架信息理一遍」→ 出确认卡 → 确认 → 后台跑 → 对话流有进度行 → 完成有 result
-- [ ] 跑到一半重启 nox-core → 任务标 interrupted、progress 保留 → 「接着弄」能从 progress 续
-- [ ] `task_cancel` 后工具轮不再继续
-- [ ] /api/health 里任务心跳可见；杀掉 runner 两拍后可见异常
-- [ ] 测试会话（`test-` 前缀）不产生任务（R6）
-- [ ] 三处同步自查 + eslint Chat.jsx + 全量 pytest
+代码层全部有测试守着（`nox-core/tests/test_tasks.py`，17 条）；带 ※ 的要等部署后在线上再验一遍。
+
+- [x] 「帮我把记忆里的书架信息理一遍」→ 出确认卡 → 确认 → 后台跑 → 进度行 → 完成有 result（链路各环节已测：出卡不跑/claim 幂等/runner 接走/进度落库/终态落库；※端到端真模型跑一次）
+- [x] 跑到一半重启 nox-core → 任务标 interrupted、progress 保留 → 「接着跑」从 progress 续（`test_claim_from_interrupted_resumes` + `test_interrupt_keeps_progress` + `test_prompt_carries_progress_for_resume`）
+- [x] `task_cancel` 后工具轮不再继续（`test_cancel_gate_blocks_tools_mid_run`：取消后每件工具都炸 TaskCancelled，连 task_step 都闸住）
+- [x] /api/health 里任务心跳可见（`task_tick`，declare every_s=30s；runner 跑任务期间也持续 beat；※杀掉 runner 看 stale 留给线上验）
+- [x] 测试会话（`test-` 前缀）不产生任务（`test_test_session_cannot_create_tasks`，R6）
+- [x] 三处同步自查（`test_all_three_tools_registered`）+ eslint Chat.jsx（35 错 4 警 = 基线零新增）+ 全量 pytest（2001 过）
 
 ## 五、分期
 
@@ -86,14 +88,31 @@ task_cancel(task_id)                 → 取消（running 的优雅停：置 can
 - **v2**：TaskDoneSource（完成 → Care 可提一嘴，R1 路径）；任务模板（常用长任务一键发起）；定时/延迟任务踩 wakeup 纸条
 - **v3**：与 computer use 合流（PC 侧长任务走 local-gateway，11 月设备线）
 
-## 六、三个待拍板决策（开工前问她）
+## 六、三个决策（2026-09-22 随「做这个」按建议落定）
 
-1. **启动确认**：全部长任务都出确认卡？（我的建议：全出——累积性破坏力换个安心）
-2. **完成说不说**：默认安静（进度随时可看、完成记一笔），Care 提一嘴是 v2？（我的建议：是）
-3. **并发**：同时 1 个？（我的建议：是——工具通道独占）
+1. **启动确认：全部长任务都出确认卡** ✅ —— proposed → confirmed 走 `/api/nox/tasks/{id}/confirm`，模型物理上够不到 running（哨兵 `test_tool_never_runs_the_task`）
+2. **完成说不说：默认安静** ✅ —— 进度随时可查（task_status / 任务卡轮询）、完成记 progress 一笔；Care 提一嘴是 v2 的 TaskDoneSource
+3. **并发：同时 1 个** ✅ —— runner 单工作协程，跑着一个时后面的 confirmed 排队（按她点「跑」的先后）
 
 ## 七、边界（写死的）
 
 - 长任务**不是开口**：进度和完成不推送、不占 Care 额度（R10/R1 的精神同 Moments）——「想让她看见」走 v2 的 TaskDoneSource，经 Care 决定
 - 测试会话闸门（R6）：`test-` 前缀会话不得创建/触发全局任务
 - 工具注册三处同步；改 Chat.jsx 跑 eslint；发版前全量 pytest
+
+## 八、施工记录（2026-09-22，同日完成）
+
+**nox-core**（root 仓库）
+- `agent/tasks.py` —— TaskStore（tasks.db：tasks + task_progress 两表）+ 任务 AgentLoop（同批工具各包取消闸 + task_step）+ `run_one` / `run_task_loop`（心跳 task_tick）。环境旋钮：`NOX_TASK_DEADLINE_S`（默认 1800）、`NOX_TASK_MAX_ITERATIONS`（默认 200）、`NOX_TASKS_DISABLED`
+- `tools/tasks.py` —— start_long_task / task_status / task_cancel 三件套
+- `nox.py` 注册（luckin 块之后、_build_prefix 之前）；`tools/context.py` 加 `attach_task`
+- `api/server.py` —— tasks.db 建库即 `interrupt_running()` 收尸；GET /api/nox/tasks/{id} + POST confirm/cancel；lifespan 起 runner
+- `tests/test_tasks.py` —— 17 条（哨兵/幂等/FIFO/重启/取消闸/续跑 prompt/R6/循环）
+
+**bridge**（root 仓库）：`noxTaskProxy` 三条透传 + SSE `kind === "task"` 转发落库（照 order 卡）
+
+**前端 nox-app**（nox-app 仓库）：Chat.jsx —— TaskCard（proposed/interrupted = 确认卡；其余 = 一行弱化入口照 ToolsLine）+ TaskSheet（Portal 到 body，复用 tsheet 壳）+ SSE task 帧 + 历史恢复 meta.task。活任务 8s 轮询，终态即停
+
+**取消的实现**：不塞进 AgentLoop——每件工具的 handler 包了取消闸（状态离开 running 就抛 TaskCancelled），连续失败由 FailureTracker 熔断收尾；「AgentLoop 下轮检查退出」= 检查点在每次工具调用前
+
+**部署时记得**（沿用现有三段流程）：nox-core release 原子切换 → bridge 换新 → PWA dist 入 /root/frontend/dist；部署后线上验一遍带 ※ 的两条

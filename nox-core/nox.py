@@ -54,6 +54,7 @@ from tools import luckin as luckin_tools
 from tools import reading as reading_tools
 from tools import room as room_tools
 from tools import search as search_tools
+from tools import tasks as tasks_tools
 from tools import tracker as tracker_tools
 from tools import train as train_tools
 from tools import watching as watching_tools
@@ -423,6 +424,17 @@ class Nox:
         else:
             self.luckin_client = None
             logger.info("未配置 NOX_LUCKIN_MCP_URL/NOX_LUCKIN_TOKEN，跳过 luckin 瑞幸工具")
+
+        # 长任务（2026-09-22，设计：Nox-长任务循环-v1-设计.md）。
+        # start_long_task 只出确认卡，真跑在确认端点后面的 runner 手里
+        # （agent/tasks.py）。store 在 api/server.py 才建 —— 传取值函数，
+        # 同上面 luckin 的 store_ref；session_id 同样取当下的那一轮。
+        tasks_tools.register_all(
+            self.loop,
+            store_ref=lambda: getattr(self, "tasks", None),
+            session_id_ref=context.session_id,
+        )
+        logger.info("长任务工具已注册（立任务走确认卡）")
 
         # 启动时取一次核心准则，之后**永不重取**。
         # 不做定时刷新：糖糖明确说了不需要，需要新记忆时他会自己调

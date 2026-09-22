@@ -7,12 +7,14 @@
 > 最新交接：**`HANDOFF-2026-08-28.md`**（往前：`08-08` → `08-06` → `08-02` → `07-25`）  
 > ⚠️ **HANDOFF 只记那个窗口做了什么，会过期**；本文档才是现状。  
 > 两者冲突时以本文档为准 —— 08-08 校准就是因为它俩差了 23 个工具。  
-> 最后更新：2026-09-22（**增量见 `HANDOFF-2026-09-22.md`**：工具调用展示 v4
+> 最后更新：2026-09-22（**长任务循环 v1 已施工完成，见第五十四节** ——
+> 任务成一等实体：tasks.db + 确认卡（模型够不到 running）+ 后台 runner
+> （并发 1 / 心跳 task_tick / 活过重启可续跑）+ 三端接线；设计+施工记录
+> `Nox-长任务循环-v1-设计.md`。**增量见 `HANDOFF-2026-09-22.md`**：工具调用展示 v4
 > 三层导航（一行入口→底部弹层→详情，弹层必须 Portal 到 body）、Resonance v4
 > 第一批（聚合层 concern cap 0.80 + 促狭图片轮机会源 + Moments 心情采样与
 > 正文重摇）、Todo 双修、mood 标签双端剥离、Dream 产出形式落地（早报封口）、
-> World 页编辑式重排；**长任务循环 v1 设计已成**：`Nox-长任务循环-v1-设计.md`，
-> 待三决策拍板后新窗口施工；往前：2026-09-21（**搬家拍板日，见第五十三节** —— VPS→N150 迁移定稿（¥0 档：Tailscale + Reality 迁 RackNerd + TTS 国内化+音色复刻）、
+> World 页编辑式重排；往前：2026-09-21（**搬家拍板日，见第五十三节** —— VPS→N150 迁移定稿（¥0 档：Tailscale + Reality 迁 RackNerd + TTS 国内化+音色复刻）、
 > Todo 双修（删除常显 + untimed 桶 + `delete_todo`；事故：漏登 handlers dict 崩循环被管线回滚——加工具三处同步）、
 > Dream 产出形式拍板（Moments 常态发 + OB 归档 + **早报封口**，`NOX_DREAM_POST` 待 09-25 翻）、
 > Resonance v4 第一刀（Moments 心情按情绪向量采样不取 max；concern 已被 173e451 排除出 inner，无需再修）；
@@ -7709,3 +7711,59 @@ edge 兜底保留。施工清单见决策文档第七节，时间线对齐 11.1�
   但有过提取，转 live 前要加门槛）；Appraisal 72 条质量最好可转正；
   Temporal 20 次只记「未接」没记解析=没攒证据；Dream 2 场（会把当天
   修的 bug 梦进去）；Moments 见 53.4。09-22~09-26 批量拍板
+
+## 五十四、长任务循环 v1：活过单条回复的活（2026-09-22，同日施工完成）
+
+设计文档：`Nox-长任务循环-v1-设计.md`（含施工记录 §八）。三决策随「做这个」
+按建议落定：**全出确认卡 / 完成默认安静 / 并发 = 1**。
+
+### 54.1 是什么
+
+她要接「帮我把 481 本书理一遍」这种活——活过单条回复。AgentLoop 的设计
+前提是活在一条回复里（12 轮 + 聊天 deadline），任务一长装不下。v1 把
+「任务」变成一等实体：**立任务（只出确认卡）→ 她点「跑」→ 后台跑 →
+进度随时可查 → 活过重启（interrupted + progress 保留，可「接着跑」）**。
+
+### 54.2 落在哪（三端）
+
+- **nox-core**：`agent/tasks.py`（TaskStore = 第六个库 `tasks.db`，照
+  orders.db 先例；任务专属 AgentLoop = 同批工具**各包取消闸** + task_step；
+  `run_task_loop` 后台循环，心跳 `task_tick`，跑任务期间也 beat）。
+  `tools/tasks.py` 三件套（start_long_task / task_status / task_cancel）。
+  端点 GET `/api/nox/tasks/{id}` + POST `confirm`/`cancel`。旋钮：
+  `NOX_TASK_DEADLINE_S`（默认 1800）/ `NOX_TASK_MAX_ITERATIONS`（200）/
+  `NOX_TASKS_DISABLED`
+- **bridge**：`noxTaskProxy` 三条透传 + SSE `kind === "task"` 转发落库
+- **前端**：Chat.jsx `TaskCard`（proposed/interrupted = 确认卡，其余状态 =
+  一行弱化入口照 ToolsLine）+ `TaskSheet`（Portal 到 body，复用 tsheet 壳）。
+  活任务 8s 轮询，终态即停
+
+### 54.3 两条设计决定（为什么这么做）
+
+- **取消不塞进 AgentLoop**：每件工具 handler 包取消闸（状态离开 running
+  就抛 TaskCancelled），连续失败 FailureTracker 熔断收尾。「AgentLoop 下轮
+  检查退出」= 检查点在每次工具调用前——模型调用中间插不进去
+- **断点续跑 = agentic resume**：不做工具级幂等/回滚（无底洞）。续跑把
+  progress 尾部 60 条喂进开工指令，模型自己判断从哪继续。所以 task_step
+  的工具描述写死「只报已经做成的，不报打算」——把打算记进去，续跑时
+  他会把没做过的当成做过的
+
+### 54.4 边界（写死）
+
+- **长任务不是开口**：进度/完成不推送、不占 Care 额度（R10/R1 精神同
+  Moments）。「想让她看见」= v2 TaskDoneSource，经 Care 决定
+- **R8**：start_long_task 只落 proposed，模型物理上够不到 running——
+  哨兵 `test_tool_never_runs_the_task`（test_tasks.py 命根子，同 orders 那条）
+- **R6**：`test-` 前缀会话立不了任务（fail 抛错，不静默）
+- 任务循环里花钱/不可逆工具自动失效：任务的 ToolContext.confirmed 恒为
+  空集，`AgentLoop._execute` 同一道锁拦下
+- 任务循环的附带产物（表情/语音/卡）没有 SSE 可搭 → **丢弃但留痕警告**
+  （不静默）；任务写过的 Provider 缓存会在 run_one 收尾时打掉
+
+### 54.5 状态与验收
+
+`tests/test_tasks.py` 17 条全过（哨兵/claim 幂等/FIFO 按她点「跑」先后/
+重启收尸/取消闸/续跑 prompt/R6/循环+心跳）；全量 pytest 2001 过；
+eslint Chat.jsx 零新增（35 错 4 警 = 基线）；vite build 过。
+**待部署后线上验**：真实模型端到端跑一个任务；杀 runner 看 /health 的
+task_tick 转 stale。部署照三段流程（core release 切换 → bridge → PWA dist）。

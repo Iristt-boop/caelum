@@ -34,6 +34,7 @@ from pydantic import BaseModel, Field
 
 from agent import meter, vision
 from agent.llm import Message
+from agent import tasks as task_mod
 from attention.service import (
     DEJECTION_KEY,
     LONGING_KEY,
@@ -983,6 +984,15 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
     if _expired:
         logger.info("启动时收掉 %d 张过期的待确认单", _expired)
 
+    # 长任务（2026-09-22）。第六个库，同 orders 的理由：状态天生要改，
+    # world/sessions 的契约都装不下。启动第一件事收尸 —— 上一个进程
+    # 在跑的任务没人管了，不标记的话在她眼里就是永远卡在 running
+    core.tasks = task_mod.TaskStore(Path(core.cfg.db_path).parent / "tasks.db")
+    _interrupted = core.tasks.interrupt_running()
+    if _interrupted:
+        logger.info("启动时把 %d 个在跑的长任务标成 interrupted（progress 保留，可续跑）",
+                    _interrupted)
+
     attention = _build_attention(core, sessions, db)
     #: 🔴 感知层那条线交给 attention —— 躁动要知道"她此刻在用什么"。
     #: ⚠️ 只在这儿接一次。`_build_attention` 里拿不到 `local_hand`
@@ -1119,6 +1129,17 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
                 logger.info("Dream shadow 循环启动")
         except Exception:  # noqa: BLE001
             logger.exception("Dream 接线失败，这条线不跑")
+        # 长任务 runner（2026-09-22）。默认开 —— 它是惰性的：没有她确认过的
+        # 任务就只是在队上等，不花一分钱。NOX_TASKS_DISABLED 留给排查日
+        try:
+            if os.getenv("NOX_TASKS_DISABLED", "") not in ("1", "true"):
+                # 🔴 先 declare 再起循环（审计 1.4）：从没跑过也要在台账里存在
+                heartbeat.declare(task_mod.HEARTBEAT_JOB, every_s=task_mod.BEAT_S)
+                tasks.append(asyncio.create_task(
+                    task_mod.run_task_loop(core=core, store=core.tasks)))
+                logger.info("长任务循环启动（并发=1）")
+        except Exception:  # noqa: BLE001
+            logger.exception("长任务接线失败，这条线不跑")
         try:
             yield
         finally:
@@ -2231,6 +2252,82 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
             "qr_url": store.pay_qr(oid) or "",
             "scan_only": luckin_order_flow.is_native_scan(pay_url),
         }
+
+    # ---------------------------------------------------------------- 长任务
+    #
+    # 🔴 确认端点就是 R8 那道闸（Nox-长任务循环-v1-设计.md 3.4）：
+    # start_long_task 工具只落 proposed，模型物理上够不到 running。
+    # 她点「跑」→ claim → confirmed → runner（并发=1）接手。
+
+    def _tasks():
+        return getattr(core, "tasks", None)
+
+    #: 状态 → 给她的人话（前端任务卡直接显示）
+    _TASK_STATE_TEXT = {
+        task_mod.PROPOSED: "等她点「跑」",
+        task_mod.CONFIRMED: "排队中，马上开跑",
+        task_mod.RUNNING: "正在后台跑",
+        task_mod.DONE: "完成",
+        task_mod.FAILED: "没跑成",
+        task_mod.CANCELLED: "已取消",
+        task_mod.INTERRUPTED: "中途断了（重启），可以接着跑",
+    }
+
+    @app.get("/api/nox/tasks/{tid}")
+    def nox_task_get(tid: str) -> dict:
+        """任务现在的样子：状态 + 进度尾部。前端任务卡轮询用。"""
+        store = _tasks()
+        if store is None:
+            raise HTTPException(status_code=503, detail="长任务链路没启用")
+        row = store.get(tid)
+        if row is None:
+            raise HTTPException(status_code=404, detail="没有这个任务")
+        return {
+            "ok": True, "id": tid, "status": row["status"],
+            "goal": row["goal"], "steps_hint": row.get("steps_hint") or "",
+            "result": row.get("result") or "",
+            "created_at": row["created_at"],
+            "started_at": row.get("started_at"),
+            "finished_at": row.get("finished_at"),
+            # 时间正序（旧→新）：时间线直接照着画
+            "progress": [
+                {"at": p["at"], "step": p["step"], "kind": p["kind"]}
+                for p in store.progress(tid, limit=100)
+            ],
+        }
+
+    @app.post("/api/nox/tasks/{tid}/confirm")
+    def nox_task_confirm(tid: str) -> dict:
+        """她点了「跑」（或对中断的任务点了「接着跑」）。
+
+        claim 是原子的：连点两次只有一次能把状态翻走。这里只翻状态，
+        真跑在 runner 手里 —— 所以这个端点不会超时，也不需要重试保护。
+        """
+        store = _tasks()
+        if store is None:
+            raise HTTPException(status_code=503, detail="长任务链路没启用")
+        row = store.claim(tid)
+        if row is None:
+            cur = store.get(tid)
+            if cur is None:
+                raise HTTPException(status_code=404, detail="没有这个任务")
+            return {"ok": False, "state": cur["status"],
+                    "detail": _TASK_STATE_TEXT.get(cur["status"], cur["status"])}
+        return {"ok": True, "state": task_mod.CONFIRMED,
+                "detail": "已排队，马上开跑（一次只跑一个，前面有活就稍等）"}
+
+    @app.post("/api/nox/tasks/{tid}/cancel")
+    def nox_task_cancel(tid: str) -> dict:
+        store = _tasks()
+        if store is None:
+            raise HTTPException(status_code=503, detail="长任务链路没启用")
+        row = store.cancel(tid)
+        if row is None:
+            raise HTTPException(status_code=404, detail="没有这个任务")
+        if row["status"] == task_mod.CANCELLED:
+            return {"ok": True, "state": task_mod.CANCELLED,
+                    "detail": "已停。手头这步做完就收尾。"}
+        return {"ok": True, "state": row["status"], "note": "这个任务已经结束了"}
 
     @app.get("/api/nox/facts")
     def nox_facts(type: str, days: int = 30) -> dict:

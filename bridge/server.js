@@ -1302,6 +1302,15 @@ async function coreMode(req, res, requestId) {
             res.write(`data: ${JSON.stringify({ type: "order", ...order })}\n\n`);
             saveMessage(sessionId, "assistant", "", { order });
             console.log(`[Bridge] Core 发待确认单 ${order.orderId}`);
+          } else if (ev.kind === "task" && ev.task_id) {
+            // 长任务确认卡（2026-09-22）。此时**还没有开跑** ——
+            // 她在卡上点「跑」才会在 nox-core 的后台 runner 执行，
+            // 走 /api/nox/tasks/:tid/confirm。状态是活的，前端轮询着刷新
+            // （同 order 卡：不能只信落库的快照）。
+            const task = { taskId: String(ev.task_id), card: ev.card || {} };
+            res.write(`data: ${JSON.stringify({ type: "task", ...task })}\n\n`);
+            saveMessage(sessionId, "assistant", "", { task });
+            console.log(`[Bridge] Core 发长任务卡 ${task.taskId}`);
           }
         } else if (ev.type === "tool_start" || ev.type === "tool_end") {
           // 他动手的实时进度（2026-09-07）。原样透传，**不落库** ——
@@ -3123,6 +3132,34 @@ app.get("/api/nox/orders/:oid", noxOrderProxy("", "GET", 8000));
 app.get("/api/nox/orders/:oid/pay", noxOrderProxy("/pay", "GET", 8000));
 app.post("/api/nox/orders/:oid/confirm", noxOrderProxy("/confirm", "POST", 30000));
 app.post("/api/nox/orders/:oid/cancel", noxOrderProxy("/cancel", "POST", 8000));
+
+// 长任务（2026-09-22，Nox-长任务循环-v1-设计.md）。同 noxOrderProxy 的理由：
+// R7「前端只打 bridge」，这边只做透明代理。确认只是翻状态（真跑在 nox-core
+// 的后台 runner），不需要下单那种 30s 宽限
+const noxTaskProxy = (path, method, timeoutMs) => async (req, res) => {
+  const tid = String(req.params.tid || "");
+  if (!/^task-[a-z0-9]{6,}$/i.test(tid)) {
+    return res.status(400).json({ ok: false, error: "任务号格式不对" });
+  }
+  try {
+    const r = await fetch(`${NOX_CORE_URL}/api/nox/tasks/${tid}${path}`, {
+      method,
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    res.status(r.status).json(await r.json());
+  } catch (e) {
+    console.error(`[nox-task] ${method} ${tid}${path} 失败:`, e.message);
+    // 确认超时 ≠ 没确认成 —— nox-core 的 claim 是幂等的，刷新页面看状态就知道
+    res.status(504).json({
+      ok: false,
+      error: e.message,
+      detail: "没能确认结果，先别重复点。稍后刷新页面看任务状态。",
+    });
+  }
+};
+app.get("/api/nox/tasks/:tid", noxTaskProxy("", "GET", 8000));
+app.post("/api/nox/tasks/:tid/confirm", noxTaskProxy("/confirm", "POST", 8000));
+app.post("/api/nox/tasks/:tid/cancel", noxTaskProxy("/cancel", "POST", 8000));
 
 // 可切换的模型清单 + 当前系统默认（Models 设置页）。
 // 切换不走这里 —— 聊天请求带 model 短名，coreMode 本来就透传

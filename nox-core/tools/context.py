@@ -181,6 +181,17 @@ class ToolContext:
             "type": "order", "order_id": order_id, "card": card, **meta,
         })
 
+    def attach_task(self, task_id: str, card: dict[str, Any], **meta: Any) -> None:
+        """标记「这张长任务确认卡要发到聊天里」（2026-09-22，长任务 v1）。
+
+        卡上只有 goal 和步骤提示 —— 和 order 卡同一个纪律：
+        **此时任务还没有开跑**，她点「跑」走 /api/nox/tasks/{id}/confirm，
+        模型够不到 running。
+        """
+        self.attachments.append({
+            "type": "task", "task_id": task_id, "card": card, **meta,
+        })
+
     def attach_meme(self, tag: str, **meta: Any) -> None:
         """标记「这个表情要发到聊天里」。
 
