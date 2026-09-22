@@ -61,7 +61,11 @@ class FakeAdapter:
 class DeadAdapter:
     """调用就炸 —— 模型挂了 / 网络断了。"""
 
+    def __init__(self):
+        self.calls = 0
+
     def complete(self, messages, tools, **kw):
+        self.calls += 1
         raise RuntimeError("模型挂了")
 
 
@@ -624,3 +628,32 @@ def test_drive_words_moved_to_the_package_root():
         Path(__file__).resolve().parents[1] / "moments" / "impulse.py"
     ).read_text(encoding="utf-8")
     assert "_WORDS = {" not in impulse_source, "旧的那份还留着，迟早各自漂移"
+
+
+class FlakyThenGoodAdapter:
+    """第一次调用炸（超时那类瞬时失败），第二次给正文。"""
+
+    def __init__(self, text: str):
+        self.text = text
+        self.calls = 0
+
+    def complete(self, messages, tools, **kw):
+        self.calls += 1
+        if self.calls == 1:
+            raise TimeoutError("Request timed out.")
+        return Turn(stop_reason="end", text=self.text)
+
+
+def test_generate_retries_once_after_transient_failure():
+    """她 09-22 拍板：失败重摇一次 —— 影子数据 2/2 全灭里大头是瞬时失败。"""
+    adapter = FlakyThenGoodAdapter("今晚的云走得很慢。")
+    text = writer.generate(adapter, {"longing": 0.4}, [], "测试")
+    assert text == "今晚的云走得很慢。"
+    assert adapter.calls == 2
+
+
+def test_generate_two_failures_stay_none():
+    """两次都败才真放弃 —— 重试不是无限重试。"""
+    adapter = DeadAdapter()
+    assert writer.generate(adapter, {"longing": 0.4}, [], "测试") is None
+    assert adapter.calls == 2

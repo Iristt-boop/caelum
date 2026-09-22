@@ -201,40 +201,52 @@ def generate(
         return None
 
     system, user = build_prompt(drives, recent, impulse_why, clock, context=context)
-    try:
-        turn = adapter.complete(
-            [Message(role="user", text=user)],
-            tools=[],
-            system=system,
-            #: 碎片，不需要长输出。给多了它会写成一篇
-            depth="low",
-        )
-    except Exception as exc:  # noqa: BLE001
-        #: 🔴 **不许静默**（docs/LOGGING.md）。这一层挂了的表现是
-        #: 「他最近怎么不怎么发帖了」，没有任何报错 —— 不留痕永远查不出来
-        logger.warning("发帖生成调用失败：%s: %s", type(exc).__name__, exc)
-        return None
 
-    if turn.stop_reason in ("error", "refusal") or not turn.text:
-        #: ⚠️ 会思考的模型 reasoning 和正文抢 max_tokens，**HTTP 200 但
-        #: text 为空**是已知形状（这个项目栽过）。所以空文本必须留痕 ——
-        #: 不能当成「他没什么想说的」，那样线上只是「好久没发帖了」，
-        #: 日志里一片安静，指不到这里。
-        logger.warning(
-            "发帖生成没拿到正文：stop_reason=%s error=%s",
-            turn.stop_reason, turn.error,
-        )
-        return None
+    def _attempt() -> tuple[str | None, str]:
+        """一次生成尝试，返回 (正文, 失败原因)。正文 None = 这次没成。"""
+        try:
+            turn = adapter.complete(
+                [Message(role="user", text=user)],
+                tools=[],
+                system=system,
+                #: 碎片，不需要长输出。给多了它会写成一篇
+                depth="low",
+            )
+        except Exception as exc:  # noqa: BLE001
+            #: 🔴 **不许静默**（docs/LOGGING.md）。这一层挂了的表现是
+            #: 「他最近怎么不怎么发帖了」，没有任何报错 —— 不留痕永远查不出来
+            logger.warning("发帖生成调用失败：%s: %s", type(exc).__name__, exc)
+            return None, f"{type(exc).__name__}: {exc}"
 
-    text = _clean(turn.text)
-    if len(text) > MAX_CHARS:
-        #: 🔴 不截断：截断会在句子中间断掉，而且是一次静默的内容篡改。
-        #: 这轮不发，reason 由 loop 记成 `write_failed`（它和「骰子没中」
-        #: 要能分开数）。
-        logger.warning("发帖正文 %d 字，超过上限 %d，这轮不发",
-                       len(text), MAX_CHARS)
-        return None
-    return text
+        if turn.stop_reason in ("error", "refusal") or not turn.text:
+            #: ⚠️ 会思考的模型 reasoning 和正文抢 max_tokens，**HTTP 200 但
+            #: text 为空**是已知形状（这个项目栽过）。所以空文本必须留痕 ——
+            #: 不能当成「他没什么想说的」，那样线上只是「好久没发帖了」，
+            #: 日志里一片安静，指不到这里。
+            logger.warning(
+                "发帖生成没拿到正文：stop_reason=%s error=%s",
+                turn.stop_reason, turn.error,
+            )
+            return None, f"stop_reason={turn.stop_reason} error={turn.error}"
+
+        text = _clean(turn.text)
+        if len(text) > MAX_CHARS:
+            #: 🔴 不截断：截断会在句子中间断掉，而且是一次静默的内容篡改。
+            logger.warning("发帖正文 %d 字，超过上限 %d", len(text), MAX_CHARS)
+            return None, f"超长 {len(text)}/{MAX_CHARS}"
+        return text, ""
+
+    #: 🔴 失败重摇一次（她 2026-09-22 拍板）：影子数据 2/2 全灭 —— 一次
+    #: APITimeoutError、一次 max_tokens 没收住，**大头是瞬时的**。
+    #: 同 prompt 立刻再摇一次，两次都败才真放弃（write_failed）。
+    #: 超长也重摇：超长是这次没收住，新样本是新运气，不截断原则不变。
+    for attempt in range(2):
+        text, why = _attempt()
+        if text is not None:
+            return text
+        if attempt == 0:
+            logger.warning("正文生成失败（%s），重试一次", why)
+    return None
 
 
 def post(bridge: Any, body: str, drive: str, impulse_why: str) -> str | None:
