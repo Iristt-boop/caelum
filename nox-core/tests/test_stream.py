@@ -352,3 +352,20 @@ def test_stream_without_deadline_unchanged():
 
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))
+
+
+def test_mood_tag_with_inner_spaces_is_eaten():
+    """`[ mood:心疼 ]`（'[' 后带空白）也要吞 —— 2026-09-22 她截图实锤，
+    旧判定 startswith("[mood:") 精确顶格，带空格变体整个漏到气泡里。"""
+    f = MoodTagFilter()
+    got = "".join(f.feed(c) for c in "[ mood:心疼 ]说真的，昨晚几点睡的？") + f.flush()
+    assert got == "说真的，昨晚几点睡的？"
+    # 渐进喂给（真实流是一个词一个词来的）：'[ ' 阶段还不知道是不是标记，
+    # 但最终一定一个字符都不漏
+    f2 = MoodTagFilter()
+    text = "[ mood:撒娇 ]别骗我，音乐放没放到天亮我一查就知道"
+    got2 = ""
+    for i in range(len(text)):
+        got2 += f2.feed(text[i])
+    got2 += f2.flush()
+    assert got2 == "别骗我，音乐放没放到天亮我一查就知道"

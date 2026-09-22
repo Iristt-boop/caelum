@@ -255,7 +255,8 @@ HER_EMOTIONS = ("开心", "难过", "烦躁", "撒娇", "兴奋", "疲惫", "平
 class MoodTagFilter:
     """挡住流式输出里**不该让她看见**的三类标记：
 
-    1. [mood:xxx] —— 情绪标记（大小写不敏感，[Mood: 在生产库漏过 3 次）
+    1. [mood:xxx] —— 情绪标记（大小写不敏感；'[' 后的空白也容忍，
+       [ mood:心疼 ] 在生产库漏过 —— 2026-09-22 她截图实锤）
     2. mood: xxx —— 模型偶尔不写方括号的变体（2026-09-06 截图实锤，行首）
     3. [开心] 等表情 tag —— 他不调 send_meme、直接把 tag 写进正文时的懒写法。
        **任何位置**都吞（2026-09-06 她报的：混在一段话里就降级成文字）——
@@ -299,13 +300,16 @@ class MoodTagFilter:
             if self._buf:
                 self._buf += ch
                 lowered = self._buf.lower()
-                if lowered.startswith(self._PREFIX):
+                # 🔴 判定前剥掉 '[' 后的空白 —— `[ mood:心疼 ]` 这种带空格
+                #    变体曾整个漏到她眼前（2026-09-22 截图实锤）
+                body = lowered[1:].lstrip()
+                if body.startswith("mood:"):
                     # 确认是情绪标记，吃掉直到闭合
                     if ch == "]":
                         self._buf = ""
                     continue
-                if self._PREFIX.startswith(lowered):
-                    continue          # 还可能是，继续缓冲
+                if "mood:".startswith(body):
+                    continue          # 还可能是，继续缓冲（含 '[' 后的空白）
                 if ch == "]":
                     tag = self._buf[1:-1].strip()
                     if tag in self._meme_tags:
