@@ -114,23 +114,24 @@ def _humanize_gap(seconds: float) -> str:
     return f"{h} 小时" if rem < 5 else f"{h} 小时 {rem} 分"
 
 
-def _last_said(sessions: Any, sid: str) -> str:
+def _last_said(store: Any, sid: str) -> str:
     """她在这个会话里最后说的那句原话。
 
     情境全在这句话里 ——「我去吃饭了」和「跟朋友出去玩」是两种沉默。
+
+    ⚠️ 走 `store.last_user_message`，**不翻 history**（2026-09-23）。history 里
+    role='user' 的还有他自己的开场白（「（系统提示：……」），包括这条链上一次的
+    唤醒 prompt —— 翻 history 的话第二次醒来「她最后说的是」就是他自己的纸条。
+    和「她回话了吗」（`last_user_at`）走同一个过滤，两边不会各认各的。
     """
     try:
-        history = sessions.get(sid)
+        got = store.last_user_message(sid)
     except Exception:  # noqa: BLE001
+        logger.warning("读不到她最后说的话，prompt 里按没找到处理", exc_info=True)
         return ""
-    for m in reversed(history or []):
-        role = getattr(m, "role", None) or (m.get("role") if isinstance(m, dict) else None)
-        if role != "user":
-            continue
-        text = getattr(m, "text", None) or (m.get("text") if isinstance(m, dict) else None)
-        if text and text.strip():
-            return text.strip()[:120]
-    return ""
+    if not got or not (got[0] or "").strip():
+        return ""
+    return got[0].strip()[:120]
 
 
 def build_prompt(w: Wakeup, last_said: str, gap_s: float, now: datetime) -> str:
@@ -195,7 +196,7 @@ def build_waker(core: Any, sessions: Any, store: Any, *,
                 continue
 
             gap_s = (now - (last_user or w.baseline)).total_seconds()
-            prompt = build_prompt(w, _last_said(sessions, w.session_id), gap_s, now)
+            prompt = build_prompt(w, _last_said(store, w.session_id), gap_s, now)
 
             try:
                 # 显式带上 w.session_id：这是**这条唤醒链自己的会话**。

@@ -477,10 +477,16 @@ class Store:
 
         唤醒链靠这个判断「她回了没有」—— 醒来之前先看一眼，
         她要是已经回话了，这条链就该直接结束，别再追问。
+        惦记（ThinkingSource）也拿它当锚点：她说完话之后 20–90 分钟想起她。
         """
+        # 🔴 **跳过他自己的开场白**（同 last_user_message，2026-09-23 线上库核出来的）。
+        #    不跳过的话，他随便哪条线主动开一次口（哪怕最后 [SKIP]），唤醒链就当
+        #    「她回话了」当场撤掉 —— 线上 30 次「她回话了」里 6 次是这么撤的，
+        #    她其实还没回（最长的一次她 175 分钟后才回来）
         with self._lock:
             row = self._conn.execute(
                 "SELECT created_at FROM messages WHERE session_id = ? AND role = 'user' "
+                f"AND {_NOT_SYSTEM_PROMPT} "
                 "ORDER BY seq DESC LIMIT 1",
                 (session_id,),
             ).fetchone()
