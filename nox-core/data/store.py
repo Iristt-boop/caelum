@@ -483,6 +483,39 @@ class Store:
         except ValueError:
             return None
 
+    def last_user_message(self, session_id: str) -> tuple[str, datetime] | None:
+        """她在这个会话里说的最后一句话 + 时刻。没说过就是 None。
+
+        Care 判断她的状态用（`attention/care/her_state.py`）：
+        说的是「晚安 / 躺下了」，她就进了睡着的状态 —— 这比任何钟点表都准
+        （2026-09-23：她 23:11 说「躺下了」，钟点表以为她 01:00 才睡）。
+        """
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT text, created_at FROM messages WHERE session_id = ? AND role = 'user' "
+                "ORDER BY seq DESC LIMIT 1",
+                (session_id,),
+            ).fetchone()
+        if row is None or not row["created_at"]:
+            return None
+        try:
+            return (row["text"] or "", datetime.fromisoformat(row["created_at"]))
+        except ValueError:
+            return None
+
+    def count_assistant_since(self, session_id: str, since: datetime) -> int:
+        """某个时刻之后他发了几条。「她几条没回」用。
+
+        `created_at` 是 UTC ISO，边界也换成 UTC ISO 再比字符串（同 messages_between）。
+        """
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT COUNT(*) AS n FROM messages WHERE session_id = ? "
+                "AND role = 'assistant' AND created_at > ?",
+                (session_id, since.astimezone(timezone.utc).isoformat()),
+            ).fetchone()
+        return int(row["n"])
+
     def stats(self) -> dict:
         with self._lock:
             s = self._conn.execute("SELECT COUNT(*) AS n FROM sessions").fetchone()["n"]

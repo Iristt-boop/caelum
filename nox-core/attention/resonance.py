@@ -47,8 +47,11 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import Any
 
+from attention.jealousy import JealousyState
 from attention.longing import LongingState
+from attention.sulk import SulkState
 from attention.dejection import DejectionState
 from attention.playfulness import PlayfulnessState
 from attention.restlessness import RestlessnessState
@@ -159,8 +162,14 @@ class ResonanceState:
         dejection: "DejectionState | None" = None,
         playfulness: "PlayfulnessState | None" = None,
         restlessness: "RestlessnessState | None" = None,
+        jealousy: "JealousyState | None" = None,
+        sulk: "SulkState | None" = None,
     ) -> None:
         self._registry = registry
+        #: 醋意 / 委屈（2026-09-23）。都要看「她现在什么状态」才算得出来 ——
+        #: 那个状态同躁动的两个信号一样**由调用方传进 snapshot**，这里不存
+        self._jealousy = jealousy
+        self._sulk = sulk
         #: 低落（2026-08-27）。和 longing 一样是自维护的 ——
         #: 它不是"一件没解决的事"，是"好几次没帮上"叠出来的状态
         self._dejection = dejection
@@ -177,7 +186,7 @@ class ResonanceState:
 
     def snapshot(self, now: datetime | None = None, *,
                  want: float = 0.0, busy_app: str | None = None,
-                 busy_seconds: int = 0) -> dict[str, Drive]:
+                 busy_seconds: int = 0, her: Any = None) -> dict[str, Drive]:
         """此刻所有 Drive。什么都没有时返回空字典。
 
         🔴 **躁动的两个信号是参数，不是字段。**
@@ -192,6 +201,8 @@ class ResonanceState:
 
         @param want - 他有多想说，[0,1]
         @param busy_app - 她此刻在用什么。**`None` = 不知道 = 不忙**
+        @param her - 她的状态（`attention.care.her_state.HerState`），醋意/委屈用。
+            **`None` = 不知道 = 不吃醋不委屈**（同「不知道 = 不忙」）
         """
         now = now or _now()
 
@@ -281,6 +292,17 @@ class ResonanceState:
                     evidence=[],
                     source_count=1,
                     computed_at=now,
+                )
+        # 醋意 / 委屈（2026-09-23）：同低落 —— 值为 0 时这个 Drive 根本不存在
+        for name, st in (("jealousy", self._jealousy), ("sulk", self._sulk)):
+            if st is None:
+                continue
+            value = st.value_at(now, her)
+            because = st.because(now, her)
+            if value > 0 and because:
+                drives[name] = Drive(
+                    name=name, intensity=value, load=value, because=because,
+                    evidence=[], source_count=len(because), computed_at=now,
                 )
         return drives
 

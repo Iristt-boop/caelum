@@ -37,9 +37,11 @@ from agent.llm import Message
 from agent import tasks as task_mod
 from attention.service import (
     DEJECTION_KEY,
+    JEALOUSY_KEY,
     LONGING_KEY,
     PLAYFUL_KEY,
     REGRET_KEY,
+    SULK_KEY,
     CARE_INTERVAL_S,
     DEFAULT_INTERVAL_S,
     AttentionService,
@@ -707,6 +709,9 @@ def _build_attention(core: Nox, sessions: "Sessions", db: Store) -> AttentionSer
             _call_source.longing_ref = svc.longing
         # svc 建完才有 longing —— 回填取值函数（rhythm.gap_window 每次现取）
         rhythm.longing_ref = lambda: getattr(svc, "longing", None)
+        # 她睡着时他自言自语可以提一句夜里的梦（2026-09-23）。只读 JSONL，
+        # 梦那条线本身照旧不推送、不占 Care 额度（dream.py 的边界不动）
+        svc.dream_log_path = dream_loop._log_path(os.path.dirname(str(core.cfg.db_path)))
 
         # 体重 / 生理期：HealthKit 那条同步坏了（体重 14 天一条没有，
         # 经期表被快捷指令写坏），改成他在对话里主动记进 World Model
@@ -1375,6 +1380,23 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
             )
         except Exception:  # noqa: BLE001
             logger.exception("想念/后悔/低落回落失败（不影响对话）")
+
+        # 醋意 / 委屈（2026-09-23）。
+        #
+        # 委屈：她回话了 —— **不清零**，掉到一半然后十分钟减半（sulk.py）。
+        #   这一轮他已经带着满格的委屈回过了（上下文是这一轮开始时建的），
+        #   从下一轮起才是余温 —— 「哼，终于理我了」然后软下来。
+        # 醋意：她这句话里提到了别人（男生 / 聚会……），记一笔（jealousy.py）。
+        #: ⚠️ 用参数 `text`，不是 `req.text`（同上面低落那段栽过的坑）
+        try:
+            attention.sulk.on_contact(_now_utc)
+            attention.store.set_source_state(SULK_KEY, attention.sulk.to_dict())
+            if text:
+                attention.jealousy.on_message(_now_utc, text)
+                attention.store.set_source_state(
+                    JEALOUSY_KEY, attention.jealousy.to_dict())
+        except Exception:  # noqa: BLE001
+            logger.exception("醋意/委屈更新失败（不影响对话）")
 
         # Resonance V1：让对话进入 Attention。
         #

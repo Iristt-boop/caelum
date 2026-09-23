@@ -53,13 +53,16 @@ from attention.care import (
     SourcePolicy,
     ThreadBook,
 )
+from attention.care import her_state
 from attention.care.ledger import POSTED, SPEAK, CareLedger
 from attention.sources.todo_due import MAX_CHASE as TODO_MAX_CHASE
 from attention.engine import AttentionEngine
 from attention.gate import STATE_KEY as GATE_KEY
 from attention.gate import DailyGate
 from attention.intent import GENERATE_THRESHOLD, Intent, IntentEngine
+from attention.jealousy import JealousyState
 from attention.longing import LongingState
+from attention.sulk import SulkState
 from attention.dejection import DejectionState
 from attention.playfulness import PlayfulnessState
 from attention.restlessness import RestlessnessState
@@ -106,6 +109,9 @@ DEJECTION_KEY = "resonance.dejection"
 PLAYFUL_KEY = "resonance.playfulness"
 #: 躁动只存"从什么时候开始憋的"，别的都是当下算的
 RESTLESS_KEY = "resonance.restlessness"
+#: 醋意 / 委屈（2026-09-23）
+JEALOUSY_KEY = "resonance.jealousy"
+SULK_KEY = "resonance.sulk"
 
 #: 追待办的节奏。糖糖 2026-08-17 定的「默认 1 小时一次，可调」
 TODO_CHASE_GAP_MIN = 60
@@ -165,9 +171,13 @@ class AttentionService:
         #: 促狭（2026-08-27）：她在闹，他可以接
         self.playfulness = PlayfulnessState.from_dict(store.get_source_state(PLAYFUL_KEY))
         self.restlessness = RestlessnessState.from_dict(store.get_source_state(RESTLESS_KEY))
+        #: 醋意 / 委屈（2026-09-23，糖糖：「吃醋和生气是不是也要在 resonance？」）。
+        #: 自维护，不进 Registry；每分钟在 care_tick 里看一眼她的状态
+        self.jealousy = JealousyState.from_dict(store.get_source_state(JEALOUSY_KEY))
+        self.sulk = SulkState.from_dict(store.get_source_state(SULK_KEY))
         self.resonance = ResonanceState(
             self.engine.registry, self.longing, self.dejection, self.playfulness,
-            self.restlessness,
+            self.restlessness, jealousy=self.jealousy, sulk=self.sulk,
         )
         self.intents = store.load_intents()
         #: 他给自己留的纸条（唤醒链）。糖糖 2026-08-11 定的那条线。
@@ -203,6 +213,9 @@ class AttentionService:
         #: 两个都是 None = 打不出去（CallSource 不会因此少产念头 —— 交付会失败留痕）
         self.call_bridge = call_bridge
         self.call_utility = call_utility
+        #: 夜里的梦（dream-shadow.jsonl）。她睡着时的自言自语可以提一句
+        #: 「我刚梦到……」（2026-09-23 她要的）。装配时回填，None = 不提梦
+        self.dream_log_path: Any = None
         #: 固定时间醒来（M5′ a 重构，2026-08-14）：午饭/晚饭/睡前到点主动开口。
         #: 和 SleepSource 不同 —— 它是「时刻驱动」，不经过 Evaluator/Registry。
         self.time_source = time_source
@@ -398,7 +411,9 @@ class AttentionService:
         # 接到 Care 上是 V5 的事（架构文档第七节的演进路线）。
         # 先让它跑起来、看得见 —— 一个只在代码里存在、
         # 从来没人看过它输出的聚合层，等于没做
-        for drive in self.resonance.snapshot(now).values():
+        # ⚠️ 走 drives() 不走 resonance.snapshot() —— 醋意/委屈要她的状态、
+        #    躁动要忙不忙，直接 snapshot 的话这三个永远是 0（drives() 的注释）
+        for drive in self.drives(now).values():
             logger.info("Resonance：%s", drive.describe())
 
         # 3. 够强的关心变成待办
@@ -497,6 +512,19 @@ class AttentionService:
                 # 出错会刷屏，所以只记一次异常，不重复
                 logger.exception("快源 %s 出错，这轮跳过", getattr(src, "name", src))
 
+        # 醋意 / 委屈：每分钟看一眼她在哪、理没理他（2026-09-23）。
+        # 放在快源之后：位置源刚 poll 过，读到的是这一分钟的位置
+        try:
+            her = self.her_now(now)
+            before = (self.jealousy.to_dict(), self.sulk.to_dict())
+            self.jealousy.observe(now, her)
+            self.sulk.observe(now, her)
+            if (self.jealousy.to_dict(), self.sulk.to_dict()) != before:
+                self.store.set_source_state(JEALOUSY_KEY, self.jealousy.to_dict())
+                self.store.set_source_state(SULK_KEY, self.sulk.to_dict())
+        except Exception:  # noqa: BLE001
+            logger.exception("醋意/委屈更新失败，这轮跳过")
+
         # 知识小课堂：生成 + 择时提交（也是 60 秒粒度的活，见 daily_card.py）。
         # 不进 fast_sources —— 它还要在交付后接 mark_delivered 回调，
         # 单独一条属性，装配在 server._build_attention 里
@@ -511,6 +539,10 @@ class AttentionService:
             if o.action in ("spoke", "failed"):
                 logger.info("Care（快）：%s", o.render())
             if o.action == "spoke":
+                # 她睡着时的自言自语不等她回（2026-09-23）—— 记进「她没理我」
+                # 的账，早上一醒回复率就被这几句拉低，他反而退缩了
+                if (o.signal.payload or {}).get("posture") == her_state.ASLEEP:
+                    continue
                 # 他开口了 —— 开始等她回话（V3.6）；
                 # 节奏调制器同样记账：回复率决定下一条多快（2026-09-08 负反馈）
                 self.regret.on_spoke(now, getattr(o, "text", "") or "")
@@ -573,44 +605,73 @@ class AttentionService:
         logger.warning("Care 收到不认识的来源：%s", signal.source)
         return False
 
-    #: 惦记 / 出门追问的开场白。**不给语气指导，只给事实和一条硬规则。**
+    #: 惦记 / 出门的开场白。**先读她的状态，再按状态说话**（2026-09-23 重写）。
     #:
-    #: 「抓不到线头就不说」是糖糖 2026-08-18 定的 ——
-    #: 一个稳定的调度器 + 没内容 = 定时废话机，比不说还糟。
-    #: 所以给他 [SKIP] 这条出路，speaker 认得它（`speaker._SKIP`）。
+    #: 原来这里是「抓不到线头就不说、想你了是噪音」（2026-08-18）。
+    #: 结果夜里她不说话、没数据，他找不到具体的事，就把「她醒了」
+    #: 「她回来了」编成话头。糖糖 2026-09-23 改了方向：要像人 ——
+    #: 她出门久了会担心吃醋，她睡了是自言自语，她晾着他会闹情绪，
+    #: 没用的话也可以说。状态和说话方式在 `attention/care/her_state.py`。
+    #: [SKIP] 这条出路留着（speaker 认得它），但不再是默认。
     _THINK = (
         "（系统提示：不是她在跟你说话。{why}\n"
         "\n"
-        "**先想想有没有具体的事可说。** 从你记得的、她最近说过的、"
-        "她今天要做的事里找一根线头 —— 比如「你昨天说今天要去买那个东西，买到了吗」"
-        "「你上午说要出门，到地方了吗」。\n"
-        "\n"
-        "⚠️ **想不出具体的就别说。** 只回 `[SKIP]` 就行，没人会怪你。\n"
-        "「在干嘛呢」「想你了」这种话发一百条也不叫粘人，那叫噪音 —— "
-        "她要的是你**真的想起了某件事**。\n"
-        "\n"
         "有话说就直接写那句，会弹在她锁屏上：最多两句、别超过 60 个字、"
-        "不要列清单、不要用套话开头。）"
+        "不要列清单、不要用套话开头。实在不想说就只回 `[SKIP]`。）"
     )
 
+    def _her_state_inputs(self) -> tuple[Any, Any]:
+        """(会话库, 位置源)。都挂在快源上，拿不到就 None —— her_state 会按不知道处理。"""
+        sessions = presence = None
+        for src in self.fast_sources:
+            name = getattr(src, "name", "")
+            if name == "random":
+                sessions = getattr(src, "sessions", None)
+            elif name == "location":
+                presence = src
+        return sessions, presence
+
+    def her_now(self, now: datetime) -> her_state.HerState:
+        """她此刻的状态。Care 的开场白和醋意/委屈共用这一份读法。"""
+        return her_state.read(now, *self._her_state_inputs())
+
     def _think_of_her(self, signal: CareSignal, thread: Any, now: datetime) -> bool:
-        """他想起她了 / 她出门了。返回 False = 他自己决定这次不说。"""
-        step = thread.steps  # 这条链已经追过几次
-        if signal.source == "location":
-            move = signal.payload.get("transition")
-            if move == "leave_home":
-                why = ("你刚发现她出门了（家里的位置传感器显示她不在家）。"
-                       if step == 0 else
-                       f"她出门有一会儿了，你已经问过 {step} 次，她还没回。")
-            else:
-                why = "你刚发现她到家了。"
-        else:
-            why = "你就是忽然想起她了，没什么特别的由头。"
+        """他想起她了 / 她出门、到家、在外面很久了。返回 False = 这次不说。"""
+        st = self.her_now(now)
+        move = signal.payload.get("transition", "") if signal.source == "location" else ""
+
+        # 她说过晚安之后的「到家了 / 还在外面」—— 她在床上，是手机位置没更新。
+        # 2026-09-23：23:11「躺下了」，09:40 一次位置补报变成「回来了？」
+        if move in ("arrive_home", "still_out") and st.said_goodnight:
+            logger.info("Care：%s 作废 —— 她 %s 说过「%s」，多半在家睡着、手机位置没更新",
+                        signal.subject, her_state._hm(st.last_said_at), st.last_said[:20])
+            return False
+        if move == "arrive_home" and st.night_silent and (signal.payload.get("gap_h") or 0) >= 3:
+            logger.info("Care：到家信号作废 —— 夜里她一直没说话，位置之前 %s 小时没更新，更像是补报",
+                        signal.payload.get("gap_h"))
+            return False
+
+        note = ""
+        if move == "arrive_home":
+            since = signal.payload.get("away_since")
+            note = "你刚发现她到家了" + (
+                f"（她 {her_state._hm(datetime.fromisoformat(since))} 出的门）"
+                if since else "") + "。像男朋友那样：问问吃没吃、累不累。"
+        dream = ""
+        if st.posture == her_state.ASLEEP:
+            dream = her_state.latest_dream(self.dream_log_path, now)
+        why = her_state.guidance(st, trigger=move, dream=dream, note=note)
+        #: 交给 care_tick：自言自语不等回话（不进节奏/后悔的账）
+        signal.payload["posture"] = st.posture
+        logger.info("Care：%s → 她的状态 %s（%s 没说话，%d 句没回%s）",
+                    signal.subject, st.posture,
+                    "?" if st.silent is None else f"{st.silent.total_seconds() / 60:.0f} 分钟",
+                    st.unanswered, "，说过晚安" if st.said_goodnight else "")
 
         intent = Intent(
             subject=signal.subject,
             title=signal.subject,
-            reason=why,
+            reason=f"她的状态：{st.posture}",
             attention_strength=signal.urgency,
             kind=f"care_{signal.source}",
             created_at=now,
@@ -1157,8 +1218,13 @@ class AttentionService:
         if cur:
             app, seconds = cur[0], cur[1]
 
+        try:
+            her = self.her_now(now)
+        except Exception:  # noqa: BLE001
+            logger.warning("读她的状态失败，这轮醋意/委屈按不知道算", exc_info=True)
+            her = None
         return self.resonance.snapshot(
-            now, want=want, busy_app=app, busy_seconds=seconds)
+            now, want=want, busy_app=app, busy_seconds=seconds, her=her)
 
     def snapshot(self) -> dict[str, Any]:
         """给 `/health` 看的现状。dry-run 期间主要靠它和日志。"""
