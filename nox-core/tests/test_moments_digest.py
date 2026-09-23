@@ -118,3 +118,62 @@ def test_no_recent_bodies_says_so_instead_of_an_empty_title():
          "reason": "dice", "body": ""},
     ]) == []
     assert "还没有数据" in digest.NO_BODY_PLACEHOLDER
+
+
+# ---------------------------------------------------------------- 2026-09-23：转 on 之后的日报
+
+def _on_line(*, reason="below_threshold", posted=False, drives="{'concern': 0.9, 'longing': 0.4}"):
+    return (
+        f"Moments｜2026-09-23T08:00:00+00:00｜mode=on｜drives={drives}｜value=0.50 inner=0.80"
+        f" timing=0.60｜threshold=0.45 dice=0.01 p=0.10"
+        f"｜posted={posted} reason={reason if not posted else ''}｜（人话）｜body=-"
+    )
+
+
+def _run(monkeypatch, capsys, tmp_path, lines, posts):
+    """造一份 journalctl 输出 + 一个真 SQLite 的 bridge 库，跑 main()。"""
+    import sqlite3
+    from datetime import datetime, timezone
+    db = tmp_path / "bridge.db"
+    c = sqlite3.connect(db)
+    c.execute("CREATE TABLE diary (id, date, time, mood, author, body, created_at, kind, drive, impulse_why)")
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    for body, drive in posts:
+        c.execute("INSERT INTO diary VALUES (?,?,?,?,?,?,?,?,?,?)",
+                  ("id", "", "", "", "Nox", body, now, "moment", drive, ""))
+    c.commit(); c.close()
+    monkeypatch.setattr(digest, "DB", str(db))
+    monkeypatch.setattr(digest, "read_lines",
+                        lambda since, unit, only_records=True: list(lines))
+    monkeypatch.setattr(sys, "argv", ["digest", "--since", "24 hours ago"])
+    code = digest.main()
+    return code, capsys.readouterr().out
+
+
+def test_on模式_列出库里真发的帖子全文和心情(monkeypatch, capsys, tmp_path):
+    lines = [_on_line()] * 11 + [_on_line(posted=True)]
+    code, out = _run(monkeypatch, capsys, tmp_path, lines, [("下午的光打在桌上\n还是想找她", "longing")])
+    assert code == 0, out
+    assert "日报" in out and "shadow 汇总" not in out
+    assert "还是想找她" in out and "下午的光打在桌上" in out, "on 下要看得到真发出去的全文"
+    assert "shadow 落帖了" not in out, "on 下库里有帖子是正常的，不是 bug"
+
+
+def test_领头的心事不算担心(monkeypatch, capsys, tmp_path):
+    """concern 09-21 起不参与 Moments —— 报告还说它领头，就是在说谎。"""
+    code, out = _run(monkeypatch, capsys, tmp_path, [_on_line()] * 12, [])
+    line = next(l for l in out.splitlines() if l.startswith("领头的心事"))
+    assert "longing" in line or "想她" in line
+    assert "concern" not in line and "担心她" not in line, line
+
+
+def test_日志说发了但库里没有_要报出来(monkeypatch, capsys, tmp_path):
+    lines = [_on_line()] * 11 + [_on_line(posted=True)]
+    code, out = _run(monkeypatch, capsys, tmp_path, lines, [])
+    assert code == 4 and "对不上" in out
+
+
+def test_全是shadow的那天库里冒出帖子_仍然是bug(monkeypatch, capsys, tmp_path):
+    lines = [_line(reason="dice", body=None)] * 12
+    code, out = _run(monkeypatch, capsys, tmp_path, lines, [("不该有", "longing")])
+    assert code == 1 and "shadow 汇总" in out

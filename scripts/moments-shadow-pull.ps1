@@ -1,4 +1,5 @@
-﻿# Moments shadow 的每日拉取 —— **不经过任何模型**。
+﻿# Moments 的每日拉取 —— **不经过任何模型**。
+# （2026-09-23 转 on 后是日报：真发的帖子全文从库里读；名字里的 shadow 是历史，任务名认它没改）
 #
 # 为什么不用 Claude Code 的定时任务（2026-09-15）：
 # 那条路起的新会话拿不到 `~/.claude/settings.json` 里那套自定义凭据，
@@ -55,7 +56,8 @@ $code = $LASTEXITCODE
 # 🔴 判据挑**退出码**，不挑中文输出（编码一变文本判据就永不成立）
 $verdict = switch ($code) {
   0       { "正常" }
-  1       { "🔴 shadow 期间库里出现了 moment 帖 —— 这是 bug，去看 moments/record.py 的结构闸门" }
+  1       { "🔴 全是 shadow 的那天库里出现了 moment 帖 —— 这是 bug，去看 moments/record.py 的结构闸门" }
+  4       { "⚠️ on：日志里「发了」的条数和库里对不上（或库读不到）—— 落库断了，去看 moments/writer.post" }
   2       { "记录太少，不下结论（不是「他没想发」，是数据不够）" }
   3       { "journalctl 读不到（unit 名 / 权限）" }
   255     { "ssh 连不上" }
