@@ -222,6 +222,20 @@ def mode() -> str:
     return "off"
 
 
+def _vote_count() -> int:
+    """这一轮问几次。默认 3，设成 1 就是旧行为。
+
+    上限卡在 5：再多也压不动误记（那 10 条误记三次里次次都在，
+    是模型的稳定偏见不是抖动），白花钱还拖长后置链路。
+    """
+    try:
+        n = int(os.getenv("NOX_APPRAISAL_VOTES", "3"))
+    except (TypeError, ValueError):
+        logger.warning("NOX_APPRAISAL_VOTES 不是数字，按 3 处理")
+        return 3
+    return max(1, min(n, 5))
+
+
 def _clean_json(raw: str) -> str:
     """把模型可能包的 ```json 围栏剥掉。
 
@@ -296,10 +310,64 @@ class LLMAppraiser:
             logger.info("没有可用的 utility 模型，这轮不做意义推断")
             return None
 
-        raw = self._ask(adapter, her_text, his_reply, known_anchors)
-        if raw is None:
+        #: 🔴 **跑 n 次取多数票**（2026-09-21 接，糖糖拍板）。
+        #:
+        #: 起因是拿 150 条她亲手标注的真实对话做的对照：**同一个 prompt
+        #: 单跑三次，抓到的条数在 7/12、8/12、11/12 之间飘**，而误记稳定在 10。
+        #: 也就是说它每一次的判断本身就带着一大截随机性，
+        #: 单次结果好坏很大程度上是运气。
+        #:
+        #:     单跑第 1 次   抓到 11/12   误记 10
+        #:     单跑第 2 次   抓到  7/12   误记 10
+        #:     单跑第 3 次   抓到  8/12   误记 10
+        #:     三次多数票    抓到  9/12   误记  8   ← 接的是这个
+        #:     三次全票才算  抓到  6/12   误记  5
+        #:
+        #: 多数票把误记从 10 压到 8，代价是抓到的略少、多两次便宜模型调用
+        #: （一天几分钱）。**这一层是后置的，她等不到它，所以多跑几次不影响对话。**
+        #:
+        #: 想更严就把 `NOX_APPRAISAL_VOTES` 调大再配全票 —— 但那是另一个决定，
+        #: 这里只做多数票。设成 1 就完全退回旧行为，一行不用改。
+        votes = _vote_count()
+        if votes <= 1:
+            raw = self._ask(adapter, her_text, his_reply, known_anchors)
+            if raw is None:
+                return None
+            return self._parse(raw, her_text)
+
+        kept: list[Appraisal] = []
+        dropped = 0
+        for _ in range(votes):
+            raw = self._ask(adapter, her_text, his_reply, known_anchors)
+            got = self._parse(raw, her_text) if raw is not None else None
+            if got is None:
+                #: None 在这一层的含义是统一的「这轮不记」——
+                #: 不管是判了 none、够不着门槛、还是 JSON 坏了。
+                #: 投票只关心「记 / 不记」，不区分不记的理由。
+                dropped += 1
+            else:
+                kept.append(got)
+
+        if len(kept) <= dropped:
+            #: 平票也算不记 —— `votes` 是偶数时才会发生，
+            #: 而「宁可漏，不可错」要求平票倒向不记。
+            if kept:
+                logger.info(
+                    "意义推断投票未过半（%d 记 / %d 不记），丢弃｜她说「%.30s」",
+                    len(kept), dropped, her_text,
+                )
             return None
-        return self._parse(raw, her_text)
+
+        #: 过半了，但拿哪一次的结果？**取置信度的中位数那一次**，
+        #: 不取最高的 —— 最高的往往正是那次跑飞了的。
+        kept.sort(key=lambda a: a.confidence)
+        chosen = kept[len(kept) // 2]
+        if dropped:
+            logger.info(
+                "意义推断投票 %d 记 / %d 不记，采用中位那次（确信 %.2f）｜%.20s",
+                len(kept), dropped, chosen.confidence, her_text,
+            )
+        return chosen
 
     # ------------------------------------------------------------ 内部
 
