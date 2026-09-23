@@ -543,3 +543,47 @@ def test_惦记真的抽心情_说出口才记进最近(tmp_path):
                       type("T", (), {"steps": 0})(), cn(23, 17))
     assert svc.recent_moods == ["sulk"], "[SKIP] 掉的那句不算用过这个心情"
     store.close()
+
+
+# ---------------------------------------------------------------- 线上真实的行形状（部署后抓到的）
+
+def test_真库_他的开场白和SKIP不算她说的话(tmp_path, monkeypatch):
+    """🔴 2026-09-23 部署后在线上库里抓到：他主动开口的开场白以 role='user' 落库
+    （「（系统提示：这不是糖糖在跟你说话……」，近 7 天 259 条），他回的 [SKIP] 也落库
+    （111 条）。前面那些测试都用假会话库，没有这两种行 —— 全绿，线上全错：
+    「她最后一句」永远是他自己上一次开口，认不出晚安、委屈永远起不来、
+    09:40 那次「回来了？」照样会发。这里用那一夜的真实形状重放。"""
+    import data.store as ds
+    from agent.llm import Message
+
+    db = ds.Store(tmp_path / "s.db")
+    sid = "c" * 32
+    rows = [
+        (cn(22, 23, 11), "user", "躺下了"),
+        (cn(22, 23, 12), "assistant", "乖，睡吧"),
+        (cn(23, 1, 8), "user", "（系统提示：这不是糖糖在跟你说话，是你自己想起了一件事，想跟她说一句。"),
+        (cn(23, 1, 8), "assistant", "凌晨一点了，眼睛给我闭上"),
+        (cn(23, 3, 30), "user", "（系统提示：不是她在跟你说话。你就是忽然想起她了"),
+        (cn(23, 3, 30), "assistant", "[SKIP]"),
+        (cn(23, 7, 52), "user", "（系统提示：这不是糖糖在跟你说话，是你自己想起了一件事"),
+        (cn(23, 7, 52), "assistant", "十一点躺的，七点就醒"),
+    ]
+    clock = iter([r[0] for r in rows])
+    monkeypatch.setattr(ds, "_now", lambda: next(clock).astimezone(timezone.utc).isoformat())
+    for _, role, text in rows:
+        db.append(sid, [Message(role=role, text=text)])
+
+    text, at = db.last_user_message(sid)
+    assert text == "躺下了" and at == cn(22, 23, 11), f"「她最后一句」读成了 {text!r}"
+    st = her_state.read(cn(23, 9, 40), db, FakePresence("home"))
+    assert st.said_goodnight, "他开过口之后就认不出她的晚安了"
+    assert st.unanswered == 2, f"数成了 {st.unanswered}：[SKIP] 不是说了一句，23:12 那句是回复"
+
+    said: list = []
+    svc, store = _svc(tmp_path, db, FakePresence("home"), said)
+    sig = CareSignal(source="location", subject="她到家了",
+                     payload={"transition": "arrive_home", "gap_h": 14.7})
+    assert svc._think_of_her(sig, type("T", (), {"steps": 0})(), cn(23, 9, 40)) is False
+    assert said == [], "那一夜 09:40 的「回来了？」在真实库形状下还是会发"
+    store.close()
+    db.close()

@@ -68,6 +68,14 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+#: 他主动开口时的开场白以 role='user' 落库，不是她说的话（见 last_user_message）。
+#: 线上实测只有「（系统提示：」一种（全角括号）；另几种写法是防以后改提示词时漏掉
+_NOT_SYSTEM_PROMPT = (
+    "text NOT LIKE '（系统提示%' AND text NOT LIKE '(系统提示%' "
+    "AND text NOT LIKE '[系统%' AND text NOT LIKE '系统提示%'"
+)
+
+
 @dataclass
 class SessionInfo:
     id: str
@@ -490,9 +498,15 @@ class Store:
         说的是「晚安 / 躺下了」，她就进了睡着的状态 —— 这比任何钟点表都准
         （2026-09-23：她 23:11 说「躺下了」，钟点表以为她 01:00 才睡）。
         """
+        # 🔴 **跳过他自己的开场白**（2026-09-23 部署后在线上库里抓到的）。
+        #    他主动开口时，Care 给他的那段「（系统提示：这不是糖糖在跟你说话……」
+        #    是以 role='user' 落库的（近 7 天 259 条）。不跳过的话，「她最后一句」
+        #    永远是他自己上一次开口的时刻 —— 认不出她的晚安、委屈永远起不来。
+        #    测试用假会话库，没有这种行，所以没抓到。
         with self._lock:
             row = self._conn.execute(
                 "SELECT text, created_at FROM messages WHERE session_id = ? AND role = 'user' "
+                f"AND {_NOT_SYSTEM_PROMPT} "
                 "ORDER BY seq DESC LIMIT 1",
                 (session_id,),
             ).fetchone()
@@ -508,10 +522,13 @@ class Store:
 
         `created_at` 是 UTC ISO，边界也换成 UTC ISO 再比字符串（同 messages_between）。
         """
+        # ⚠️ 他回的 `[SKIP]`（决定这次不说）也落库了（近 7 天 111 条）——
+        #    那不是「说了一句她没回」，不算
         with self._lock:
             row = self._conn.execute(
                 "SELECT COUNT(*) AS n FROM messages WHERE session_id = ? "
-                "AND role = 'assistant' AND created_at > ?",
+                "AND role = 'assistant' AND created_at > ? "
+                "AND TRIM(text) NOT LIKE '[SKIP]%'",
                 (session_id, since.astimezone(timezone.utc).isoformat()),
             ).fetchone()
         return int(row["n"])
