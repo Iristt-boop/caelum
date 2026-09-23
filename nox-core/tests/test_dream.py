@@ -309,3 +309,32 @@ def test_ob_grow_failure_does_not_kill_the_night(buckets, night_env):
                            bridge=_Bridge(), ob=_DeadOB(),
                            now=datetime.now(CST))
     assert rec is not None
+
+
+# --------------------------------------------------------------- 2026-09-23：三晚「太短」
+
+def test_不写死600的token上限(buckets, night_env):
+    """utility 是会思考的模型，reasoning 和正文共用 max_tokens —— 写死 600
+    是 09-21 起连续三晚「太短」的头号嫌疑（见 memory reasoning-tokens-eat-max-tokens）。"""
+    u = _Utility()
+    dream.night_tick(utility=u, buckets_dir=buckets,
+                     data_dir=night_env["data_dir"], now=datetime.now(CST))
+    kw = u.calls[0][2]
+    assert kw.get("max_tokens") in (None,), f"又写死了 token 上限：{kw.get('max_tokens')}"
+
+
+def test_太短时把失败的形状记全(buckets, night_env, caplog):
+    """三晚六次只留了一句「太短」，查不出是超时 / 截断 / 真只回了两个字。"""
+    import logging
+
+    class Short(_Utility):
+        def complete(self, messages, tools, **kw):
+            self.calls.append((messages, tools, kw))
+            return SimpleNamespace(text="嗯。", stop_reason="max_tokens", error=None,
+                                   usage={"output_tokens": 4000})
+
+    caplog.set_level(logging.WARNING)
+    dream.night_tick(utility=Short(), buckets_dir=buckets,
+                     data_dir=night_env["data_dir"], now=datetime.now(CST))
+    msg = " ".join(r.getMessage() for r in caplog.records)
+    assert "stop=max_tokens" in msg and "4000" in msg, msg

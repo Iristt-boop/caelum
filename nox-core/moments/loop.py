@@ -81,6 +81,14 @@ MIN_GAP_MIN = 180
 P_MAX = 0.15
 #: source_state 里的键
 STATE_KEY = "moments"
+#: 🔴 正文没写出来时「欠一条」多久内还算数（分钟）。
+#:
+#: 2026-09-21→23 shadow 里「本来会发」4 次、**4 次全是生成失败**（3 次凌晨超时、
+#: 1 次 max_tokens），骰子好不容易中了，一次瞬时故障就把这条帖子扔了。
+#: 失败后记一笔欠账，这段时间里只要冲动还过阈值，下一 tick **不再掷骰子**直接重写 ——
+#: 那一刻「想发」已经成立过了，没写出来是模型的事，不是他改主意了。
+#: 过了这段时间就作废：两小时后的心情已经不是那一刻的了，不补。
+OWED_TTL_MIN = 60
 #: 循环节奏（秒）。和 attention_tick 同一个量级
 TICK_SECONDS = 900
 #: 心跳台账里的活计名。declare 过之后看门狗自动覆盖它
@@ -149,6 +157,29 @@ def _minutes_since(when: Any, now: datetime) -> int | None:
         logger.warning("Moments 里的时刻没有时区，当作没有：%r", when)
         return None
     return int((now - when).total_seconds() // 60)
+
+
+def _owed(state: Mapping[str, Any], now: datetime) -> bool:
+    """上一次想发却没写出来，而且还在 OWED_TTL_MIN 之内。"""
+    since = _minutes_since(state.get("owed_at"), now)
+    return since is not None and since < OWED_TTL_MIN
+
+
+def _set_owed(store: Any, state: Mapping[str, Any], now: datetime | None) -> None:
+    """记一笔 / 清掉欠账。**保留其它键**（date / count / last_post_at）——
+    整个覆盖的话，一次失败就把今天的计数和上一帖的时间抹了，上限和间隔一起失效。
+    已经欠着的不刷新时间：欠账从第一次失败算起，不能靠连续失败无限续命。"""
+    new = dict(state)
+    if now is None:
+        new.pop("owed_at", None)
+    elif not _owed(state, now):
+        new["owed_at"] = now.astimezone(timezone.utc).isoformat()
+    else:
+        return
+    try:
+        store.set_source_state(STATE_KEY, new)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Moments 欠账状态没存住：%s: %s", type(exc).__name__, exc)
 
 
 def _read_drives(attention: Any, now: datetime) -> dict[str, float]:
@@ -386,9 +417,16 @@ def post_tick(*, mode: str, store: Any, attention: Any, sessions: Any,
 
     #: ⑥ 掷骰子。**到这一步才掷** —— 前面几条闸门用的都是「确定性信号」，
     #: 掷了骰子再回头判断的话，没过阈值的 tick 也会在日志里留下「差点就发」
-    dice_p = post_probability(imp.value)
-    dice = rng.random()
-    if dice >= dice_p:
+    owed = _owed(state, now)
+    if owed:
+        #: 上一 tick 骰子中了、正文没写出来 —— 这次直接写，不再掷（见 OWED_TTL_MIN）
+        dice, dice_p = None, None
+        logger.info("Moments：补上次没写出来的那条（%s 分钟前想发的）",
+                    _minutes_since(state.get("owed_at"), now))
+    else:
+        dice_p = post_probability(imp.value)
+        dice = rng.random()
+    if not owed and dice >= dice_p:
         return _finish(MomentRecord(
             at=now, mode=mode, signals=signals, impulse=imp, threshold=THRESHOLD,
             dice=dice, dice_p=dice_p, posted=False, post_id=None,
@@ -424,6 +462,8 @@ def post_tick(*, mode: str, store: Any, attention: Any, sessions: Any,
     if mode == "shadow":
         body = _generate_body()
         if body is None:
+            #: ⚠️ shadow **不记欠账** —— shadow 绝不写 source_state（见 test_shadow_*：
+            #: 影子偷偷动状态就可能吃掉真实配额）。欠账只在 on 里有
             return _finish(MomentRecord(
                 at=now, mode=mode, signals=signals, impulse=imp, threshold=THRESHOLD,
                 dice=dice, dice_p=dice_p, posted=False, post_id=None,
@@ -449,11 +489,13 @@ def post_tick(*, mode: str, store: Any, attention: Any, sessions: Any,
     #: 它和「骰子没中」要能分开数 —— 一个是设计，一个是坏了。
     body = _generate_body()
     if body is None:
+        _set_owed(store, state, now)
         return _finish(MomentRecord(
             at=now, mode=mode, signals=signals, impulse=imp, threshold=THRESHOLD,
             dice=dice, dice_p=dice_p, posted=False, post_id=None,
             reason="write_failed", body="",
-            why_not_posted="正文没生成出来（模型没给 / 超长 / 调用炸了），这一轮不发",
+            why_not_posted=("正文没生成出来（模型没给 / 超长 / 调用炸了），"
+                            f"记一笔欠账，{OWED_TTL_MIN} 分钟内冲动还在就下一 tick 补写"),
         ))
 
     try:

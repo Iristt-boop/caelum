@@ -677,14 +677,19 @@ def test_generate_failure_never_escapes(monkeypatch, caplog):
     assert rec is not None and rec.reason == "write_failed"
     assert rec.posted is False and rec.post_id is None
     assert rig.calls["post"] == [], "没有正文就不该落库"
-    assert rig.bridge.posts == [] and rig.store.writes == [], "没发出去不占配额"
+    assert rig.bridge.posts == []
+    #: 「不占配额」= 不碰 count / last_post_at。2026-09-23 起写失败会记一笔欠账
+    #: （owed_at，见 OWED_TTL_MIN），那只是「下一 tick 补写」，不吃配额
+    assert all(set(w["value"]) <= {"owed_at"} for w in rig.store.writes), (
+        "没发出去不占配额", rig.store.writes)
 
     boom = Rig(monkeypatch, boom_at="generate")
     with caplog.at_level(logging.WARNING):
         rec2 = boom.run()  # ← 抛出来的话这条测试就红在异常上
 
     assert rec2.reason == "write_failed"
-    assert boom.bridge.posts == [] and boom.store.writes == []
+    assert boom.bridge.posts == []
+    assert all(set(w["value"]) <= {"owed_at"} for w in boom.store.writes), boom.store.writes
     assert _warnings(caplog) == 1, "炸了必须留痕，不然线上只有「最近没发帖」"
 
 
@@ -978,3 +983,71 @@ def test_loop_source_stays_inside_its_boundaries():
     assert "api/push/send" not in src, "R10：发帖不推送"
     assert "notify" not in src, "R10：发帖不推送"
     assert "from temporal import to_local" in src, "本地日要问 temporal 要"
+
+
+# ---------------------------------------------------------------- 欠一条（2026-09-23）
+#
+# shadow 09-21→23：「本来会发」4 次、4 次全是生成失败（3 次凌晨超时、1 次 max_tokens）。
+# 骰子好不容易中了，一次瞬时故障就把那条扔了。现在记一笔欠账，
+# OWED_TTL_MIN 内冲动还过阈值就下一 tick 直接补写，不再掷骰子。
+
+def test_写不出来记欠账_而且不抹掉今天的计数和上一帖时间(monkeypatch):
+    prev = (NOW - timedelta(hours=5)).isoformat()
+    rig = Rig(monkeypatch, body=None,
+              state={"date": "2026-09-15", "count": 1, "last_post_at": prev})
+    rec = rig.run()
+    assert rec.reason == "write_failed"
+    st = rig.store.source_state["moments"]
+    assert st.get("owed_at"), "写失败没记欠账 —— 下一 tick 又得重新掷骰子"
+    assert st["count"] == 1 and st["last_post_at"] == prev, (
+        "记欠账把今天的计数 / 上一帖时间抹了 —— 上限和间隔一起失效")
+
+
+def test_欠着的下一tick不掷骰子直接补写_发出去就清账(monkeypatch):
+    rig = Rig(monkeypatch, body=None)
+    rig.run()
+    rig.now = NOW + timedelta(minutes=15)
+    rig.rng = FakeRng(0.99)                    # 真掷的话必然不中
+    rig.calls = _fake_writer(monkeypatch, body="补上了")
+    rec = rig.run()
+    assert rec.posted and rec.body == "补上了"
+    assert rig.rng.calls == 0, "欠着的那条还在掷骰子 —— 故障一次就等于重新抽签"
+    assert "owed_at" not in rig.store.source_state["moments"], "发出去了还挂着欠账"
+
+
+def test_欠账过期就不补了(monkeypatch):
+    rig = Rig(monkeypatch, body=None)
+    rig.run()
+    #: 写死 61：跟着常量走的话，常量被改成一年，这条测试也跟着推一年（变异验证抓到的）
+    rig.now = NOW + timedelta(minutes=61)
+    rig.rng = FakeRng(0.99)
+    rig.calls = _fake_writer(monkeypatch, body="迟到的")
+    rec = rig.run()
+    assert rec.reason == "dice" and rig.rng.calls == 1, "一小时前的心情还在补"
+
+
+def test_连着失败_欠账从第一次算起不续命(monkeypatch):
+    rig = Rig(monkeypatch, body=None)
+    rig.run()
+    first = rig.store.source_state["moments"]["owed_at"]
+    rig.now = NOW + timedelta(minutes=15)
+    rig.run()
+    assert rig.store.source_state["moments"]["owed_at"] == first
+
+
+def test_欠着但冲动掉下去了_不补(monkeypatch):
+    rig = Rig(monkeypatch, body=None)
+    rig.run()
+    rig.now = NOW + timedelta(minutes=15)
+    rig.attention = FakeAttention(drives={"longing": 0.05},
+                                  last_contact=NOW - timedelta(minutes=999))
+    rig.calls = _fake_writer(monkeypatch, body="不该出现")
+    rec = rig.run()
+    assert rec.reason == "below_threshold" and rig.calls["generate"] == []
+
+
+def test_shadow不记欠账_不写任何状态(monkeypatch):
+    """shadow 绝不写 source_state（上面 test_shadow_generation_failure_* 那条规矩）。"""
+    rig = Rig(monkeypatch, mode="shadow", body=None)
+    rig.run()
+    assert rig.store.writes == []

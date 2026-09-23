@@ -327,14 +327,22 @@ def _generate(utility: Any, picked: dict, now: datetime) -> str | None:
     prompt = build_prompt(picked, now)
     try:
         from agent.llm import Message
+        #: ⚠️ 不再写死 max_tokens=600（2026-09-23）：utility 是会思考的模型，
+        #: reasoning 和正文共用这份额度（见 memory reasoning-tokens-eat-max-tokens）。
+        #: 09-21 起连续三晚「太短」，白天复现两种上限都成功 —— 原因还没钉死，
+        #: 先把这个嫌疑去掉，并在下面把失败的形状记全
         r = utility.complete([Message(role="user", text=prompt)],
-                             [], depth="low", max_tokens=600)
+                             [], depth="low")
     except Exception as exc:  # noqa: BLE001
         logger.warning("Dream shadow：生成请求失败：%s", exc)
         return None
     text = (getattr(r, "text", "") or "").strip().strip("“”\"")
     if len(text) < 6:
-        logger.warning("Dream shadow：生成结果太短，当失败处理")
+        #: 🔴 记全失败的形状：只写「太短」的话，三晚六次失败查不出是
+        #: 超时 / 被截断 / 模型真的只回了两个字 —— 下一次要能直接看出来
+        logger.warning("Dream shadow：生成结果太短，当失败处理（stop=%s error=%s usage=%s 原文=%r）",
+                       getattr(r, "stop_reason", None), getattr(r, "error", None),
+                       getattr(r, "usage", None), text)
         return None
     return text
 
