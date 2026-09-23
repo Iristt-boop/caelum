@@ -110,13 +110,17 @@ if [ -z "$H" ]; then
 elif ! echo "$H" | grep -q '"status":"ok"'; then
   # 把具体哪一项坏了摘出来，别只说"不健康" ——
   # 一条她看不懂下一步该干嘛的告警，等于没有告警（见 docs/LOGGING.md 规则 4）
+  #
+  # 某一项带了 `alert`（固定文案的人话，比如 memory_channels）就用那句，
+  # 否则用键名。⚠️ 只认 `alert`，不认 `error` —— error 里常有会变的东西
+  # （超时 / 连接被拒 / 次数），它一变指纹就变，冷却就被绕过了
   BADS=$(echo "$H" | python3 -c '
 import json, sys
 try:
     d = json.load(sys.stdin)
 except Exception:
     print("解析不了"); sys.exit()
-print(", ".join(k for k, v in (d.get("checks") or {}).items() if not v.get("ok")) or "说不清是哪一项")
+print(", ".join(v.get("alert") or k for k, v in (d.get("checks") or {}).items() if not v.get("ok")) or "说不清是哪一项")
 ' 2>/dev/null)
   add "探活不通过：$BADS"
 fi

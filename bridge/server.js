@@ -4575,6 +4575,14 @@ app.get("/api/health", async (req, res) => {
   const staleJobs = Array.isArray(core.body?.background_stale)
     ? core.body.background_stale : [];
 
+  // 同一类洞的第二处：OB 的外部通道（embedding / rerank，都是百炼）。
+  // 2026-09-22 百炼欠费断了三小时 —— OB 活着、/health 200、这里全绿，
+  // 只是他想不起来了。OB 自己记台账（channel_health.py），这里照搬结论。
+  // `alert` 是给 caelum-watch 推手机用的那句话：**必须是固定文案，不带次数**——
+  // 看门狗拿正文算指纹做冷却，带了会变的数字就每 5 分钟吵她一次
+  const failingChannels = Array.isArray(ombre.body?.channels_failing)
+    ? ombre.body.channels_failing : [];
+
   const checks = {
     bridge: { ok: true },
     nox_core: { ok: core.ok, ms: core.ms, http: core.http, error: core.error, model: core.body?.model },
@@ -4585,6 +4593,16 @@ app.get("/api/health", async (req, res) => {
       ? { ok: false, stale: staleJobs, error: `后台活计停了：${staleJobs.join(", ")}` }
       : { ok: core.ok, jobs: Object.keys(core.body?.background || {}).length },
     ombre: { ok: ombre.ok, ms: ombre.ms, http: ombre.http, error: ombre.error, buckets: ombre.body?.buckets, decay: ombre.body?.decay_engine },
+    // 单独一项，理由同 nox_background：「OB 挂了」和「OB 在但检索通道断了」修法不同
+    memory_channels: failingChannels.length
+      ? {
+          ok: false,
+          failing: failingChannels,
+          channels: ombre.body?.channels,
+          error: `记忆检索通道在失败：${failingChannels.join(", ")}`,
+          alert: `记忆检索的 ${failingChannels.join(" / ")} 在失败（多半是百炼欠费或服务挂了），他现在想不起来或想不准`,
+        }
+      : { ok: ombre.ok, rerank_mode: ombre.body?.rerank_mode },
     eryu: { ok: eryu.ok, ms: eryu.ms, http: eryu.http, error: eryu.error },
     co_reading: { ok: reading.ok, ms: reading.ms, http: reading.http, error: reading.error },
     co_watching: { ok: watching.ok, ms: watching.ms, http: watching.http, error: watching.error },
