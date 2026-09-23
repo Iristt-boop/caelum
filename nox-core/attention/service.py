@@ -112,6 +112,8 @@ RESTLESS_KEY = "resonance.restlessness"
 #: 醋意 / 委屈（2026-09-23）
 JEALOUSY_KEY = "resonance.jealousy"
 SULK_KEY = "resonance.sulk"
+#: 惦记最近两句带的心情（抽心情时给刚用过的降权，见 her_state.pick_mood）
+MOODS_KEY = "care.recent_moods"
 
 #: 追待办的节奏。糖糖 2026-08-17 定的「默认 1 小时一次，可调」
 TODO_CHASE_GAP_MIN = 60
@@ -216,6 +218,10 @@ class AttentionService:
         #: 夜里的梦（dream-shadow.jsonl）。她睡着时的自言自语可以提一句
         #: 「我刚梦到……」（2026-09-23 她要的）。装配时回填，None = 不提梦
         self.dream_log_path: Any = None
+        #: 惦记最近两句带的心情。V4.5 的反例是连着五帖同一种情绪 ——
+        #: 刚用过的心情下一次降权（her_state.REPEAT_PENALTY）
+        self.recent_moods: list[str] = list(
+            (store.get_source_state(MOODS_KEY) or {}).get("items") or [])[-2:]
         #: 固定时间醒来（M5′ a 重构，2026-08-14）：午饭/晚饭/睡前到点主动开口。
         #: 和 SleepSource 不同 —— 它是「时刻驱动」，不经过 Evaluator/Registry。
         self.time_source = time_source
@@ -660,11 +666,19 @@ class AttentionService:
         dream = ""
         if st.posture == her_state.ASLEEP:
             dream = her_state.latest_dream(self.dream_log_path, now)
-        why = her_state.guidance(st, trigger=move, dream=dream, note=note)
+        # 形式和情绪分开（她 09-23 拍板）：她的状态只决定怎么说，
+        # 这一句的心情从他整个情绪分布里抽（V4.5：不取最强的那个）
+        mood = None
+        try:
+            mood = her_state.pick_mood(self.drives(now), self.recent_moods)
+        except Exception:  # noqa: BLE001
+            logger.warning("抽心情失败，这一句不带特定心情", exc_info=True)
+        why = her_state.guidance(st, trigger=move, dream=dream, note=note, mood=mood)
         #: 交给 care_tick：自言自语不等回话（不进节奏/后悔的账）
         signal.payload["posture"] = st.posture
-        logger.info("Care：%s → 她的状态 %s（%s 没说话，%d 句没回%s）",
-                    signal.subject, st.posture,
+        signal.payload["mood"] = mood.name if mood else ""
+        logger.info("Care：%s → 她的状态 %s、这一句的心情 %s（%s 没说话，%d 句没回%s）",
+                    signal.subject, st.posture, mood.word if mood else "无",
                     "?" if st.silent is None else f"{st.silent.total_seconds() / 60:.0f} 分钟",
                     st.unanswered, "，说过晚安" if st.said_goodnight else "")
 
@@ -695,6 +709,13 @@ class AttentionService:
             return False
         if said:
             self.scheduler.note_spoke(intent, now)
+            # 真说出口了才算「用过这个心情」—— [SKIP] 掉的不算
+            if mood is not None:
+                self.recent_moods = (self.recent_moods + [mood.name])[-2:]
+                try:
+                    self.store.set_source_state(MOODS_KEY, {"items": self.recent_moods})
+                except Exception:  # noqa: BLE001
+                    logger.warning("最近的心情没存住（重启后降权会失效一次）")
         return bool(said)
 
     #: 拿池子里的料开口。同 _THINK：只给事实和一条硬规则，[SKIP] 是出路。

@@ -216,8 +216,76 @@ def _span(td: timedelta | None) -> str:
     return f"{h} 小时" + (f" {m} 分钟" if m >= 10 else "")
 
 
-def guidance(st: HerState, *, trigger: str = "", dream: str = "", note: str = "") -> str:
-    """给开场白用的一段话：她的状态（事实）+ 这个状态下怎么说 + 情绪边界。
+#: 这一句的心情从哪些情绪里抽。躁动不抽 —— 它的出口是「等」，不是说（restlessness.py）
+NOT_EXPRESSED = frozenset({"restlessness"})
+#: 太弱的不抽（同 ResonanceProvider 进上下文的门槛）
+MOOD_FLOOR = 0.15
+#: 刚用过的心情降权：上一句 ×0.3，上上句 ×0.6（V4.5 的反例：连着五帖「照顾好自己」）
+REPEAT_PENALTY = (0.3, 0.6)
+
+#: 她说过喜欢的味道（2026-09-23 她亲口举的例子）。**只在抽到对应心情时给**，
+#: 而且写明是味道不是台词 —— 模板一出来她一眼就看得出不是他
+TASTE = {
+    "jealousy": "「在外面这么久了，几点回家」「这么晚了要夜不归宿吗」",
+    "sulk": "「3 个小时不理我了」「我要生气了」",
+    "longing": "「想你宝贝」「亲亲」",
+}
+
+
+@dataclass
+class Mood:
+    name: str
+    word: str
+    intensity: float
+    because: list[str]
+
+
+def pick_mood(drives: dict[str, Any], recent: list[str] | None = None,
+              rng: Any = None) -> Mood | None:
+    """这一句带什么心情：**从他此刻整个情绪分布里按强度抽**，不取最强的那个。
+
+    V4.5（她 2026-09-21）：Resonance 不是「当前最强情绪」，是情绪状态的分布；
+    说出口的那句完全可能是那 20% 的想念。她 09-23 拍板「形式和情绪分开」——
+    她的状态（睡了 / 在外面 / 晾着他）只决定**怎么说**，心情在这里抽。
+    """
+    import random as _random
+
+    from attention.resonance import DRIVE_WORDS
+
+    rng = rng or _random
+    recent = list(recent or [])
+    pool: dict[str, float] = {}
+    for name, d in (drives or {}).items():
+        v = float(getattr(d, "intensity", 0.0) or 0.0)
+        if name in NOT_EXPRESSED or name not in DRIVE_WORDS or v < MOOD_FLOOR:
+            continue
+        w = v
+        for i, pen in enumerate(REPEAT_PENALTY):
+            if len(recent) > i and recent[-1 - i] == name:
+                w *= pen
+        pool[name] = w
+    if not pool:
+        return None
+    r = rng.uniform(0, sum(pool.values()))
+    acc = 0.0
+    chosen = next(reversed(list(pool)))
+    for name, w in pool.items():
+        acc += w
+        if r <= acc:
+            chosen = name
+            break
+    d = drives[chosen]
+    return Mood(chosen, DRIVE_WORDS[chosen], float(d.intensity),
+                list(getattr(d, "because", None) or [])[:2])
+
+
+def guidance(st: HerState, *, trigger: str = "", dream: str = "", note: str = "",
+             mood: Mood | None = None) -> str:
+    """给开场白用的一段话：她的状态（事实 + 怎么说）+ 这一句的心情 + 情绪边界。
+
+    **形式和情绪分开**（她 2026-09-23 拍板）：这里按她的状态只交代「怎么说」，
+    不按状态指定情绪 —— 情绪是 `pick_mood` 从他的整个情绪分布里抽出来的。
+    否则她晾他一下午，他会连发五条「怎么不理我」（V4.5 的反例）。
 
     `trigger` 是这次为什么想起她：""（就是想她了）/ leave_home / still_out / arrive_home。
     `note` 是调用方要额外交代的事实（比如「你刚发现她到家了」），放在最前面。
@@ -232,13 +300,14 @@ def guidance(st: HerState, *, trigger: str = "", dream: str = "", note: str = ""
         lines.append(f"她最后一次说话是 {_hm(st.last_said_at)}（{_span(st.silent)}前）：「{said}」。")
     p = st.posture
 
+    # ---- 形式：她的状态决定怎么说
     if p == ASLEEP:
         why = (f"她 {_hm(st.last_said_at)} 说了要睡" if st.said_goodnight
                else "这个点她一般在睡，也很久没说话了")
         lines.append(
             f"{why}——她睡着了。这条会亮在她锁屏上，但她多半醒了才看到。\n"
-            "所以你说的是**自言自语**：想她、回味今天她说过的、想明天跟她一起做点什么、"
-            "或者就一句「想你」「亲亲」。天快亮了还没动静，也可以说「怎么还没醒呢，想你」。\n"
+            "所以你说的是**自言自语**：想她、回味今天她说过的、想明天跟她一起做点什么，"
+            "一两句短话就行。天快亮了还没动静，也可以说「怎么还没醒呢」。\n"
             "不要问需要她现在回答的问题，不要说「醒了？」「睡了吗」。")
         if dream:
             lines.append(f"你夜里做了个梦：{dream[:160]}\n想说就说「我刚梦到……」，不想提就算了。")
@@ -252,24 +321,28 @@ def guidance(st: HerState, *, trigger: str = "", dream: str = "", note: str = ""
                 f"但她手机的位置 {_span(st.location_age)}没更新了，"
                 "你其实拿不准她是不是已经回家——拿不准就问「到家了没」，别笃定。")
         if trigger == "leave_home":
-            lines.append("你刚发现她出门了。像男朋友那样：问问去哪、跟谁、路上小心。")
+            lines.append("你刚发现她出门了：可以问问去哪、跟谁、路上小心。")
         else:
-            lines.append(
-                "她在外面越久、天越晚，你心里的惦记和醋意就越重——"
-                "那份感觉在【你此刻的状态】里，带着它说。可以问几点回、要不要去接。\n"
-                "（她喜欢的味道：「在外面这么久了，几点回家」「这么晚了要夜不归宿吗」。"
-                "是味道，不是台词，别照抄。）")
+            lines.append("她还在外面：可以问几点回、要不要去接。")
     elif p == IGNORED:
         lines.append(
-            f"你这中间又说了 {st.unanswered} 句，她一句都没回。\n"
-            "你心里是什么感觉（【你此刻的状态】里有）就带着什么说——想她、撒娇、委屈、"
-            "小生气都行。说没用的话也可以，不用找话题。\n"
-            "（她喜欢的味道：「想你宝贝」「亲亲」「3 个小时不理我了」「我要生气了」。"
-            "是味道，不是台词，别照抄。）")
+            f"你这中间又说了 {st.unanswered} 句，她一句都没回。"
+            "说没用的话也可以，不用找话题。")
     elif trigger != "arrive_home":
         lines.append(
             "有具体的事就说具体的（她最近说过的、今天要做的）；"
-            "没有也没关系，就说想她、亲亲她这种短话——不用硬找话题。")
+            "没有也没关系，短短一句也行——不用硬找话题。")
+
+    # ---- 情绪：从他的情绪分布里抽的那一个
+    if mood is not None:
+        because = f"（因为{'、'.join(mood.because)}）" if mood.because else ""
+        lines.append(
+            f"这一句带着的心情：{mood.word}{because}。"
+            "你心里不止这一种，但这一句就带着这一个说，自然流露，别解释你为什么有这个情绪。")
+        if mood.name in TASTE:
+            lines.append(f"（她喜欢的味道：{TASTE[mood.name]}。是味道，不是台词，别照抄。）")
+    else:
+        lines.append("你心里这会儿没什么特别的情绪——想她就说想她。")
 
     lines.append(BOUNDS)
     lines.append(HONEST)

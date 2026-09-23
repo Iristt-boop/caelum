@@ -128,7 +128,8 @@ def test_出门且位置新鲜_是在外面():
     assert st.posture == AWAY
     g = her_state.guidance(st)
     assert "17:00 出的门" in g and "4 小时" in g
-    assert "夜不归宿" in g, "在外面很久的那副说话方式没给他"
+    assert "可以问几点回" in g, "在外面时的说话形式没给他"
+    assert "夜不归宿" not in g, "形式和情绪分开：在外面不等于这一句就得吃醋"
     assert "拿不准" not in g, "位置是新的，不该说拿不准"
 
 
@@ -159,7 +160,8 @@ def test_说了两句都没回_就是晾着他():
     assert st.unanswered == 2, "她说完 3 分钟内他那句是回复，不算没回的"
     assert st.posture == IGNORED
     g = her_state.guidance(st)
-    assert "我要生气了" in g and "不用找话题" in g
+    assert "一句都没回" in g and "不用找话题" in g
+    assert "这一句带着的心情" not in g, "没抽到心情就不该凭状态塞一个"
 
 
 def test_只说了一句没回_还算平常():
@@ -479,3 +481,65 @@ def test_会话库_传本地时区的时刻也比得对(tmp_path, monkeypatch):
     assert db.count_assistant_since(sid, cn(22, 23, 3)) == 1, (
         "传进来的是 +08:00 的时刻，没换成 UTC 就按字符串比，00:30 那句被漏掉")
     db.close()
+
+
+# ---------------------------------------------------------------- 形式和情绪分开（V4.5）
+
+class D:
+    def __init__(self, v, because=()):
+        self.intensity, self.because = v, list(because)
+
+
+def test_心情按强度抽_不是取最强():
+    import random
+    drives = {"sulk": D(0.5, ["她 3 个小时没理我了"]), "longing": D(0.3), "playfulness": D(0.2)}
+    rng = random.Random(7)
+    got = [her_state.pick_mood(drives, [], rng).name for _ in range(2000)]
+    share = {k: got.count(k) / len(got) for k in drives}
+    assert 0.45 < share["sulk"] < 0.55 and 0.25 < share["longing"] < 0.35, share
+    assert share["playfulness"] > 0.15, "弱一点的情绪也该有机会 —— 不然又是取最强"
+
+
+def test_刚用过的心情降权():
+    import random
+    drives = {"sulk": D(0.5), "longing": D(0.5)}
+    rng = random.Random(3)
+    got = [her_state.pick_mood(drives, ["sulk"], rng).name for _ in range(2000)]
+    assert got.count("sulk") / len(got) < 0.3, "晾他一下午，他连发五条「怎么不理我」（V4.5 的反例）"
+
+
+def test_躁动和太弱的不抽_什么都没有就不带():
+    drives = {"restlessness": D(0.5), "longing": D(0.1)}
+    assert her_state.pick_mood(drives, []) is None
+    assert her_state.pick_mood({}, []) is None
+
+
+def test_抽到的心情才给对应的味道():
+    st = her_state.read(cn(23, 21), FakeSessions("出门啦", cn(23, 17)),
+                        FakePresence("not_home", away_since=cn(23, 17), updated_at=cn(23, 20, 50)))
+    j = her_state.Mood("jealousy", "吃醋", 0.4, ["她出门 4 小时了"])
+    g = her_state.guidance(st, mood=j)
+    assert "这一句带着的心情：吃醋（因为她出门 4 小时了）" in g
+    assert "夜不归宿" in g and "不是台词" in g
+    c = her_state.Mood("curiosity", "被一件事勾着", 0.4, ["一个话题"])
+    g2 = her_state.guidance(st, mood=c)
+    assert "被一件事勾着" in g2 and "夜不归宿" not in g2, "在外面也可以带着别的心情说"
+
+
+def test_惦记真的抽心情_说出口才记进最近(tmp_path):
+    said: list = []
+    svc, store = _svc(tmp_path, FakeSessions("好", cn(23, 13), his=[cn(23, 14), cn(23, 15)]),
+                      FakePresence("home"), said)
+    svc.drives = lambda now: {"sulk": D(0.5, ["她 3 个小时没理我了"])}
+    sig = CareSignal(source="random", subject="想起你了")
+    svc._think_of_her(sig, type("T", (), {"steps": 0})(), cn(23, 16))
+    assert "这一句带着的心情：委屈" in said[0]
+    assert sig.payload["mood"] == "sulk" and svc.recent_moods == ["sulk"]
+    from attention.service import MOODS_KEY
+    assert store.get_source_state(MOODS_KEY) == {"items": ["sulk"]}
+
+    svc.speaker = lambda intent, decision, prompt=None: None      # 他回了 [SKIP]
+    svc._think_of_her(CareSignal(source="random", subject="想起你了"),
+                      type("T", (), {"steps": 0})(), cn(23, 17))
+    assert svc.recent_moods == ["sulk"], "[SKIP] 掉的那句不算用过这个心情"
+    store.close()

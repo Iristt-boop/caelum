@@ -75,6 +75,30 @@ _MIN_CONTRIB = FLOOR
 _DRIVE_CAPS = {"concern": 0.80}
 _DRIVE_CAP_DEFAULT = 0.95
 
+#: 🔴 **情绪名 → 他会怎么形容自己。全项目唯一的一张。**
+#:
+#: 2026-09-23 之前后端抄了两份（Moments 一份、他的上下文一份），加醋意/委屈时
+#: 发现 Moments 那份没跟上 —— 写帖子的提示词里会原样漏出 "jealousy"。
+#: 糖糖：「以后说不定还会在 resonance 加情绪，总不能加一个就要这样维护一个，会乱的。」
+#: 所以收成这一张：加情绪只改这里，`tests/test_drive_words.py` 会查
+#: 「Resonance 能产出的每种情绪都在表里」，漏了就红。
+#:
+#: ⚠️ 措辞是他的内心独白，不是给她看的文案。改之前先想一遍"他会这么形容自己吗"。
+DRIVE_WORDS: dict[str, str] = {
+    "concern": "担心她",
+    "longing": "想她",
+    "regret": "过意不去",
+    "dejection": "提不起劲",
+    "playfulness": "想逗她",
+    #: 2026-09-04 加。**唯一一个和她无关的** —— 措辞特意不带"她"字
+    "curiosity": "被一件事勾着",
+    #: 2026-09-23 加。都是冲她的、撒娇的 —— 分寸见 care/her_state.py 的 BOUNDS
+    "jealousy": "吃醋",
+    "sulk": "委屈",
+    #: 他自己知道、但不进他上下文的（见 context/providers/resonance.py 的 _SKIP）
+    "restlessness": "憋着话",
+}
+
 #: `because` / `evidence` 各留几条。
 #: 这两个字段是给人看的（日志、自省），不是给机器算的 ——
 #: 列满二十条没人读得下去
