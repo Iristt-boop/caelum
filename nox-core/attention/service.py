@@ -1237,7 +1237,15 @@ class AttentionService:
         link = getattr(self, "link", None)
         cur = getattr(link, "_current", None) if link is not None else None
         if cur:
-            app, seconds = cur[0], cur[1]
+            #: 🔴 **只认新鲜的**（2026-09-23 修）。`_current` 只在收到心跳 / 切窗口时更新，
+            #: 她电脑一睡眠、链路一断，最后那个窗口就一直挂在这儿 —— 于是
+            #: 「她正在忙」整夜成立，躁动整夜满格 0.5，Moments 领头的心事一天
+            #: 46 次是「憋着话」，凌晨那几次「本来会发」全是它推的。
+            #: 过期 = 不知道 = 不忙（restlessness.py 的原则），阈值用感知层自己的
+            last = getattr(link, "_last_activity_at", None)
+            stale_s = getattr(link, "SENSE_STALE_S", 30 * 60)
+            if last is not None and (now - last).total_seconds() < stale_s:
+                app, seconds = cur[0], cur[1]
 
         try:
             her = self.her_now(now)
