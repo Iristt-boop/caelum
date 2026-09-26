@@ -444,14 +444,30 @@ db.run(`CREATE TABLE IF NOT EXISTS calls (
 
 const CALL_RING_SECONDS = 45;
 
+// 未接通的通话条（2026-09-26）：sweep 转 missed / 她按拒接时往会话落一条。
+// 接通那通由 answer 端点落（content=开场白，时长 /api/call/end 回填）。
+// content 这行字给模型/搜索看；前端 CallBubble 照 metadata.call 渲染，不显示它
+function recordUnansweredCall(id, status, reason) {
+  try {
+    saveMessage(latestSessionId(), "assistant", "未接通的电话", {
+      proactive: true,
+      call: { id, status, reason: (reason || "").slice(0, 120) },
+    });
+  } catch (e) { console.log("[Call] 通话条落库失败:", e.message); }
+}
+
 function sweepCalls(now = Date.now()) {
   // 响铃超时 = 没接。惰性清扫：任何读呼叫状态的入口顺手做，
   // 不挂定时器（这表一天写不了几行，没必要养一个后台循环）
-  const rows = dbAll("SELECT id, created_at FROM calls WHERE status='ringing'");
+  // 2026-09-26：转 missed 的同一刻落通话条 —— 糖糖那通 18:49 的 missed
+  // 她这边什么都没看到。sweep 在 core 90s 的 status 查询里必被触发，
+  // 所以通话条总是赶在留言前面进会话
+  const rows = dbAll("SELECT id, reason, created_at FROM calls WHERE status='ringing'");
   for (const r of rows) {
     const age = (now - Date.parse(r.created_at)) / 1000;
     if (Number.isFinite(age) && age > CALL_RING_SECONDS) {
       dbRun("UPDATE calls SET status='missed' WHERE id=?", [r.id]);
+      recordUnansweredCall(r.id, "missed", r.reason);
     }
   }
 }
@@ -4121,7 +4137,11 @@ app.post("/api/call/answer", (req, res) => {
   const sid = latestSessionId();
   let saved = null;
   if (r[0].opener && sid) {
-    saveMessage(sid, "assistant", r[0].opener, { proactive: true, call: id });
+    // 2026-09-26：call 从裸 id 升级成对象 —— 前端 CallBubble 靠它渲染通话条
+    saveMessage(sid, "assistant", r[0].opener, {
+      proactive: true,
+      call: { id, status: "answered", reason: (r[0].reason || "").slice(0, 120) },
+    });
     saved = sid;
   }
   console.log(`[Call] ${id} 已接听${saved ? ` (session=${sid})` : "（无会话可落）"}`);
@@ -4131,10 +4151,11 @@ app.post("/api/call/answer", (req, res) => {
 // 她拒接。core 的跟进定时器稍后会看到这个状态，把「留言」发出来
 app.post("/api/call/decline", (req, res) => {
   const id = (req.body?.id || "").toString().slice(0, 64);
-  const r = dbAll("SELECT status FROM calls WHERE id=?", [id]);
+  const r = dbAll("SELECT status, reason FROM calls WHERE id=?", [id]);
   if (!r[0]) return res.status(404).json({ error: "no such call" });
   if (r[0].status === "ringing") {
     dbRun("UPDATE calls SET status='declined' WHERE id=?", [id]);
+    recordUnansweredCall(id, "declined", r[0].reason);
     console.log(`[Call] ${id} 被拒接`);
   }
   res.json({ ok: true });
@@ -4146,6 +4167,18 @@ app.post("/api/call/end", (req, res) => {
   const dur = Math.max(0, Math.round(Number(req.body?.duration) || 0));
   dbRun("UPDATE calls SET status=CASE WHEN status='answered' THEN 'ended' ELSE status END, ended_at=?, duration_s=? WHERE id=?",
     [new Date().toISOString(), dur, id]);
+  // 2026-09-26：时长回填进通话条消息 —— 她重开 App 看到「语音通话 3:24」。
+  // 🔴 不能一条 UPDATE 全表 json_extract：历史消息的 metadata 有非 JSON 串，
+  // json_extract 碰到就抛 malformed JSON 炸掉整个语句。先倒序找目标行（通话条
+  // 刚落库，就在表尾附近），再按 rowid 定点 json_set
+  const hit = dbAll(
+    "SELECT rowid FROM conversations WHERE json_valid(metadata) AND json_extract(metadata,'$.call.id')=? ORDER BY rowid DESC LIMIT 1",
+    [id],
+  );
+  if (hit[0]) {
+    dbRun("UPDATE conversations SET metadata=json_set(metadata,'$.call.duration_s',?) WHERE rowid=?",
+      [dur, hit[0].rowid]);
+  }
   console.log(`[Call] ${id} 结束，${dur}s`);
   res.json({ ok: true });
 });
