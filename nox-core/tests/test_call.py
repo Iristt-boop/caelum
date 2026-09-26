@@ -35,10 +35,11 @@ def _longing(value=0.7, quiet_h=4.0):
     return LongingState(value=value, last_contact=NOW - timedelta(hours=quiet_h))
 
 
-def _source(tmp_path, longing=None):
+def _source(tmp_path, longing="__default__"):
+    #: longing 参数用哨兵串区分「没传」和「显式传 None」——None 是合法用例
     return CallSource(AttentionStore(tmp_path / "attn.db"),
                       log_dir=str(tmp_path),
-                      longing_ref=longing or _longing())
+                      longing_ref=_longing() if longing == "__default__" else longing)
 
 
 def test_mode_off_polls_nothing(tmp_path, monkeypatch):
@@ -52,10 +53,26 @@ def test_outside_window_no_signal(tmp_path, monkeypatch):
     assert _source(tmp_path).poll(OUTSIDE) == []
 
 
-def test_low_longing_no_signal(tmp_path, monkeypatch):
+def test_longing_ref_missing_no_signal(tmp_path, monkeypatch):
+    """longing_ref 没接上 = 连她何时说的最后一句话都不知道，宁可不打。"""
+    monkeypatch.setenv("NOX_CALL", "on")
+    s = _source(tmp_path, longing=None)
+    assert s.poll(NOW) == []
+
+
+def test_quiet_too_short_no_signal(tmp_path, monkeypatch):
+    monkeypatch.setenv("NOX_CALL", "on")
+    s = _source(tmp_path, _longing(quiet_h=1.0))
+    assert s.poll(NOW) == []
+
+
+def test_low_longing_still_signals(tmp_path, monkeypatch):
+    """longing 不做门槛（糖糖 2026-09-26）：安静满两小时就是信号，
+    想念那个数只管 reason 和 urgency 的味道。"""
     monkeypatch.setenv("NOX_CALL", "on")
     s = _source(tmp_path, _longing(value=0.3))
-    assert s.poll(NOW) == []
+    sigs = s.poll(NOW)
+    assert len(sigs) == 1 and sigs[0].source == "call"
 
 
 def test_shadow_logs_once_per_hour_and_never_signals(tmp_path, monkeypatch):

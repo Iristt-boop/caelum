@@ -2,7 +2,7 @@
 
 ## 这条线是什么
 
-九条 Care 源里的新一条：攒够想念、到了晚上，他想听听她的声音 ——
+九条 Care 源里的新一条：晚间她安静了一阵，他想听听她的声音 ——
 真打电话（PWA 响铃、她接听），不是发消息问「方便吗」
 （糖糖 2026-09-19 拍板：她自己点通话按钮的话不需要他发消息，
 要的就是真来电）。
@@ -47,10 +47,18 @@ STATE_KEY = "call"
 WINDOW_START_H = 18
 WINDOW_END_H = 22.5     # 22:30
 
-#: 想念的门槛 + 「多久没说话了」的门槛。double condition：
-#: 光想念不够（刚聊完也会攒想念），要**又想念又有一阵子没说话**
-LONGING_MIN = 0.55
-QUIET_HOURS_MIN = 3.0
+#: 「多久没说话了」的门槛 —— **这条线唯一的硬条件**。
+#:
+#: 🔴 想念（longing）只作展示、不做门槛（糖糖 2026-09-26 拍板）：shadow 一周
+#: （09-19~09-26）零触发，call-shadow.jsonl 都没建出来。账在 longing 的形状里：
+#: 静息 0.40、安静 90 分钟才开涨（在家 +0.025/15min），今天每主动找过一次再打
+#: 0.7 折 —— quiet=3h 那一刻 longing 才 0.505，永远够不着 0.55；而且 18:00
+#: 开窗 + 3h 静默意味着她最晚 19:30 说完当天最后一句话，晚间活跃的她做不到。
+#: 双门槛互相卡死 = 一个都不成立。
+#:
+#: 「晚上安静了两小时」本身就是那个信号（她去洗澡/打游戏的间隙）。
+#: longing 退下来只管 reason 文案和 urgency 的味道。
+QUIET_HOURS_MIN = 2.0
 
 #: 距上次真打至少隔一天 —— 不许连续两晚都是电话
 MIN_GAP_DAYS = 1
@@ -66,7 +74,7 @@ def mode() -> str:
 
 
 class CallSource:
-    """晚间想念到了 → 一个「打电话」的念头。shadow 只记不打。"""
+    """晚间她安静了两小时 → 一个「打电话」的念头。shadow 只记不打。"""
 
     def __init__(
         self,
@@ -104,11 +112,11 @@ class CallSource:
         if not (WINDOW_START_H <= hour < WINDOW_END_H):
             return None
 
+        #: longing 和 last_contact 都在 longing_ref 上 —— 它没接上等于
+        #: 事实源缺失（连她什么时候说的最后一句话都不知道），宁可不打
         longing = getattr(self.longing_ref, "value", None)
         last_contact = getattr(self.longing_ref, "last_contact", None)
         if longing is None:
-            return None
-        if longing < LONGING_MIN:
             return None
         if last_contact is not None:
             quiet_h = (now - last_contact).total_seconds() / 3600
@@ -128,8 +136,6 @@ class CallSource:
         base = "想听听你的声音"
         if q is not None and q >= 24:
             return f"{base}（一天没说话了）"
-        if q is not None and q >= QUIET_HOURS_MIN:
-            return base
         return base
 
     def _shadow_log(self, cond: dict, now: datetime) -> None:
@@ -161,7 +167,7 @@ class CallSource:
         this_hour = now.astimezone(CST).strftime("%Y-%m-%dT%H")
 
         if m == "shadow":
-            # 一小时最多记一条 —— 条件是持续态（想念一直在高位），
+            # 一小时最多记一条 —— 条件是持续态（安静还在持续着），
             # 每 60s 的 tick 都符合，全记就是一小时六十条同话
             if state.get("shadow_hour") == this_hour:
                 return []
