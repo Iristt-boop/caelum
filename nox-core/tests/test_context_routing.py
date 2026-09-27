@@ -226,3 +226,27 @@ def test_最小集里不许有打网络的():
     """
     for text in ["早上好", "开空调", "我没睡好", "外面冷吗"]:
         assert not (set(classify_context(text, light=True)) & EXTERNAL), text
+
+
+# ---------------------------------------------------------------- Appraisal 检索那一半（2026-09-27）
+
+def test_检索那一半关着时_普通一句不翻记忆(monkeypatch):
+    monkeypatch.delenv("NOX_APPRAISAL_RECALL", raising=False)
+    assert "memory" not in classify_context("好累啊今天")
+
+
+def test_检索那一半开着时_普通一句也翻记忆(monkeypatch):
+    """不等锚点 —— 锚点要 Registry，Registry 那一半 09-30 才开。"""
+    monkeypatch.setenv("NOX_APPRAISAL_RECALL", "on")
+    assert "memory" in classify_context("好累啊今天")
+
+
+def test_检索那一半开着_轻量路径照旧不翻(monkeypatch):
+    """问天气、说早上好：那条路存在的意义就是快。"""
+    monkeypatch.setenv("NOX_APPRAISAL_RECALL", "on")
+    assert "memory" not in classify_context("早上好", light=True)
+
+
+def test_检索那一半只认明确的打开(monkeypatch):
+    monkeypatch.setenv("NOX_APPRAISAL_RECALL", "shadow")
+    assert "memory" not in classify_context("好累啊今天")

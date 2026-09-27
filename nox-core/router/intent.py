@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass
 from enum import Enum
@@ -198,6 +199,25 @@ _NEED_MUSIC = re.compile(
 )
 
 
+def recall_always() -> bool:
+    """Appraisal 的「检索那一半」开着没有（`NOX_APPRAISAL_RECALL`，默认关）。
+
+    ## 为什么要把 Appraisal 拆成两半（2026-09-23 定，09-27 她拍板打开这一半）
+
+    `NOX_LLM_APPRAISAL=on` 一次改两件事：
+      1. **写 Registry** —— 锚点会改变他主动开口时念叨什么（Care 的内容）
+      2. **打开翻记忆的总开关** —— 有活跃锚点 → 下面的①恒真 → 1.3% 的轮次翻记忆变成几乎每轮
+
+    第 1 件的精确率只有 53%（150 条标注），写错了他会念叨一件她根本没说的事，
+    所以留到 09-30。第 2 件只是「每轮多带一段背景」，错了的代价小得多，
+    而且 rerank 需要她聊天的真实查询才能验门槛（shadow 三天记下的全是他主动开口的提示）。
+
+    开着时：**不看锚点，轻量路径以外的每一轮都翻**。
+    这和转正之后的行为一致（转正后锚点几乎总是在），只是不写 Registry。
+    """
+    return os.getenv("NOX_APPRAISAL_RECALL", "off").strip().lower() in ("1", "on", "true", "yes")
+
+
 def classify_context(text: str, *, light: bool = False,
                      has_understanding: bool = False) -> list[str]:
     """这轮加载哪些 Provider。
@@ -239,7 +259,8 @@ def classify_context(text: str, *, light: bool = False,
         names.append("todo")
     if _NEED_HEALTH.search(s):
         names.append("health")
-    if has_understanding or _NEED_MEMORY.search(s):
+    #: ③ Appraisal 检索那一半打开时，不等锚点（见 recall_always）
+    if has_understanding or recall_always() or _NEED_MEMORY.search(s):
         names.append("memory")
     if _NEED_HOME.search(s):
         names.append("home")
