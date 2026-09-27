@@ -44,7 +44,7 @@
 | 资产 | 位置 | 说明 |
 |---|---|---|
 | 人格 | `nox-core/personality/prompt.py` | 人设 + 静态前缀组装（缓存前缀，不可变） |
-| 世界观 | `Iristt-boop/Claude` 仓库 `nox-docs/Caelum-世界观.md` | 唯一真源；工程映射见 `PROJECT.md` 〇节 |
+| 世界观 | `Iristt-boop/ombre-brain` 仓库（原名 Claude）`worklog` 分支 `nox-docs/Caelum-世界观.md` | 唯一真源；工程映射见 `PROJECT.md` 〇节 |
 | 记忆筛选/写入门槛 | `nox-core/memory/`（ob_client.py、tools.py） | 「存什么、筛什么」的规则是 Nox 层决策 |
 | 插件清单 | `.mcp.json`、内核 `cordis.patch.yml` 里的插件替换 | 含 VS Code 布局插件替换（见下） |
 
