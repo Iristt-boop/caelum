@@ -375,8 +375,9 @@ def test_今天昨天按日历天算不按小时差():
     assert _humanize(cst(11, 12), cst(14, 12)) == humanize(3)
 
 
-def test_intent带了recall就转交给chat_没带就不传(astore):
-    """recall 只在他主动开口时有；没设时不传这个参数，老的 core 不受影响。"""
+def test_intent带了recall就转交给chat_没带就拿主题去翻(astore):
+    """走到 speaker 的都是他主动开口 —— 提示是模板，绝不能拿它去翻记忆。
+    09-27 第一条抓到的就是追待办：没设 recall，300 字模板照样被拿去翻。"""
     got: list = []
 
     class Core(FakeCore):
@@ -390,4 +391,5 @@ def test_intent带了recall就转交给chat_没带就不传(astore):
     speak(i, _decision(i))
     j = _intent()
     speak(j, _decision(j))
-    assert got == ["感觉撑得睡不着了", "<没传>"]
+    assert got == ["感觉撑得睡不着了", SUBJECT]
+    assert all("系统提示" not in g for g in got)

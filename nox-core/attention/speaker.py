@@ -251,10 +251,15 @@ def build_speaker(core: _Core, sessions: _Sessions, store: Any,
         # 显式带上 sid：这句话属于**它自己那条对话**。原来靠 `core.current_session_id`
         # 那个进程级属性，而她正在聊天时那条链路会把它覆盖成她的会话 ——
         # 于是主动说的一句话、以及它调工具留的纸条，全挂到了她的会话上（不报错）。
-        #: 翻记忆用的话（Intent.recall）。只有设了才传 —— 没设就是老路子：拿提示原文去翻
+        #: 翻记忆用的话。🔴 **走到 speaker 的都是他主动开口，提示全是模板** ——
+        #: 没明说拿什么去翻（Intent.recall）就拿**主题**去翻（「待办：背英语单词」「午饭」
+        #: 「来电留言 · …」），绝不退回拿整段提示去翻。
+        #: 09-27 部署惦记/话题两条之后，第一条抓到的就是追待办：它没设 recall，
+        #: 300 字的模板照样被拿去翻。一条条路补会漏，所以在出口统一兜底
         recall = getattr(intent, "recall", None)
-        extra = {} if recall is None else {"recall": recall}
-        r = core.chat(prompt, history, session_id=sid, **extra)
+        if recall is None:
+            recall = str(getattr(intent, "subject", "") or "")
+        r = core.chat(prompt, history, session_id=sid, recall=recall)
 
         # 存进他的会话 —— 这一步就是「留在上下文里」的落点。
         # 放在推送**之前**：宁可存了没推出去（她少收一条），
