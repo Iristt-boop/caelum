@@ -252,3 +252,27 @@ def test_not_hardcoded_into_the_lineup():
 
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))
+
+
+# ---------------------------------------------------------------- 他主动开口时翻什么（2026-09-27）
+
+def test_他主动开口时拿recall去翻_不拿整段提示():
+    """rerank shadow 三天：拿整段开场白去翻，「修复对话记忆bug」被塞进 105 次里的 71 次。"""
+    ob = FakeOB()
+    prompt = "（系统提示：不是她在跟你说话。现在是 08:55。\n不要问需要她现在回答的问题……）"
+    MemoryProvider(ob).get_state(Turn(text=prompt, recall="感觉撑得睡不着了"))
+    assert [c["query"] for c in ob.calls] == ["感觉撑得睡不着了"]
+
+
+def test_recall是空串就不翻_哪怕提示很长():
+    """空串 = 拼提示的一方说了「这次没有具体的线头」，不能退回去拿模板翻。"""
+    ob = FakeOB()
+    s = MemoryProvider(ob).get_state(Turn(text="（系统提示：不是她在跟你说话。……）", recall=""))
+    assert ob.calls == []
+    assert s["relevant"] == []
+
+
+def test_她发来的话照旧用原话():
+    ob = FakeOB()
+    MemoryProvider(ob).get_state(Turn(text="你还记得我怕冷吗"))
+    assert ob.calls[0]["query"] == "你还记得我怕冷吗"

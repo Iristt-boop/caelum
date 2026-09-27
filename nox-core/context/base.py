@@ -64,6 +64,14 @@ class Turn:
     now: datetime | None = None
     voice: bool = False
     scene: str | None = None
+    #: 翻记忆用哪句话。None = 就用 `text`（她发来的话，平常都是这样）。
+    #:
+    #: 🔴 他**主动开口**时 `text` 是一整段系统提示（「不是她在跟你说话。现在是 08:55……
+    #: 不要问需要她现在回答的问题……」），拿它去翻记忆，翻到的是跟**模板里的套话**相关的桶。
+    #: rerank shadow 三天（2026-09-23~26）：105 次全是这种提示，「修复对话记忆bug」被塞进 71 次，
+    #: 凌晨三点他想她时也在。所以由拼提示的那一方明说「该拿什么去翻」：
+    #: 她最后那句话、他的梦、话题的钩子。空串 = 这次没有具体的线头，不翻。
+    recall: str | None = None
 
 
 class BaseContextProvider(ABC):

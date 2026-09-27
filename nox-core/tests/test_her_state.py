@@ -587,3 +587,42 @@ def test_真库_他的开场白和SKIP不算她说的话(tmp_path, monkeypatch):
     assert said == [], "那一夜 09:40 的「回来了？」在真实库形状下还是会发"
     store.close()
     db.close()
+
+
+# ---------------------------------------------------------------- 翻记忆拿什么（2026-09-27）
+
+def test_翻记忆拿她那句话和他的梦():
+    st = HerState(now=cn(26, 8, 55), last_said="感觉撑得睡不着了", last_said_at=cn(25, 22, 47))
+    q = her_state.recall_query(st, dream="梦里我守着一口铜锅" + "咕嘟" * 60)
+    assert q.startswith("感觉撑得睡不着了\n梦里我守着一口铜锅")
+    assert len(q.split("\n")[1]) == her_state.RECALL_DREAM_CHARS, "梦太长会淹掉她那句话"
+
+
+def test_什么线头都没有就是空串():
+    assert her_state.recall_query(HerState(now=cn(26, 8)), dream="  ") == ""
+
+
+def test_惦记开口时_intent带着她那句话去翻记忆_不带开场白(tmp_path):
+    from attention.relationship import RelationshipState
+    from attention.service import AttentionService
+    from attention.sources.thinking import ThinkingSource
+    from attention.store import AttentionStore
+
+    store = AttentionStore(tmp_path / "attn.db")
+    sessions = FakeSessions("我今天下午回去搞", cn(26, 12, 38))
+    seen: list = []
+
+    class Provider:
+        def get_state(self, turn=None, force_refresh=False):
+            return {"has_data": False}
+
+    svc = AttentionService(
+        store, Provider(), RelationshipState(),
+        speaker=lambda intent, decision, prompt=None: seen.append(intent) or "msg-1",
+        fast_sources=[ThinkingSource(store, sessions), FakePresence("home")],
+    )
+    svc._think_of_her(CareSignal(source="random", subject="想起你了"),
+                      type("T", (), {"steps": 0})(), cn(26, 14, 8))
+    assert seen and seen[0].recall == "我今天下午回去搞"
+    assert "系统提示" not in seen[0].recall
+    store.close()

@@ -373,3 +373,21 @@ def test_今天昨天按日历天算不按小时差():
     # 和 timeline 那侧必须逐字相同 —— 两套并一套的意义就在这
     from temporal import humanize
     assert _humanize(cst(11, 12), cst(14, 12)) == humanize(3)
+
+
+def test_intent带了recall就转交给chat_没带就不传(astore):
+    """recall 只在他主动开口时有；没设时不传这个参数，老的 core 不受影响。"""
+    got: list = []
+
+    class Core(FakeCore):
+        def chat(self, text, history, **kw):
+            got.append(kw.get("recall", "<没传>"))
+            return self.reply
+
+    speak = build_speaker(Core(), FakeSessions(), FakeStore(), astore)
+    i = _intent()
+    i.recall = "感觉撑得睡不着了"
+    speak(i, _decision(i))
+    j = _intent()
+    speak(j, _decision(j))
+    assert got == ["感觉撑得睡不着了", "<没传>"]

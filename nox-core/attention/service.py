@@ -690,6 +690,8 @@ class AttentionService:
             kind=f"care_{signal.source}",
             created_at=now,
             expires_at=now + timedelta(hours=2),
+            #: 翻记忆拿她那句话和他的梦，不拿整段开场白（见 her_state.recall_query）
+            recall=her_state.recall_query(st, dream),
         )
         decision = SchedulerDecision(
             intent=intent, reason=signal.subject,
@@ -759,6 +761,8 @@ class AttentionService:
             kind=f"care_{signal.source}",
             created_at=now,
             expires_at=now + timedelta(hours=2),
+            #: 翻记忆拿话题本身（她以前是不是聊过类似的），不拿「怎么开口」那一大段规矩
+            recall=p.get("hook") or "",
         )
         decision = SchedulerDecision(
             intent=intent, reason=signal.subject,

@@ -193,7 +193,10 @@ class MemoryProvider(BaseContextProvider):
         self.ob = ob
 
     def _fetch(self, turn: Turn) -> dict[str, Any]:
-        query = (turn.text or "").strip()
+        #: 他主动开口时，拼提示的那一方会明说该拿什么去翻（见 Turn.recall）；
+        #: 她发来的话没有这个字段，照旧用原话
+        recall = getattr(turn, "recall", None)
+        query = (turn.text if recall is None else recall or "").strip()
         if not query:
             # 没有话题就别去检索 —— 不带 query 的 breath() 返回的是钉选桶，
             # 那份已经在静态前缀里了，白花 7 秒

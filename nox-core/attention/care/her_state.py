@@ -200,6 +200,26 @@ def latest_dream(path: str | Path | None, now: datetime) -> str:
         return ""
 
 
+#: 翻记忆时梦取多长。梦是一整段意识流，全塞进去会淹掉她那句话
+RECALL_DREAM_CHARS = 80
+
+
+def recall_query(st: HerState, dream: str = "") -> str:
+    """他想起她时，拿什么去翻记忆：**她最后那句话 + 他的梦**。
+
+    🔴 不是整段开场白。开场白里全是说话规矩（「最多两句」「不要问需要她现在回答的问题」）
+    和时间戳，拿它去翻，翻出来的是跟套话沾边的桶 ——
+    rerank shadow 三天里「修复对话记忆bug」被塞进 105 次里的 71 次。
+    两样都没有就返回空串：这次没有具体的线头，不翻。
+    """
+    parts = []
+    if st.last_said.strip():
+        parts.append(st.last_said.strip())
+    if dream.strip():
+        parts.append(dream.strip()[:RECALL_DREAM_CHARS])
+    return "\n".join(parts)
+
+
 # ---------------------------------------------------------------- 说话方式
 
 def _hm(dt: datetime | None) -> str:

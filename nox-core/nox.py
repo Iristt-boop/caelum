@@ -761,7 +761,8 @@ class Nox:
     def _dynamic(self, text: str, voice: bool, scene: str | None = None,
                  has_images: bool = False,
                  session_id: str | None = None,
-                 session_started: datetime | None = None) -> str:
+                 session_started: datetime | None = None,
+                 recall: str | None = None) -> str:
         """组装每轮可变的提示：情绪 +（语音模式下）该情景的通话指令。
 
         两者都走 dynamic_system，跟在缓存断点之后 —— 静态前缀一个字都不能变。
@@ -785,7 +786,7 @@ class Nox:
             has_understanding=has_live_anchor(getattr(self, "attention", None)),
         )
         parts = [self.context.render(
-            names, turn=Turn(text=text, voice=voice, scene=scene))]
+            names, turn=Turn(text=text, voice=voice, scene=scene, recall=recall))]
         if voice:
             parts.append(scenes.get(scene).render())
         # 共听模式：检测到音乐相关请求时注入 MUSIC_SCENE
@@ -883,13 +884,16 @@ class Nox:
         model: str | None = None,
         session_id: str | None = None,
         session_started: datetime | None = None,
+        recall: str | None = None,
     ) -> RouteResult:
+        """`recall`：翻记忆用的话，只有他主动开口时才传（见 context/base.py 的 Turn.recall）。"""
         text, images = self._see(text, images, model)
         # 三层情绪渲染成一段动态提示，跟在缓存断点之后发 ——
         # 每轮都变，绝不能混进静态前缀（见 personality/mood.py 开头）
         dynamic = self._dynamic(text, voice, scene, has_images=bool(images),
                                 session_id=session_id,
-                                session_started=session_started)
+                                session_started=session_started,
+                                recall=recall)
         result = self.router.handle(
             text, history, dynamic_system=dynamic, images=images,
             voice=voice, scene=scene, adapter=self.adapter_for(model),
