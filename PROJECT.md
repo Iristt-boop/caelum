@@ -7,7 +7,11 @@
 > 最新交接：**`HANDOFF-2026-08-28.md`**（往前：`08-08` → `08-06` → `08-02` → `07-25`）  
 > ⚠️ **HANDOFF 只记那个窗口做了什么，会过期**；本文档才是现状。  
 > 两者冲突时以本文档为准 —— 08-08 校准就是因为它俩差了 23 个工具。  
-> 最后更新：2026-09-22（**长任务循环 v1 已施工完成，见第五十四节** ——
+> 最后更新：2026-09-28（**Caelum OS 整套换新外壳，见第五十五节** —— 风格 × 颜色（Logos / Domus / Lux / Flora
+> + 自定义色板）、四种开屏、九页逐页改完（Todo / Chat / Attention / Memory / Moments / Music / Movies / Health / Settings），
+> Home / World / Books 等素材；**Nox 侧 09-26~27 见第五十六节**（主动开口翻记忆拿她的话 + Appraisal 检索半开 +
+> rerank shadow 终于有真数据）；**09-23~09-26 其他会话的提交只在 56.4 记了索引**，细节看 commit；
+> 往前：2026-09-22（**长任务循环 v1 已施工完成，见第五十四节** ——
 > 任务成一等实体：tasks.db + 确认卡（模型够不到 running）+ 后台 runner
 > （并发 1 / 心跳 task_tick / 活过重启可续跑）+ 三端接线；设计+施工记录
 > `Nox-长任务循环-v1-设计.md`。**增量见 `HANDOFF-2026-09-22.md`**：工具调用展示 v4
@@ -5594,6 +5598,10 @@ main = deepseek-harness 官方 master（HEAD `47f9438`，**12293 commit 完整�
 
 ## 三十四、Caelum OS 桌面界面重做 + 装成桌面应用（2026-08-17）
 
+> ⚠️ **09-27 起桌面端默认走新外壳 ShellV2（风格 × 颜色），见第五十五节。** 这一节讲的三主题外壳
+> （`App.jsx` + `components/layout/`）还在，地址带 `#classic` 进得去，稳定后删。Electron 壳、端口、
+> 打包这些本节内容照旧有效。
+
 > 糖糖给了三张桌面设计稿（晚霞 / 深空 / 彩虹），一句话定调：
 > **「Caelum 不应该像『AI 控制中心』，更像『AI 存在的房间』。」**
 > 08-16 那版桌面端（第三十三节阶段 3）她的评价是「不好看」，这次整个换掉。
@@ -6653,7 +6661,7 @@ Care 的 Dream 源只停在 `care/signal.py:69` 的注释里，无 cron/timer，
   （/root/backups/ob-pre-rewrite-20260905.bundle，留在 VPS）。重写在克隆里做、
   `git reset`（mixed）拉回正典仓——工作区记忆文件全程未碰（246 条 .md 前后相等），
   旧对象已 gc 清除。全历史密钥复扫为空
-- GitHub `Iristt-boop/Claude` 收束：`main` = 正典代码线（96bd22f，干净）；
+- GitHub `Iristt-boop/Claude`（**09-27 她改名 `Iristt-boop/ombre-brain`**）收束：`main` = 正典代码线（96bd22f，干净）；
   `worklog` 分支 = 原「done: 工作日志」线（114+ commits，完整保留）；`deployed` 临时快照已删。
   此后流向：VPS 提交 → 本地 `git fetch vps` → 推 GitHub main
 
@@ -7767,3 +7775,114 @@ edge 兜底保留。施工清单见决策文档第七节，时间线对齐 11.1�
 eslint Chat.jsx 零新增（35 错 4 警 = 基线）；vite build 过。
 **待部署后线上验**：真实模型端到端跑一个任务；杀 runner 看 /health 的
 task_tick 转 stale。部署照三段流程（core release 切换 → bridge → PWA dist）。
+
+## 五十五、Caelum OS 整套换新外壳：风格 × 颜色，九页逐页改完（2026-09-23 ~ 09-28）
+
+> 起点是她 09-23 定的四条（`caelum-os-ui/DESIGN.md` v2.0 〇之三）：**共用框架 + 每页一件招牌物件**、
+> 字少互动多、深色主题不用浅色纸、标签英文句子中文。给设计 AI 的简报在
+> `caelum-os-ui/docs/design-brief-2026-09.md`（手机端一份在 `frontend/docs/`），她用 GPT 出了四套整页稿
+> （`E:\主题\export\{Logos,Domus,Lux,Flora}-*.png`）。**分工写死：GPT 只出图和素材，HTML / 代码全是我写。**
+
+### 55.1 风格 × 颜色（骨架固定，皮肤随便换）
+
+- **四种风格**（她定名）：**Logos** 数据艺术「世界由 0 和 1 构成」· **Domus** 宫崎骏式的可爱 ·
+  **Lux** Apple 式极简 · **Flora** 洛可可 / 自然主义。风格管字体、圆角、质感、动效；颜色是风格下面的几套
+- 代码：`src/shell/styles.js`（STYLES，每种挂几套 palette + 一套「自定义」）、`useStyle.js`
+  （根元素挂 `data-style` / `data-palette`，同时把旧的 `data-theme` 拨到它借用的那套，旧页面令牌靠它垫底）、
+  所有样式令牌在 `src/shell/shell.css`
+- 🔴 **根元素属性必须在渲染时同步挂上，不能等 effect**：子组件的 effect 先于父组件跑，开屏画布一挂上就读
+  `--accent`，09-27 真机 Logos 开屏整片是黑的（`d8e094f`）。验这类东西的探针要**按 main.jsx 的挂法**渲染真外壳
+- **自定义色板**（Settings › Appearance）：8 个旋钮（底色 / 文字 / 强调 / 次强调 + 饱和度 / 面板透明 / 次要文字 / 模糊）
+  推出整套令牌，存 localStorage `caelum-custom-palette`；对比度不够会提醒（`customPalette.js` + 测试）
+- **字体**（她看对比图拍板，`6629d0a`）：Logos JetBrains Mono + Fusion Pixel · Domus Itim + 小赖 ·
+  Lux Inter · Flora IM Fell English + 朱雀仿宋 + Pinyon Script；正文走系统字。GB2312 子集 woff2 在
+  `public/fonts/styles/`（`scripts/subset-style-fonts.py`，全 OFL，`LICENSES.md`）
+- **开屏**（`Splash.jsx`，各风格一种出场）：先铺满天空再出「✦ Caelum」—— Logos 代码一个个亮起、中间压暗、
+  0 和 1 拼出字；Domus 星星一跳一跳；Lux 光从中心出来；Flora 纸展开 + 鎏金框从四角长出 + 笔尖写字。
+  （Flora 想要「蝴蝶飞过去把纸拉开」，等蝴蝶素材）
+- **氛围层**（`ShellBackdrop.jsx`）：Logos = 一层很淡的**他的代码**（几栏并排、行号、关键字亮一点，
+  和开屏同一个生成器 `codeCells`，淡出时字不跳；`--code-ink` 0.45）· Domus 星空 · Lux 一团柔光 · Flora 羊皮纸
+- **素材槽约定**：`public/skins/<风格>/…`（例：`flora/frame.png` 九宫格金框、`flora/paper.jpg`、
+  `<风格>/movies-hero.png` Movies 横幅插画）。Flora 框和纸是从聊天截图裁的低清版，原图到了替换
+
+### 55.2 新外壳 ShellV2（`5aadcbb` 起默认）
+
+- `main.jsx`：默认 `ShellV2`，`#classic` 回旧 App（旧外壳 `App.jsx` + `components/layout/` 稳定后删）
+- 左栏 208 / 62 可收（飞出二级菜单）+ 底部三件（Nox 卡带铃和链路灯、语音通话、时钟）；右栏（Us 纪念日 +
+  「还有 N 天」、Nox Status、Feeling、Thought of you、He's noticing、Memories、Common Tools、Now Playing）可收；
+  标题栏前进后退是真的
+- 跨页跳转：`window.dispatchEvent(new CustomEvent("caelum:open-chat", { detail: { draft } }))` —— 去 Chat、
+  **框里只填不发**（Health「记一餐」→「我吃了：」）
+- Electron 固定端口 39180（随机端口 = 每次重启 localStorage 全空，风格和自定义色会丢）
+
+### 55.3 九页（每页一件招牌物件；四种风格各一套样子）
+
+| 页 | 招牌物件 / 要点 | 和稿子不一样的地方（为什么） |
+|---|---|---|
+| Todo `aedd992` | 左主右注 1.6:1；只留「他追了你几次」 | 从 9 个模块的 dashboard 收成工具页 |
+| Chat `c5eab51` `3ee6291` | 气泡随风格；通话记录卡；能播的语音消息；**待确认单**（超时/5xx 只说「不确定」，绝不说失败）；**长任务卡**（就地展开进度） | 桌面上二维码是付款主路（电脑出码手机扫） |
+| Attention `2cb2d1f` | 心电图四支笔（Logos 0/1 字线、Domus 串珠、Lux 细光、Flora 金线叶子）；九种情绪是**会亮的图标**；近期搏动显示他说了什么 | 情绪不画进度条（dashboard 语言）。对原话：有 message_id 按 id（`f5f6de6`），老事件按时间且只对唯一对得上的 |
+| Memory `f19d720`→`49ad80e` | 记忆之河：**颗粒不动、光在流**（她 09-24 的要求），蛇行两道弯、岸有起伏、几股水流、水花、重的记忆聚成光团；记忆是河上的小光点，点开卡片浮在旁边 | 旧 WebGL 河（CodeRiver）删了，`lib/river.js` 只留时间位置三件。Domus 每颗柔光，Flora 是小花 + 叶子 + 金光（她：「圆点不够复古和花」） |
+| Moments `bc21e4f` | 日期竖线 + 「💬 N ｜ 对方的最后一句」+ 底部「写一条」（接上 bridge 早有的 POST /api/diary） | 稿子的点赞数和配图数据里没有 —— 不摆假数字。她显示成 Iris |
+| Music `0d8972e` `a909f60` | 正在播放是一张**会转的唱片**（暂停停在原处、唱臂落下抬起、高光不转）；For you / Recent / Playlists；Listened with Nox 按最近排 | 随机 / 循环 / 收藏 player 没这功能，不摆。Lux 是透明彩胶（她点名）。放不出来会说（player 的 error 以前没显示） |
+| Movies `fdedeaa` `74cb6d9` | 大厅：Watch Together 横幅 + Watch History + Ticket Collection；影院界面没动 | **票根形状不照稿改成卡片**（她 09-05 否过）；纸按风格换：白纸 = Lux，Logos 深色电子票、Domus 粉糖果纸、Flora 羊皮纸旧票 |
+| Health `9470199` | Sleep 分段胶囊 + 两周小柱；Activity 四个圈（**不是进度**）；Cycle 一轮一排点（不知道周期只画到今天，不拿 28 天顶）；记一餐 → Chat；Nutrition 四餐 + 碳蛋脂**占比**圈 | 经期记录失败原来是静默的，现在会说 |
+| Settings `533e934` | 共用骨架 `components/settings/SettingsFrame`（SettingsPage / Group / Row / Toggle / Select）；General 做出来 | **只放真起作用的**：稿子里的开机自启 / 数据使用 / 保留时长 / 文字大小 / 语言后面没功能，不摆 |
+
+还没做：**Home**（图标活过来：黑豹白兔看星空，星星 = 他想你的次数）、**World**（窗边）、**Books** —— 等素材。
+Permissions / Integrations / Privacy 仍是占位。
+
+### 55.4 验证纪律（这一轮反复用到的）
+
+- **设计棘轮**：`python scripts/check-design.py`（违规数只许降，`--update` 压基线；09-28 是 449，起点 642）。
+  设置页的 `SettingsPage` 算页面标题
+- 每页都做**变异**（把改动故意改坏，确认测试会红）；活下来的变异 = 补测试
+- 视觉探针（`probe-*.html`，gitignore，用完即删）：**按 main.jsx 挂真外壳 + 假 fetch**，一个请求不出本机；
+  假数据里**必须放一条真实长度的长句** —— Attention 09-27 就是真数据的长句把裸 `1fr` 列撑到 2117px 溢出。
+  两栏网格一律 `minmax(0,…)`
+- 截图：外壳滚动区里的 canvas 用 **Playwright**（headless Edge `--disable-gpu` 截不到，像素其实在）；
+  开屏 / 氛围层这种不在滚动区的用 headless Edge
+- 删组件 / 摘依赖只有 `vite build` 能抓（vitest 对断裂 import 是瞎的）
+- dist：每页做完 `vite build` 进 `caelum-os-ui/dist`（Electron 读它），push 到 nox-app `main`
+
+## 五十六、Nox 侧（2026-09-26 ~ 09-27）+ 09-23 ~ 09-26 未入册提交索引
+
+### 56.1 他主动开口时翻记忆拿她的话（`11c675f` `e5559a6`，已部署）
+
+rerank shadow 跑了几天一刀都没切过 —— 查下来 **100% 的查询是主动开口的整段模板**（几百字的系统提示），
+拿模板去翻记忆，排序好坏根本无从谈起。修：`Turn.recall` / `Intent.recall` 一路接到 MemoryProvider
+（`query = turn.text if recall is None else recall`）：惦记走 `her_state.recall_query`（她最后那句 + 他的梦，
+梦截 80 字）、话题走 hook；**speaker 出口统一兜底**：没明说就拿主题翻，绝不退回整段模板（`e5559a6`，
+部署后第一条抓到追待办漏设 recall 才加的）。部署后查询变成「感觉撑得睡不着了」这种，0.14 阈值开始切（6→3）
+
+### 56.2 Appraisal 拆成两半，先开检索那一半（`a2e73b7`）
+
+`router/intent.py` 的 `recall_always()` 读 `NOX_APPRAISAL_RECALL`：开着就每轮都翻记忆（不再等 appraisal 判）。
+**VPS `/root/nox-core/.env` 已设 on（09-27，她：「一起打开吧」）**。`NOX_LLM_APPRAISAL` 仍是 shadow；
+Registry 那一半排在 09-30（锚点投票修正还欠着）。rerank 开不开：等两三天她的真查询攒够再看
+（日志 `/root/ombre-brain/rerank_shadow.jsonl`，日报 `rerank_shadow_report.py`）
+
+### 56.3 仓库与部署
+
+- OB 的 GitHub 仓库她 09-27 改名 `Iristt-boop/ombre-brain`（本地 master → origin main；私人的信和世界观在
+  `worklog` 分支）；指路文档 `7f47aad` 已跟上。**下次部署 nox-core 顺手删掉** `tools/intimate.py`
+  里 `read_github_note` 描述中过期的 `Iristt-boop/Claude` / `todo.md` 示例
+- nox-core 线上现在是 `e5559a6`（deploy.ps1 release 切换）
+- ⏳ **待合并 + 部署**：`066d542`（在分支 `claude/intelligent-pasteur-f46d58`，09-27 后台任务做的）——
+  Care 账本每次开口带上那条消息的 conversations id（bridge `saveMessage` 回 rowid、`/api/push/send` 回
+  message_id、speaker 回 `Spoken`）。前端 Attention 已经认 id（`f5f6de6`），这条没上线前仍按时间对
+
+### 56.4 09-23 ~ 09-26 其他会话的提交（只记索引，为什么写在各自的 commit 里）
+
+| 日期 | commit | 一句话 |
+|---|---|---|
+| 09-23 | `b4d0fdf` | 主动开口按她的状态说话（`attention/care/her_state.py`）+ 醋意 / 委屈进 Resonance |
+| 09-23 | `938b63d` | 形式和情绪分开：主动开口的心情从情绪分布里抽，情绪词表收成一张 |
+| 09-23 | `89c12ec` `7029fb6` | 她的状态 / `last_user_at` 跳过他自己的开场白，`[SKIP]` 不算「没回」 |
+| 09-23 | `e65d546` | 惦记锚点只认她的话（她选 A） |
+| 09-23 | `7c993c8` `91dcaf7` | Moments 转正前两处修 + 汇总改成转 on 之后的日报 |
+| 09-23 | `4feedb5` | 躁动只认新鲜的「她在忙」（电脑睡了 = 不知道 = 不忙） |
+| 09-23 | `f17e9cc` | Appraisal 问三次取多数票（进 shadow） |
+| 09-23 | `0c13a6f` | 记忆检索通道告警：bridge 出 `memory_channels`，caelum-watch 推人话 |
+| 09-26 | `814b231` | 主动来电门槛改「晚间安静两小时」，转 on（她拍板） |
+| 09-26 | `6655170` | bridge 落通话记录（未接 / 拒接成通话条，接通时长回填 `metadata.call`）；**事故**：线上 server.js 曾被远古工作树覆盖，已从 0923 备份恢复 |
