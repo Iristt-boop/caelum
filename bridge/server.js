@@ -268,7 +268,8 @@ _db.pragma("journal_mode = WAL");
 _db.pragma("synchronous = NORMAL");
 
 const db = {
-  run(sql, params = []) { _db.prepare(sql).run(...(Array.isArray(params) ? params : [params])); },
+  //: 回 better-sqlite3 的 `{ changes, lastInsertRowid }`。sql.js 时代的调用点不看返回值，照旧不受影响
+  run(sql, params = []) { return _db.prepare(sql).run(...(Array.isArray(params) ? params : [params])); },
   exec(sql, params = []) {
     const rows = _db.prepare(sql).all(...(Array.isArray(params) ? params : [params]));
     if (!rows.length) return [];
@@ -277,7 +278,7 @@ const db = {
   },
 };
 
-function dbRun(sql, params = []) { db.run(sql, params); }
+function dbRun(sql, params = []) { return db.run(sql, params); }
 // 迁移专用：列已存在是预期，其余失败必须留一行日志再继续启动
 //（规范见 docs/LOGGING.md——「静默失败」是这个系统反复栽的形状）
 function dbTry(sql) {
@@ -293,12 +294,15 @@ function dbAll(sql, params = []) {
 }
 
 // 聊天消息落库（搜索 / 历史恢复用）；meta 存 thinking / 语音卡片 / 图片等附加信息
+// 返回这一行的 rowid（= /api/messages 里那条的 `id`），没落上回 null。
+// Core 的 Care 账本拿它把「这次开口」和原话对上 —— 账本只存 id，不存原文（2026-08-18）
 function saveMessage(sessionId, role, content, meta = "") {
-  if (!content && !meta) return;
+  if (!content && !meta) return null;
   try {
     const metaStr = typeof meta === "string" ? meta : JSON.stringify(meta);
-    dbRun(`INSERT INTO conversations VALUES (?,?,?,?,?)`, [sessionId || "", role, content || "", new Date().toISOString(), metaStr]);
-  } catch (e) { console.log("[Bridge] saveMessage failed:", e.message); }
+    const info = dbRun(`INSERT INTO conversations VALUES (?,?,?,?,?)`, [sessionId || "", role, content || "", new Date().toISOString(), metaStr]);
+    return info ? Number(info.lastInsertRowid) : null;
+  } catch (e) { console.log("[Bridge] saveMessage failed:", e.message); return null; }
 }
 
 // 情绪标签只给 TTS 用，进入聊天记录/字幕前必须剥掉
@@ -4107,10 +4111,15 @@ app.post("/api/push/send", async (req, res) => {
   const body = text.trim() ? text : (atts.length ? ATT_WORD[atts[0][0].type] : "");
   if (!body.trim()) return res.status(400).json({ error: "body is required" });
   let saved = false;
+  let messageId = null;
   if (sid) {
-    if (text.trim()) saveMessage(sid, "assistant", text, { proactive: true });
-    for (const [, meta] of atts) saveMessage(sid, "assistant", "", { ...meta, proactive: true });
-    saved = true;
+    //: message_id = 这次开口落下的**第一条**的 rowid（有字是那句字，只发语音就是那条语音）。
+    //  Care 账本只存 id 不存原文，拿它对回原话（2026-08-18；这段 09-27 只改在线上，09-28 收回仓库）
+    const ids = [];
+    if (text.trim()) ids.push(saveMessage(sid, "assistant", text, { proactive: true }));
+    for (const [, meta] of atts) ids.push(saveMessage(sid, "assistant", "", { ...meta, proactive: true }));
+    messageId = ids.find((x) => x != null) ?? null;
+    saved = messageId != null;
   }
   const subs = dbAll("SELECT COUNT(*) AS c FROM push_subs")[0]?.c || 0;
   // 没有订阅不是错误 —— 她可能还没在这台设备上装 PWA。如实回报条数，
@@ -4118,7 +4127,9 @@ app.post("/api/push/send", async (req, res) => {
   await sendPushAll(title, body);
   console.log(`[Push] 主动推送 -> ${subs} 个订阅${saved ? ` (session=${sid})` : ""}: ${body.slice(0, 40)}`
     + (atts.length ? ` +${atts.map(([a]) => a.type).join(",")}` : ""));
-  res.json({ ok: true, subs, saved, attachments: atts.length });
+  // message_id 是 conversations 的 rowid，没落库就是 null。转成字符串 ——
+  // Core 那边账本的 message_id 是 str，Moments 的帖子 id 也走同一个字段
+  res.json({ ok: true, subs, saved, message_id: messageId == null ? null : String(messageId), attachments: atts.length });
 });
 
 // ============ 主动来电：端点 ============

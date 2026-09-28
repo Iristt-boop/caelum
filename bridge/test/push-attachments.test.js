@@ -76,6 +76,18 @@ describe("主动消息带附件", () => {
     assert.equal((await rows(sid)).length, 1);
   });
 
+  test("message_id 回的是落下的第一条的 id（Care 账本拿它对回原话；09-27 只改在线上，09-28 收回仓库）", async () => {
+    const sid = SID.replace(/c$/, "a");
+    const r1 = await api(bridge.base, "/api/push/send", { method: "POST", body: { body: "想你了", session_id: sid } });
+    const r2 = await api(bridge.base, "/api/push/send", { method: "POST", body: {
+      body: "", session_id: sid, attachments: [{ type: "voice", tts: "Miss you." }] } });
+    const list = (await api(bridge.base, `/api/messages?sessionId=${sid}`)).data;
+    assert.equal(typeof r1.data.message_id, "string");
+    assert.equal(r1.data.message_id, String(list.find((m) => m.content === "想你了").id));
+    assert.equal(r2.data.message_id, String(list.find((m) => (m.metadata || "").includes("voice")).id),
+      "只发语音时 message_id 应该指向那条语音");
+  });
+
   test("没字也没附件：照旧 400", async () => {
     const r = await api(bridge.base, "/api/push/send", { method: "POST", body: { body: "", session_id: SID } });
     assert.equal(r.status, 400);
