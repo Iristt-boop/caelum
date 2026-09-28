@@ -521,20 +521,19 @@ def make_handlers(client: RestClient) -> dict[str, object]:
         if not rp.ok:
             raise RuntimeError(f"点播失败: {rp.error}")
 
-        # 🔴 封面以 co-listening 回读的为准（2026-09-28）。
+        # 🔴 封面以 co-listening 换过的为准（2026-09-28）。
         #
         # 模型抄的 cover 会错：09-06 / 09-21 那三首存的是长得像真封面的假地址
         # （picId 对不上，CDN 404），Music 页和聊天卡片上都是裂图。co-listening
-        # 收到点播后按 songId 查网易云官方换掉了 —— 下面的歌卡和记忆用它换过的那个
-        try:
-            back = client.get("/music/remote")
-            bs = (back.data or {}).get("song") if isinstance(back.data, dict) else None
-            if isinstance(bs, dict) and str(bs.get("songId")) == song_id and "cover" in bs:
-                if bs["cover"] != cover:
-                    logger.info("点歌封面按官方换了：%s（模型给的 %.60s）", song_id, cover or "空")
-                cover = bs["cover"]
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("回读点播封面失败，用模型给的：%s", exc)
+        # 收到点播后按 songId 查网易云官方换掉，**在 POST 的回包里**把换过的歌给回来。
+        #
+        # ⚠️ **绝不能 GET /music/remote 回读** —— 那个 GET 是读完即删，
+        # 一读，她的播放器就再也取不到这首了（09-28 第一版就是这么写的，上线约半小时）
+        bs = rp.data.get("song") if isinstance(rp.data, dict) else None
+        if isinstance(bs, dict) and str(bs.get("songId")) == song_id and "cover" in bs:
+            if bs["cover"] != cover:
+                logger.info("点歌封面按官方换了：%s（模型给的 %.60s）", song_id, cover or "空")
+            cover = bs["cover"]
 
         # 把「为什么选这首」存进歌曲记忆。
         #

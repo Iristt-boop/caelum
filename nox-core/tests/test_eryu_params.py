@@ -203,11 +203,11 @@ def test_play_backfills_missing_cover():
 
 
 class RoutedClient(FakeClient):
-    """按路径回不同的东西 —— 回读 /music/remote 要拿到 co-listening 换过的封面。"""
+    """按路径回不同的东西 —— POST /music/remote 的回包里是 co-listening 换过封面的歌。"""
 
-    def __init__(self, routes: dict) -> None:
+    def __init__(self, routes: dict, posts: dict | None = None) -> None:
         super().__init__()
-        self.routes = routes
+        self.routes, self.posts = routes, posts or {}
 
     def get(self, path, params=None):
         self.calls.append(("GET", path, params or {}))
@@ -215,14 +215,14 @@ class RoutedClient(FakeClient):
 
     def post(self, path, body=None):
         self.calls.append(("POST", path, body or {}))
-        return FakeResult(data={"ok": True})
+        return FakeResult(data=self.posts.get(path, {"ok": True}))
 
 
 FAKE_COVER = "https://p1.music.126.net/2RSgYVAPtYV4nHwu4ArqzQ==/109951165604594760.jpg"
 REAL_COVER = "https://p2.music.126.net/1pRVSJLGh5-NjCGmzGYDXg==/109951164728421732.jpg"
 
 
-def test_play_封面以co_listening回读的为准(monkeypatch):
+def test_play_封面以co_listening换过的为准(monkeypatch):
     """🔴 2026-09-28：模型抄的封面会错（09-21 Merry-Go-Round 存的是 404 的假地址），
     Music 页和聊天歌卡都是裂图。co-listening 收到点播按 songId 换成官方的 ——
     歌卡和记忆要用换过的那个，不用模型给的。"""
@@ -231,10 +231,11 @@ def test_play_封面以co_listening回读的为准(monkeypatch):
     cards = []
     ctx = type("Ctx", (), {"attach_music": lambda self, sid, **kw: cards.append((sid, kw))})()
     monkeypatch.setattr(tool_context, "current", lambda: ctx)
-    client = RoutedClient({
-        "/music/url": {"ok": True, "url": "x", "cached": True},
-        "/music/remote": {"song": {"songId": "442454", "name": "Merry-Go-Round", "cover": REAL_COVER}},
-    })
+    client = RoutedClient(
+        {"/music/url": {"ok": True, "url": "x", "cached": True}},
+        {"/music/remote": {"ok": True, "song": {"songId": "442454", "name": "Merry-Go-Round",
+                                                "cover": REAL_COVER}}},
+    )
     make_handlers(client)["eryu_play"]({
         "song_id": "442454", "name": "Merry-Go-Round", "artist": "久石譲",
         "cover": FAKE_COVER, "reason": "你说想听点轻快的钢琴",
@@ -243,15 +244,24 @@ def test_play_封面以co_listening回读的为准(monkeypatch):
     assert client.find("/music/memory")["cover"] == REAL_COVER
 
 
-def test_play_回读的不是这首就不换(monkeypatch):
-    """队列文件被别的点播抢先改了 —— 对不上 songId 就别拿别人的封面。"""
-    client = RoutedClient({
-        "/music/url": {"ok": True},
-        "/music/remote": {"song": {"songId": "999", "cover": "https://other.jpg"}},
-    })
+def test_play_回包的不是这首就不换(monkeypatch):
+    """对不上 songId 就别拿别人的封面（老版本服务端 / 回包异常）。"""
+    client = RoutedClient(
+        {"/music/url": {"ok": True}},
+        {"/music/remote": {"ok": True, "song": {"songId": "999", "cover": "https://other.jpg"}}},
+    )
     make_handlers(client)["eryu_play"]({"song_id": "442454", "name": "M", "cover": "https://mine.jpg",
                                         "reason": "你说想听点轻快的钢琴"})
     assert client.find("/music/memory")["cover"] == "https://mine.jpg"
+
+
+def test_play_绝不GET回读点播队列():
+    """🔴 GET /music/remote 是**读完即删**。点完歌再 GET 一次，她的播放器就收不到了
+    —— 09-28 第一版为了拿官方封面就这么写了，上线约半小时 Nox 点的歌全丢。"""
+    client = RoutedClient({"/music/url": {"ok": True}},
+                          {"/music/remote": {"ok": True, "song": {"songId": "1", "cover": "c"}}})
+    make_handlers(client)["eryu_play"]({"song_id": "1", "name": "某首", "reason": "你说想听点轻快的钢琴"})
+    assert not [c for c in client.calls if c[0] == "GET" and c[1] == "/music/remote"]
 
 
 def test_play_saves_reason():
