@@ -265,30 +265,16 @@ SIMILAR_SPEC = ToolSpec(
     },
 )
 
-# ------------------------------------------------------------------ 远程轮询
-
-# ⚠️ 2026-08-08 起**不再注册**这个工具，见文件末尾 register_all 的说明。
+# ------------------------------------------------------------------ 远程轮询（已删）
 #
-# 它和 `eryu_play` 抢同一个队列：`/music/remote` 是**单向一次性队列**
-# （GET 读完即删）。原设计是「她推歌 → 小克取」，而现在改成了
-# 「小克点播 → 她的播放器取」。两个方向共用一个队列的话，
-# 小克 poll 的时候会把自己刚点的歌取走。
+# `eryu_remote_poll`（「看看她有没有推歌给你」）2026-09-28 删掉了，spec 和实现一起。
 #
-# 顺带一提，原设计那个方向也从来没实现过 —— eryu 前端根本没有
-# 「推给 Nox」这个按钮（`grep -rn remote client/` 零匹配）。
-# 真要做「她推歌给小克」，得后端另开一个反向队列 + 前端加按钮。
-REMOTE_SPEC = ToolSpec(
-    side_effect="read",
-    name="eryu_remote_poll",
-    description=(
-        "看看糖糖那边有没有通过 eryu 网页推歌过来。\n"
-        "她在 music.noxtang.com 上点「推给 Nox」，\n"
-        "这首歌就会出现在这里——读到之后你可以回应、或者直接用 eryu_play 放。\n"
-        "什么时候用：她说了「给你推了一首歌」「你听听这个」之类的话之后。\n"
-        "⚠️ 她没提推歌就别主动调——这是她的主动行为，不是你的。"
-    ),
-    parameters={"type": "object", "properties": {}},
-)
+# 它 08-08 起就没注册：`/music/remote` 是**单向一次性队列**（GET 读完即删），
+# 方向是「Nox 点播 → 她的播放器取」。这个工具读的是同一个队列，
+# 却把里面的歌当成「她推给你的」—— 一调就把 Nox 自己刚点的歌取走，
+# 而且读的键名还是错的（`song_id`，实际叫 `song`），永远说「还没推歌」。
+# 「她推歌给 Nox」那个方向从来没实现过（没有反向队列，也没有按钮）。
+# 真要做，得 co-listening 另开一个反向队列 —— 那时候新写，别把这段捡回来。
 
 
 EXPERIENCE_SPEC = ToolSpec(
@@ -941,26 +927,6 @@ def make_handlers(client: RestClient) -> dict[str, object]:
             out.append(line)
         return "\n".join(out)
 
-    def remote_poll(_args: dict) -> str:
-        r = client.get("/music/remote")
-        if not r.ok:
-            raise RuntimeError(f"轮询远程失败: {r.error}")
-
-        data = r.data if isinstance(r.data, dict) else {}
-        if not data or not data.get("song_id"):
-            return "糖糖还没有推歌过来。"
-
-        song_id = data.get("song_id", "")
-        name = data.get("name", song_id)
-        artists = "/".join(a.get("name", "") for a in data.get("artists", []))
-        note = data.get("note", "")
-
-        parts = [f"糖糖推了一首歌给你：{name} - {artists}（song_id={song_id}）"]
-        if note:
-            parts.append(f"她说：{note}")
-        parts.append("用 eryu_play 放给她听。")
-        return "\n".join(parts)
-
     return {
         "eryu_search": search,
         "eryu_play": play,
@@ -974,8 +940,6 @@ def make_handlers(client: RestClient) -> dict[str, object]:
         "eryu_pick_by_mood": pick_by_mood,
         "eryu_experience": experience,
         "eryu_daily": daily,
-        # 实现留着，但 register_all 里不再注册（见 REMOTE_SPEC 上面的说明）
-        "eryu_remote_poll": remote_poll,
     }
 
 
@@ -1045,10 +1009,7 @@ def make_client(base_url: str, token: str, timeout: float = 12.0) -> RestClient:
 def register_all(loop, client: RestClient) -> None:
     """注册顺序固定 —— 工具定义是缓存前缀的一部分。"""
     handlers = make_handlers(client)
-    # ⚠️ REMOTE_SPEC（eryu_remote_poll）**故意不在这个列表里**（2026-08-08）。
-    # `/music/remote` 是单向一次性队列，现在归 `eryu_play` 用来点播给她；
-    # 再注册一个反向轮询的工具，小克会把自己刚点的歌取走。
-    # 实现还留在 make_handlers 里，将来后端开了反向队列可以直接接回来。
+    # ⚠️ 没有 eryu_remote_poll：它和 eryu_play 抢同一个读完即删的队列，09-28 已删（见上面「远程轮询（已删）」）
     # ⚠️ 新工具加在**末尾**：工具定义是缓存前缀的一部分，
     # 插在中间会让整段前缀作废，一轮 ¥0.00055 变 ¥0.011
     for spec in (SEARCH_SPEC, PLAY_SPEC, LYRIC_SPEC,

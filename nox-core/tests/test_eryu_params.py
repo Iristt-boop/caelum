@@ -423,7 +423,7 @@ def test_remote_poll_must_not_be_registered():
     """`eryu_remote_poll` 和 `eryu_play` 抢同一个一次性队列。
 
     两个都注册的话，小克 poll 的时候会把自己刚点给她的歌取走 ——
-    她那边永远等不到。实现还留着，但**不许注册**。
+    她那边永远等不到。09-28 起实现也删了：注册表和 handlers 里都不许再出现。
     """
     from tools.eryu import register_all
 
@@ -437,6 +437,7 @@ def test_remote_poll_must_not_be_registered():
 
     assert "eryu_recent" in registered
     assert "eryu_remote_poll" not in registered
+    assert "eryu_remote_poll" not in make_handlers(FakeClient())
 
 
 def test_id_based_gets_use_plain_id():
