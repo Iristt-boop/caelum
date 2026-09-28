@@ -7832,7 +7832,9 @@ task_tick 转 stale。部署照三段流程（core release 切换 → bridge →
 | Health `9470199` | Sleep 分段胶囊 + 两周小柱；Activity 四个圈（**不是进度**）；Cycle 一轮一排点（不知道周期只画到今天，不拿 28 天顶）；记一餐 → Chat；Nutrition 四餐 + 碳蛋脂**占比**圈 | 经期记录失败原来是静默的，现在会说 |
 | Settings `533e934` | 共用骨架 `components/settings/SettingsFrame`（SettingsPage / Group / Row / Toggle / Select）；General 做出来 | **只放真起作用的**：稿子里的开机自启 / 数据使用 / 保留时长 / 文字大小 / 语言后面没功能，不摆 |
 
-还没做：**Home**（图标活过来：黑豹白兔看星空，星星 = 他想你的次数）、**World**（窗边）、**Books** —— 等素材。
+**Home（Flora，09-28）**：花环里一整幅画（月夜湖畔，黑豹和白兔看月亮），不跟数据变 —— 她定的「主页只要一种 feel」；唯一的状态是「他留了话你还没看」→ 右下别一封火漆信（lib/letter.js，已读 = OS 里 Chat 开着且窗口在前台）。画用花环自己的内框当遮罩（hole-mask.png）。先前代码画天 + 抠图拼的一版被她一眼看出是两个图层，已删。
+
+还没做：另外三种风格的 Home、**World**（窗边）、**Books** —— 等素材。
 Permissions / Integrations / Privacy 仍是占位。
 
 ### 55.4 验证纪律（这一轮反复用到的）
