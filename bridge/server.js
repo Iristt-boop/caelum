@@ -4076,22 +4076,49 @@ app.post("/api/daily-push", async (req, res) => {
 // 不落的话会出现「锁屏弹了一句话，点进去聊天里什么都没有」——
 // 和 /api/daily-push 第 3 步是同一件事，那边是 bridge 自己发起所以自己存，
 // 这条是 Core 发起的，bridge 不知情，得由调用方把 session_id 带过来。
+// 主动消息带的附件 → 落库的 metadata。**形状必须和 /chat/stream 那条一模一样**
+// （上面 ev.kind === "voice" / "music" / "meme" / "image" 那几支），手机和 OS 翻历史
+// 认的就是这几种；形状一歪就是「库里有、界面上没有」。
+// 🔴 2026-09-28 补：原来这个端点只收文字 —— 他主动找她时发的语音条，Core 那边
+// 生成了，走到这里被丢掉（09-27 00:31 那条哄睡的语音就这么没了）
+function proactiveAttachmentMeta(att) {
+  if (!att || typeof att !== "object") return null;
+  if (att.type === "voice" && att.tts) {
+    return { voice: { en: stripVoiceTags(String(att.tts)), tts: String(att.tts), zh: String(att.zh || "") } };
+  }
+  if (att.type === "music" && att.song_id) {
+    return { music: { songId: String(att.song_id), name: att.name || "", artist: att.artist || "", cover: att.cover || "" } };
+  }
+  if (att.type === "meme" && att.tag) return { meme: String(att.tag) };
+  if (att.type === "image" && att.url) {
+    return { image: String(att.url), album: att.album || "", favorited: !!att.favorited };
+  }
+  return null;
+}
+const ATT_WORD = { voice: "发来一条语音", music: "给你点了一首歌", meme: "发来一个表情", image: "发来一张图" };
+
 app.post("/api/push/send", async (req, res) => {
   const title = (req.body?.title || "Nox").toString().slice(0, 50);
-  const body = (req.body?.body || "").toString().slice(0, 300);
+  const text = (req.body?.body || "").toString().slice(0, 300);
   const sid = (req.body?.session_id || "").toString().slice(0, 64);
+  const atts = (Array.isArray(req.body?.attachments) ? req.body.attachments : [])
+    .slice(0, 8).map((a) => [a, proactiveAttachmentMeta(a)]).filter(([, m]) => m);
+  // 只发了一条语音、没写字也是一条正经的主动消息；锁屏上总得有句话
+  const body = text.trim() ? text : (atts.length ? ATT_WORD[atts[0][0].type] : "");
   if (!body.trim()) return res.status(400).json({ error: "body is required" });
   let saved = false;
   if (sid) {
-    saveMessage(sid, "assistant", body, { proactive: true });
+    if (text.trim()) saveMessage(sid, "assistant", text, { proactive: true });
+    for (const [, meta] of atts) saveMessage(sid, "assistant", "", { ...meta, proactive: true });
     saved = true;
   }
   const subs = dbAll("SELECT COUNT(*) AS c FROM push_subs")[0]?.c || 0;
   // 没有订阅不是错误 —— 她可能还没在这台设备上装 PWA。如实回报条数，
   // 让调用方能在日志里看出「推了但没人收」，而不是以为成功了
   await sendPushAll(title, body);
-  console.log(`[Push] 主动推送 -> ${subs} 个订阅${saved ? ` (session=${sid})` : ""}: ${body.slice(0, 40)}`);
-  res.json({ ok: true, subs, saved });
+  console.log(`[Push] 主动推送 -> ${subs} 个订阅${saved ? ` (session=${sid})` : ""}: ${body.slice(0, 40)}`
+    + (atts.length ? ` +${atts.map(([a]) => a.type).join(",")}` : ""));
+  res.json({ ok: true, subs, saved, attachments: atts.length });
 });
 
 // ============ 主动来电：端点 ============

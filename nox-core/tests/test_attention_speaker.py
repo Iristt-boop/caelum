@@ -393,3 +393,66 @@ def test_intent带了recall就转交给chat_没带就拿主题去翻(astore):
     speak(j, _decision(j))
     assert got == ["感觉撑得睡不着了", SUBJECT]
     assert all("系统提示" not in g for g in got)
+
+
+# ---------------------------------------------------------------- 主动开口带附件（2026-09-28）
+#
+# 她报的：Nox 调了工具发语音，手机收不到。查出来是**主动开口这条路只推文字** ——
+# 09-27 00:31 他主动哄睡时调了 send_voice_message，语音在 attachments 里没人管，
+# 她收到的是一句带着「[VOICE]」的字。
+
+VOICE = {"type": "voice", "tts": "[softly] Close your eyes, baby.", "zh": "闭上眼睛，宝贝。"}
+
+
+def _core_with(text: str, attachments: list) -> FakeCore:
+    core = FakeCore(text)
+    core.reply.result.attachments = attachments
+    return core
+
+
+def test_主动开口发的语音条跟着一起交给bridge(astore):
+    core = _core_with("[VOICE] 睡不着就听我的声音", [VOICE])
+    speak = build_speaker(core, FakeSessions(), FakeStore(), astore)
+    said = speak(_intent(), _decision(_intent()))
+    [(path, payload)] = core.bridge.calls
+    assert path == "/api/push/send"
+    assert payload["attachments"] == [VOICE]
+    assert "[VOICE]" not in payload["body"], "模型自己写的伪标记进了她的聊天记录"
+    assert said == payload["body"] == "睡不着就听我的声音"
+
+
+def test_只发了语音没写字也算说了(astore):
+    """返回值不能是空串 —— service 拿 `if said:` 判发没发，空串会被记成「他选择不说」。"""
+    core = _core_with("", [VOICE])
+    speak = build_speaker(core, FakeSessions(), FakeStore(), astore)
+    said = speak(_intent(), _decision(_intent()))
+    [(_, payload)] = core.bridge.calls
+    assert payload["body"] == "" and payload["attachments"] == [VOICE]
+    assert said == "（发了一条语音）"
+
+
+def test_确认卡不跟着主动消息走(astore, caplog):
+    """order / task 是等她点头才执行的卡 —— 主动开口时冒出来不发，留痕。"""
+    order = {"type": "order", "order_id": "o1", "card": {}}
+    music = {"type": "music", "song_id": "1", "name": "晴天", "artist": "", "cover": ""}
+    core = _core_with("给你点了首歌", [order, music])
+    speak = build_speaker(core, FakeSessions(), FakeStore(), astore)
+    speak(_intent(), _decision(_intent()))
+    [(_, payload)] = core.bridge.calls
+    assert payload["attachments"] == [music]
+    assert "order" in caplog.text
+
+
+def test_只有确认卡没写字_照旧当没生成(astore):
+    core = _core_with("", [{"type": "task", "task_id": "t1", "card": {}}])
+    speak = build_speaker(core, FakeSessions(), FakeStore(), astore)
+    with pytest.raises(RuntimeError, match="没给出文本"):
+        speak(_intent(), _decision(_intent()))
+    assert core.bridge.calls == []
+
+
+def test_没有附件就不带这个键(astore):
+    """老形状照旧：bridge 那边不认识的键别平白多出来。"""
+    core = FakeCore()
+    build_speaker(core, FakeSessions(), FakeStore(), astore)(_intent(), _decision(_intent()))
+    assert "attachments" not in core.bridge.calls[0][1]

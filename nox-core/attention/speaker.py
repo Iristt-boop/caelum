@@ -187,15 +187,49 @@ def build_prompt(intent: Intent, decision: SchedulerDecision,
     )
 
 
-def push(core: Any, sid: str, text: str) -> dict:
+#: 主动开口时能跟着发出去的附件（2026-09-28）。
+#:
+#: 🔴 原来这条路**只推文字**：他主动找她时调了 send_voice_message，语音在 `r.result.attachments`
+#: 里，没人管 —— 她手机上只收到一句话（09-27 00:31 那条哄睡的语音就这么没了）。
+#: 聊天流那条路（`/chat/stream`）一直是把附件逐个发给 bridge 的，这里补上同一件事。
+#:
+#: ⚠️ order / task 卡**不跟**：那两张是「等她点头才执行」的确认卡，主动开口时冒出来
+#: 等于他没问就把单子递到她锁屏上。真出现了留痕、不发
+PUSHABLE = frozenset({"voice", "music", "meme", "image"})
+_ATT_WORD = {"voice": "一条语音", "music": "一首歌", "meme": "一个表情", "image": "一张图"}
+
+#: 模型自己在正文里写的伪标记。他在历史里见过语音条的样子，偶尔会照着写一个
+#: 「[VOICE] ……」进正文（09-27 那条就是）—— 真的语音已经作为附件发了，正文里这个标记只是噪音
+_FAKE_MARK = re.compile(r"\[\s*VOICE\s*\]\s*", re.IGNORECASE)
+
+
+def pushable(attachments: list | None) -> list[dict]:
+    """挑出能跟着主动消息发的附件；其余的留一行日志。"""
+    out: list[dict] = []
+    for att in attachments or []:
+        kind = att.get("type") if isinstance(att, dict) else None
+        if kind in PUSHABLE:
+            out.append(att)
+        else:
+            logger.warning("主动开口时产生了 %s 附件，这条路不发（确认卡要她在聊天里点）", kind)
+    return out
+
+
+def push(core: Any, sid: str, text: str, attachments: list | None = None) -> dict:
     """推一句话到她锁屏，并让 bridge 落一条 conversations。
+
+    `attachments`：这一轮工具产生的语音条 / 歌卡 / 表情包 / 图片，bridge 按聊天流同样的形状落库。
+    有附件时正文可以是空的（只发了一条语音）。
 
     抽出来给唤醒链共用。**任何失败都抛** —— 理由见 `build_speaker` 的注释。
     """
     if core.bridge is None:
         raise RuntimeError("未配置 NOX_BRIDGE_URL，没有推送通道")
-    resp = core.bridge.post(
-        "/api/push/send", {"title": "Nox", "body": text, "session_id": sid})
+    body: dict[str, Any] = {"title": "Nox", "body": text, "session_id": sid}
+    atts = pushable(attachments)
+    if atts:
+        body["attachments"] = atts
+    resp = core.bridge.post("/api/push/send", body)
     if not resp.ok:
         raise RuntimeError(f"推送失败: {resp.error}")
     return resp.data or {}
@@ -285,13 +319,20 @@ def build_speaker(core: _Core, sessions: _Sessions, store: Any,
         # ⚠️ 兜底再剥一次。上面那条是「有标记就不说」，这里防的是
         # 标记写歪了（多个空格、全角括号…）没被认出来 ——
         # **控制标记绝不能出现在她的聊天记录里**，那是我们内部的黑话
-        text = finalize_push_text(_HOLD.sub("", raw))
-        if not text:
-            # 没词就别硬发。抛出去让 service 记成「发送失败」，
+        text = finalize_push_text(_FAKE_MARK.sub("", _HOLD.sub("", raw)))
+        atts = pushable(getattr(r.result, "attachments", None))
+        if not text and not atts:
+            # 没词、也没发语音/歌/表情，就别硬发。抛出去让 service 记成「发送失败」，
             # 这样冷却不会白白消耗掉今天的机会
             raise RuntimeError(f"模型没给出文本（{r.result.outcome}）")
 
-        subs = push(core, sid, text).get("subs")
+        subs = push(core, sid, text, atts).get("subs")
+        if atts:
+            logger.info("主动关心带了 %s", "、".join(a["type"] for a in atts))
+        if not text:
+            #: 只发了一条语音 / 一首歌。**返回值不能是空串** —— service 拿 `if said:`
+            #: 判发没发，空串会被记成「他选择不说」，账本里就没有这一次
+            text = "（发了" + "、".join(_ATT_WORD.get(a["type"], a["type"]) for a in atts) + "）"
         logger.info("主动关心已发出（session=%s, %s 个订阅, 最近说过 %d 次）: %s",
                     sid, subs, spoken, text)
         return text

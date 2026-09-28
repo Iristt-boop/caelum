@@ -272,6 +272,24 @@ def test_live_pushes():
     assert sessions.saved[SID]               # 也进了他自己的会话
 
 
+def test_追问时发的语音条也跟着推出去():
+    """2026-09-28：唤醒链和主动关心共用 push —— 原来两条路都只推文字，附件被丢。"""
+    voice = {"type": "voice", "tts": "Did you eat yet?", "zh": "吃了吗"}
+    core = FakeCore("吃完饭了吗宝贝\n[NEXT 60]")
+    real_chat = core.chat
+
+    def chat(text, history, **kw):
+        r = real_chat(text, history, **kw)
+        r.result.attachments = [voice]
+        return r
+
+    core.chat = chat
+    run = build_waker(core, FakeSessions(), FakeStore(), dry_run=False)
+    run(_book(cn(9, 12)), cn(9, 12, 40))
+    _, payload = core.bridge.calls[0]
+    assert payload["attachments"] == [voice]
+
+
 def test_she_replied_ends_chain_without_asking_him():
     """她已经回话了就直接收摊，连模型都不用叫醒 —— 省一次调用。"""
     core = FakeCore("[STOP]")

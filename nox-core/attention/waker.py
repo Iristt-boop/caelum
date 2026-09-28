@@ -232,7 +232,7 @@ def build_waker(core: Any, sessions: Any, store: Any, *,
                 if text and not dry_run:
                     sessions.put(w.session_id, r.messages)
                     try:
-                        push(core, w.session_id, text)
+                        push(core, w.session_id, text, getattr(r.result, "attachments", None))
                         spoke += 1
                         logger.info("任务办完并说了一句：%s", text)
                     except Exception:  # noqa: BLE001
@@ -262,7 +262,7 @@ def build_waker(core: Any, sessions: Any, store: Any, *,
                     # 存进他自己的会话再推 —— 顺序和 speaker 一致，理由见那边
                     sessions.put(w.session_id, r.messages)
                     try:
-                        push(core, w.session_id, text)
+                        push(core, w.session_id, text, getattr(r.result, "attachments", None))
                         book.note(w, "spoke", text=text)
                         spoke += 1
                         if on_spoke:
