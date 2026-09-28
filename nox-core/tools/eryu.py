@@ -47,11 +47,8 @@ PLAY_SPEC = ToolSpec(
     name="eryu_play",
     description=(
         "直接点播一首歌到糖糖的共听页面 —— 她那边最多 5 秒就会自动开始放。\n"
-        "song_id / name / artist / **cover** 全都从 eryu_search 的结果里抄，"
-        "**一个都不要漏，也不要自己编**。\n"
-        "⚠️ **cover 尤其别漏** —— 她的播放器把封面嵌在黑胶唱片中间，"
-        "不带的话唱片中央就是个空的音符占位，很难看。\n"
-        "eryu_search 的每一行结尾都有 `cover=https://...`，照抄那个值。\n"
+        "song_id / name / artist 从 eryu_search 的结果里抄，**不要自己编**。\n"
+        "封面不用管 —— 服务端按 song_id 查网易云官方的（cover 参数可以不填）。\n"
         "\n"
         "⚠️ 前提是她**开着 Caelum App**。页面没开就没人来取这首歌，"
         "它会一直等在队列里。所以放完跟她说一声。\n"
@@ -78,8 +75,7 @@ PLAY_SPEC = ToolSpec(
             "artist": {"type": "string", "description": "歌手，从 eryu_search 结果里抄"},
             "cover": {
                 "type": "string",
-                "description": "封面 URL，从 eryu_search 结果行尾的 cover= 抄过来。"
-                               "**别省略** —— 唱片中间要用它",
+                "description": "可选。服务端会按 song_id 换成网易云官方封面，填错也没关系",
             },
             "reason": {
                 "type": "string",
@@ -101,7 +97,7 @@ PLAY_SPEC = ToolSpec(
                     "接下来要连着放的歌，最多 10 首。第一首放完自动接上。\n"
                     "她说「随便放点歌」「放一串」「循环」时**一定要给这个** —— "
                     "只给一首的话，三分钟后就没声了。\n"
-                    "每首和上面一样要带 song_id / name / artist / cover。"
+                    "每首和上面一样要带 song_id / name / artist（cover 可省）。"
                 ),
                 "items": {
                     "type": "object",
@@ -524,6 +520,21 @@ def make_handlers(client: RestClient) -> dict[str, object]:
         rp = client.post("/music/remote", payload)
         if not rp.ok:
             raise RuntimeError(f"点播失败: {rp.error}")
+
+        # 🔴 封面以 co-listening 回读的为准（2026-09-28）。
+        #
+        # 模型抄的 cover 会错：09-06 / 09-21 那三首存的是长得像真封面的假地址
+        # （picId 对不上，CDN 404），Music 页和聊天卡片上都是裂图。co-listening
+        # 收到点播后按 songId 查网易云官方换掉了 —— 下面的歌卡和记忆用它换过的那个
+        try:
+            back = client.get("/music/remote")
+            bs = (back.data or {}).get("song") if isinstance(back.data, dict) else None
+            if isinstance(bs, dict) and str(bs.get("songId")) == song_id and "cover" in bs:
+                if bs["cover"] != cover:
+                    logger.info("点歌封面按官方换了：%s（模型给的 %.60s）", song_id, cover or "空")
+                cover = bs["cover"]
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("回读点播封面失败，用模型给的：%s", exc)
 
         # 把「为什么选这首」存进歌曲记忆。
         #

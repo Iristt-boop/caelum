@@ -202,6 +202,58 @@ def test_play_backfills_missing_cover():
     assert body["song"]["cover"] == "https://p2.music.126.net/found.jpg"
 
 
+class RoutedClient(FakeClient):
+    """按路径回不同的东西 —— 回读 /music/remote 要拿到 co-listening 换过的封面。"""
+
+    def __init__(self, routes: dict) -> None:
+        super().__init__()
+        self.routes = routes
+
+    def get(self, path, params=None):
+        self.calls.append(("GET", path, params or {}))
+        return FakeResult(data=self.routes.get(path, {}))
+
+    def post(self, path, body=None):
+        self.calls.append(("POST", path, body or {}))
+        return FakeResult(data={"ok": True})
+
+
+FAKE_COVER = "https://p1.music.126.net/2RSgYVAPtYV4nHwu4ArqzQ==/109951165604594760.jpg"
+REAL_COVER = "https://p2.music.126.net/1pRVSJLGh5-NjCGmzGYDXg==/109951164728421732.jpg"
+
+
+def test_play_封面以co_listening回读的为准(monkeypatch):
+    """🔴 2026-09-28：模型抄的封面会错（09-21 Merry-Go-Round 存的是 404 的假地址），
+    Music 页和聊天歌卡都是裂图。co-listening 收到点播按 songId 换成官方的 ——
+    歌卡和记忆要用换过的那个，不用模型给的。"""
+    from tools import context as tool_context
+
+    cards = []
+    ctx = type("Ctx", (), {"attach_music": lambda self, sid, **kw: cards.append((sid, kw))})()
+    monkeypatch.setattr(tool_context, "current", lambda: ctx)
+    client = RoutedClient({
+        "/music/url": {"ok": True, "url": "x", "cached": True},
+        "/music/remote": {"song": {"songId": "442454", "name": "Merry-Go-Round", "cover": REAL_COVER}},
+    })
+    make_handlers(client)["eryu_play"]({
+        "song_id": "442454", "name": "Merry-Go-Round", "artist": "久石譲",
+        "cover": FAKE_COVER, "reason": "你说想听点轻快的钢琴",
+    })
+    assert cards == [("442454", {"name": "Merry-Go-Round", "artist": "久石譲", "cover": REAL_COVER})]
+    assert client.find("/music/memory")["cover"] == REAL_COVER
+
+
+def test_play_回读的不是这首就不换(monkeypatch):
+    """队列文件被别的点播抢先改了 —— 对不上 songId 就别拿别人的封面。"""
+    client = RoutedClient({
+        "/music/url": {"ok": True},
+        "/music/remote": {"song": {"songId": "999", "cover": "https://other.jpg"}},
+    })
+    make_handlers(client)["eryu_play"]({"song_id": "442454", "name": "M", "cover": "https://mine.jpg",
+                                        "reason": "你说想听点轻快的钢琴"})
+    assert client.find("/music/memory")["cover"] == "https://mine.jpg"
+
+
 def test_play_saves_reason():
     """「他为什么选这首」要存进歌曲记忆，显示在共听页那张卡片的灰底里。
 
