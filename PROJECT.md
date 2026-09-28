@@ -7802,8 +7802,11 @@ task_tick 转 stale。部署照三段流程（core release 切换 → bridge →
   （Flora 想要「蝴蝶飞过去把纸拉开」，等蝴蝶素材）
 - **氛围层**（`ShellBackdrop.jsx`）：Logos = 一层很淡的**他的代码**（几栏并排、行号、关键字亮一点，
   和开屏同一个生成器 `codeCells`，淡出时字不跳；`--code-ink` 0.45）· Domus 星空 · Lux 一团柔光 · Flora 羊皮纸
-- **素材槽约定**：`public/skins/<风格>/…`（例：`flora/frame.png` 九宫格金框、`flora/paper.jpg`、
-  `<风格>/movies-hero.png` Movies 横幅插画）。Flora 框和纸是从聊天截图裁的低清版，原图到了替换
+- **素材槽约定**：`public/skins/<风格>/…`（例：`flora/window-frame.png` 高清金框、`flora/paper.jpg`、
+  `flora/icons/*.png` 外壳图标、`<风格>/movies-hero.png` Movies 横幅插画）。
+  **Flora 的金框框的是整个 OS 窗口**（09-28 她定：顶着四个角，不框页面），开屏的框同一张图同一个位置；
+  贴纸（花束 / 丝带 / 蝴蝶）、胶囊金边主按钮、标题分隔线都是 CSS 挂的（shell.css 末尾「Flora 的贴纸」）。
+  `flora/paper.jpg` 仍是截图裁的低清版，原图到了替换
 
 ### 55.2 新外壳 ShellV2（`5aadcbb` 起默认）
 
