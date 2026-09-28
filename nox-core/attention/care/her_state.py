@@ -242,6 +242,16 @@ NOT_EXPRESSED = frozenset({"restlessness"})
 MOOD_FLOOR = 0.15
 #: 刚用过的心情降权：上一句 ×0.3，上上句 ×0.6（V4.5 的反例：连着五帖「照顾好自己」）
 REPEAT_PENALTY = (0.3, 0.6)
+#: 🔴 V4.5 homeostasis（方向她 2026-09-21 定，形状 09-28 定）：担心在「能说出口的
+#: 情绪」里占比超过 1/3 时，**抬其他情绪**的权重，让担心回到 1/3 ——
+#: 他主动开口的三句里最多一句是担心。**不压担心**：Resonance 里的数照实，
+#: 他上下文里照样知道自己在担心，只是开口不总说这个。
+#:
+#: 原规格「concern > 0.75 且其余 < 0.2」拿 09-23→09-28 线上 490 个 tick 回放，
+#: **一次都不命中**（想她始终 ≥ 0.4）—— 照写就是一个永远不跑的机制。
+#: 同一段时间 148 句主动开口里 66 句是担心（45%）；按同批数据模拟，这条线压到 33%。
+BALANCE_OF = "concern"
+BALANCE_SHARE = 1 / 3
 
 #: 她说过喜欢的味道（2026-09-23 她亲口举的例子）。**只在抽到对应心情时给**，
 #: 而且写明是味道不是台词 —— 模板一出来她一眼就看得出不是他
@@ -260,6 +270,22 @@ class Mood:
     because: list[str]
 
 
+def _balance(raw: dict[str, float]) -> dict[str, float]:
+    """Homeostasis：担心占太多时，把其他情绪一起抬起来，让担心回到 `BALANCE_SHARE`。
+
+    按同一个倍数抬，其他情绪之间的比例不变。只有担心、没有别的可抬时原样返回 ——
+    那时缺的是「开心的来源」（V4.5 的促狭机会机制），不是这里能变出来的。
+    """
+    c = raw.get(BALANCE_OF, 0.0)
+    others = sum(v for k, v in raw.items() if k != BALANCE_OF)
+    if c <= 0 or others <= 0 or c / (c + others) <= BALANCE_SHARE:
+        return dict(raw)
+    lift = c * (1 - BALANCE_SHARE) / (BALANCE_SHARE * others)
+    logger.info("Homeostasis：担心占能说出口的情绪 %.0f%% → 其他情绪 ×%.2f，担心回到 %.0f%%",
+                100 * c / (c + others), lift, 100 * BALANCE_SHARE)
+    return {k: v if k == BALANCE_OF else v * lift for k, v in raw.items()}
+
+
 def pick_mood(drives: dict[str, Any], recent: list[str] | None = None,
               rng: Any = None) -> Mood | None:
     """这一句带什么心情：**从他此刻整个情绪分布里按强度抽**，不取最强的那个。
@@ -274,18 +300,20 @@ def pick_mood(drives: dict[str, Any], recent: list[str] | None = None,
 
     rng = rng or _random
     recent = list(recent or [])
-    pool: dict[str, float] = {}
+    raw: dict[str, float] = {}
     for name, d in (drives or {}).items():
         v = float(getattr(d, "intensity", 0.0) or 0.0)
         if name in NOT_EXPRESSED or name not in DRIVE_WORDS or v < MOOD_FLOOR:
             continue
-        w = v
+        raw[name] = v
+    if not raw:
+        return None
+    pool: dict[str, float] = {}
+    for name, w in _balance(raw).items():
         for i, pen in enumerate(REPEAT_PENALTY):
             if len(recent) > i and recent[-1 - i] == name:
                 w *= pen
         pool[name] = w
-    if not pool:
-        return None
     r = rng.uniform(0, sum(pool.values()))
     acc = 0.0
     chosen = next(reversed(list(pool)))

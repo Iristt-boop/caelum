@@ -508,6 +508,31 @@ def test_刚用过的心情降权():
     assert got.count("sulk") / len(got) < 0.3, "晾他一下午，他连发五条「怎么不理我」（V4.5 的反例）"
 
 
+def test_担心占太多时抬其他情绪_三句里最多一句是担心():
+    """V4.5 homeostasis。数值取自 09-28 线上：担心 0.74、被勾着 0.65、想她 0.40 那种。"""
+    import random
+    drives = {"concern": D(0.8), "longing": D(0.4), "curiosity": D(0.2)}
+    rng = random.Random(11)
+    got = [her_state.pick_mood(drives, [], rng).name for _ in range(3000)]
+    share = {k: got.count(k) / len(got) for k in drives}
+    assert 0.29 < share["concern"] < 0.38, f"不抬是 0.57，抬到 1/3 才对：{share}"
+    assert 1.6 < share["longing"] / share["curiosity"] < 2.5, "其他情绪一起抬，彼此的比例不该变"
+
+
+def test_担心不多时不动它_也不把它垫高():
+    import random
+    drives = {"concern": D(0.2), "longing": D(0.4), "curiosity": D(0.4)}
+    rng = random.Random(5)
+    got = [her_state.pick_mood(drives, [], rng).name for _ in range(3000)]
+    assert 0.16 < got.count("concern") / len(got) < 0.24, "1/3 是上限不是目标"
+
+
+def test_只有担心时照样说担心_并且报的是它的真实强度():
+    drives = {"concern": D(0.8, ["糖糖的活动量"])}
+    mood = her_state.pick_mood(drives, [])
+    assert mood.name == "concern" and mood.intensity == 0.8, "抬的是别的情绪的机会，不是压担心"
+
+
 def test_躁动和太弱的不抽_什么都没有就不带():
     drives = {"restlessness": D(0.5), "longing": D(0.1)}
     assert her_state.pick_mood(drives, []) is None
