@@ -56,6 +56,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time
 from datetime import timedelta
 from typing import Any
 
@@ -172,6 +173,27 @@ def _digest(body: str) -> list[str]:
     return out
 
 
+def _log_recall(turn: Turn | None, state: dict[str, Any],
+                cached_age: float | None, took_ms: float) -> None:
+    """一行：她这句 → 拿什么词检索的 → 现检索还是沿用缓存 → 带进去哪几条。"""
+    if state.get("available") is False:
+        return  # 基类已经 warning 过「拉取失败且没有旧数据」
+    said = str(getattr(turn, "text", "") or "").strip().replace("\n", " ")
+    query = str(state.get("query") or "").replace("\n", " ")
+    items = list(state.get("relevant") or [])
+    if state.get("stale"):
+        src = f"检索挂了，用 {state.get('stale_age_s', 0):.0f} 秒前的旧结果"
+    elif cached_age is not None:
+        src = f"沿用 {cached_age:.0f} 秒前的检索"
+    elif state.get("skipped"):
+        src = str(state["skipped"])
+    else:
+        src = f"刚检索 {took_ms:.0f}ms"
+    logger.info("记忆：这轮「%.30s」｜检索词「%.30s」｜%s｜%d 条%s",
+                said, query, src, len(items),
+                "：" + "｜".join(i[:24] for i in items) if items else "")
+
+
 class MemoryProvider(BaseContextProvider):
     """按当前话题检索相关记忆。**只读。**"""
 
@@ -191,6 +213,24 @@ class MemoryProvider(BaseContextProvider):
     def __init__(self, ob: OmbreBrain, **kw: Any) -> None:
         super().__init__(**kw)
         self.ob = ob
+
+    def get_state(self, turn: Turn | None = None,
+                  force_refresh: bool = False) -> dict[str, Any]:
+        """同基类，外加**每轮一行账**：这轮带进去的是哪几条、出自哪次检索。
+
+        2026-09-27 `NOX_APPRAISAL_RECALL=on` 把翻记忆从 1.3% 的轮次开到几乎每轮，
+        可他翻到了什么、准不准，日志里一行都没有 —— 开关开了等于盲飞。
+        这行是以后回头评「想起来的对不对」的唯一原料（她 09-28 让加的）。
+
+        ⚠️ 「沿用 N 秒前的检索」要单独标出来：缓存按 Provider 名存、TTL 5 分钟，
+        这轮带进去的可能是上一句话（甚至他主动开口那次）的检索结果。
+        """
+        hit = None if force_refresh else self.cache.get(self.name)
+        t0 = time.monotonic()
+        state = super().get_state(turn=turn, force_refresh=force_refresh)
+        _log_recall(turn, state, hit.age_s if hit is not None else None,
+                    (time.monotonic() - t0) * 1000)
+        return state
 
     def _fetch(self, turn: Turn) -> dict[str, Any]:
         #: 他主动开口时，拼提示的那一方会明说该拿什么去翻（见 Turn.recall）；
