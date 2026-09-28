@@ -29,7 +29,7 @@ class _Loop:
 
     def __init__(self):
         self.tools = {
-            "eryu_play": _Tool(ToolSpec("eryu_play", "放一首歌", {}, side_effect="read")),
+            "listen_play": _Tool(ToolSpec("listen_play", "放一首歌", {}, side_effect="read")),
             "search_food": _Tool(ToolSpec("search_food", "查食物热量", {}, side_effect="read")),
         }
 
@@ -60,8 +60,8 @@ def test_tools_lists_specs(monkeypatch, tmp_path):
     assert d["ok"] is True
     # _build_attention 之后还会注册 record/remind 那几件，所以只断言"包含"
     names = [x["name"] for x in d["items"]]
-    assert "eryu_play" in names and "search_food" in names
-    mine = next(x for x in d["items"] if x["name"] == "eryu_play")
+    assert "listen_play" in names and "search_food" in names
+    mine = next(x for x in d["items"] if x["name"] == "listen_play")
     assert mine["description"] == "放一首歌"
 
 

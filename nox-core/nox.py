@@ -834,7 +834,7 @@ class Nox:
         ## 为什么必须有这一步
 
         Provider 是按 TTL 缓存的（`health` 6 小时、`todo` 30 分钟、`music` 3 分钟），
-        而写路径（`record_period` / `add_todo` / `eryu_play` …）成功之后
+        而写路径（`record_period` / `add_todo` / `listen_play` …）成功之后
         **没有任何人通知缓存**。于是下一轮拼提示时递给他的还是**写之前**那份快照：
 
             她：我来例假了       → 他调 record_period，真写进 World Model 了

@@ -215,7 +215,7 @@ def _listen_payload() -> dict:
 
 
 def test_listening_only_together_and_recent(world):
-    """只记「一起听」；她自己听的不进 world，太久的由 eryu_experience 管。"""
+    """只记「一起听」；她自己听的不进 world，太久的由 listen_experience 管。"""
     eryu = FakeClient({"/music/memory": Resp(data=_listen_payload())})
     SharedActivitiesSource(eryu=eryu, world=world).poll(NOW)
 

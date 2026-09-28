@@ -21,11 +21,11 @@ logger = logging.getLogger(__name__)
 
 SEARCH_SPEC = ToolSpec(
     side_effect="read",
-    name="eryu_search",
+    name="listen_search",
     description=(
         "在网易云音乐搜歌。返回歌名、歌手、专辑和 song_id。\n"
         "糖糖说「放首 xxx」「搜一下 xxx 这首歌」「有没有 xxx」时用。\n"
-        "拿到 song_id 后用 eryu_play 播放。"
+        "拿到 song_id 后用 listen_play 播放。"
     ),
     parameters={
         "type": "object",
@@ -44,10 +44,10 @@ SEARCH_SPEC = ToolSpec(
 
 PLAY_SPEC = ToolSpec(
     side_effect="write",
-    name="eryu_play",
+    name="listen_play",
     description=(
         "直接点播一首歌到糖糖的共听页面 —— 她那边最多 5 秒就会自动开始放。\n"
-        "song_id / name / artist 从 eryu_search 的结果里抄，**不要自己编**。\n"
+        "song_id / name / artist 从 listen_search 的结果里抄，**不要自己编**。\n"
         "封面不用管 —— 服务端按 song_id 查网易云官方的（cover 参数可以不填）。\n"
         "\n"
         "⚠️ 前提是她**开着 Caelum App**。页面没开就没人来取这首歌，"
@@ -59,8 +59,8 @@ PLAY_SPEC = ToolSpec(
         "\n"
         "她说这几种话时的排法：\n"
         "  「放 XXX」（具体歌名）→ 放那首，queue 里排同歌手或相似的\n"
-        "  「放点 XX 的歌」（歌手）→ 用 eryu_search 搜那个歌手，排一串\n"
-        "  「随便放点」「放着别停」→ 用 netease_recommend 拿她的每日推荐，排 10 首\n"
+        "  「放点 XX 的歌」（歌手）→ 用 listen_search 搜那个歌手，排一串\n"
+        "  「随便放点」「放着别停」→ 用 listen_daily 拿她的每日推荐，排 10 首\n"
         "\n"
         "⚠️ 这样点播的歌会被记成「一起听过」，她自己点的不算。\n"
         "\n"
@@ -70,9 +70,9 @@ PLAY_SPEC = ToolSpec(
     parameters={
         "type": "object",
         "properties": {
-            "song_id": {"type": "string", "description": "eryu_search 返回的 song_id"},
-            "name": {"type": "string", "description": "歌名，从 eryu_search 结果里抄"},
-            "artist": {"type": "string", "description": "歌手，从 eryu_search 结果里抄"},
+            "song_id": {"type": "string", "description": "listen_search 返回的 song_id"},
+            "name": {"type": "string", "description": "歌名，从 listen_search 结果里抄"},
+            "artist": {"type": "string", "description": "歌手，从 listen_search 结果里抄"},
             "cover": {
                 "type": "string",
                 "description": "可选。服务端会按 song_id 换成网易云官方封面，填错也没关系",
@@ -123,47 +123,29 @@ PLAY_SPEC = ToolSpec(
 
 LYRIC_SPEC = ToolSpec(
     side_effect="read",
-    name="eryu_get_lyric",
+    name="listen_lyric",
     description=(
-        "拿一首歌的歌词。song_id 从 eryu_search 拿。\n"
+        "拿一首歌的歌词。song_id 从 listen_search 拿。\n"
         "她说「这首歌在唱什么」「帮我看看歌词」，"
         "或者你想在聊到某首歌时引用歌词的时候用。"
     ),
     parameters={
         "type": "object",
         "properties": {
-            "song_id": {"type": "string", "description": "eryu_search 返回的 song_id"},
+            "song_id": {"type": "string", "description": "listen_search 返回的 song_id"},
         },
         "required": ["song_id"],
     },
 )
 
-# ------------------------------------------------------------------ 频谱分析
-
-ANALYZE_SPEC = ToolSpec(
-    side_effect="read",
-    name="eryu_analyze",
-    description=(
-        "对一首歌做 AI 频谱分析，拿 BPM、调性、能量曲线等音乐特征。\n"
-        "分析是异步的——后台子进程跑，可能需要几秒到十几秒。\n"
-        "分析过一次的歌会缓存，下次再调直接返回缓存结果。\n"
-        "什么时候用：糖糖问「这首歌是什么风格的」「节奏快不快」，\n"
-        "或者你想在推荐歌曲时聊音乐特征（「这首的 BPM 很适合你现在的心情」）。"
-    ),
-    parameters={
-        "type": "object",
-        "properties": {
-            "song_id": {"type": "string", "description": "eryu_search 返回的 song_id"},
-        },
-        "required": ["song_id"],
-    },
-)
+# 频谱分析（eryu_analyze）2026-09-23 她拍板砍掉，09-28 随改名一起删干净：VPS 从没装过 librosa，
+# co-listening 的分析端点回 410。存量特征 JSON 只剩 pick_by_mood 在读（它自己 glob 缓存目录）。
 
 # ------------------------------------------------------------------ 歌曲记忆（读）
 
 MEMORY_GET_SPEC = ToolSpec(
     side_effect="read",
-    name="eryu_get_memory",
+    name="listen_memory_get",
     description=(
         "读一首歌的笔记——之前听这首歌时糖糖说了什么、你有什么感受。\n"
         "什么时候用：再次听到这首歌、糖糖提到这首歌让她想起什么，\n"
@@ -172,7 +154,7 @@ MEMORY_GET_SPEC = ToolSpec(
     parameters={
         "type": "object",
         "properties": {
-            "song_id": {"type": "string", "description": "eryu_search 返回的 song_id"},
+            "song_id": {"type": "string", "description": "listen_search 返回的 song_id"},
         },
         "required": ["song_id"],
     },
@@ -182,7 +164,7 @@ MEMORY_GET_SPEC = ToolSpec(
 
 MEMORY_SAVE_SPEC = ToolSpec(
     side_effect="write",
-    name="eryu_save_memory",
+    name="listen_memory_save",
     description=(
         "给一首歌写笔记——记下糖糖听到这首歌时的感受，或者你想记住的任何事。\n"
         "什么时候用：糖糖说「这首歌让我想起 xxx」、某首歌对她有特殊意义、\n"
@@ -192,7 +174,7 @@ MEMORY_SAVE_SPEC = ToolSpec(
     parameters={
         "type": "object",
         "properties": {
-            "song_id": {"type": "string", "description": "eryu_search 返回的 song_id"},
+            "song_id": {"type": "string", "description": "listen_search 返回的 song_id"},
             "notes": {"type": "string", "description": "要记下来的内容——她的感受、你们的共同记忆"},
             "tags": {"type": "string", "description": "逗号分隔的标签，如「怀旧,低落,深夜」"},
         },
@@ -204,12 +186,12 @@ MEMORY_SAVE_SPEC = ToolSpec(
 
 ROAM_SPEC = ToolSpec(
     side_effect="read",
-    name="eryu_roam",
+    name="listen_roam",
     description=(
         "随机漫游发现歌曲 —— **一次给一首**，完全随机。\n"
         "\n"
         "⚠️ **这不是「随便放点歌」的默认选择。** 她说「随便放首歌」"
-        "「今天听什么」时，用 `netease_recommend`（那是她自己账号的推荐）。\n"
+        "「今天听什么」时，用 `listen_daily`（那是她自己账号的推荐）。\n"
         "\n"
         "这个只在她**明确想要没听过的东西**时才用："
         "「来点新鲜的」「换换口味」「听点我没听过的」。\n"
@@ -225,12 +207,12 @@ ROAM_SPEC = ToolSpec(
 
 DAILY_SPEC = ToolSpec(
     side_effect="read",
-    name="eryu_daily",
+    name="listen_from_liked",
     description=(
         "拿共听页面「Liked」歌单里的歌当种子，找相似的。\n"
         "\n"
         "⚠️ **这不是「每日推荐」的默认选择。** 她要推荐时用 "
-        "`netease_recommend` —— 那是她自己网易云账号算的，"
+        "`listen_daily` —— 那是她自己网易云账号算的，"
         "有 337 首「喜欢」打底。这个的种子只有她在共听页面手动加的**几首**，"
         "推出来会很单调（现在全是 Taylor Swift / Selena Gomez 那一挂）。\n"
         "\n"
@@ -249,17 +231,17 @@ DAILY_SPEC = ToolSpec(
 
 SIMILAR_SPEC = ToolSpec(
     side_effect="read",
-    name="eryu_similar",
+    name="listen_similar",
     description=(
-        "找和一首歌风格相似的歌曲。song_id 从 eryu_search 拿。\n"
+        "找和一首歌风格相似的歌曲。song_id 从 listen_search 拿。\n"
         "什么时候用：糖糖说「有没有像这首歌一样的」「类似的还有吗」、\n"
         "听完一首觉得对味、想继续这个风格时。\n"
-        "返回相似的歌名和 song_id，可以直接用 eryu_play 放。"
+        "返回相似的歌名和 song_id，可以直接用 listen_play 放。"
     ),
     parameters={
         "type": "object",
         "properties": {
-            "song_id": {"type": "string", "description": "eryu_search 返回的 song_id"},
+            "song_id": {"type": "string", "description": "listen_search 返回的 song_id"},
         },
         "required": ["song_id"],
     },
@@ -279,11 +261,11 @@ SIMILAR_SPEC = ToolSpec(
 
 EXPERIENCE_SPEC = ToolSpec(
     side_effect="read",
-    name="eryu_experience",
+    name="listen_experience",
     description=(
         "**音乐这件事上，你和她之间发生过什么。**\n"
         "\n"
-        "一次拿到完整视图，不用分别调 recent / memory / analyze：\n"
+        "一次拿到完整视图，不用分别调 recent / memory：\n"
         "  · 最近在听什么（谁放的、什么时候）\n"
         "  · 你给她放过哪些、一起听过几次、当时你说的理由\n"
         "  · 这些歌是什么气质（BPM / 能量，分析过的才有）\n"
@@ -302,13 +284,13 @@ EXPERIENCE_SPEC = ToolSpec(
 
 MOOD_PICK_SPEC = ToolSpec(
     side_effect="read",
-    name="eryu_pick_by_mood",
+    name="listen_pick_by_mood",
     description=(
         "**按气质挑歌** —— 她说「放点治愈的」「睡前来点安静的」"
         "「打扫卫生放点带劲的」这类**形容词**时用这个。\n"
         "\n"
         "从已经做过音频分析的歌里筛（真实的 BPM / 能量 / 起伏，不是猜的），"
-        "返回一串可以直接喂给 `eryu_play` 的 song_id。\n"
+        "返回一串可以直接喂给 `listen_play` 的 song_id。\n"
         "\n"
         "**mood 可选：**\n"
         "  `calm`    安静治愈、适合睡前和写东西（能量 < 0.16，起伏小）\n"
@@ -336,7 +318,7 @@ MOOD_PICK_SPEC = ToolSpec(
 
 RECENT_SPEC = ToolSpec(
     side_effect="read",
-    name="eryu_recent",
+    name="listen_recent",
     description=(
         "看糖糖最近在共听页面听了什么歌，最新的在最前面。\n"
         "什么时候用：想知道她最近在听什么、她说「我最近老听一首歌」、"
@@ -390,7 +372,7 @@ def make_handlers(client: RestClient) -> dict[str, object]:
             album = s.get("album", "")
             line = f"song_id={s.get('id')} | {s.get('name', '?')} | {artists} | 《{album}》"
             # ⚠️ **必须把封面带出来。** 原来这行没有 cover，模型手上根本
-            # 没有封面地址，`eryu_play` 想带也带不了 —— 结果糖糖那边
+            # 没有封面地址，`listen_play` 想带也带不了 —— 结果糖糖那边
             # 唱片中间永远是个音符占位（2026-08-10 她发现的）。
             if s.get("cover"):
                 line += f" | cover={s['cover']}"
@@ -400,7 +382,7 @@ def make_handlers(client: RestClient) -> dict[str, object]:
     def play(args: dict) -> str:
         song_id = str(args.get("song_id", "")).strip()
         if not song_id:
-            return "没给 song_id。先用 eryu_search 搜。"
+            return "没给 song_id。先用 listen_search 搜。"
 
         name = str(args.get("name", "")).strip()
         artist = str(args.get("artist", "")).strip()
@@ -423,7 +405,7 @@ def make_handlers(client: RestClient) -> dict[str, object]:
         #
         # ⚠️ **超时不算失败。** 没缓存过的歌要从网易云现下 5 MB，
         # 12 秒的默认超时经常不够（2026-08-10 实测 TimeoutError，
-        # 导致整个 eryu_play 挂掉、队列一首都没排上）。
+        # 导致整个 listen_play 挂掉、队列一首都没排上）。
         #
         # 但下载是在 eryu 那边继续跑的，我们等不等它都一样 ——
         # 前端真正取流是走 bridge 的 /music/stream，那时候多半已经好了。
@@ -475,7 +457,7 @@ def make_handlers(client: RestClient) -> dict[str, object]:
 
         # 兜底：他没给 queue 就自己补。
         #
-        # ⚠️ 别指望模型老实抄 —— 要他先 eryu_search 搜 10 首、再把每首的
+        # ⚠️ 别指望模型老实抄 —— 要他先 listen_search 搜 10 首、再把每首的
         # 四个字段誊进数组，抄写成本太高，实测他就只给一首
         # （2026-08-10：工具描述里明写了「一次要给一串」，照样只发一首）。
         #
@@ -570,7 +552,7 @@ def make_handlers(client: RestClient) -> dict[str, object]:
     def lyric(args: dict) -> str:
         song_id = str(args.get("song_id", "")).strip()
         if not song_id:
-            return "没给 song_id。先用 eryu_search 搜。"
+            return "没给 song_id。先用 listen_search 搜。"
 
         r = client.get("/music/lyric", {"id": song_id})
         if not r.ok:
@@ -585,52 +567,6 @@ def make_handlers(client: RestClient) -> dict[str, object]:
         if len(lrc) > 2500:
             lrc = lrc[:2497] + "..."
         return lrc
-
-    def analyze(args: dict) -> str:
-        song_id = str(args.get("song_id", "")).strip()
-        if not song_id:
-            return "没给 song_id。先用 eryu_search 搜。"
-
-        # 先查状态，可能已经分析过了。
-        #
-        # ⚠️ 字段名对不上过：Core 原来找 `ready`（布尔）和 `result`，
-        # 而服务端给的是 `{"status": "ready", "analysis": {...}}`
-        # （server/eryu.py:988）。所以就算分析结果早就躺在
-        # music_cache 里，这里也永远匹配不上，只会回一句
-        # 「任务已提交，后台正在跑」—— 而 VPS 根本没装 librosa，
-        # 那个后台任务注定失败（2026-08-09 查出）。
-        status = client.get("/music/analyze/status", {"id": song_id})
-        status_data = (status.data if isinstance(status.data, dict) else {}) if status.ok else {}
-        state = str(status_data.get("status") or "")
-        if state == "ready":
-            return _format_analysis(song_id, status_data.get("analysis") or {})
-        if state == "running":
-            return f"song_id={song_id} 正在分析中，过一会儿再问我。"
-        if state.startswith("error"):
-            return f"song_id={song_id} 上次分析失败了：{state[6:].strip()}"
-
-        # ⚠️ **故意不触发 VPS 上的分析**（2026-08-09）。
-        #
-        # 音频分析要 librosa（提 BPM / 能量 / 频谱），而 VPS 上没装 ——
-        # 那台机器同时跑着 bridge / nox-core / ombre-brain / eryu /
-        # netease-mcp / ha-mcp / xiaozhi，再塞一个吃满 CPU 的音频分析
-        # 会拖累对话响应。
-        #
-        # 分析改在糖糖的电脑上跑（`ob-tools/audio/analyze_local.py`，
-        # i5-13400F 十六核，单首约 24 秒、六路并行），结果回传到
-        # VPS 的 music_cache。eryu 本来就允许这样 —— 它的
-        # `/music/analyze/status` 只是去读 `{id}_preanalysis.json`，
-        # 不关心那个文件是谁算出来的。
-        #
-        # 这里要是还去 POST 触发，只会在 VPS 上跑一个必定失败的任务，
-        # 还会留下 `_analyze_error.txt` —— 下次再查就变成
-        # 「上次分析失败了」，把本来只是「还没分析」的状态弄脏。
-        return (
-            f"song_id={song_id} 这首还没有分析过。\n"
-            "音频特征是在糖糖电脑上批量跑的，得等她那边跑一轮才会有。\n"
-            "**现在别硬猜 BPM 和能量** —— 可以改用 eryu_get_lyric 看歌词，"
-            "从词和曲名去理解这首歌。"
-        )
 
     def get_memory(args: dict) -> str:
         song_id = str(args.get("song_id", "")).strip()
@@ -727,7 +663,7 @@ def make_handlers(client: RestClient) -> dict[str, object]:
     def similar(args: dict) -> str:
         song_id = str(args.get("song_id", "")).strip()
         if not song_id:
-            return "没给 song_id。先用 eryu_search 搜。"
+            return "没给 song_id。先用 listen_search 搜。"
 
         r = client.get("/music/similar", {"id": song_id})
         if not r.ok:
@@ -836,7 +772,7 @@ def make_handlers(client: RestClient) -> dict[str, object]:
         """按气质挑歌。
 
         直接读 eryu 缓存目录里的 `*_preanalysis.json` —— 那是在糖糖电脑上
-        跑 librosa 算出来的真实特征（VPS 没装 librosa，见 analyze 那段注释）。
+        跑 librosa 算出来的真实特征（VPS 没装 librosa，见上面「频谱分析」那段注释）。
         eryu 没有「按特征筛」的接口，所以在这边算。
 
         ⚠️ 档位按**能量**分，不是 BPM。同样 103 BPM，
@@ -928,73 +864,18 @@ def make_handlers(client: RestClient) -> dict[str, object]:
         return "\n".join(out)
 
     return {
-        "eryu_search": search,
-        "eryu_play": play,
-        "eryu_get_lyric": lyric,
-        "eryu_analyze": analyze,
-        "eryu_get_memory": get_memory,
-        "eryu_save_memory": save_memory,
-        "eryu_roam": roam,
-        "eryu_similar": similar,
-        "eryu_recent": recent,
-        "eryu_pick_by_mood": pick_by_mood,
-        "eryu_experience": experience,
-        "eryu_daily": daily,
+        "listen_search": search,
+        "listen_play": play,
+        "listen_lyric": lyric,
+        "listen_memory_get": get_memory,
+        "listen_memory_save": save_memory,
+        "listen_roam": roam,
+        "listen_similar": similar,
+        "listen_recent": recent,
+        "listen_pick_by_mood": pick_by_mood,
+        "listen_experience": experience,
+        "listen_from_liked": daily,
     }
-
-
-def _format_analysis(song_id: str, result: dict) -> str:
-    """把分析结果格式化成模型能读的文本。
-
-    字段来自 `analyze_local.py`（在糖糖电脑上跑的 librosa 分析，
-    结果回传到 VPS 的 music_cache）。VPS 上没装 librosa，
-    所以这些数据**只可能是本地算完传上去的**。
-    """
-    if not result:
-        return f"song_id={song_id} 的分析结果还没出来，过几秒再试。"
-
-    name = result.get("name") or ""
-    artist = result.get("artist") or ""
-    head = f"song_id={song_id}"
-    if name:
-        head += f" · {name}"
-        if artist:
-            head += f" - {artist}"
-
-    lines: list[str] = []
-    if result.get("duration"):
-        lines.append(f"时长: {result['duration']} 秒")
-    if result.get("bpm"):
-        lines.append(f"BPM: {result['bpm']}（快慢）")
-    if result.get("key"):
-        lines.append(f"调性: {result['key']}")
-
-    # ⚠️ 能量是 0~1，不是 0~10。原来这里写死 `{energy}/10`，
-    # 会把 0.286 显示成「0.286/10」，模型据此判断会以为这歌几乎没声音
-    energy = result.get("energy")
-    if energy is not None:
-        lines.append(f"能量: {energy:.3f}（0~1，越大越有劲）")
-    if result.get("dynamics") is not None:
-        lines.append(f"起伏: {result['dynamics']:.3f}（0~1，越小越平缓）")
-    if result.get("brightness"):
-        lines.append(f"明亮度: {result['brightness']:.0f} Hz（越高越亮）")
-    if result.get("harmonicRatio") is not None:
-        lines.append(f"谐波占比: {result['harmonicRatio']:.2f}（越高越偏旋律，纯音乐通常更高）")
-
-    mood_tags = result.get("mood_tags") or result.get("tags") or []
-    if mood_tags:
-        tags_str = ", ".join(mood_tags) if isinstance(mood_tags, list) else str(mood_tags)
-        lines.append(f"情绪标签: {tags_str}")
-
-    if not lines:
-        return f"{head}\n分析完成，但没有返回特征数据。"
-
-    lines.append(
-        "\n怎么用这些数字：**光看 BPM 会判断错**。"
-        "能量才是「治愈」和「打扫」的分水岭 —— "
-        "同样 103 BPM，能量 0.25 是要跟着唱的，0.10 是能睡着的。"
-    )
-    return head + "\n" + "\n".join(lines)
 
 
 def make_client(base_url: str, token: str, timeout: float = 12.0) -> RestClient:
@@ -1009,11 +890,14 @@ def make_client(base_url: str, token: str, timeout: float = 12.0) -> RestClient:
 def register_all(loop, client: RestClient) -> None:
     """注册顺序固定 —— 工具定义是缓存前缀的一部分。"""
     handlers = make_handlers(client)
-    # ⚠️ 没有 eryu_remote_poll：它和 eryu_play 抢同一个读完即删的队列，09-28 已删（见上面「远程轮询（已删）」）
+    # ⚠️ 没有 eryu_remote_poll：它和 listen_play 抢同一个读完即删的队列，09-28 已删（见上面「远程轮询（已删）」）
     # ⚠️ 新工具加在**末尾**：工具定义是缓存前缀的一部分，
     # 插在中间会让整段前缀作废，一轮 ¥0.00055 变 ¥0.011
+    # ⚠️ ANALYZE_SPEC 2026-09-23 砍除（糖糖拍板：音频分析没怎么用过，
+    # VPS 也从没装过 librosa）—— co-listening 的分析端点回 410，
+    # 再注册只会让模型看见工具就白试一次
     for spec in (SEARCH_SPEC, PLAY_SPEC, LYRIC_SPEC,
-                 ANALYZE_SPEC, MEMORY_GET_SPEC, MEMORY_SAVE_SPEC,
+                 MEMORY_GET_SPEC, MEMORY_SAVE_SPEC,
                  ROAM_SPEC, SIMILAR_SPEC, RECENT_SPEC, DAILY_SPEC,
                  MOOD_PICK_SPEC, EXPERIENCE_SPEC):
         loop.register(spec, handlers[spec.name])  # type: ignore[arg-type]
