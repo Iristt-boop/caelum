@@ -30,22 +30,25 @@ from agent.adapters import make_adapter  # noqa: E402
 from config import config  # noqa: E402
 from temporal.extract import TemporalExtractor  # noqa: E402
 
-#: (她的原话, 期望的 kind, 这条在验什么)
-#: `None` = 不该产出 intent
-CASES: list[tuple[str, str | None, str]] = [
+#: (她的原话, 期望认出的 kind 列表（按出现顺序）, 这条在验什么)
+#: 空列表 = 不该产出事件
+CASES: list[tuple[str, list[str], str]] = [
+    # ---- 2026-09-28 第二版：多事件 + duration 方向 ----
+    ("早上起得晚嘛。收到领导，我今天晚上就去放好鸡蛋，明天你给我蒸",
+     ["day_offset", "day_offset"], "🔴 一句两个时间：今晚放鸡蛋 / 明天蒸"),
+    ("Moments明天上线，今天给你加了长任务循环", ["day_offset", "day_offset"], "🔴 一句两个时间"),
+    ("Glm做工具显示直接做坏了。导致这3个小时我都连不上你", ["duration"], "🔴 过去的一段，不是三小时后"),
     # ---- 2026-09-18 修的两条 ----
-    ("昨晚？你再看看？昨晚我就醒了18分钟", "last_night", "🔴 昨晚：原来被认成 day_offset -1"),
-    ("不知道 睁不开眼 昨晚老醒", "last_night", "🔴 昨晚"),
-    ("那我一会再煎个鸡蛋 。", "vague", "🔴 一会：原来被折算成 30 分钟"),
-    ("先给你一个早安亲亲", None, "🔴 招呼语不算时间表达"),
+    ("昨晚？你再看看？昨晚我就醒了18分钟", ["last_night"], "🔴 昨晚：原来被认成 day_offset -1"),
+    ("不知道 睁不开眼 昨晚老醒", ["last_night"], "🔴 昨晚"),
+    ("那我一会再煎个鸡蛋 。", ["vague"], "🔴 一会：原来被折算成 30 分钟"),
+    ("先给你一个早安亲亲", [], "🔴 招呼语不算时间表达"),
     # ---- 原来就对的，别改坏 ----
-    ("今天脑子不太清醒  背了一半", "day_offset", "回归"),
-    ("下午要出去", "day_offset", "回归（带 slot）"),
-    ("我今天让glm给我调研市面上比较好的ai陪伴开源项目呢", "day_offset", "回归"),
-    ("今天体重51.8。胖了", "day_offset", "回归"),
-    ("今天想休息不想动", "day_offset", "回归"),
-    ("你今晚不能给我开电热毯了。", "day_offset", "回归（今晚≠昨晚）"),
-    ("今天没有英语小课堂？", "day_offset", "回归"),
+    ("今天脑子不太清醒  背了一半", ["day_offset"], "回归"),
+    ("下午要出去", ["day_offset"], "回归（带 slot）"),
+    ("今天体重51.8。胖了", ["day_offset"], "回归"),
+    ("你今晚不能给我开电热毯了。", ["day_offset"], "回归（今晚≠昨晚）"),
+    ("今天没有英语小课堂？", ["day_offset"], "回归"),
 ]
 
 
@@ -60,18 +63,18 @@ def main() -> int:
 
     x = TemporalExtractor(lambda: adapter)
     bad = 0
-    kinds: list[str | None] = []
+    produced = 0
     for text, want, why in CASES:
         got = x.extract(text)
-        got_kind = got.kind if got else None
-        kinds.append(got_kind)
-        ok = got_kind == want
+        got_kinds = [e.intent.kind for e in got]
+        produced += len(got)
+        ok = got_kinds == want
         bad += 0 if ok else 1
         mark = "✅" if ok else "🔴"
-        print(f"{mark} {want or '(不产出)':<12} ← 实际 {str(got_kind):<12} "
+        print(f"{mark} {str(want or '(不产出)'):<28} ← 实际 {str(got_kinds):<28} "
               f"｜{text[:24]}  # {why}")
-        if got and not ok:
-            print(f"      细节：{got.to_dict()}")
+        for e in got:
+            print(f"      「{e.expression}」→ {e.event}（{e.act}）{e.intent.to_dict()}")
 
     print()
     # 🔴 空集不是通过：一条都没跑成也会「0 个不对」
@@ -84,8 +87,8 @@ def main() -> int:
     # 第一次跑这个脚本时本机没有 key，11 条全 None，而期望 None 的那条
     # 显示成 ✅ —— 一个整条链路 401 的运行，报出来是「1/11 对」。
     # 那个 ✅ 是**空断言**：它没有区分「模型认对了」和「模型根本没被调到」。
-    if all(k is None for k in kinds):
-        print("🔴 11 条全都没产出 —— 这是链路挂了（key？模型名？），不是模型认不出来。")
+    if produced == 0:
+        print("🔴 一条都没产出 —— 这是链路挂了（key？模型名？），不是模型认不出来。")
         print("   把 logging 调到 DEBUG 看真因。**不下结论。**")
         return 1
 

@@ -142,19 +142,78 @@ def test_month_end(y, m, expect_day):
 
 def test_duration_跨午夜():
     """🔴 糖糖点名：23:58 + 2h → 01:58，**日期要跟着跨过去**。"""
-    r = resolve(Intent(kind="duration", hours=2), ref(d=14, hh=23, mm=58))
+    r = resolve(Intent(kind="duration", direction="future", hours=2), ref(d=14, hh=23, mm=58))
     assert r.precision == "datetime"
     assert r.at == datetime(2026, 9, 15, 1, 58, tzinfo=CST)
 
 
 def test_duration_各单位():
-    assert resolve(Intent(kind="duration", minutes=10), ref(hh=12)).at.minute == 10
-    assert resolve(Intent(kind="duration", days=3), ref()).at.date() == date(2026, 9, 17)
+    assert resolve(Intent(kind="duration", direction="future", minutes=10), ref(hh=12)).at.minute == 10
+    assert resolve(Intent(kind="duration", direction="future", days=3), ref()).at.date() == date(2026, 9, 17)
 
 
 def test_duration_不给date():
     """它落在一个**时刻**上，不是一天。下游要 date 的自己去截。"""
-    assert resolve(Intent(kind="duration", hours=2), ref()).date is None
+    assert resolve(Intent(kind="duration", direction="future", hours=2), ref()).date is None
+
+
+# ---------------------------------------------------------------- duration 的方向（2026-09-28）
+
+def test_过去的一段_这3个小时连不上你():
+    """🔴 shadow 真实句子：09-19 20:33 她说「这3个小时我都连不上你」，
+    第一版解析成 23:33（**三小时之后**）。应该是 17:33 → 20:33 这一段。"""
+    said = datetime(2026, 9, 19, 20, 33, tzinfo=CST)
+    r = resolve(Intent(kind="duration", hours=3, direction="past", span=True), said)
+    assert r.precision == "range"
+    assert r.range == (datetime(2026, 9, 19, 17, 33, tzinfo=CST), said)
+    assert r.within(datetime(2026, 9, 19, 19, 0, tzinfo=CST))
+    assert not r.within(datetime(2026, 9, 19, 23, 0, tzinfo=CST)), "落到了未来"
+    assert r.date is None and r.at is None, "一段时间不许被压成一天或一个点"
+
+
+def test_过去的一个点_三天前():
+    r = resolve(Intent(kind="duration", days=3, direction="past"), ref())
+    assert r.precision == "datetime" and r.at == datetime(2026, 9, 11, 12, 0, tzinfo=CST)
+
+
+def test_未来的一段_接下来两小时():
+    r = resolve(Intent(kind="duration", hours=2, direction="future", span=True), ref())
+    assert r.range == (ref(), ref(hh=14))
+    assert r.within(ref()), "左闭：她说话那一刻就在忙了"
+    assert not r.within(ref(hh=14)), "右开"
+
+
+def test_过去的一段跨午夜():
+    """她 01:00 说「忙了两个小时」—— 那段从前一天 23:00 开始。"""
+    r = resolve(Intent(kind="duration", hours=2, direction="past", span=True), ref(d=15, hh=1))
+    assert r.range[0] == datetime(2026, 9, 14, 23, 0, tzinfo=CST)
+
+
+@pytest.mark.parametrize("bad", [
+    dict(kind="duration", hours=2),                                   # 🔴 不许没有方向
+    dict(kind="duration", hours=2, direction="backward"),
+    dict(kind="duration", hours=2, direction="past", span="yes"),
+    dict(kind="day_offset", n=1, direction="future"),                 # 只有 duration 有方向
+    dict(kind="day_offset", n=1, span=True),
+])
+def test_方向字段非法就抛(bad):
+    with pytest.raises(ValueError):
+        Intent(**bad)
+
+
+def test_封闭集合_precision和act():
+    """同 KINDS 那条：多一个就红 —— 改这里等于改契约。"""
+    from temporal.event import ACTS
+    from temporal.resolver import PRECISIONS
+    assert PRECISIONS == {"date", "datetime", "slot", "range", "upper_bound", "none"}
+    assert ACTS == {"plan", "request", "report"}
+
+
+def test_截止到一段的结尾():
+    """「接下来两小时之内」—— 上界是那段的右端。"""
+    r = resolve(Intent(kind="deadline", before=Intent(
+        kind="duration", hours=2, direction="future", span=True)), ref())
+    assert r.precision == "upper_bound" and r.upper_bound == ref(hh=14)
 
 
 # ---------------------------------------------------------------- slot
@@ -214,7 +273,7 @@ def test_deadline_里的歧义会穿透():
 def test_deadline_套时刻类():
     """「两小时之内」→ 上界就是那个时刻本身。"""
     r = resolve(Intent(kind="deadline",
-                       before=Intent(kind="duration", hours=2)), ref(hh=12))
+                       before=Intent(kind="duration", direction="future", hours=2)), ref(hh=12))
     assert r.upper_bound == datetime(2026, 9, 14, 14, tzinfo=CST)
 
 
@@ -243,7 +302,7 @@ def test_表外的kind直接抛():
     dict(kind="month_end", n=1),
     dict(kind="day_offset"),                     # 缺必填
     dict(kind="weekday_next", weekday=8),        # 越界
-    dict(kind="duration", hours=2, slot="morning"),   # 时刻类不能带 slot
+    dict(kind="duration", hours=2, direction="future", slot="morning"),   # 时刻类不能带 slot
     dict(kind="day_offset", n=1, slot="午夜"),   # 不认识的时段
 ])
 def test_字段组合非法就抛(bad):
@@ -302,7 +361,8 @@ def test_resolve_不碰现在():
     Intent(kind="day_offset", n=-1, slot="evening"),
     Intent(kind="weekday_next", weekday=3),
     Intent(kind="month_end"),
-    Intent(kind="duration", hours=2, minutes=30),
+    Intent(kind="duration", direction="future", hours=2, minutes=30),
+    Intent(kind="duration", direction="past", hours=3, span=True),
     Intent(kind="deadline", before=Intent(kind="weekday_next", weekday=5)),
 ])
 def test_intent_序列化往返(intent):
@@ -373,7 +433,7 @@ def test_没解析出来的结果不许被消费():
 
 def test_时刻类问不了落不落在里面():
     """`duration` 是一个点，不是范围。"""
-    r = resolve(Intent(kind="duration", hours=2), ref())
+    r = resolve(Intent(kind="duration", direction="future", hours=2), ref())
     with pytest.raises(ValueError, match="是一个时刻"):
         r.within(ref())
 

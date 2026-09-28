@@ -21,6 +21,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import sys
 from datetime import date, datetime, timedelta
@@ -34,6 +35,7 @@ from attention.todo_defer import (  # noqa: E402
     MECH_FIRED, MECH_NEEDS_FIELD, DeferDecision, decide,
 )
 from temporal import CST  # noqa: E402
+from temporal.event import TemporalEvent  # noqa: E402
 from temporal.extract import _PROMPT, TemporalExtractor, mode  # noqa: E402
 from temporal.intent import Intent  # noqa: E402
 from temporal.resolver import Resolution, resolve  # noqa: E402
@@ -64,6 +66,22 @@ def _x(text: str) -> TemporalExtractor:
     return TemporalExtractor(FakeAdapter(text))
 
 
+def _ev(expression: str, temporal: dict, event: str = "去练腿", act: str = "plan") -> dict:
+    return {"expression": expression, "event": event, "act": act, "temporal": temporal}
+
+
+def _raw(*events: dict) -> str:
+    """模型该吐的形状（2026-09-28 第二版）：`{"events": [...]}`。"""
+    return json.dumps({"events": list(events)}, ensure_ascii=False)
+
+
+def _one(raw: str, text: str) -> Intent | None:
+    """只认出一个事件时，取它的时间关系 —— 老用例大多是单时间的。"""
+    got = _x(raw).extract(text)
+    assert len(got) <= 1, f"只该认出一个，拿到 {got}"
+    return got[0].intent if got else None
+
+
 # ---------------------------------------------------------------- 那条红线
 
 def test_提示词里一个日期都不给():
@@ -90,7 +108,7 @@ def test_提示词里一个日期都不给():
 
 def test_运行时也不会把日期塞进去():
     """静态查提示词不够 —— 还得确认调用时没在别处拼上去。"""
-    a = FakeAdapter('{"kind": "day_offset", "n": 1}')
+    a = FakeAdapter(_raw(_ev("明天", {"kind": "day_offset", "n": 1})))
     TemporalExtractor(a).extract("明天去练腿")
     import re
     assert not re.search(r"20\d{2}", a.seen_system[0])
@@ -102,42 +120,114 @@ def test_模型硬塞_resolved_字段会被拒():
     糖糖 2026-09-14 判它「结构正确」：它把「模型可以自由生成 JSON」
     和「系统允许什么进入 Core」切开了。
     """
-    assert _x('{"kind": "day_offset", "n": 1, "resolved_date": "2026-09-15"}').extract("明天") is None
+    raw = _raw(_ev("明天", {"kind": "day_offset", "n": 1, "resolved_date": "2026-09-15"}))
+    assert _x(raw).extract("明天去") == []
+    #: 事件那一层也一样：多一个字段就不放行
+    raw = _raw({**_ev("明天", {"kind": "day_offset", "n": 1}), "resolved_date": "2026-09-15"})
+    assert _x(raw).extract("明天去") == []
 
 
 def test_表外的kind会被拒():
-    assert _x('{"kind": "next_month"}').extract("下个月") is None
+    assert _x(_raw(_ev("下个月", {"kind": "next_month"}))).extract("下个月") == []
+
+
+def test_表外的act会被拒():
+    """act 是封闭集合 —— 模型自创一个 greeting / task 进不来。"""
+    assert _x(_raw(_ev("明天", {"kind": "day_offset", "n": 1}, act="task"))).extract("明天去") == []
 
 
 # ---------------------------------------------------------------- 正常路径
 
-@pytest.mark.parametrize("raw, expect", [
-    ('{"kind": "day_offset", "n": 1}', Intent(kind="day_offset", n=1)),
-    ('{"kind": "weekday_next", "weekday": 3}', Intent(kind="weekday_next", weekday=3)),
-    ('{"kind": "weekday_bare", "weekday": 5}', Intent(kind="weekday_bare", weekday=5)),
-    ('{"kind": "month_end"}', Intent(kind="month_end")),
-    ('{"kind": "duration", "hours": 2}', Intent(kind="duration", hours=2)),
-    ('{"kind": "day_offset", "n": -1, "slot": "evening"}',
+@pytest.mark.parametrize("expression, temporal, expect", [
+    ("明天", {"kind": "day_offset", "n": 1}, Intent(kind="day_offset", n=1)),
+    ("下周三", {"kind": "weekday_next", "weekday": 3}, Intent(kind="weekday_next", weekday=3)),
+    ("周五", {"kind": "weekday_bare", "weekday": 5}, Intent(kind="weekday_bare", weekday=5)),
+    ("月底", {"kind": "month_end"}, Intent(kind="month_end")),
+    ("两个小时后", {"kind": "duration", "hours": 2, "direction": "future"},
+     Intent(kind="duration", hours=2, direction="future")),
+    ("这3个小时", {"kind": "duration", "hours": 3, "direction": "past", "span": True},
+     Intent(kind="duration", hours=3, direction="past", span=True)),
+    ("昨天晚上", {"kind": "day_offset", "n": -1, "slot": "evening"},
      Intent(kind="day_offset", n=-1, slot="evening")),
 ])
-def test_认出来的形状(raw, expect):
-    assert _x(raw).extract("随便一句") == expect
+def test_认出来的形状(expression, temporal, expect):
+    assert _one(_raw(_ev(expression, temporal)), f"{expression}随便一句") == expect
 
 
 def test_围栏要剥掉():
     """便宜模型很爱包 ```json，那不算它出错。"""
-    assert _x('```json\n{"kind": "day_offset", "n": 1}\n```').extract("明天") == Intent(
-        kind="day_offset", n=1)
+    raw = "```json\n" + _raw(_ev("明天", {"kind": "day_offset", "n": 1})) + "\n```"
+    assert _one(raw, "明天去") == Intent(kind="day_offset", n=1)
+
+
+# ---------------------------------------------------------------- 一句话多个事件（2026-09-28）
+
+def test_一句话两个时间各挂各的事件():
+    """🔴 shadow 真实句子。第一版只抽到「今晚」，接 Todo 就是「蒸蛋 @ 今晚」。"""
+    text = "早上起得晚嘛。收到领导，我今天晚上就去放好鸡蛋，明天你给我蒸"
+    raw = _raw(
+        _ev("今天晚上", {"kind": "day_offset", "n": 0, "slot": "evening"}, event="放好鸡蛋"),
+        _ev("明天", {"kind": "day_offset", "n": 1}, event="蒸鸡蛋", act="request"),
+    )
+    got = _x(raw).extract(text)
+    assert [(e.expression, e.event, e.act) for e in got] == [
+        ("今天晚上", "放好鸡蛋", "plan"), ("明天", "蒸鸡蛋", "request")]
+    #: 蒸蛋落在明天，不是今晚
+    steam = next(e for e in got if e.event == "蒸鸡蛋")
+    assert resolve(steam.intent, REF).date == date(2026, 9, 15)
+
+
+def test_坏的那个事件不连累好的(caplog):
+    """逐条丢，不整句丢。"""
+    raw = _raw(
+        _ev("明天", {"kind": "day_offset", "n": 1}),
+        _ev("下个月", {"kind": "next_month"}, event="搬家"),
+    )
+    with caplog.at_level(logging.WARNING):
+        got = _x(raw).extract("明天去练腿，下个月搬家")
+    assert [e.expression for e in got] == ["明天"]
+    assert "不合契约" in caplog.text, "丢了但没留痕"
+
+
+def test_原话里没有的时间词不放行(caplog):
+    """🔴 结构性的防编造：它说她说了「后天」，原话里没有 —— 进不来。"""
+    raw = _raw(_ev("后天", {"kind": "day_offset", "n": 2}))
+    with caplog.at_level(logging.WARNING):
+        assert _x(raw).extract("明天去练腿") == []
+    assert "不在她原话里" in caplog.text
+
+
+def test_比对原话忽略空白():
+    """她打字常带空格 —— 「10点 好了」里的「10点」不能因为空格被判成编的。"""
+    raw = _raw(_ev("明天 上午", {"kind": "day_offset", "n": 1, "slot": "morning"}))
+    assert len(_x(raw).extract("明天上午去")) == 1
+
+
+def test_一句话认出太多个只留前几个(caplog):
+    from temporal.event import MAX_EVENTS
+    text = "今天" * (MAX_EVENTS + 3)
+    raw = _raw(*[_ev("今天", {"kind": "day_offset", "n": 0})] * (MAX_EVENTS + 3))
+    with caplog.at_level(logging.WARNING):
+        assert len(_x(raw).extract(text)) == MAX_EVENTS
+    assert "只留前" in caplog.text
+
+
+# ---------------------------------------------------------------- duration 的方向（2026-09-28）
+
+def test_duration_不给方向会被拒():
+    """🔴 不许默认往后 —— 那正是「这3个小时」落到三小时之后的原因。"""
+    raw = _raw(_ev("3个小时", {"kind": "duration", "hours": 3}))
+    assert _x(raw).extract("这3个小时连不上你") == []
 
 
 # ---------------------------------------------------------------- 没说时间 ≠ 解析不了
 
-def test_没有时间表达就不产出intent():
-    """🔴 「她没说时间」根本不产出 intent；
-    「说了但系统定不了是哪天」产出 intent + precision=none。
+def test_没有时间表达就不产出事件():
+    """🔴 「她没说时间」根本不产出事件；
+    「说了但系统定不了是哪天」产出事件 + precision=none。
     两者是不同的系统事实，不能混（契约第五节 + weekday_bare 的由来）。
     """
-    assert _x('{"kind": null}').extract("我有点累") is None
+    assert _x(_raw()).extract("我有点累") == []
 
 
 def test_没有时间表达不该产生警告(caplog):
@@ -145,33 +235,39 @@ def test_没有时间表达不该产生警告(caplog):
 
     如果它走「不合契约」那条告警分支，shadow 日志会被寻常句子淹掉，
     真正该看的东西反而找不到。
-    （变异测试抓到的：把 `kind is None` 那个分支去掉，输出仍然是 None，
+    （变异测试抓到的：把空列表那个分支去掉，输出仍然是空，
       只有日志级别变了 —— 只断言返回值的话这条永远绿。）
     """
     with caplog.at_level(logging.DEBUG):
-        assert _x('{"kind": null}').extract("我有点累") is None
+        assert _x(_raw()).extract("我有点累") == []
     assert not [r for r in caplog.records if r.levelno >= logging.WARNING],         "寻常句子产生了警告 —— shadow 日志会被淹"
 
 
-def test_说了周几是产出intent而不是没有():
-    i = _x('{"kind": "weekday_bare", "weekday": 3}').extract("周三去")
+def test_说了周几是产出事件而不是没有():
+    i = _one(_raw(_ev("周三", {"kind": "weekday_bare", "weekday": 3})), "周三去")
     assert i is not None, "「周三」被当成了『没说时间』—— 那两件事必须分开"
     assert not resolve(i, REF).ok
 
 
 # ---------------------------------------------------------------- 坏输入
 
-@pytest.mark.parametrize("raw", ["不是 JSON", "[1,2,3]", "", '{"kind": "day_offset"}'])
+@pytest.mark.parametrize("raw", [
+    "不是 JSON", "[1,2,3]", "", '{"kind": "day_offset", "n": 1}',   # 第一版的形状也不认了
+    '{"events": "明天"}', '{"events": [1]}',
+    _raw(_ev("明天", {"kind": "day_offset"})),                       # 缺字段
+    _raw({"expression": "明天", "event": "", "act": "plan",
+          "temporal": {"kind": "day_offset", "n": 1}}),               # 没说修饰哪件事
+])
 def test_坏输出一律丢掉不抛(raw):
-    assert _x(raw).extract("明天") is None
+    assert _x(raw).extract("明天去") == []
 
 
 def test_模型挂了不抛():
-    assert TemporalExtractor(DeadAdapter()).extract("明天") is None
+    assert TemporalExtractor(DeadAdapter()).extract("明天") == []
 
 
 def test_没有utility模型就不做():
-    assert TemporalExtractor(lambda: None).extract("明天") is None
+    assert TemporalExtractor(lambda: None).extract("明天") == []
 
 
 def test_开关默认off(monkeypatch):
@@ -183,9 +279,13 @@ def test_开关默认off(monkeypatch):
 
 # ---------------------------------------------------------------- shadow 出口
 
+def _event(intent: Intent, expression: str = "明天", event: str = "再去") -> TemporalEvent:
+    return TemporalEvent(expression=expression, event=event, act="plan", intent=intent)
+
+
 def _result(**over):
     base = dict(text="今天不去，明天再去",
-                intent=Intent(kind="day_offset", n=1),
+                event=_event(Intent(kind="day_offset", n=1)),
                 resolution=resolve(Intent(kind="day_offset", n=1), REF),
                 reference_time=REF, applied=False,
                 why_not_applied="shadow 模式")
@@ -219,13 +319,31 @@ def test_日志三段齐全(caplog):
     assert "2026-09-15" in t, "缺第②段：算出来是哪天"
     assert REF.isoformat() in t, "缺锚点 —— 没有它没法复算"
     assert "shadow 模式" in t, "缺第③段：为什么没接"
+    assert "「明天」→ 再去（plan）" in t, "缺第⓪段：这个时间修饰的是哪件事"
+
+
+def test_日志真的是一行(caplog):
+    """🔴 原来拼成三行，journald 按行切开，grep 只拿到第一行 ——
+    09-22 复盘误判成「只记了未接」。①②③ 必须在同一条记录的同一行里。"""
+    with caplog.at_level(logging.INFO):
+        _result(text="今天不去，\n明天再去").log()
+    [rec] = [r for r in caplog.records if "时间理解" in r.getMessage()]
+    msg = rec.getMessage()
+    assert "\n" not in msg, "日志被换行切开了"
+    assert "①" in msg and "②" in msg and "③" in msg
+
+
+def test_同一句的几个事件标得出是第几个(caplog):
+    with caplog.at_level(logging.INFO):
+        _result(index=2, of=2).log()
+    assert "[2/2]" in caplog.text
 
 
 def test_未解析的也要记全(caplog):
     """解析失败更该记 —— 那正是要观察的东西。"""
     bad = resolve(Intent(kind="weekday_bare", weekday=5), REF)
     with caplog.at_level(logging.INFO):
-        _result(text="周五去", intent=Intent(kind="weekday_bare", weekday=5),
+        _result(text="周五去", event=_event(Intent(kind="weekday_bare", weekday=5), "周五", "去"),
                 resolution=bad, why_not_applied="时间没解析出来").log()
     assert "weekday_ambiguous" in caplog.text
 
@@ -268,7 +386,7 @@ def test_解析不了就不动():
 def test_精度对不上就不动():
     """「两个小时后」落在一个时刻上，待办是按天追的 —— 宁可不动，
     也不要把它硬取整成一天。"""
-    at = resolve(Intent(kind="duration", hours=2), REF)
+    at = resolve(Intent(kind="duration", hours=2, direction="future"), REF)
     d = decide(at, todo_id="t1", today=TODAY)
     assert not d.should_defer and "精度对不上" in d.why_not
 
@@ -336,9 +454,10 @@ def test_日志里写明有没有试过匹配(caplog):
 
 
 class _UtilityAdapter:
-    """假的 utility 模型，固定回一个时间关系。"""
+    """假的 utility 模型，固定回一个事件（「明天」去练腿）。"""
 
-    def __init__(self, payload: str = '{"kind": "day_offset", "n": 1}') -> None:
+    def __init__(self, payload: str | None = None) -> None:
+        payload = payload or _raw(_ev("明天", {"kind": "day_offset", "n": 1}))
         self.payload = payload
         self.calls = 0
 
@@ -455,6 +574,22 @@ def test_一轮对话真的会产出shadow日志(tmp_path, monkeypatch, caplog):
     assert "day_offset" in caplog.text, "缺第①段"
     assert "2026-09-15" in caplog.text, "缺第②段 —— 锚点是 message_time 才算得出这天"
     assert "not_attempted" in caplog.text, "缺 todo 归属状态"
+
+
+def test_一句两个事件真跑出两条日志(tmp_path, monkeypatch, caplog):
+    """🔴 挡「抽出了两个，只记了一个」—— 第一版的形状就是一句一条。"""
+    utility = _UtilityAdapter(_raw(
+        _ev("今晚", {"kind": "day_offset", "n": 0, "slot": "evening"}, event="放好鸡蛋"),
+        _ev("明天", {"kind": "day_offset", "n": 1}, event="蒸鸡蛋", act="request"),
+    ))
+    c = _client(tmp_path, monkeypatch, utility, now=REF)
+    with caplog.at_level(logging.INFO):
+        c.post("/chat", json={"text": "今晚放好鸡蛋，明天你给我蒸", "session_id": "s-1"})
+    lines = [r.getMessage() for r in caplog.records if "时间理解" in r.getMessage()]
+    assert len(lines) == 2, lines
+    assert "[1/2]" in lines[0] and "放好鸡蛋" in lines[0]
+    assert "[2/2]" in lines[1] and "蒸鸡蛋" in lines[1] and "2026-09-15" in lines[1], \
+        "蒸蛋没落在明天"
 
 
 def test_注入型会话不抽时间(tmp_path, monkeypatch, caplog):

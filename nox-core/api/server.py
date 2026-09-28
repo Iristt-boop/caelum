@@ -1497,6 +1497,9 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
 
             message → Intent → Resolver → TemporalResult → shadow log
 
+        （2026-09-28 第二版：message → 一组 TemporalEvent → 每个各自
+        Resolver → 各自一条 shadow log。一句话可能有好几个时间。）
+
         **不做 Todo 匹配**（糖糖 2026-09-14 明确要求）。理由：
         现在要测的是「自然语言 → 时间语义」能不能稳定工作。
         这时候混进 Todo 关联猜测，数据出了问题就分不清是
@@ -1534,17 +1537,18 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
 
         def _run() -> None:
             try:
-                intent = TemporalExtractor(lambda: utility).extract(text)
-                if intent is None:
-                    return          # 她没说时间 —— 常态，不记
-                resolution = temporal_resolve(intent, ref)
-                TemporalResult(
-                    text=text, intent=intent, resolution=resolution,
-                    reference_time=ref,
-                    applied=False,
-                    why_not_applied=f"shadow 模式（NOX_TEMPORAL={temporal_extract.mode()}）",
-                    todo_match_status="not_attempted",
-                ).log()
+                # 一句话一组事件（2026-09-28）。空列表 = 她没说时间，常态，不记
+                events = TemporalExtractor(lambda: utility).extract(text)
+                for i, ev in enumerate(events, 1):
+                    TemporalResult(
+                        text=text, event=ev,
+                        resolution=temporal_resolve(ev.intent, ref),
+                        reference_time=ref,
+                        applied=False,
+                        why_not_applied=f"shadow 模式（NOX_TEMPORAL={temporal_extract.mode()}）",
+                        todo_match_status="not_attempted",
+                        index=i, of=len(events),
+                    ).log()
             except Exception:  # noqa: BLE001
                 # 不许静默（docs/LOGGING.md）。这一层挂了的表现是
                 # 「shadow 日志忽然没了」，而那看起来和「她最近没说时间」一样

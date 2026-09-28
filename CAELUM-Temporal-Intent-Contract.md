@@ -1,6 +1,6 @@
 # Temporal Intent Contract（第二层设计页）
 
-> **状态：设计稿，等糖糖审形状。一行代码都还没写。**
+> **状态：第一版 09-14 上线 shadow；第二版（第九节）09-28 施工。**
 >
 > 上游：`CAELUM-时间模型审计-2026-09-14.md`（F5）
 > 上一层：`nox-core/temporal.py`（第一层，2026-09-14 已上线）
@@ -403,3 +403,75 @@ Temporal        →  「这句话里的时间关系是什么」
 
 > 这两条都属于「测的不是那件事」：检查跑了、绿了，
 > 而它根本够不着被改坏的地方。
+
+---
+
+## 九、第二版：从「时间识别器」到「时间事件抽取器」（糖糖 2026-09-28 定）
+
+> 两周 shadow（09-14 → 09-28，43 条，38 条关系认对）证明地基没问题：
+> `reference_time` 设计对、LLM 不给日期对、Resolver 分离对。
+> 暴露的是 contract 还停在「单时间表达解析」，而消费方（Todo / Memory / Moments）
+> 要的是**事件的时间关系**。她的排序：P0 输入边界 → P1 结果改数组 →
+> P2 duration 加方向 → P3 重跑 shadow → P4 才接 Todo。
+
+### P0 输入边界：只吃她的原话
+
+`data/origin.her_words` —— 程序会话前缀（diary- / reading-）+ 我们自己提示词的开头
+（系统提示 / 【共影）。09-22 共影把字幕塞进主会话，Temporal 把「曼尼加油啊」当她的话抽了。
+`_turn_ends` 开头换一次，**所有读文字的消费方**（不止 Temporal）拿同一个结果。
+新加一种塞进主会话的提示词**必须**在 `PROGRAM_TEXT_PREFIXES` 登记。
+
+### P1 一句话一组事件（`temporal/event.py`）
+
+```json
+{"events": [
+  {"expression": "今晚", "event": "放好鸡蛋", "act": "plan",
+   "temporal": {"kind": "day_offset", "n": 0, "slot": "evening"}},
+  {"expression": "明天", "event": "蒸鸡蛋", "act": "request",
+   "temporal": {"kind": "day_offset", "n": 1}}
+]}
+```
+
+- `temporal` 就是第一版的 Intent，**契约不变**（封闭集合、不含日期）
+- `expression` 必须**真的出现在她原话里**（忽略空白比对）—— 编的进不来，结构性的
+- `act` 封闭集合：`plan` 她打算做 / `request` 让他做 / `report` 已发生或状态。
+  Todo 以后只吃 plan / request；招呼语（早安亲亲）不产出事件
+- 逐条丢，不整句丢；一句最多 5 个
+- 删掉了第一版那句「多个时间时取她要做的那件事」—— 那正是「蒸蛋 @ 今晚」的来源
+
+### P2 duration 必须带方向，还要分点和段
+
+她提的是加 `direction`；写的时候发现还缺一维：「三个小时前」是一个**点**，
+「这三个小时连不上你」是**一段持续到现在的时间**。只加方向的话后者会被压成
+「三小时前那一刻」。
+
+| direction | span | 例子 | Resolution |
+|---|---|---|---|
+| future | false | 两个小时后 | `datetime` = ref + d |
+| past | false | 三天前 | `datetime` = ref − d |
+| past | true | 这3个小时连不上你 | **`range`** = [ref − d, ref) |
+| future | true | 接下来两小时都在忙 | **`range`** = [ref, ref + d) |
+
+- `direction` **必填，不给默认值** —— 默认 future 就是第一版那个 bug 原样回来
+- 新 precision `range`：左闭右开，**没有 date**（一段可能跨午夜，挑一天就是编造）；
+  `within()` 和 slot 同语义；deadline 包一段取右端当上界
+- 只有 duration 能带 direction / span
+
+### 「一会」保持 `vague`
+
+她提议 `fuzzy_relative + expression + precision low`。现状已经覆盖：`vague` 解析成
+`none + vague_no_reminder`（低精度不能建严格提醒），原话里的「一会」进了事件的
+`expression`。所以不改名，少一次全链路改名。
+
+### 日志真的是一行
+
+原来用换行拼三段，journald 按行切，grep 只拿到第一行 —— 09-22 复盘就误判成
+「只记了未接、没记解析」。现在 ⓪事件 ①关系 ②落点 ③为什么没接 用「｜」串一行，
+同一句的几个事件标 `[i/n]`。
+
+### 还没做的
+
+- **钟点没有 kind**：「10点好了」「昨天晚上六点」在封闭集合外，模型只能不产出或丢掉。
+  这正是 shadow 里漏掉的最该抓的一句。要加得改契约第三节，**等她拍**
+- P3 重跑 shadow → P4 接 Todo defer（`attention/todo_defer.py` 已写好、零调用方，
+  bridge 缺 `deferred_until`）
