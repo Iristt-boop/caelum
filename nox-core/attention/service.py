@@ -44,6 +44,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Protocol
 
 from obs import heartbeat
+from growth import experience as growth_experience
 from attention.care import (
     COMPANY,
     FOLLOWUP,
@@ -211,6 +212,10 @@ class AttentionService:
         #: 想念 → 窗口微调 + 急迫度（正反馈）。开口记录在 care_tick 的 spoke 处，
         #: 她说话的挂点在 api/server.py 的 on_contact 一排。None = 不调制
         self.rhythm = rhythm
+        #: Growth Loop 第 0 期（2026-09-28）：rhythm 每判定一条开口，就往经历账本抄一行。
+        #: 只收集不学习 —— 这一行接上与否，他的任何行为都不变
+        if rhythm is not None and hasattr(store, "append_experience"):
+            rhythm.on_judged = lambda entry: growth_experience.record_reply(store, entry)
         #: 主动来电（2026-09-19）：bridge 通道 + 开场白生成用的 utility。
         #: 两个都是 None = 打不出去（CallSource 不会因此少产念头 —— 交付会失败留痕）
         self.call_bridge = call_bridge
@@ -553,10 +558,28 @@ class AttentionService:
                 # 节奏调制器同样记账：回复率决定下一条多快（2026-09-08 负反馈）
                 self.regret.on_spoke(now, getattr(o, "text", "") or "")
                 if self.rhythm is not None:
-                    self.rhythm.on_spoke(now)
+                    self.rhythm.on_spoke(now, self._opening_context(o.signal, now))
         if out:
             self._persist()
         return out
+
+    def _opening_context(self, signal: CareSignal, now: datetime) -> dict[str, Any] | None:
+        """他开口这一刻她在干嘛 —— 给经历账本用（Growth Loop 第 0 期）。
+
+        posture 优先用开口**之前**读的那份（`_think_of_her` 写进 payload 的）：
+        开口之后再读，刚发出去的这句会被算进「没回的句数」，可能把 normal 读成 ignored。
+        别的源没有那份，才现读（这时 posture 可能偏 ignored 一点，silent_min 不受影响 ——
+        它量的是她最后一句，他说什么都不动它）。
+        """
+        try:
+            st = self.her_now(now)
+            return growth_experience.opening_context(
+                now, source=signal.source,
+                posture=(signal.payload or {}).get("posture") or st.posture,
+                silent=st.silent)
+        except Exception:  # noqa: BLE001
+            logger.warning("读不出开口时她的状态，这条经历不带情境", exc_info=True)
+            return None
 
     # ------------------------------------------------------------ Care 层的钩子
 

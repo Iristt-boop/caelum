@@ -81,6 +81,25 @@ CREATE TABLE IF NOT EXISTS wakeups (
     id   TEXT PRIMARY KEY,
     data TEXT NOT NULL
 );
+
+-- Growth Loop 的经历账本（CAELUM-GROWTH-LOOP-设计.md 第四节 ②，第 0 期 2026-09-28）。
+-- 🔴 **只追加，不修改，不删除** —— 碰这张表的只有 append_experience / list_experiences，
+-- 没有第三个（tests/test_growth_ledger.py 结构上盯着）。
+-- 习惯是从这里重放出来的：α 调了、她说「那几天不算」，都是拿账本重算，不是改账本。
+-- 放在 attention.db 而不是新库：`scripts/caelum-backup.sh` 逐个列库文件，
+-- 新库不在清单里就等于搬家时丢掉他全部的成长。
+CREATE TABLE IF NOT EXISTS experiences (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    at            TEXT NOT NULL,
+    kind          TEXT NOT NULL,
+    context       TEXT NOT NULL,
+    outcome       REAL NOT NULL,
+    weight        REAL NOT NULL DEFAULT 1.0,
+    source_event  TEXT,
+    attributed_to TEXT NOT NULL,
+    recorded_at   TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS experiences_kind_at ON experiences(kind, at);
 """
 
 
@@ -268,6 +287,33 @@ class AttentionStore:
                 (key, json.dumps(value, ensure_ascii=False)),
             )
             self._conn.commit()
+
+    # ------------------------------------------------------------ 经历账本（Growth Loop）
+
+    def append_experience(self, *, at: str, kind: str, context: dict[str, Any],
+                          outcome: float, attributed_to: str, recorded_at: str,
+                          weight: float = 1.0, source_event: str | None = None) -> int:
+        """记一条经历，返回它的 id。**账本只能往后加** —— 见表定义上面那段。"""
+        with self._lock:
+            cur = self._conn.execute(
+                "INSERT INTO experiences(at, kind, context, outcome, weight, "
+                "source_event, attributed_to, recorded_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?)",
+                (at, kind, json.dumps(context, ensure_ascii=False), float(outcome),
+                 float(weight), source_event, attributed_to, recorded_at),
+            )
+            self._conn.commit()
+            return int(cur.lastrowid)
+
+    def list_experiences(self, kind: str | None = None) -> list[dict[str, Any]]:
+        """按发生时刻从旧到新。重放、回放、成长日志都从这里读。"""
+        sql = "SELECT * FROM experiences"
+        args: tuple[Any, ...] = ()
+        if kind is not None:
+            sql += " WHERE kind = ?"
+            args = (kind,)
+        with self._lock:
+            rows = self._conn.execute(sql + " ORDER BY at, id", args).fetchall()
+        return [{**dict(r), "context": json.loads(r["context"])} for r in rows]
 
     def close(self) -> None:
         with self._lock:

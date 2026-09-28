@@ -384,7 +384,7 @@ def test_睡着时的自言自语不记进她没理我的账(tmp_path):
         def tick(self, now):
             pass
 
-        def on_spoke(self, now):
+        def on_spoke(self, now, ctx=None):
             Rhythm.spoke += 1
 
     svc.rhythm = Rhythm()
