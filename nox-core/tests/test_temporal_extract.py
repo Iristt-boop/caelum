@@ -469,6 +469,65 @@ def test_注入型会话不抽时间(tmp_path, monkeypatch, caplog):
     assert utility.calls == 0, "注入型会话被抽了时间"
 
 
+@pytest.mark.parametrize("text", [
+    #: 09-22 线上真实形状：她在看《摩登家庭》，他想插一句 —— 她根本没开口
+    "【共影·主动】她在看一部本地的片子，刚到第 106 秒，这里换场了，你想说一句。"
+    "【片名】摩登家庭S01E01 (AAC音轨).mkv 【当前画面】明天他们要去球场",
+    #: 她暂停了问一句，但整段是 bridge 拼的场景描述 + 字幕
+    "【共影】她暂停在 57.5 秒问你：【当前画面】这是一个户外，明年世界毁灭",
+    #: 他主动开口的开场白，落在**主会话**里
+    "（系统提示：不是她在跟你说话。现在是明天早上 08:55，你忽然想起她了。）",
+])
+def test_主会话里程序拼的消息不抽时间(tmp_path, monkeypatch, caplog, text):
+    """🔴 2026-09-28 查 shadow 抓到的：共影塞在**主会话**里，会话前缀那道闸
+    拦不住，Temporal 把「曼尼加油啊」那段当她的话抽了。"""
+    utility = _UtilityAdapter()
+    c = _client(tmp_path, monkeypatch, utility, now=REF)
+    with caplog.at_level(logging.INFO):
+        c.post("/chat", json={"text": text, "session_id": "s-1"})
+    assert utility.calls == 0, "程序拼的消息被当成她的话抽了时间"
+    assert "理解层不读" in caplog.text, "挡掉了但没留痕"
+
+
+def test_程序拼的轮次整轮不做记忆抽取(tmp_path, monkeypatch):
+    """记忆抽取读「她说 + 他回」。她那半是空的时候只剩他对片子的吐槽 ——
+    抽出来的是**他看剧的感想**，不是关于她的记忆。纯图片轮照旧抽（那是她发的图）。"""
+    dialogs = []
+
+    class _OB:
+        async def aextract_memory(self, dialog):
+            dialogs.append(dialog)
+            return type("R", (), {"ok": True, "text": "", "error": None})()
+
+    monkeypatch.setattr(_ChatCore, "ob", _OB(), raising=False)
+    #: 🔴 他那句要够长 —— 抽取对不满 30 字的回合本来就跳过，
+    #: 拿「好」当回复的话，闸门拆了这条也照样绿（变异测试抓到的）
+    real_chat = _ChatCore.chat
+
+    def long_reply(self, text, history=None, **kw):
+        r = real_chat(self, text, history, **kw)
+        r.result.text = "场边喊得比场上还卖力，曼尼加油啊！这孩子被拒了都能秒消化"
+        return r
+
+    monkeypatch.setattr(_ChatCore, "chat", long_reply)
+    c = _client(tmp_path, monkeypatch, _UtilityAdapter(), now=REF)
+
+    c.post("/chat", json={"text": "【共影·主动】她在看片，刚到第 106 秒，这里换场了，你想说一句",
+                          "session_id": "s-1"})
+    assert dialogs == [], f"程序拼的轮次被抽了记忆：{dialogs}"
+
+    c.post("/chat", json={"text": "今天和朋友去爬山了，腿好酸好酸，明天估计走不动路了", "session_id": "s-1"})
+    assert len(dialogs) == 1 and "爬山" in dialogs[0], "她的原话没抽 —— 上面那条是空集通过"
+
+
+def test_她的原话照样抽(tmp_path, monkeypatch):
+    """对照组：闸门不许把她自己的话也挡了（开头像提示词的只认我们自己的标记）。"""
+    utility = _UtilityAdapter()
+    c = _client(tmp_path, monkeypatch, utility, now=REF)
+    c.post("/chat", json={"text": "【转发】明天去练腿", "session_id": "s-1"})
+    assert utility.calls == 1
+
+
 def test_开关off时一次模型都不调(tmp_path, monkeypatch):
     utility = _UtilityAdapter()
     c = _client(tmp_path, monkeypatch, utility, now=REF)

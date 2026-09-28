@@ -109,6 +109,7 @@ from temporal.resolver import resolve as temporal_resolve
 from temporal.result import TemporalResult
 from day import build_day
 from context.compactor import maybe_compact
+from data.origin import her_words
 from data.store import Store
 from nox import Nox
 from personality.mood import now_cst
@@ -1287,6 +1288,23 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
         except Exception as exc:  # noqa: BLE001
             logger.warning("压缩触发失败（不影响对话）: %s", exc)
 
+        # 🔴 **下面每一个「读她说了什么」的消费方，读的都是 `text`，
+        # 不是 `raw_text`**（糖糖 2026-09-28：理解层只吃她的原话）。
+        #
+        # 落进她会话的 user 消息不全是她说的：共影把场景描述和字幕拼成
+        # 「【共影·主动】…你想说一句」塞进主会话，09-22 那晚 Temporal、
+        # 规则情绪、醋意、记忆抽取、意义推断全都把它当她的话读了一遍。
+        # 判断收在 `data/origin.her_words` 一处。
+        #
+        # ⚠️ 只换「读文字」的那部分。纸条基准线、想念回落这些
+        # 「她有没有来过」的副作用不读文字，照旧每轮都跑 ——
+        # 共影·主动那种她根本没开口的轮次算不算「来过」，是另一个问题，
+        # 不在这道闸里顺手改。
+        raw_text = text
+        text = her_words(sid, raw_text)
+        if raw_text and not text:
+            logger.info("这轮不是她的原话（%.12s…），理解层不读", raw_text.strip())
+
         # 时间语义第二层（2026-09-14）：她这句话里的**时间关系**是什么。
         #
         # 🔴 **独立 contract，不挂理解层**（糖糖拍的）—— 职责不同：
@@ -1311,7 +1329,9 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
         # 记忆抽取 shadow（Phase 3，2026-09-16）：一轮结束后把对话片段交给
         # OB 的 extract_memory —— 只抽取记日志、不落库，积累一周数据人工
         # 看抽取质量。🔴 同一道测试会话闸门：测试流量会把 shadow 数据搅浑
-        if not is_test_session(sid):
+        # 程序拼的轮次整轮不抽：只剩他那句的话，抽出来的是他对片子的吐槽。
+        # 纯图片轮（raw_text 本来就空）照旧 —— 那是她发的图
+        if not is_test_session(sid) and (text or not raw_text):
             try:
                 _ob_extract_async(sid, text, reply)
             except Exception as exc:  # noqa: BLE001

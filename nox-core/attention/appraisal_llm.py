@@ -58,6 +58,7 @@ import re
 from typing import Any, Callable
 
 from attention.appraisal import Appraisal, SUBJECT, TOPIC, anchored
+from data.origin import PROGRAM_SESSION_PREFIXES, is_program_session
 
 logger = logging.getLogger(__name__)
 
@@ -194,12 +195,16 @@ _TURN = """她说：{her}
 #:
 #: ⚠️ 按**会话前缀**判，不按字符串匹配：提示词的措辞会改，链路的身份不会
 #: （`bridge/server.js` 的 `diary-${id}` / `co-reading` 的 `reading-<id>`）。
-NOT_HER_WORDS = ("diary-", "reading-")
+#:
+#: ⚠️ 2026-09-28：光按会话前缀不够 —— 共影是塞在**主会话**里的。
+#: 完整判断收到了 `data/origin.her_words`（会话前缀 + 我们自己提示词的开头），
+#: 这里只留会话那一半的别名，给老调用方。
+NOT_HER_WORDS = PROGRAM_SESSION_PREFIXES
 
 
 def is_injected(session_id: str) -> bool:
-    """这一轮的「用户消息」是程序拼的，不是她打的字。"""
-    return str(session_id or "").startswith(NOT_HER_WORDS)
+    """整个会话都是程序拼的。**判一句话是不是她说的，用 `her_words`。**"""
+    return is_program_session(session_id)
 
 
 def mode() -> str:
