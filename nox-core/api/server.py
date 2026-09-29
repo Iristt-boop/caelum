@@ -2396,6 +2396,10 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
             ],
         }
 
+    #: 服务商的人话名字（Models 页每一列的标题）。新加一家没写进来也不会空着 —— 露 BACKENDS 里的 key
+    PROVIDER_LABELS = {"deepseek": "DeepSeek", "openrouter": "OpenRouter", "zhipu": "智谱 GLM",
+                       "anthropic": "Anthropic", "dashscope": "阿里百炼"}
+
     def _backend_of(llm: Any) -> str:
         """从 LLMConfig 反推是哪家。
 
@@ -2431,10 +2435,16 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
              **({"price": pricing_cny[c.model]} if c.model in pricing_cny else {})}
             for k, c in (getattr(cfg, "models", {}) or {}).items()
         ]
+        # 服务商 = 清单里用到的每一家 + 现在主线 / 杂活用的那家（09-29 糖糖：「每加入一个模型就
+        # 自动更新」—— 原来写死 deepseek / openrouter 两家，切到 GLM 之后 zhipu 根本不在这张表里，
+        # 前端也就不知道它配没配 key）。加模型、加一家都不用再改这里
+        used = [c["backend"] for c in choices]
+        used += [_backend_of(x) for x in (primary, getattr(cfg, "utility", None)) if x is not None]
         providers = {}
-        for name, label in (("deepseek", "DeepSeek"), ("openrouter", "OpenRouter")):
+        for name in dict.fromkeys(b for b in used if b):
             b = BACKENDS.get(name)
-            providers[name] = {"label": label, "configured": bool(b and b.api_key)}
+            providers[name] = {"label": PROVIDER_LABELS.get(name, name),
+                               "configured": bool(b and b.api_key)}
 
         utility = getattr(cfg, "utility", None)
         return {
