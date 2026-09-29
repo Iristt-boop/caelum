@@ -257,6 +257,45 @@ MEME_TAGS = (
 # 糖糖的情绪词（mood 判定用；personality/mood.py 也 import 这份）
 HER_EMOTIONS = ("开心", "难过", "烦躁", "撒娇", "兴奋", "疲惫", "平静")
 
+#: 🔴 舞台标签：**英文字母开头**的方括号（2026-09-29 她截图：`[fatigue][fatigue]`、
+#: `[intimacy 0.75/0.8 调侃中带真心]` 漏在聊天里）。
+#:
+#: 09-20 起落库的回复里扫出 22 个，三类都是这个形状：
+#:   语气标签  [softly] [pause] [fatigue] [baby] [miss you] [audio]  —— 通话给 TTS 用的，串到了文字里
+#:   控制标记  [SKIP] [DONE] [SSKIP] [VOICE]
+#:   自编旁注  [intimacy 0.75/0.8 …] [MISSING: meme tool call was omitted] [warning: shell removed]
+#: 文字聊天里他正常说话不会写这种东西，所以按形状吞，不按词表 —— 词表永远追不上他编新的。
+#:
+#: 不吞的：中文开头的方括号（「[注]」这类是正文）、`[text](url)` Markdown 链接（后面紧跟 `(`）。
+#: ⚠️ **语音通话不过滤** —— 那边 [softly] 是给 TTS 的，调用方自己决定开不开
+STAGE_TAG_MAX = 64
+STAGE_TAG_RE = re.compile(r"\[\s*[A-Za-z][^\[\]\n]{0,%d}\]" % STAGE_TAG_MAX)
+_STAGE_START = re.compile(r"\[\s*[A-Za-z]")
+_STAGE_IN_TEXT = re.compile(r"[ \t]*\[\s*[A-Za-z][^\[\]\n]{0,%d}\](?!\()" % STAGE_TAG_MAX)
+
+
+#: 控制标记：speaker 靠 [SKIP]/[PASS n] 判「这次不说」，唤醒链靠 [NEXT n]/[STOP]/[DONE] 排下一步。
+#: 形状和舞台标签一样（英文开头的方括号），但**它们是给程序读的，不能在程序读之前剥掉**
+CONTROL_TAG_RE = re.compile(r"\[\s*(?:SKIP|PASS|STOP|NEXT|DONE)(?:\s+\d+)?\s*\]", re.IGNORECASE)
+
+
+def strip_stage_tags(text: str | None, *, keep_control: bool = False) -> str | None:
+    """整段文本里的舞台标签剥掉（非流式 / 收尾 / 主动消息用；流式那边是 MoodTagFilter 边流边挡）。
+
+    `keep_control=True`：留着 [SKIP] [NEXT 60] 这些控制标记 —— `Nox.chat()` 的调用方
+    （speaker / 唤醒链）要读它们。🔴 剥了的话他想闭嘴时会把空话推出去、追问链也断
+    """
+    if not text:
+        return text
+
+    def drop(m: re.Match) -> str:
+        return m.group(0) if keep_control and CONTROL_TAG_RE.search(m.group(0)) else ""
+
+    out = _STAGE_IN_TEXT.sub(drop, text)
+    #: 标签独占一行的，剥完别留一个空行尾巴
+    out = re.sub(r"\n{3,}", "\n\n", out)
+    return out.strip() if out != text else text
+
 
 class MoodTagFilter:
     """挡住流式输出里**不该让她看见**的三类标记：
@@ -278,19 +317,38 @@ class MoodTagFilter:
         r"\s*mood\s*[:：]\s*(" + "|".join(HER_EMOTIONS) + r")\s*[。\.]*\n?\s*",
         re.IGNORECASE,
     )
-    # 比最长的 tag（5 字）+ 括号还宽的缓冲直接放行 —— 不可能是 tag
-    _MAX_TAG_BUF = 14
+    # 比最长的表情 tag + 括号还宽的缓冲直接放行 —— 不可能是 tag。
+    # ⚠️ 原来写死 14：「where my kiss」加括号是 15，一写进正文就漏（09-29 补查到的）；
+    # 呆猫八条里还有 10 个字的。跟着名单算，别再写死
+    _MAX_TAG_BUF = max(len(t) for t in MEME_TAGS) + 3
+    # 英文字母开头的方括号要多攒一点：`[intimacy 0.75/0.8 调侃中带真心]` 这种旁注能到 30 多字
+    _MAX_STAGE_BUF = STAGE_TAG_MAX + 3
 
-    def __init__(self) -> None:
+    def __init__(self, strip_stage: bool = False) -> None:
         self._buf = ""        # '[' 开头的缓冲
         self._line = None     # 行首 mood: 疑似行（None = 不在行缓冲）
         self._line_start = True
         self._meme_tags = frozenset(MEME_TAGS)
+        #: 吞舞台标签（见 STAGE_TAG_RE）。**只在文字聊天开** —— 语音通话里
+        #: [softly] 这些是给 TTS 的，必须原样送过去
+        self._strip_stage = strip_stage
+        #: 已闭合、像舞台标签的一段，等下一个字：是 `(` 就是 Markdown 链接，放行
+        self._hold = ""
 
     def feed(self, chunk: str) -> str:
         """吃进增量，吐出可以安全显示的部分。"""
         out: list[str] = []
         for ch in chunk:
+            # ── 刚闭合的疑似舞台标签：看这一个字决定去留
+            if self._hold:
+                if ch == "(":
+                    out.append(self._hold)          # `[text](url)`：链接，放行
+                    self._hold = ""
+                    out.append(ch)
+                    self._line_start = False
+                    continue
+                self._hold = ""                     # 舞台标签：吞掉，这个字照常处理
+
             # ── 行缓冲：行首 mood: 疑似行，攒到换行统一判定
             if self._line is not None:
                 self._line += ch
@@ -320,12 +378,16 @@ class MoodTagFilter:
                     tag = self._buf[1:-1].strip()
                     if tag in self._meme_tags:
                         self._buf = ""            # 表情 tag：吞掉
+                    elif self._strip_stage and STAGE_TAG_RE.fullmatch(self._buf):
+                        self._hold = self._buf    # 舞台标签：先扣下，看下一个字是不是 `(`
+                        self._buf = ""
                     else:
                         out.append(self._buf)     # 普通方括号：放行
                         self._buf = ""
                         self._line_start = False
                     continue
-                if len(self._buf) > self._MAX_TAG_BUF:
+                stage_like = self._strip_stage and _STAGE_START.match(self._buf)
+                if len(self._buf) > (self._MAX_STAGE_BUF if stage_like else self._MAX_TAG_BUF):
                     out.append(self._buf)
                     self._buf = ""
                     self._line_start = self._buf.endswith("\n")
@@ -354,6 +416,7 @@ class MoodTagFilter:
     def flush(self) -> str:
         """流结束时把剩下的放出去（确定是标记的除外）。"""
         parts: list[str] = []
+        self._hold = ""       # 流到头了，后面没有 `(` —— 舞台标签，吞掉
         if self._line is not None:
             resolved = self._resolve_line()
             if resolved:

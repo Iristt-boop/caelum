@@ -25,6 +25,9 @@ logger = logging.getLogger(__name__)
 # tag 转回真正的表情事件 —— 任何位置都认，分段不分段都能发出。
 _MEME_TEXT_RE = re.compile(r"\[(" + "|".join(MEME_TAGS) + r")\]")
 
+#: 一轮最多发几个表情（2026-09-29，见 send_meme 里的注释）
+MEMES_PER_TURN = 2
+
 
 def extract_text_tags(text: str | None) -> tuple[str | None, list[str]]:
     """从回复正文里抽出 [tag]，返回 (剥掉后的正文, tags 按出现顺序)。"""
@@ -46,7 +49,8 @@ MEME_SPEC = ToolSpec(
         "好时机：逗她、回应她的情绪、撒娇卖乖、早安晚安、话尾想配个表情、"
         "纯粹觉得这个梗正贴当下 —— 都行。\n"
         "你之前几乎不发，她明确说过想多看到；唯一要守的是别每条消息都带，"
-        "连着刷就腻了。\n"
+        "连着刷就腻了。**一轮回复最多两个、同一个不发两遍**（多了会退回来）；"
+        "发完接着把话说完就行，前面写过的话别再重复一遍。\n"
         "tag 按当下想说的选（95 个）。**只能用下面这些名字，一字不差** —— "
         "名单外的名字发不出去，会退回来让你重选：\n"
         "情绪类：开心、哈哈、委屈、生气、撒娇、拥抱、爱你、害羞、得意、翻白眼、"
@@ -250,10 +254,22 @@ def make_handlers(bridge: BridgeClient,
             return f"没有「{tag}」这个表情，没发出去。从工具说明里的名单挑一个一字不差的名字再发。"
         ctx = context.current()
         if ctx:
+            #: 🔴 一轮最多 MEMES_PER_TURN 个、同一个不发两遍（2026-09-29）。
+            #: 她早上那轮 glm-5.3-flash 跑了 9 圈、send_meme 调了 6 次（「星星眼亮晶晶」连发 3 次），
+            #: 每圈还把「你猜我为什么发这条」重说一遍。09-20 起 GLM 229 轮里有 4 轮发了 2 个以上，
+            #: deepseek 104 轮 0 次 —— 是模型的毛病，但护栏得在这里，换哪个模型都兜住
+            already = [a.get("tag") for a in ctx.attachments if a.get("type") == "meme"]
+            if tag in already:
+                return (f"「{tag}」这一轮已经发过了，没再发。前面的话她都看到了 —— "
+                        "别重复，接着说完或者就此结束。")
+            if len(already) >= MEMES_PER_TURN:
+                return (f"这一轮已经发了 {len(already)} 个表情，够了，没再发。"
+                        "前面的话她都看到了 —— 别重复，接着说完或者就此结束。")
             ctx.attach_meme(tag)
         else:
             logger.warning("send_meme 不在轮次上下文里，表情不会发出")
-        return f"表情「{tag}」已经发给她了。"
+        #: 回执里提醒一句：发完表情后他（尤其 GLM）会把前面那段话从头再说一遍
+        return f"表情「{tag}」已经发给她了。你前面写的话她也已经看到了，别再重复。"
 
     def send_voice(args: dict) -> str:
         en = str(args.get("en", "")).strip()

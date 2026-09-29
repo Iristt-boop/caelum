@@ -14,7 +14,7 @@ from typing import Any
 
 from agent import vision
 from agent.adapters import make_adapter, supports_vision
-from agent.llm import LLMAdapter, Message
+from agent.llm import LLMAdapter, Message, strip_stage_tags
 from agent.loop import AgentLoop
 from config import Config, _build_llm, config as default_config
 from context import ContextProviderRegistry
@@ -911,6 +911,11 @@ class Nox:
         cleaned, meme_tags = intimate_tools.extract_text_tags(cleaned)
         if meme_tags:
             result.attachments.extend({"type": "meme", "tag": t} for t in meme_tags)
+        # 舞台标签（[softly] [intimacy …]）剥掉 —— 主动消息走的就是这条非流式路（2026-09-29）。
+        # 语音模式不剥：那边的语气标签要送 TTS。
+        # 🔴 控制标记 [SKIP] [NEXT 60] 留着：speaker / 唤醒链要读，它们自己会剥
+        if not voice:
+            cleaned = strip_stage_tags(cleaned, keep_control=True)
         if detected:
             self.mood.update(detected)
             logger.debug(
@@ -970,6 +975,10 @@ class Nox:
                         result.attachments.extend(
                             {"type": "meme", "tag": t} for t in meme_tags
                         )
+                    # 完整正文也剥一遍舞台标签（流里已经被 MoodTagFilter 挡了，
+                    # 这里管的是落库 / 进历史那一份 —— 留着会教他下次接着写）
+                    if not voice:
+                        cleaned = strip_stage_tags(cleaned)
                     if detected:
                         self.mood.update(detected)
                         self._save_state()

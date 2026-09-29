@@ -381,7 +381,9 @@ class AgentLoop:
         #
         # ⚠️ MoodTagFilter 只认 [mood: 前缀 —— ElevenLabs 的情绪标签
         # （[whining] [softly] 等）必须原样保留送到 TTS，不能被误伤。
-        mood_filter = MoodTagFilter()
+        #: 舞台标签（[softly] [SKIP] [intimacy …]）只在文字聊天里吞 —— `split` 关着就是
+        #: 语音模式，那边的语气标签是给 TTS 的（2026-09-29）
+        mood_filter = MoodTagFilter(strip_stage=split)
         # 语音模式关掉分段：||| 会被 TTS 当成正文念出来
         splitter = SegmentSplitter() if split else None
 
