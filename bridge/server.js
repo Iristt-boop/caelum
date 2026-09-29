@@ -1611,6 +1611,8 @@ app.post("/api/translate", async (req, res) => {
 // ==============================================================
 const ELEVEN_KEY = process.env.ELEVENLABS_API_KEY || process.env.ELEVEN_KEY || "";
 const ELEVEN_VOICE = process.env.ELEVENLABS_VOICE_ID || process.env.ELEVEN_VOICE || "gGOcFXG638t1tfyhocY5";
+//: 只给测试换成本地假上游用（验「第一次合成就存进缓存」那条路）。线上不设
+const ELEVEN_TTS_BASE = process.env.ELEVENLABS_TTS_BASE || "https://api.elevenlabs.io";
 const VOICE_TAG_RE = /\[(?:whining|excited|pouting|softly|sniffling|laughing|eager|pause|whispers?|sighs?|giggles?)\]/gi;
 const DASHSCOPE_API_KEY = process.env.DASHSCOPE_API_KEY || process.env.QWEN_ASR_API_KEY || "";
 const DASHSCOPE_BASE_URL = (process.env.DASHSCOPE_BASE_URL || process.env.QWEN_ASR_BASE_URL || "https://dashscope.aliyuncs.com/compatible-mode/v1").replace(/\/$/, "");
@@ -1808,7 +1810,83 @@ const TTS_MAX_CHARS = 2000;
 //
 // 以前是 `await r.arrayBuffer()` 先收全再 res.end() —— 整段合成完才开始传，
 // 首字出声要多等一到两秒。前端本来就用 MediaSource 在等着喂，是这一层拖了后腿。
-async function pipeTts(upstream, res) {
+// ==================== 语音条缓存 + 收藏（2026-09-29）====================
+//
+// 她问：「现在的语音是播放第一次就下载下来了，还是每播放一次就要耗费一次额度？」
+// —— 每次都耗。bridge 不缓存，前端只在那条语音条还挂在屏幕上时留着 blob，
+// 刷新 / 重开 App 再点就又去 ElevenLabs 合成一遍。而且 v3 每次合成语气都不一样，
+// 重播听到的已经不是第一次那一版。
+//
+//   tts-cache/  按「文本」存第一次合成的结果。可重建，**不进备份**，超 300MB 删最旧的
+//   voice-favs/ 她收藏的那几条。**要备份**（scripts/caelum-backup.sh），删了就找不回那个声音
+const TTS_CACHE_DIR = path.join(DATA_DIR, "tts-cache");
+const VOICE_FAV_DIR = path.join(DATA_DIR, "voice-favs");
+const TTS_CACHE_MAX_BYTES = 300 * 1024 * 1024;
+fs.mkdirSync(TTS_CACHE_DIR, { recursive: true });
+fs.mkdirSync(VOICE_FAV_DIR, { recursive: true });
+
+/** 同一句话（带情绪标签的原文，和 /api/tts 送进 v3 的是同一份）→ 同一个文件 */
+function ttsKey(text) {
+  return crypto.createHash("sha256").update("phone|" + text).digest("hex").slice(0, 40);
+}
+function ttsCachePath(text) {
+  return path.join(TTS_CACHE_DIR, `${ttsKey(text)}.mp3`);
+}
+/** 先写临时文件再改名 —— 写一半被读到就是一段残音频 */
+function writeAtomic(file, buf) {
+  const tmp = `${file}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, buf);
+  fs.renameSync(tmp, file);
+}
+let ttsCacheWrites = 0;
+function saveTtsCache(file, buf) {
+  try {
+    writeAtomic(file, buf);
+    if (++ttsCacheWrites % 50 === 0) pruneTtsCache();
+  } catch (e) {
+    console.error("[TTS] 缓存写不进去（不影响播放）:", e.message);
+  }
+}
+function pruneTtsCache() {
+  try {
+    const files = fs.readdirSync(TTS_CACHE_DIR).filter((f) => f.endsWith(".mp3"))
+      .map((f) => { const p = path.join(TTS_CACHE_DIR, f); const s = fs.statSync(p); return { p, size: s.size, t: s.mtimeMs }; })
+      .sort((a, b) => a.t - b.t);
+    let total = files.reduce((n, f) => n + f.size, 0);
+    for (const f of files) {
+      if (total <= TTS_CACHE_MAX_BYTES) break;
+      fs.unlinkSync(f.p);
+      total -= f.size;
+    }
+  } catch (e) {
+    console.error("[TTS] 缓存清理失败:", e.message);
+  }
+}
+
+/** 收藏时缓存里没有（缓存上线前播过的、或者没播过就收藏）才合成一次。非流式，拿整段 buffer */
+async function synthVoiceOnce(withTags) {
+  if (!ELEVEN_KEY) { console.error("[VoiceFav] 没配 ElevenLabs key，合成不了"); return null; }
+  const clean = withTags.replace(VOICE_TAG_RE, "").replace(/\s{2,}/g, " ").trim();
+  for (const [modelId, text] of [["eleven_v3", withTags], ["eleven_turbo_v2_5", clean]]) {
+    try {
+      const r = await fetch(`${ELEVEN_TTS_BASE}/v1/text-to-speech/${ELEVEN_VOICE}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "xi-api-key": ELEVEN_KEY },
+        body: JSON.stringify({ text, model_id: modelId, voice_settings: { stability: 0.34, style: 0.84 } }),
+        signal: AbortSignal.timeout(30000),
+      });
+      if (r.ok) return Buffer.from(await r.arrayBuffer());
+      console.error(`[VoiceFav] ${modelId} 合成失败:`, r.status);
+    } catch (e) {
+      console.error(`[VoiceFav] ${modelId} 合成异常:`, e.message);
+    }
+  }
+  return null;
+}
+
+// `collect`（可选）：顺手收一份完整音频给 TTS 缓存用（2026-09-29）。
+// 只有**完整流完**才标 collect.complete —— 半路她切走了的那份是残的，不能存
+async function pipeTts(upstream, res, collect = null) {
   if (!res.headersSent) {
     res.setHeader("Content-Type", "audio/mpeg");
     // 关掉 Caddy/nginx 的缓冲，否则它会把流重新攒成一坨
@@ -1817,17 +1895,21 @@ async function pipeTts(upstream, res) {
   }
   const reader = upstream.body.getReader();
   let bytes = 0;
+  let cut = false;
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
     bytes += value.length;
+    const buf = Buffer.from(value);
+    if (collect) collect.chunks.push(buf);
     // 下游断了（她挂了电话 / 切走了）就别再拉了，省 API 额度
-    if (!res.write(Buffer.from(value))) {
+    if (!res.write(buf)) {
       await new Promise((resolve) => res.once("drain", resolve));
     }
-    if (res.destroyed) { try { await reader.cancel(); } catch {} break; }
+    if (res.destroyed) { cut = true; try { await reader.cancel(); } catch {} break; }
   }
   res.end();
+  if (collect) collect.complete = !cut && bytes > 0;
   return bytes;
 }
 
@@ -1899,6 +1981,18 @@ app.post("/api/tts", async (req, res) => {
    */
   const chain = pickChain(profile, engine);
 
+  // 🔴 语音条缓存（2026-09-29 她问「是不是每播一次都耗一次额度」—— 是的，原来每次都重新合成）。
+  // 只给**带 cache:true 的请求**（聊天语音条）：通话那条路每句都是新的，存了也没人再听。
+  // 命中直接给文件：不花额度，而且每次都是同一个声音（v3 每次合成语气都不一样）。
+  const cacheFile = req.body.cache === true && !profile && !engine ? ttsCachePath(withTags) : null;
+  if (cacheFile && fs.existsSync(cacheFile)) {
+    res.setHeader("Content-Type", "audio/mpeg");
+    res.setHeader("X-TTS-Engine", "cache");
+    res.setHeader("Access-Control-Expose-Headers", "X-TTS-Engine");
+    console.log(`[TTS] 缓存命中 ${path.basename(cacheFile)}`);
+    return res.sendFile(cacheFile);
+  }
+
   const sendEngine = (name) => {
     //: ⚠️ 一定要在写 body 之前设。设完头再降级是不行的 ——
     //: 头已经发出去了，改不回来（下面每一档失败后都查 headersSent 就是这个道理）
@@ -1910,7 +2004,7 @@ app.post("/api/tts", async (req, res) => {
   /** ElevenLabs 两档共用。v3 保留情绪标签（英语陪练的命根子），turbo 用剥净的文本。 */
   async function tryEleven(name, modelId, body, timeout) {
     try {
-      const r = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${ELEVEN_VOICE}/stream`, {
+      const r = await fetch(`${ELEVEN_TTS_BASE}/v1/text-to-speech/${ELEVEN_VOICE}/stream`, {
         method: "POST",
         headers: { "Content-Type": "application/json", "xi-api-key": ELEVEN_KEY },
         body: JSON.stringify({
@@ -1923,8 +2017,11 @@ app.post("/api/tts", async (req, res) => {
       if (r.ok && r.body) {
         sendEngine(name);
         const t0 = Date.now();
-        const bytes = await pipeTts(r, res);
+        //: 只缓存 ElevenLabs 的（edge 是降级音质，存进去就永远是那个声音了）
+        const collect = cacheFile ? { chunks: [], complete: false } : null;
+        const bytes = await pipeTts(r, res, collect);
         console.log(`[TTS] ${name} 流式 ${bytes}B / ${Date.now() - t0}ms`);
+        if (collect?.complete) saveTtsCache(cacheFile, Buffer.concat(collect.chunks));
         return true;
       }
       console.error(`[TTS] ${name} failed:`, r.status);
@@ -1985,6 +2082,70 @@ app.post("/api/tts", async (req, res) => {
   //: 整条链都没成。**说出来**，别回一个 200 的空 body（那是静默失败）
   console.error("[TTS] 整条降级链都失败了");
   if (!res.headersSent) res.status(502).json({ error: "tts_all_failed" });
+});
+
+// ---------------- 语音条收藏（2026-09-29 她要的：Console 里第二个页签）----------------
+// 收藏的是**那一段音频**，不是那句文字 —— 同一句话重新合成就是另一个语气了。
+// key = ttsKey(原文)：同一句收藏两次是同一条（幂等），也正好对上 tts-cache 里那份。
+db.run(`CREATE TABLE IF NOT EXISTS voice_favorites (
+  id TEXT PRIMARY KEY, key TEXT UNIQUE, tts TEXT, en TEXT, zh TEXT,
+  message_id TEXT, session_id TEXT, created_at TEXT)`);
+
+const favFile = (id) => path.join(VOICE_FAV_DIR, `${id}.mp3`);
+const favRow = (r) => ({ id: r.id, tts: r.tts, en: r.en, zh: r.zh, message_id: r.message_id,
+  session_id: r.session_id, created_at: r.created_at });
+
+app.get("/api/voice-favorites", (req, res) => {
+  const rows = dbAll("SELECT * FROM voice_favorites ORDER BY created_at DESC");
+  res.json({ ok: true, items: rows.map(favRow) });
+});
+
+app.post("/api/voice-favorites", async (req, res) => {
+  const tts = String(req.body?.tts || "").trim().slice(0, TTS_MAX_CHARS);
+  if (!tts) return res.status(400).json({ error: "tts required" });
+  const key = ttsKey(tts);
+  const had = dbAll("SELECT * FROM voice_favorites WHERE key=?", [key])[0];
+  if (had) return res.json({ ok: true, item: favRow(had), existed: true });
+
+  //: 先有音频再落库 —— 反过来的话，合成失败会留下一条点了没声音的收藏
+  const cached = ttsCachePath(tts);
+  let audio = fs.existsSync(cached) ? fs.readFileSync(cached) : null;
+  const from = audio ? "cache" : "synth";
+  if (!audio) {
+    audio = await synthVoiceOnce(tts);
+    if (!audio) return res.status(502).json({ error: "合成失败，没收藏上" });
+    saveTtsCache(cached, audio);        // 顺手进缓存，聊天里再点就是同一个声音
+  }
+  const id = randomUUID();
+  writeAtomic(favFile(id), audio);
+  const row = {
+    id, key, tts, en: String(req.body?.en || stripVoiceTags(tts)).slice(0, 2000),
+    zh: String(req.body?.zh || "").slice(0, 2000),
+    message_id: req.body?.message_id != null ? String(req.body.message_id) : null,
+    session_id: req.body?.session_id ? String(req.body.session_id).slice(0, 64) : null,
+    created_at: new Date().toISOString(),
+  };
+  dbRun(`INSERT INTO voice_favorites (id, key, tts, en, zh, message_id, session_id, created_at)
+         VALUES (?,?,?,?,?,?,?,?)`,
+    [row.id, key, row.tts, row.en, row.zh, row.message_id, row.session_id, row.created_at]);
+  console.log(`[VoiceFav] 收藏 ${id.slice(0, 8)}（${from}，${audio.length}B）: ${row.en.slice(0, 30)}`);
+  res.json({ ok: true, item: favRow(row), from });
+});
+
+app.get("/api/voice-favorites/:id/audio", (req, res) => {
+  const row = dbAll("SELECT id FROM voice_favorites WHERE id=?", [req.params.id])[0];
+  const file = row && favFile(row.id);
+  if (!file || !fs.existsSync(file)) return res.status(404).json({ error: "not found" });
+  res.setHeader("Content-Type", "audio/mpeg");
+  res.sendFile(file);
+});
+
+app.delete("/api/voice-favorites/:id", (req, res) => {
+  const row = dbAll("SELECT id FROM voice_favorites WHERE id=?", [req.params.id])[0];
+  if (!row) return res.status(404).json({ error: "not found" });
+  dbRun("DELETE FROM voice_favorites WHERE id=?", [row.id]);
+  try { fs.unlinkSync(favFile(row.id)); } catch (e) { console.error("[VoiceFav] 删音频文件失败:", e.message); }
+  res.json({ ok: true });
 });
 
 // ==============================================================

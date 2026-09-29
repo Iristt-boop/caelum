@@ -53,6 +53,9 @@ mkdir -p "$WORK/files"
 cp -r /root/ombre-brain/buckets "$WORK/files/ombre-buckets"   # 记忆 .md + dehydration_cache.db
 rm -f "$WORK/files/ombre-buckets/embeddings.db"               # 已单独热备，去重
 cp -r /root/data/uploads      "$WORK/files/uploads"           # 照片
+# 收藏的语音条（2026-09-29）：存的是她听到的那一段，重新合成就是另一个语气了，丢了找不回。
+# 旁边的 tts-cache/ 是可重建的播放缓存，不进备份
+[ -d /root/data/voice-favs ] && cp -r /root/data/voice-favs "$WORK/files/voice-favs"
 cp -r /root/co-reading-mcp/data "$WORK/files/coreading-data"  # 批注/进度/书
 # eryu：只要记忆/歌单 JSON；music_cache(260M 音频缓存) 可从网易云再生，不进备份
 mkdir -p "$WORK/files/eryu-data"
