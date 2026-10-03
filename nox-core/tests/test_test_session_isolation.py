@@ -274,7 +274,10 @@ def test_real_session_does_reach_the_appraiser(appraising):
     client, events, adapter = appraising
     r = client.post("/chat", json={"text": "我不想干了", "session_id": "s-real"})
     assert r.status_code == 200
-    assert adapter.calls == 1
+    # 🔴 09-22 放宽：utility 从「只有理解层用」变成共享的
+    #    （记忆抽取影子每轮也调它），精确数会一直过期。
+    #    这条测的意图是「真实会话的闸门不许误伤」—— ≥1 即达意
+    assert adapter.calls >= 1
     ap = [e for e in events if e.type == "appraisal"]
     assert len(ap) == 1
     assert ap[0].payload["appraisal"]["anchor"] == "毕设"
@@ -290,7 +293,8 @@ def test_shadow_mode_writes_nothing(appraising, monkeypatch):
     monkeypatch.setenv("NOX_LLM_APPRAISAL", "shadow")
     r = client.post("/chat", json={"text": "我不想干了", "session_id": "s-real"})
     assert r.status_code == 200
-    assert adapter.calls == 1, "影子模式要真的跑，否则观察不到东西"
+    # 🔴 09-22 同上：utility 共享后精确数会过期，意图是「影子要真的跑」
+    assert adapter.calls >= 1, "影子模式要真的跑，否则观察不到东西"
     assert [e for e in events if e.type == "appraisal"] == []
 
 

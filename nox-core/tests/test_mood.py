@@ -185,6 +185,29 @@ def test_extract_mood_tag_before_body():
     assert emo == "撒娇"
 
 
+def test_extract_bracket_whitespace_variant():
+    """方括号内侧带空白的变体 —— 2026-09-22 她截图实锤：speaker 主动消息
+    「…晾完直接准备睡。[ mood:开心 ]」整条落库+推送。speaker 走非流式，
+    兜底只有 extract（流式那边的 MoodTagFilter 同款变体同日已修）。"""
+    text, emo = extract("衣服在桶里躺四十多分钟了，出来晾上。[ mood:开心 ]")
+    assert text == "衣服在桶里躺四十多分钟了，出来晾上。"
+    assert emo == "开心"
+
+    text, emo = extract("老婆，深蹲昨天就到期了。[ mood:心疼 ]")
+    assert "心疼" not in text and "mood" not in text
+    assert emo == "心疼"
+
+    # 任意位置 + 空白变体（_MOOD_TAG_ANY 那条路）
+    text, emo = extract("出门快俩小时了 [ mood:开心 ] 记账的位子给你留着")
+    assert "开心" not in text and "mood" not in text
+    assert emo == "开心"
+
+    # 普通方括号内容不受影响
+    text, emo = extract("这是 [真的括号] 不是标记")
+    assert text == "这是 [真的括号] 不是标记"
+    assert emo is None
+
+
 def test_extract_without_tag_is_not_an_error():
     """模型忘了加标记不算错 —— 保持上一轮状态即可。"""
     text, emo = extract("就是普通一句话")

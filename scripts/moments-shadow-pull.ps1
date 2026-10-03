@@ -1,4 +1,5 @@
-﻿# Moments shadow 的每日拉取 —— **不经过任何模型**。
+﻿# Moments 的每日拉取 —— **不经过任何模型**。
+# （2026-09-23 转 on 后是日报：真发的帖子全文从库里读；名字里的 shadow 是历史，任务名认它没改）
 #
 # 为什么不用 Claude Code 的定时任务（2026-09-15）：
 # 那条路起的新会话拿不到 `~/.claude/settings.json` 里那套自定义凭据，
@@ -28,7 +29,13 @@ $Key     = "$env:USERPROFILE\.ssh\id_ed25519"
 # 🔴 认名字不认 IP：43.133.211.140 已经不是这台机器了（2026-09-15 踩过）
 $Vps     = "root@noxtang.com"
 $OutDir  = "D:\claude-code\scratch\moments-shadow"
-$Local   = "D:\claude-code\.claude\worktrees\awesome-sanderson-1e4889\scripts\moments-shadow-digest.py"
+# 🔴 指主检出，不指 worktree（2026-09-21 修）：原来指着
+# `.claude\worktrees\awesome-sanderson-1e4889\`，于是每天往 VPS 推的是那条
+# 分支上的**新** digest（它找 `body=`），而线上 nox-core 跑的是 master 的**旧**
+# 代码（`record.py` 里连 body 字段都没有）—— 报告不报错，只是「正文」那一段
+# 永远空着，糖糖要的两个问题里第二个三天都没观测到。
+# worktree 还会被删掉，路径一没了就静默退回 VPS 上那份陈年脚本。
+$Local   = "D:\claude-code\scripts\moments-shadow-digest.py"
 
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 $stamp = Get-Date -Format "yyyy-MM-dd"
@@ -49,7 +56,8 @@ $code = $LASTEXITCODE
 # 🔴 判据挑**退出码**，不挑中文输出（编码一变文本判据就永不成立）
 $verdict = switch ($code) {
   0       { "正常" }
-  1       { "🔴 shadow 期间库里出现了 moment 帖 —— 这是 bug，去看 moments/record.py 的结构闸门" }
+  1       { "🔴 全是 shadow 的那天库里出现了 moment 帖 —— 这是 bug，去看 moments/record.py 的结构闸门" }
+  4       { "⚠️ on：日志里「发了」的条数和库里对不上（或库读不到）—— 落库断了，去看 moments/writer.post" }
   2       { "记录太少，不下结论（不是「他没想发」，是数据不够）" }
   3       { "journalctl 读不到（unit 名 / 权限）" }
   255     { "ssh 连不上" }

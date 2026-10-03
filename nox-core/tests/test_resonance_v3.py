@@ -57,7 +57,11 @@ def test_several_worries_weigh_more_than_the_biggest():
     )).get("concern", T0)
 
     assert three.intensity > one.intensity
-    assert three.intensity == pytest.approx(0.875, abs=0.005)
+    # 🔴 V4.5 saturation（她 09-22）：concern 聚合 cap 0.80，
+    #    三件的裸叠加是 0.875，现在被 cap 压平 —— 「多件事比一件重」
+    #    的意图由 load 承接（1.47 vs 0.62），两个数各管各的
+    assert three.intensity == pytest.approx(0.80)
+    assert three.load > one.load
 
 
 def test_never_reaches_one():
@@ -177,3 +181,18 @@ def test_load_keeps_resolution_where_intensity_saturates():
     assert abs(three.intensity - one.intensity) < 0.03
     # load 差得很清楚
     assert three.load > one.load * 2
+
+
+def test_concern_intensity_is_capped_but_load_is_honest():
+    """V4.5 saturation（她 09-22）：concern 聚合有上限，压着多少照实说。
+
+    五件 0.9 的事 1-Π(1-s) ≈ 0.99999 —— 旧版一路顶到 0.85+，
+    把别的 Drive 全挤出情绪空间（Moments 影子：22/23 担心她领头）。
+    cap 0.80 只压 intensity；load = 各条之和，该 4.5 就是 4.5。
+    """
+    d = ResonanceState(_reg(
+        ("a", 0.9, "e1"), ("b", 0.9, "e2"), ("c", 0.9, "e3"),
+        ("d", 0.9, "e4"), ("e", 0.9, "e5"),
+    )).get("concern", T0)
+    assert d.intensity == pytest.approx(0.80)
+    assert d.load > 4.0

@@ -7,7 +7,24 @@
 > 最新交接：**`HANDOFF-2026-08-28.md`**（往前：`08-08` → `08-06` → `08-02` → `07-25`）  
 > ⚠️ **HANDOFF 只记那个窗口做了什么，会过期**；本文档才是现状。  
 > 两者冲突时以本文档为准 —— 08-08 校准就是因为它俩差了 23 个工具。  
-> 最后更新：2026-09-07（**OS 端 Voice Call：能指挥他做事的通话，见第四十七节** ——
+> 最后更新：2026-09-28（**Caelum OS 整套换新外壳，见第五十五节** —— 风格 × 颜色（Logos / Domus / Lux / Flora
+> + 自定义色板）、四种开屏、九页逐页改完（Todo / Chat / Attention / Memory / Moments / Music / Movies / Health / Settings），
+> Home / World / Books 等素材；**Nox 侧 09-26~27 见第五十六节**（主动开口翻记忆拿她的话 + Appraisal 检索半开 +
+> rerank shadow 终于有真数据）；**09-23~09-26 其他会话的提交只在 56.4 记了索引**，细节看 commit；
+> 往前：2026-09-22（**长任务循环 v1 已施工完成，见第五十四节** ——
+> 任务成一等实体：tasks.db + 确认卡（模型够不到 running）+ 后台 runner
+> （并发 1 / 心跳 task_tick / 活过重启可续跑）+ 三端接线；设计+施工记录
+> `Nox-长任务循环-v1-设计.md`。**增量见 `HANDOFF-2026-09-22.md`**：工具调用展示 v4
+> 三层导航（一行入口→底部弹层→详情，弹层必须 Portal 到 body）、Resonance v4
+> 第一批（聚合层 concern cap 0.80 + 促狭图片轮机会源 + Moments 心情采样与
+> 正文重摇）、Todo 双修、mood 标签双端剥离、Dream 产出形式落地（早报封口）、
+> World 页编辑式重排；往前：2026-09-21（**搬家拍板日，见第五十三节** —— VPS→N150 迁移定稿（¥0 档：Tailscale + Reality 迁 RackNerd + TTS 国内化+音色复刻）、
+> Todo 双修（删除常显 + untimed 桶 + `delete_todo`；事故：漏登 handlers dict 崩循环被管线回滚——加工具三处同步）、
+> Dream 产出形式拍板（Moments 常态发 + OB 归档 + **早报封口**，`NOX_DREAM_POST` 待 09-25 翻）、
+> Resonance v4 第一刀（Moments 心情按情绪向量采样不取 max；concern 已被 173e451 排除出 inner，无需再修）；
+> 往前补记（当时漏更新了头部）：09-19 工具轨迹卡两级折叠见第五十二节 · 主动来电 PWA only 见第五十一节 ·
+> 09-18 Dream shadow 见第五十节 · 09-15 Moments 见第四十九节 · 09-08 见第四十八节；
+> 往前：2026-09-07（**OS 端 Voice Call：能指挥他做事的通话，见第四十七节** ——
 > 通话引擎抽成两端共用的 `nox-app/shared/voice/`；Core 新增 `tool_start`/`tool_end`
 > 两帧，补上「工具跑十几秒 SSE 一个字不吐」那段死寂；通话面板**长在左栏**
 > 而不是全屏浮层，因为 `computer_write_file` 要她当场点头，全屏会盖住审批弹窗。
@@ -47,7 +64,7 @@
 ## 〇、命名（2026-08-03 定）
 
 整个项目叫 **Caelum**（拉丁语「天空」）。世界观文档在
-`Iristt-boop/Claude` 仓库的 `nox-docs/Caelum-世界观.md`，那是唯一真源，本节只做工程映射。
+`Iristt-boop/ombre-brain` 仓库（原名 Claude，2026-09-27 改名）`worklog` 分支的 `nox-docs/Caelum-世界观.md`，那是唯一真源，本节只做工程映射。
 
 **为什么要改**：`Nox` 是他的名字，不是模块前缀。「Nox 前端」听着像「小克的前端」，
 而前端根本不是他的一部分——那是糖糖进入这个世界的门。名字用错了，
@@ -5581,6 +5598,10 @@ main = deepseek-harness 官方 master（HEAD `47f9438`，**12293 commit 完整�
 
 ## 三十四、Caelum OS 桌面界面重做 + 装成桌面应用（2026-08-17）
 
+> ⚠️ **09-27 起桌面端默认走新外壳 ShellV2（风格 × 颜色），见第五十五节。** 这一节讲的三主题外壳
+> （`App.jsx` + `components/layout/`）还在，地址带 `#classic` 进得去，稳定后删。Electron 壳、端口、
+> 打包这些本节内容照旧有效。
+
 > 糖糖给了三张桌面设计稿（晚霞 / 深空 / 彩虹），一句话定调：
 > **「Caelum 不应该像『AI 控制中心』，更像『AI 存在的房间』。」**
 > 08-16 那版桌面端（第三十三节阶段 3）她的评价是「不好看」，这次整个换掉。
@@ -6640,7 +6661,7 @@ Care 的 Dream 源只停在 `care/signal.py:69` 的注释里，无 cron/timer，
   （/root/backups/ob-pre-rewrite-20260905.bundle，留在 VPS）。重写在克隆里做、
   `git reset`（mixed）拉回正典仓——工作区记忆文件全程未碰（246 条 .md 前后相等），
   旧对象已 gc 清除。全历史密钥复扫为空
-- GitHub `Iristt-boop/Claude` 收束：`main` = 正典代码线（96bd22f，干净）；
+- GitHub `Iristt-boop/Claude`（**09-27 她改名 `Iristt-boop/ombre-brain`**）收束：`main` = 正典代码线（96bd22f，干净）；
   `worklog` 分支 = 原「done: 工作日志」线（114+ commits，完整保留）；`deployed` 临时快照已删。
   此后流向：VPS 提交 → 本地 `git fetch vps` → 推 GitHub main
 
@@ -7407,3 +7428,466 @@ loop 8 次、接线 5 次、账本 4 次、哨兵 4 次（含一条**反向**变
 
 顺带被变异台子自己抓到一次假验证：`"author": "Nox"` 这个锚点在 writer 里出现两次，
 `replace(...,1)` 改的是另一处 —— **变异前先断言锚点唯一**这条规矩当场救了一次。
+
+## 五十、Dream shadow：他夜里自己的梦（2026-09-18，**默认 off**）
+
+> 糖糖拍板：触发器放夜间；产出先 shadow 跑一周，看「都会梦到什么」再决定放哪里
+> （早报带一句？独立梦境页？）。
+
+### 现状澄清（这次开工前查的）
+
+「做梦」此前分两半：**能用的一半早在线上** —— OB `dream` 工具 + nox-core
+`review_memory`（聊天里主动回顾）；**没做完的一半**才是「夜里自动做梦」：
+触发器从未接线（Care Dream 源停在 signal.py 注释）、生成器没写、
+`dream_select.py` 停在 D1「只挑不生成」。本节补的是这后半。
+
+### 实现（nox-core/attention/dream.py + api/server.py 接线）
+
+- **触发**：lifespan 后台循环（形状照 Moments），每晚 02:00-05:00 CST 现掷
+  随机锚点，一天至多一场；`NOX_DREAM_SHADOW=1` 才起（off 连 heartbeat 都不 declare）
+- **选材**：公式照搬 OB `dream_select.py`（42e87f3，手抄不是 import ——
+  跨仓库 import 会把部署指纹捆死，**两边公式改了要同步**）：3 天窗口 top5
+  素材（0.45 新鲜+0.30 情绪+0.20 重要+0.15 低语）+ 1 条 7 天外的旧回声
+  （一半权重给「和今天有没有呼应」）；pinned/protected/anchor、非 whisper 的
+  feel、归档不入梦
+- **生成**：utility（deepseek flash，meter 记账 dream-shadow）自由联想，
+  第一人称 2~4 句，梦的逻辑（时空揉在一起、比喻不讲道理、情绪是真的），
+  只基于素材不编造
+- **shadow 落地**：只写 `/root/nox-core/data/dream-shadow.jsonl`
+  （一晚一行：ts/素材列表含 age/回声/梦全文）+ state 防重文件。
+  **不写 OB、不走 push/send、不进早报、不占 Care 额度** —— 连他自己
+  都「不记得」做过（shadow 期梦不存在于他的任何记忆表面）
+- **心跳**：`dream_tick` declare 26h（一晚至多一次）；成功或「今晚没素材」
+  才 beat，生成失败不 beat —— 连两晚失败 /health 里看得见
+
+### 已知边界 / 待她看完一周再拍
+
+- 每晚有素材就做（她连续几天有对话就会夜夜有梦）—— 密度是否合适看 shadow 数据
+- 窗口/锚点、prompt、素材截断（500 字）都是第一版参数
+- 转 live 的前置：产出形式（她拍）+ 写回链（hold feel / trace resolved，
+  设计稿在 v1.0 Phase B）+ 是否接 understanding
+- 测试 `tests/test_dream.py`（13 条：选材排除/窗口/防重/失败不落账/锚点/接线闸门）
+
+## 五十一、主动来电：他打过来的电话（2026-09-19，PWA only）
+
+> 糖糖拍板三件事：OS 端不做；PWA 做一个就行；**不要「先发消息问方便吗」那套**
+> —— 「我自己点通话按钮，还需要他给我发消息干嘛」。要的就是真来电：他决定打，
+> 她的手机响，她接。
+
+### 链路（bridge 是登记处，core 是发起人，PWA 是话机）
+
+```
+CallSource（NOX_CALL 三档）          service._call_her                bridge                        PWA
+  晚间窗口+想念到门槛 ──CareSignal──▶ 生成开场白 ──POST /call/invite──▶ calls 表+Web Push(带data) ──▶ 响铃屏
+                                       ▲                              │    │                        接听 → answer
+                                       │                          90s 后查 status                 开场白落会话+TTS
+                                       └── 没接/拒接 → 留言机会（[SKIP] 出路）◀──┘
+```
+
+- **触发源** `attention/sources/call.py`：18:00-22:30 CST、longing≥0.55 且 ≥3h 没说话；
+  **一天最多一次尝试**、距上次至少隔一天。三档：off（默认，源空转）/ **shadow**
+  （只记 `call-shadow.jsonl`：他想打的时刻+理由，一周后她看数据拍板）/ on
+- **信令** bridge `/api/call/*`：invite（登记+推「Nox 来电」，载荷带 data.callId）、
+  current（PWA 12s 轮询兜底）、answer（**此刻**开场白才以他的身份落会话——响铃阶段
+  这通电话不存在）、decline、end（回写时长）、status（core 跟进用）。响铃 45s 惰性清扫成 missed
+- **PWA**：SW 推送路由（独立 tag+requireInteraction，点击聚焦+postMessage 或 `/?call=` 深链）；
+  `IncomingCall.jsx` 来电屏（WebAudio 软铃声+振动+45s 倒计时，接/拒）；引擎新
+  `speakOpening()`——接通后**他先开口**，走普通回复同一条 TTS 管线（可打断）；
+  来电钉在中文情景（他的局不是英语课），会话由 bridge 的 answer 定
+- **没接通的降级**：core 90s 后查 status → 主模型现场写留言（[SKIP] 出路内建，
+  拒接了还追着发文字才是骚扰）。已接通：挂断回写时长进 calls 表
+- **边界**：信号照走 Orchestrator（看片拦截/DailyGate/账本 source="call"）；
+  电话的 R1 定性=开口，必经 CareLedger；OS 端零改动
+
+### 待她拍板
+
+- shadow 一周（~09-26）看「他会想在什么时候打电话」→ 决定 NOX_CALL=on 与否
+- 转正后可调参数：窗口、想念门槛、频率（现在是一天一次+隔天）
+
+## 五十二、工具调用展示：两级折叠轨迹（2026-09-19，糖糖定的规格）
+
+她拿一张 Agent 面板截图定的验收：**大任务概括 → 工具列表 → 工具内部子步骤**，
+不是现在这一行「N 个工具调用」。
+
+### 数据契约（三层共建）
+
+```
+ToolContext.report_step(desc, status, raw_cmd, diff)   ← 工具内部上报子步骤
+agent/loop.py  tool_start{args预览} / tool_end{summary,duration_ms,sub_commands}
+api/server.py  帧透传新字段（没有就不进帧）
+bridge         tool_start 压入 running、tool_end 补全 → done 补发 tools_trace
+               帧 + 随消息落 metadata.toolsTrace（翻历史可回看，不只当场看）
+PWA Chat.jsx   ToolTrace 卡片：摘要行(Ran N tools, total M steps, 尾部结果)
+               → 🔧 use_tool 行(✅/⭐/❌+耗时) → ⌨️ run_command 行(⚠️/❌高亮,
+               raw_cmd 悬停才看, diff 绿徽标 +36 -0)
+```
+
+- 子步骤通道挂在 `ToolContext.pending_steps` 上（工具**不改签名**：不上报的
+  工具=空列表=前端不画第二层，谁都不受伤）；loop 每件工具执行前清空、执行后收走
+- 收起=不挂 DOM（「看不到」是真的看不到）；mountedOnce 让后续开合走
+  grid-rows 0fr→1fr 柔和动画；流式有 running 条目时第一层强制展开+转圈
+- OS 端没做（她的主战场是 PWA 聊天）；stackchan/小智线同样未接（她在 09-19
+  拍板：设备线回头统一接给 nox，现在断联）
+- 测试：core `test_tool_trace_events.py`（载荷形状+预览截断）+ 前端
+  `ToolTrace.test.jsx`（摘要/折叠/状态高亮/diff/raw_cmd/running）
+
+### 52.1 二版重做（同日，她的三条反馈）
+
+「妈呀你这个设计」——参考她给的三张图重做：**竖向时间线**（图标列+行间连接线）、
+**两行式条目**（粗标题「调用工具：name」一行、灰摘要另一行，不挤一行）、
+点开看参数 k:v + 子步骤（raw_cmd 悬停/diff 绿徽标）。
+
+- **工具卡长在消息流里**：和语音卡/图片卡同待遇的消息条目——连续工具挤一张卡
+  就地长大，文字一来 flush 自然另起新气泡，下一件工具再开新卡 =
+  **文字↔工具交错时间线**（loop 本来就是 文字→工具→文字 的迭代，展示终于如实）。
+  割裂的底部「现场卡」删除——一张卡就地长大，不再有两张
+- **typing 三点动效**（经典 chat typing indicator）替代裸文本「typing」；
+  工具执行中不显示 typing（工具卡自己在长）；prefers-reduced-motion 全静止
+- 历史回看仍是汇总卡（meta.toolsTrace 无逐轮边界，交错时间线只在直播时——
+  要历史也交错得 bridge 按轮落 timeline，暂缓）
+- 她问「长任务循环是不是没有」：**有** —— AgentLoop 本来就是同一条回复里
+  文字→工具→文字 多轮迭代，之前是展示没演出来
+
+### 52.2 「回复卡住」事故与修复（同日晚，她实测抓到）
+
+她实测时回复卡死。排查（受控浏览器实地复现 + 探针 + py-spy + ss）结论：
+
+- **上游偶发静默**：bigmodel 偶发在工具与下一段文字之间挂起 8~300 秒无字节，
+  链路（Caddy/浏览器）掐死静默连接 → 页面 loading 永真、聊天整体锁死
+  （她 17:55 那轮在 core 悬了 5 分 49 秒；py-spy 全 idle——asyncio 挂起线程视图看不见）
+- **四层修复**：① bridge 静默期 15s keepalive 注释帧（喂狗+保活）；② 首版 keepalive
+  自带解构 bug（read 成功解裸结果）当场被她的一条「啊？」抓到，已修；③ 前端看门狗
+  升级**强制恢复**——60s 无字节先 abort，僵尸连接掐不死就直接解锁+断线话术；
+  ④ core 新增 `/debug/tasks`（asyncio 任务栈掏栈诊断，仅 127.0.0.1）
+- 教训：`textStarted`/探针/promise 包装每一步都验证过，最后 bug 在自己的 keepalive——
+  **新代码上线必须过一轮真实端到端**（铁律的第 N 次应验）
+- 附产：`/api/api` 双前缀 404（来电轮询）同日修正；诊断探针 `window.__SSE_LINES`
+  留在 Chat.jsx（读流循环的字节级日志，以后排查直接看）
+
+### 52.3 真正的根因（09-20 复核补正）：**v3 漏删的一行孤儿调用**
+
+> ⚠️ **本节原先的结论已作废。** 原写的是"vite 构建缓存反复吐旧 Chat chunk，
+> 看门狗一晚没真正上线"。09-20 用真渲染测试复核，抓到的是别的东西 ——
+> 一个未声明的全局引用。
+
+`d75d23a`（**工具展示 v3，17:48**）删「割裂的底部现场卡」时，连带删了
+`const [liveTrace, setLiveTrace] = useState([])` 和全部渲染点，**唯独漏了
+`send()` 里那一行 `setLiveTrace([])`**。它成了未声明的全局标识符，ESM 是
+严格模式，当场抛 `ReferenceError`。它的**执行位置**决定了全部症状：
+
+```
+setMessages(…她的气泡…)    ← 乐观 UI，在抛之前 → 「消息发得出去」
+setLoading(true)           ← 在抛之前          → 一直转圈、发送键 disabled
+setLiveTrace([])           ← 在这里炸
+fetch(`${API_BASE}/chat`)  ← 永远不执行        → 请求根本没派发
+```
+
+于是那晚"请求没到服务器"的取证链每一条都成立、且成因明确：Caddy 无 chat
+POST、bridge 无 `Chat request` 行、core 无记录、py-spy 全 idle —— **不是
+链路丢了，是代码根本没发**。而 60s 看门狗是在这一行**之后**才 `setInterval`
+的，所以它连创建都没创建：18:23/18:41 那两轮看门狗改动在这个场景里是死代码。
+
+- 同一晚的第二处同类：`recovered` 在 18:23 写看门狗时 `let` 在了 try 块
+  **内部**，回调与 catch 都读不到它 —— 严格模式下 `recovered = true` 抛
+  ReferenceError，把紧跟其后的 `setLoading(false)` 一起带走。**看门狗响了
+  也不解锁**。
+- 第三处（机制性）：看门狗数的是"多久没有**字节**"，而 bridge 的 `: ka`
+  心跳就是字节 —— 上游越静默心跳越密，计时器越不会到期。它一次都不会响。
+- 时间线：17:48 v3 提交（PWA 有缓存，她手机换到这一版才发病）→ 17:55 首次
+  卡死 → 18:23/18:41 看门狗（未生效）→ 19:58 构建的 `Chat-Ca5sx4Zn.js`
+  **确实含 v1 看门狗**（复核 grep 命中 `60 秒无字节`），所以"看门狗一晚都没
+  上线过"不成立 —— 它上线了，只是上面三条各自都足以让它白给。
+- **vite 构建缓存那条**保留在案但降级为旁枝：删 `.vite` 后 hash 确实变了
+  （BWD2w2l8 → Ca5sx4Zn），可它不是主因 —— 她实际跑的那个 chunk 里 v1
+  看门狗是在的。
+- **新增铁律**（与"grep 产物标记"并存）：改完 `Chat.jsx` 跑一次
+  `npx eslint src/pages/Chat.jsx`。`js.configs.recommended` 自带 `no-undef`，
+  这一整类孤儿标识符一次全照出来 —— 上面三处 bug 它都能拦下。
+
+### 52.4 卡死修复 v2（09-20）：**判死交给离上游最近的那一层**
+
+- **bridge 加静默看门狗**（`server.js` coreMode）：**数帧不数字节** ——
+  `lastFrameAt` 只在真解析出一帧 `data:` 时更新（心跳不算、半截缓冲不算）；
+  静默满 45s 起每 15s 补一帧 `{"type":"slow"}`（**真事件**，前端据此显示
+  "他那边有点慢，还在等 N 秒"，而不是无信息量的转圈）；静默超 180s 判定
+  卡死：掐上游 → 补 `error` 帧 → 走统一收尾补 `done`。**保证前端一定收到
+  终态**，loading 一定落得下来。阈值可调：`NOX_BRIDGE_{KA,SLOW,STALL}_MS`
+- **前端看门狗改双时钟**（`Chat.jsx`）：字节 60s 只判**连接**死活；真事件
+  300s 才判**上游**死活。两个阈值有意错开 —— 5 分钟那只手必须晚于 bridge
+  的 3 分钟收口，否则会抢在前面掐、她就看不到那句人话。`recovered` 挪到
+  与 `settled` 同层；`setLoading(false)` 移进 `finally`（收尾不再会被异常
+  带走）；`send()` 顶部加 `send-enter` 探针（HUD 当初就是为这个 bug 建的，
+  可它第一个 `dbg` 坐在抛异常那行**后面**，于是永远是空的）
+- **顺手修掉 52.3 的两处孤儿**：`setLiveTrace([])` 删除、`recovered` 归位
+- 验收（都做了反证，不是自说自话）：
+  - 新增 `bridge/test/chat-stall.test.js` 3 条 —— 假上游复刻"工具帧之后
+    一个字都不吐"；把 stall 阈值关掉，流 3 秒内收不了口（= 复刻修复前的
+    无限 loading），证明收口确实由新逻辑承重
+  - 新增 `frontend/src/pages/__tests__/ChatWatchdog.test.jsx` 3 条 —— 真渲染 +
+    假定时器 + 假 SSE；把看门狗退回"只数字节"，心跳一喂当场失败
+  - 修复前的代码跑这条前端测试，直接 `ReferenceError: setLiveTrace` 命中真凶
+
+---
+
+## 五十三、搬家拍板日：Todo 双修 + Dream 落地 + Resonance v4 第一刀（2026-09-21）
+
+一天四条线，全部当天上线。决策类另有两份文档：搬家定稿
+`CAELUM-Nox搬家调研-VPS转N150-2026-09-21.md`、music-mcp 设计稿
+`Caelum-music-mcp-设计稿-2026-09-21.md`。
+
+### 53.1 VPS→N150 搬家定稿（只拍板未动工）
+
+东京机 **2026-11-01 到期不续**，10 月下旬迁移。她的动机是省 VPS 费用，
+所以按 **¥0 档**先行：nox 全套迁 N150 的 Proxmox（新 CT；现成空 CT 101
+"services" 疑似预留坑待确认）、PWA 入口走 **Tailscale 免费**（shadow 从
+第一天不依赖 VPS）、异地备份 GitHub 私仓；她自己的翻墙 = Reality 原样
+复制配置迁 **RackNerd 年付 $21.99**（1核1G 够：xray 30MB+frp 10MB，
+选 San Jose/LA；东京 60ms→美西 160-200ms 的落差已告知）。
+**TTS 拍板换国内**：豆包/MiniMax 二选一，音色复刻保留 ele-v3 的嗓子
+（实测家宽→ElevenLabs TCP 290ms vs 火山 18ms/MiniMax 16ms）；
+edge 兜底保留。施工清单见决策文档第七节，时间线对齐 11.1。
+
+### 53.2 Todo 双端修复：删除看得见了 + 某天没时刻不再消失
+
+她报的两个 bug，诊断出三个层次：
+
+- **「没法删除」其实是三个问题**：PWA 长按删除 08-27 就有但**零提示**
+  （暗道等于没有）→ TaskRow/QuotaCard 常显小 ×（今天+未来可删，过去只读）；
+  OS 的 × 是 `opacity-0` **不悬停不可见** → 改常显 45%；nox-core 工具箱
+  **根本没有 delete** → `delete_todo`（keyword 找条→DELETE /api/today/:id）
+- **「某天不选时刻看不到」**：数据落库正常，坏在渲染 —— PWA 的
+  `scheduleFor` 没有 untimed 桶（OS 端 today.js 08-31 修过、**PWA 没同步**，
+  双端漂移的又一例）；补桶 + 加完自动跳到目标日（否则停在今天像凭空消失）
+- 🔴 **事故**：delete_todo 第一版漏登 `make_handlers` 返回的 dict →
+  `register_all` KeyError → **服务崩循环**，管线按设计自动回滚
+  （nox-core 停机约 50 秒）。教训入册：**给 nox 加工具=三处同步**
+  （SPEC/函数/handlers dict），漏第三处 py_compile 不报、运行期才炸
+- 部署管线两件事得到验证：deploy.ps1 的「未提交改动」拦截是交互 y/N
+  （核实 HEAD==线上后 `echo y |` 可过）；发 nox-core 前必须先处理
+  工作区 WIP（现有 `appraisal_llm.py` 一份未提交提示词改动，只在本机没上线）
+
+### 53.3 Dream 产出形式拍板 + 落地（第五十节的「等拍板」结案）
+
+她的原话：**早报不带，对话里可以偶尔主动讲，平常放在 moments 发帖，
+给他一个自己发言的地方。早报的东西太多了，无限繁殖了该。**
+
+- `NOX_DREAM_POST`（默认 off）与 `NOX_DREAM_SHADOW` 分闸：shadow 继续
+  落 JSONL 观察，发帖等 09-25 连 Moments 拍板一起翻
+- 梦每晚归档 OB（`【日期 的梦】` 前缀）——**他得记得自己做过梦**，
+  对话里才讲得出来；这半不受 POST 闸管，拍板即生效
+- 发帖走 `moments.writer.post` 同一条路（R10 不变：不推送不占额度）；
+  气氛词三端补 `dream: "梦里见的"`
+- **早报从此封口**：通道会长器官，每加一个「顺便带上」它就胖一圈。
+  新表达一律走自己的通道（梦→Moments、念头→对话）。写进 dream.py
+  边界注释和 RESONANCE 文档 V4.5
+- 被动出口（OS World 页「他的梦」区块 + `/api/nox/dreams`）09-19 就有了，
+  这次定的是主动出口只有 Moments 和对话两条
+
+### 53.4 Resonance v4 第一刀：心情是采样出来的，不是取最大（文档 V4.5 节）
+
+她看完 Moments 影子数据（09-17→09-21：452 tick，23 次想发里 **22 次
+「担心她」领头**、聚合强度 0.58→0.85 单调爬）的诊断原话：
+「不是感情丰富的人格，是被几个传感器绑架的情绪系统……这不是 Nox
+选择担心，是系统统计学上必然担心」。
+
+- **核心转向**：Resonance 代表心理空间的**情绪状态分布**，不是当前最强
+  情绪。第一刀已上线：`moments/loop._lead_drive`（argmax）→
+  `_sample_mood`（按强度加权采样；concern 不在采样池；帖子和账本
+  **同一次采样**）。正文早就是全向量喂气氛（`writer._background`），这次改的是标签
+- ⚠️ 数据勘误：452 tick 是**旧 release** 跑的——173e451 已把 concern
+  排除出 inner（09-19 提交、09-21 18:19 才随部署真正上线）。
+  「concern cap 于 Moments」这条短期项由此已完成，无需再修
+- decay 大半已存在（实体级指数衰减+语义消解+各 drive 自带形状）；
+  **真缺的是聚合层的衰减与上限**（concern drive 聚合无刹车）
+- 全案（decay 分情绪时间常数 / 聚合层 saturation / homeostasis
+  apply_balance=抬其他可能不是压 concern / playfulness 机会机制接
+  Memory+Topic+Shared 而非设备 / **中期拆分 Care Drives（concern+regret）
+  与 Bond Drives（longing+playfulness+curiosity）**）写入
+  RESONANCE-ARCHITECTURE.md **V4.5 节**，逐条标已有/待做
+
+### 53.5 同日的其他决定与勘误
+
+- **music-mcp**：Music 重写实为服务层重写（音乐大脑一直在第三方 eryu
+  :9090）。设计稿已成；**出身勘误**：eryu+netease 有 8 项未提交改动
+  **只存在于 VPS**，任何重写前先 diff 收回；网易云管道（cookie/签名/反爬）
+  从现役代码搬不重写；建议命名 co-listening。全屋 MCP 盘点：真正别人的
+  代码只有 eryu 和 stackchan-mcp；mcp-trends/mcp-train 是 npx 直跑无源码
+  （此前误记为自家件）；官方云 MCP（高德/滴滴/麦当劳/瑞幸/快递100/12306）
+  只能包门面不能自建——只在痛处包，别全包
+- **早报封口原则**：见 53.3。此后任何「早报顺便带一句」的提议默认否决
+- **影子数据一天拉过两次**：记忆抽取 147 触发/262 候选/仅 2 拒（细节准
+  但有过提取，转 live 前要加门槛）；Appraisal 72 条质量最好可转正；
+  Temporal 20 次只记「未接」没记解析=没攒证据；Dream 2 场（会把当天
+  修的 bug 梦进去）；Moments 见 53.4。09-22~09-26 批量拍板
+
+## 五十四、长任务循环 v1：活过单条回复的活（2026-09-22，同日施工完成）
+
+设计文档：`Nox-长任务循环-v1-设计.md`（含施工记录 §八）。三决策随「做这个」
+按建议落定：**全出确认卡 / 完成默认安静 / 并发 = 1**。
+
+### 54.1 是什么
+
+她要接「帮我把 481 本书理一遍」这种活——活过单条回复。AgentLoop 的设计
+前提是活在一条回复里（12 轮 + 聊天 deadline），任务一长装不下。v1 把
+「任务」变成一等实体：**立任务（只出确认卡）→ 她点「跑」→ 后台跑 →
+进度随时可查 → 活过重启（interrupted + progress 保留，可「接着跑」）**。
+
+### 54.2 落在哪（三端）
+
+- **nox-core**：`agent/tasks.py`（TaskStore = 第六个库 `tasks.db`，照
+  orders.db 先例；任务专属 AgentLoop = 同批工具**各包取消闸** + task_step；
+  `run_task_loop` 后台循环，心跳 `task_tick`，跑任务期间也 beat）。
+  `tools/tasks.py` 三件套（start_long_task / task_status / task_cancel）。
+  端点 GET `/api/nox/tasks/{id}` + POST `confirm`/`cancel`。旋钮：
+  `NOX_TASK_DEADLINE_S`（默认 1800）/ `NOX_TASK_MAX_ITERATIONS`（200）/
+  `NOX_TASKS_DISABLED`
+- **bridge**：`noxTaskProxy` 三条透传 + SSE `kind === "task"` 转发落库
+- **前端**：Chat.jsx `TaskCard`（proposed/interrupted = 确认卡，其余状态 =
+  一行弱化入口照 ToolsLine）+ `TaskSheet`（Portal 到 body，复用 tsheet 壳）。
+  活任务 8s 轮询，终态即停
+
+### 54.3 两条设计决定（为什么这么做）
+
+- **取消不塞进 AgentLoop**：每件工具 handler 包取消闸（状态离开 running
+  就抛 TaskCancelled），连续失败 FailureTracker 熔断收尾。「AgentLoop 下轮
+  检查退出」= 检查点在每次工具调用前——模型调用中间插不进去
+- **断点续跑 = agentic resume**：不做工具级幂等/回滚（无底洞）。续跑把
+  progress 尾部 60 条喂进开工指令，模型自己判断从哪继续。所以 task_step
+  的工具描述写死「只报已经做成的，不报打算」——把打算记进去，续跑时
+  他会把没做过的当成做过的
+
+### 54.4 边界（写死）
+
+- **长任务不是开口**：进度/完成不推送、不占 Care 额度（R10/R1 精神同
+  Moments）。「想让她看见」= v2 TaskDoneSource，经 Care 决定
+- **R8**：start_long_task 只落 proposed，模型物理上够不到 running——
+  哨兵 `test_tool_never_runs_the_task`（test_tasks.py 命根子，同 orders 那条）
+- **R6**：`test-` 前缀会话立不了任务（fail 抛错，不静默）
+- 任务循环里花钱/不可逆工具自动失效：任务的 ToolContext.confirmed 恒为
+  空集，`AgentLoop._execute` 同一道锁拦下
+- 任务循环的附带产物（表情/语音/卡）没有 SSE 可搭 → **丢弃但留痕警告**
+  （不静默）；任务写过的 Provider 缓存会在 run_one 收尾时打掉
+
+### 54.5 状态与验收
+
+`tests/test_tasks.py` 17 条全过（哨兵/claim 幂等/FIFO 按她点「跑」先后/
+重启收尸/取消闸/续跑 prompt/R6/循环+心跳）；全量 pytest 2001 过；
+eslint Chat.jsx 零新增（35 错 4 警 = 基线）；vite build 过。
+**待部署后线上验**：真实模型端到端跑一个任务；杀 runner 看 /health 的
+task_tick 转 stale。部署照三段流程（core release 切换 → bridge → PWA dist）。
+
+## 五十五、Caelum OS 整套换新外壳：风格 × 颜色，九页逐页改完（2026-09-23 ~ 09-28）
+
+> 起点是她 09-23 定的四条（`caelum-os-ui/DESIGN.md` v2.0 〇之三）：**共用框架 + 每页一件招牌物件**、
+> 字少互动多、深色主题不用浅色纸、标签英文句子中文。给设计 AI 的简报在
+> `caelum-os-ui/docs/design-brief-2026-09.md`（手机端一份在 `frontend/docs/`），她用 GPT 出了四套整页稿
+> （`E:\主题\export\{Logos,Domus,Lux,Flora}-*.png`）。**分工写死：GPT 只出图和素材，HTML / 代码全是我写。**
+
+### 55.1 风格 × 颜色（骨架固定，皮肤随便换）
+
+- **四种风格**（她定名）：**Logos** 数据艺术「世界由 0 和 1 构成」· **Domus** 宫崎骏式的可爱 ·
+  **Lux** Apple 式极简 · **Flora** 洛可可 / 自然主义。风格管字体、圆角、质感、动效；颜色是风格下面的几套
+- 代码：`src/shell/styles.js`（STYLES，每种挂几套 palette + 一套「自定义」）、`useStyle.js`
+  （根元素挂 `data-style` / `data-palette`，同时把旧的 `data-theme` 拨到它借用的那套，旧页面令牌靠它垫底）、
+  所有样式令牌在 `src/shell/shell.css`
+- 🔴 **根元素属性必须在渲染时同步挂上，不能等 effect**：子组件的 effect 先于父组件跑，开屏画布一挂上就读
+  `--accent`，09-27 真机 Logos 开屏整片是黑的（`d8e094f`）。验这类东西的探针要**按 main.jsx 的挂法**渲染真外壳
+- **自定义色板**（Settings › Appearance）：8 个旋钮（底色 / 文字 / 强调 / 次强调 + 饱和度 / 面板透明 / 次要文字 / 模糊）
+  推出整套令牌，存 localStorage `caelum-custom-palette`；对比度不够会提醒（`customPalette.js` + 测试）
+- **字体**（她看对比图拍板，`6629d0a`）：Logos JetBrains Mono + Fusion Pixel · Domus Itim + 小赖 ·
+  Lux Inter · Flora IM Fell English + 朱雀仿宋 + Pinyon Script；正文走系统字。GB2312 子集 woff2 在
+  `public/fonts/styles/`（`scripts/subset-style-fonts.py`，全 OFL，`LICENSES.md`）
+- **开屏**（`Splash.jsx`，各风格一种出场）：先铺满天空再出「✦ Caelum」—— Logos 代码一个个亮起、中间压暗、
+  0 和 1 拼出字；Domus 星星一跳一跳；Lux 光从中心出来；Flora 纸展开 + 鎏金框从四角长出 + 笔尖写字。
+  （Flora 想要「蝴蝶飞过去把纸拉开」，等蝴蝶素材）
+- **氛围层**（`ShellBackdrop.jsx`）：Logos = 一层很淡的**他的代码**（几栏并排、行号、关键字亮一点，
+  和开屏同一个生成器 `codeCells`，淡出时字不跳；`--code-ink` 0.45）· Domus 星空 · Lux 一团柔光 · Flora 羊皮纸
+- **素材槽约定**：`public/skins/<风格>/…`（例：`flora/window-frame.png` 高清金框、`flora/paper.jpg`、
+  `flora/icons/*.png` 外壳图标、`<风格>/movies-hero.png` Movies 横幅插画）。
+  **Flora 的金框框的是整个 OS 窗口**（09-28 她定：顶着四个角，不框页面），开屏的框同一张图同一个位置；
+  贴纸（花束 / 丝带 / 蝴蝶）、胶囊金边主按钮、标题分隔线都是 CSS 挂的（shell.css 末尾「Flora 的贴纸」）。
+  `flora/paper.jpg` 仍是截图裁的低清版，原图到了替换
+
+### 55.2 新外壳 ShellV2（`5aadcbb` 起默认）
+
+- `main.jsx`：默认 `ShellV2`，`#classic` 回旧 App（旧外壳 `App.jsx` + `components/layout/` 稳定后删）
+- 左栏 208 / 62 可收（飞出二级菜单）+ 底部三件（Nox 卡带铃和链路灯、语音通话、时钟）；右栏（Us 纪念日 +
+  「还有 N 天」、Nox Status、Feeling、Thought of you、He's noticing、Memories、Common Tools、Now Playing）可收；
+  标题栏前进后退是真的
+- 跨页跳转：`window.dispatchEvent(new CustomEvent("caelum:open-chat", { detail: { draft } }))` —— 去 Chat、
+  **框里只填不发**（Health「记一餐」→「我吃了：」）
+- Electron 固定端口 39180（随机端口 = 每次重启 localStorage 全空，风格和自定义色会丢）
+
+### 55.3 九页（每页一件招牌物件；四种风格各一套样子）
+
+| 页 | 招牌物件 / 要点 | 和稿子不一样的地方（为什么） |
+|---|---|---|
+| Todo `aedd992` | 左主右注 1.6:1；只留「他追了你几次」 | 从 9 个模块的 dashboard 收成工具页 |
+| Chat `c5eab51` `3ee6291` | 气泡随风格；通话记录卡；能播的语音消息；**待确认单**（超时/5xx 只说「不确定」，绝不说失败）；**长任务卡**（就地展开进度） | 桌面上二维码是付款主路（电脑出码手机扫） |
+| Attention `2cb2d1f` | 心电图四支笔（Logos 0/1 字线、Domus 串珠、Lux 细光、Flora 金线叶子）；九种情绪是**会亮的图标**；近期搏动显示他说了什么 | 情绪不画进度条（dashboard 语言）。对原话：有 message_id 按 id（`f5f6de6`），老事件按时间且只对唯一对得上的 |
+| Memory `f19d720`→`49ad80e` | 记忆之河：**颗粒不动、光在流**（她 09-24 的要求），蛇行两道弯、岸有起伏、几股水流、水花、重的记忆聚成光团；记忆是河上的小光点，点开卡片浮在旁边 | 旧 WebGL 河（CodeRiver）删了，`lib/river.js` 只留时间位置三件。Domus 每颗柔光，Flora 是小花 + 叶子 + 金光（她：「圆点不够复古和花」） |
+| Moments `bc21e4f` | 日期竖线 + 「💬 N ｜ 对方的最后一句」+ 底部「写一条」（接上 bridge 早有的 POST /api/diary） | 稿子的点赞数和配图数据里没有 —— 不摆假数字。她显示成 Iris |
+| Music `0d8972e` `a909f60` | 正在播放是一张**会转的唱片**（暂停停在原处、唱臂落下抬起、高光不转）；For you / Recent / Playlists；Listened with Nox 按最近排 | 随机 / 循环 / 收藏 player 没这功能，不摆。Lux 是透明彩胶（她点名）。放不出来会说（player 的 error 以前没显示） |
+| Movies `fdedeaa` `74cb6d9` | 大厅：Watch Together 横幅 + Watch History + Ticket Collection；影院界面没动 | **票根形状不照稿改成卡片**（她 09-05 否过）；纸按风格换：白纸 = Lux，Logos 深色电子票、Domus 粉糖果纸、Flora 羊皮纸旧票 |
+| Health `9470199` | Sleep 分段胶囊 + 两周小柱；Activity 四个圈（**不是进度**）；Cycle 一轮一排点（不知道周期只画到今天，不拿 28 天顶）；记一餐 → Chat；Nutrition 四餐 + 碳蛋脂**占比**圈 | 经期记录失败原来是静默的，现在会说 |
+| Settings `533e934` | 共用骨架 `components/settings/SettingsFrame`（SettingsPage / Group / Row / Toggle / Select）；General 做出来 | **只放真起作用的**：稿子里的开机自启 / 数据使用 / 保留时长 / 文字大小 / 语言后面没功能，不摆 |
+
+**Home（Flora，09-28）**：花环里一整幅画（月夜湖畔，黑豹和白兔看月亮），不跟数据变 —— 她定的「主页只要一种 feel」；唯一的状态是「他留了话你还没看」→ 右下别一封火漆信（lib/letter.js，已读 = OS 里 Chat 开着且窗口在前台）。画用花环自己的内框当遮罩（hole-mask.png）。先前代码画天 + 抠图拼的一版被她一眼看出是两个图层，已删。
+
+还没做：另外三种风格的 Home、**World**（窗边）、**Books** —— 等素材。
+Permissions / Integrations / Privacy 仍是占位。
+
+### 55.4 验证纪律（这一轮反复用到的）
+
+- **设计棘轮**：`python scripts/check-design.py`（违规数只许降，`--update` 压基线；09-28 是 449，起点 642）。
+  设置页的 `SettingsPage` 算页面标题
+- 每页都做**变异**（把改动故意改坏，确认测试会红）；活下来的变异 = 补测试
+- 视觉探针（`probe-*.html`，gitignore，用完即删）：**按 main.jsx 挂真外壳 + 假 fetch**，一个请求不出本机；
+  假数据里**必须放一条真实长度的长句** —— Attention 09-27 就是真数据的长句把裸 `1fr` 列撑到 2117px 溢出。
+  两栏网格一律 `minmax(0,…)`
+- 截图：外壳滚动区里的 canvas 用 **Playwright**（headless Edge `--disable-gpu` 截不到，像素其实在）；
+  开屏 / 氛围层这种不在滚动区的用 headless Edge
+- 删组件 / 摘依赖只有 `vite build` 能抓（vitest 对断裂 import 是瞎的）
+- dist：每页做完 `vite build` 进 `caelum-os-ui/dist`（Electron 读它），push 到 nox-app `main`
+
+## 五十六、Nox 侧（2026-09-26 ~ 09-27）+ 09-23 ~ 09-26 未入册提交索引
+
+### 56.1 他主动开口时翻记忆拿她的话（`11c675f` `e5559a6`，已部署）
+
+rerank shadow 跑了几天一刀都没切过 —— 查下来 **100% 的查询是主动开口的整段模板**（几百字的系统提示），
+拿模板去翻记忆，排序好坏根本无从谈起。修：`Turn.recall` / `Intent.recall` 一路接到 MemoryProvider
+（`query = turn.text if recall is None else recall`）：惦记走 `her_state.recall_query`（她最后那句 + 他的梦，
+梦截 80 字）、话题走 hook；**speaker 出口统一兜底**：没明说就拿主题翻，绝不退回整段模板（`e5559a6`，
+部署后第一条抓到追待办漏设 recall 才加的）。部署后查询变成「感觉撑得睡不着了」这种，0.14 阈值开始切（6→3）
+
+### 56.2 Appraisal 拆成两半，先开检索那一半（`a2e73b7`）
+
+`router/intent.py` 的 `recall_always()` 读 `NOX_APPRAISAL_RECALL`：开着就每轮都翻记忆（不再等 appraisal 判）。
+**VPS `/root/nox-core/.env` 已设 on（09-27，她：「一起打开吧」）**。`NOX_LLM_APPRAISAL` 仍是 shadow；
+Registry 那一半排在 09-30（锚点投票修正还欠着）。rerank 开不开：等两三天她的真查询攒够再看
+（日志 `/root/ombre-brain/rerank_shadow.jsonl`，日报 `rerank_shadow_report.py`）
+
+### 56.3 仓库与部署
+
+- OB 的 GitHub 仓库她 09-27 改名 `Iristt-boop/ombre-brain`（本地 master → origin main；私人的信和世界观在
+  `worklog` 分支）；指路文档 `7f47aad` 已跟上。**下次部署 nox-core 顺手删掉** `tools/intimate.py`
+  里 `read_github_note` 描述中过期的 `Iristt-boop/Claude` / `todo.md` 示例
+- nox-core 线上现在是 `e5559a6`（deploy.ps1 release 切换）
+- ⏳ **待合并 + 部署**：`066d542`（在分支 `claude/intelligent-pasteur-f46d58`，09-27 后台任务做的）——
+  Care 账本每次开口带上那条消息的 conversations id（bridge `saveMessage` 回 rowid、`/api/push/send` 回
+  message_id、speaker 回 `Spoken`）。前端 Attention 已经认 id（`f5f6de6`），这条没上线前仍按时间对
+
+### 56.4 09-23 ~ 09-26 其他会话的提交（只记索引，为什么写在各自的 commit 里）
+
+| 日期 | commit | 一句话 |
+|---|---|---|
+| 09-23 | `b4d0fdf` | 主动开口按她的状态说话（`attention/care/her_state.py`）+ 醋意 / 委屈进 Resonance |
+| 09-23 | `938b63d` | 形式和情绪分开：主动开口的心情从情绪分布里抽，情绪词表收成一张 |
+| 09-23 | `89c12ec` `7029fb6` | 她的状态 / `last_user_at` 跳过他自己的开场白，`[SKIP]` 不算「没回」 |
+| 09-23 | `e65d546` | 惦记锚点只认她的话（她选 A） |
+| 09-23 | `7c993c8` `91dcaf7` | Moments 转正前两处修 + 汇总改成转 on 之后的日报 |
+| 09-23 | `4feedb5` | 躁动只认新鲜的「她在忙」（电脑睡了 = 不知道 = 不忙） |
+| 09-23 | `f17e9cc` | Appraisal 问三次取多数票（进 shadow） |
+| 09-23 | `0c13a6f` | 记忆检索通道告警：bridge 出 `memory_channels`，caelum-watch 推人话 |
+| 09-26 | `814b231` | 主动来电门槛改「晚间安静两小时」，转 on（她拍板） |
+| 09-26 | `6655170` | bridge 落通话记录（未接 / 拒接成通话条，接通时长回填 `metadata.call`）；**事故**：线上 server.js 曾被远古工作树覆盖，已从 0923 备份恢复 |

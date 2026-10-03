@@ -32,7 +32,7 @@ KINDS = frozenset({
     "weekday_next",    # **下**周三 —— 下一日历周的那天
     "weekday_bare",    # 光秃秃的「周三」 —— 识别得出，但**解析不了**，见下
     "month_end",       # 月底
-    "duration",        # 两个小时后 / 十分钟后
+    "duration",        # 两个小时后 / 三天前 / 这三个小时 —— **必须带方向**，见 DIRECTIONS
     "deadline",        # 「……之前」，包住另一个 intent
     "last_night",      # 昨晚 —— **跨午夜**，不是一个日历日，见 resolver
     "vague",           # 一会 / 回头 / 改天 —— 识别得出，但**故意不解析**，见下
@@ -40,6 +40,22 @@ KINDS = frozenset({
 
 #: 时段修饰符。边界在 `temporal.SLOTS`（第一层），这里只认名字。
 SLOT_NAMES = frozenset({"morning", "afternoon", "evening", "late_night"})
+
+#: 🔴 duration 的方向（糖糖 2026-09-28）。
+#:
+#: 第一版的 duration 没有方向，Resolver 一律往后加 —— shadow 里
+#: 「这3个小时我都连不上你」被解析成**三小时之后**。
+#: 时长本身没有方向，方向是她那句话给的，所以由模型认、**Resolver 不猜**：
+#:
+#:     direction  span   例子                  落点
+#:     future     否     两个小时后             一个点 ref + d
+#:     past       否     三天前                 一个点 ref − d
+#:     past       是     这三个小时连不上你     一段 [ref − d, ref)，持续到现在
+#:     future     是     接下来两小时都在忙     一段 [ref, ref + d)
+#:
+#: 「三个小时前」和「这三个小时」差的不是方向，是**点还是段** ——
+#: 只加 direction 的话后者会被压成「三小时前那一刻」，所以 span 一起加。
+DIRECTIONS = frozenset({"past", "future"})
 
 #: 每个 kind 允许带哪些字段。**多一个少一个都拒绝** ——
 #: 这张表是「封闭集合」在字段层面的那一半。
@@ -83,10 +99,23 @@ class Intent:
     before: "Intent | None" = None
     #: 修饰符，不是 kind。只能挂在算得出 date 的 kind 上
     slot: str | None = None
+    #: duration 专用：past / future，**必填**（见 DIRECTIONS）
+    direction: str | None = None
+    #: duration 专用：True = 一段持续的时间，不是一个点。默认点
+    span: bool = False
 
     def __post_init__(self) -> None:
         if self.kind not in KINDS:
             raise ValueError(f"表外的 kind：{self.kind!r}（封闭集合是 {sorted(KINDS)}）")
+
+        if self.kind == "duration":
+            if self.direction not in DIRECTIONS:
+                #: 🔴 不给默认值。给了 future 就是第一版那个 bug 原样回来
+                raise ValueError(f"duration 必须说明方向（past/future），拿到 {self.direction!r}")
+            if not isinstance(self.span, bool):
+                raise ValueError(f"span 只能是 true/false，拿到 {self.span!r}")
+        elif self.direction is not None or self.span:
+            raise ValueError(f"{self.kind} 不该带 direction / span —— 那是 duration 的字段")
 
         allowed = _FIELDS[self.kind]
         given = {f for f in ("n", "weekday", "days", "hours", "minutes", "before")
@@ -117,10 +146,12 @@ class Intent:
     def to_dict(self) -> dict[str, Any]:
         """只导出有值的字段，省得一堆 null 进日志。"""
         d: dict[str, Any] = {"kind": self.kind}
-        for f in ("n", "weekday", "days", "hours", "minutes", "slot"):
+        for f in ("n", "weekday", "days", "hours", "minutes", "slot", "direction"):
             v = getattr(self, f)
             if v is not None:
                 d[f] = v
+        if self.span:
+            d["span"] = True
         if self.before is not None:
             d["before"] = self.before.to_dict()
         return d
@@ -133,15 +164,20 @@ class Intent:
         """
         if not isinstance(d, dict):
             raise ValueError(f"intent 必须是对象，拿到 {type(d).__name__}")
-        known = {"kind", "n", "weekday", "days", "hours", "minutes", "slot", "before"}
+        known = {"kind", "n", "weekday", "days", "hours", "minutes", "slot", "before",
+                 "direction", "span"}
         unknown = set(d) - known
         if unknown:
             raise ValueError(f"intent 里有不认识的字段：{sorted(unknown)}")
         before = d.get("before")
+        span = d.get("span", False)
         return cls(
             kind=str(d.get("kind", "")),
             n=d.get("n"), weekday=d.get("weekday"),
             days=d.get("days"), hours=d.get("hours"), minutes=d.get("minutes"),
             slot=d.get("slot"),
+            direction=d.get("direction"),
+            #: 模型写 null 当成没给（= 点）；别的非布尔值交给 __post_init__ 拒
+            span=False if span is None else span,
             before=cls.from_dict(before) if before is not None else None,
         )

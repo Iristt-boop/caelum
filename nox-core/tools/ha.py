@@ -123,8 +123,17 @@ def make_handlers(client: McpClient, world_ref=None) -> dict[str, object]:
     """
 
     def _call(tool: str, args: dict) -> str:
+        # 工具调用展示（2026-09-19）：每次 HA 调用上报子步骤 —— 这是
+        # 所有家居工具的收口，在这里报一次等于每件工具至少有一层可展开
+        ctx = context.current()
+        if ctx is not None:
+            import json as _json
+            ctx.report_step(f"请求家居服务：{tool}",
+                            raw_cmd=_json.dumps(args, ensure_ascii=False)[:200])
         r = client.call(tool, args)
         if not r.ok:
+            if ctx is not None:
+                ctx.report_step(f"家居服务返回失败：{r.error}", status="error")
             raise RuntimeError(f"家居控制失败: {r.error}")
         return r.text or "（服务没有返回内容）"
 

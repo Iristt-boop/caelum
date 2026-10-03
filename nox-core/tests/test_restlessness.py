@@ -238,6 +238,7 @@ class Test真跑一轮:
         self._pend(a)
         #: 她在打游戏，已经进入状态
         a.link._current = ("三角洲行动", 600)
+        a.link._last_activity_at = datetime.now(timezone.utc)  # 心跳刚到：信号是新鲜的
 
         d = live.get("/api/nox/resonance").json()
         assert d["ok"] and d["enabled"]
@@ -260,5 +261,19 @@ class Test真跑一轮:
     def test_他没话想说的时候也没有躁动(self, live):
         a = self._attention(live.app)
         a.link._current = ("三角洲行动", 600)
+        a.link._last_activity_at = datetime.now(timezone.utc)  # 心跳刚到：信号是新鲜的
         drives = live.get("/api/nox/resonance").json()["drives"]
         assert "restlessness" not in drives
+
+
+    def test_电脑睡了_窗口信号过期就不算她在忙(self, live):
+        """🔴 2026-09-23：她电脑一睡眠，最后那个窗口一直挂在 `_current` 里，
+        「她在忙」整夜成立 → 躁动整夜 0.5 → Moments 凌晨被它推着想发帖。
+        信号过期（超过 SENSE_STALE_S 没心跳）= 不知道 = 不忙。"""
+        from datetime import timedelta
+        a = self._attention(live.app)
+        self._pend(a)
+        a.link._current = ("三角洲行动", 600)
+        a.link._last_activity_at = datetime.now(timezone.utc) - timedelta(hours=3)
+        drives = live.get("/api/nox/resonance").json()["drives"]
+        assert "restlessness" not in drives, "电脑睡了三小时，他还以为她在打游戏"

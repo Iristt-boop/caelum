@@ -202,6 +202,50 @@ def test_empty_text_makes_no_event(captured):
     assert [e for e in events if e.source == "chat"] == []
 
 
+def test_共影塞进主会话的提示词_读文字的消费方一个都不读(captured, monkeypatch):
+    """🔴 2026-09-28：共影把场景描述 + 字幕拼成 user 消息塞进**主会话**，
+    09-22 那晚规则情绪、醋意、「她说算了」、意义推断全把它当她的话读了。
+
+    字幕里有「男生」有「算了」—— 读了的话，醋意和低落会被一部电视剧拨动。
+    """
+    import api.server as server
+    from attention import appraisal_llm
+    from attention.jealousy import JealousyState
+
+    client, events = captured
+    read = []
+    monkeypatch.setattr(JealousyState, "on_message",
+                        lambda self, now, text: read.append(("醋意", text)))
+    #: 这一个没有 `if text` 守着，空串也会调 —— 读到空串不算读了
+    monkeypatch.setattr(server, "looks_like_giving_up",
+                        lambda text: text and read.append(("算了", text)))
+    #: 规则版情绪（喂促狭的那个）
+    from attention.appraisal import RuleAppraiser
+    real_appraise = RuleAppraiser.appraise
+    monkeypatch.setattr(RuleAppraiser, "appraise",
+                        lambda self, text, *a, **k: read.append(("规则情绪", text))
+                        or real_appraise(self, text, *a, **k))
+    #: 意义推断：开着 shadow 时，读到文字的轮次才会走到这道会话闸
+    #: （`mode()` 本身别处也调，拿它当探针会误报）
+    monkeypatch.setenv("NOX_LLM_APPRAISAL", "shadow")
+    real_injected = appraisal_llm.is_injected
+    monkeypatch.setattr(appraisal_llm, "is_injected",
+                        lambda sid: read.append(("意义推断", sid)) or real_injected(sid))
+
+    r = client.post("/chat", json={
+        "text": "【共影·主动】她在看片，刚到第 106 秒。【字幕】算了，那个男生明天就走",
+        "session_id": "s-4",
+    })
+    assert r.status_code == 200
+    assert [e for e in events if e.source == "chat"] == [], "字幕进了 Attention"
+    assert read == [], f"读文字的消费方读到了程序拼的提示词：{read}"
+
+    #: 对照组：她自己说的，同一批消费方都要读到 —— 否则上面那条是空集通过
+    client.post("/chat", json={"text": "算了，那个男生明天就走", "session_id": "s-4"})
+    assert {k for k, _ in read} == {"醋意", "算了", "规则情绪", "意义推断"}, read
+    assert [e for e in events if e.source == "chat"], "她的原话没进 Attention"
+
+
 def test_handle_failure_does_not_break_chat(captured, monkeypatch):
     """engine 炸了也绝不影响对话主链。
 

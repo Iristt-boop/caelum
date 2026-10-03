@@ -74,6 +74,39 @@ class ToolContext:
     #: 谁往里加东西，谁就要能回答「她是在哪一次点击里同意的」。
     confirmed: set[str] = field(default_factory=set)
 
+    #: **当前这件工具**的子步骤（工具调用展示的第二层，2026-09-19）。
+    #: 工具经 `report_step()` 上报「我内部做了哪几步」，loop 在每件工具
+    #: 执行前清空、执行后收走装进 tool_end 帧（agent/loop.py）。
+    #: 挂在 ctx 上而不是工具返回值上，是为了**工具不用改签名** ——
+    #: 不上报的工具有空列表，前端就不画第二层，谁都不受伤。
+    pending_steps: list[dict[str, Any]] = field(default_factory=list)
+
+    def report_step(self, desc: str, *, status: str = "success",
+                    raw_cmd: str | None = None, diff: str | None = None,
+                    url: str | None = None, type: str = "run_command") -> None:
+        """上报一条工具内部子步骤（⌨️ run_command 那一层）。
+
+        `desc` 是给人看的友好描述，平时只显示它；`raw_cmd` 是底层命令，
+        前端悬停才看（调试用）；失败/警告用 status 标，前端会高亮。
+        展示层的事不该带塌工具本身 —— 所以这里什么都不抛。
+
+        `url` 是**这一步的来源**（2026-09-19 加，糖糖：「web_search … 下方要列
+        都搜索了哪些网址，要有来源」）。现在只有 web_search 用：每搜到一条网页
+        报一条。不塞进 `desc` 里是因为那是个「给人看的一句话」—— 链接要能被
+        点开、能被复制，才算来源。
+        """
+        entry: dict[str, Any] = {"desc": desc, "type": type, "status": status}
+        if raw_cmd:
+            entry["raw_cmd"] = raw_cmd
+        if diff:
+            entry["diff"] = diff
+        if url:
+            entry["url"] = url
+        try:
+            self.pending_steps.append(entry)
+        except Exception:  # noqa: BLE001
+            pass
+
     def wrote(self, *providers: str) -> None:
         """登记「我刚改了这些 Provider 管的状态」。
 
@@ -146,6 +179,17 @@ class ToolContext:
         """
         self.attachments.append({
             "type": "order", "order_id": order_id, "card": card, **meta,
+        })
+
+    def attach_task(self, task_id: str, card: dict[str, Any], **meta: Any) -> None:
+        """标记「这张长任务确认卡要发到聊天里」（2026-09-22，长任务 v1）。
+
+        卡上只有 goal 和步骤提示 —— 和 order 卡同一个纪律：
+        **此时任务还没有开跑**，她点「跑」走 /api/nox/tasks/{id}/confirm，
+        模型够不到 running。
+        """
+        self.attachments.append({
+            "type": "task", "task_id": task_id, "card": card, **meta,
         })
 
     def attach_meme(self, tag: str, **meta: Any) -> None:

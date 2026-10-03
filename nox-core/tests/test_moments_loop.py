@@ -82,8 +82,10 @@ class FakeAttention:
     """
 
     def __init__(self, drives: dict | None = None, last_contact=None,
-                 raise_on_drives: bool = False) -> None:
+                 raise_on_drives: bool = False,
+                 details: dict | None = None) -> None:
         self._drives = dict(drives or {})
+        self._details = dict(details or {})
         self.longing = SimpleNamespace(last_contact=last_contact)
         self.raise_on_drives = raise_on_drives
         self.calls: list = []
@@ -95,7 +97,9 @@ class FakeAttention:
         return {
             name: Drive(
                 name=name, intensity=float(v), load=float(v),
-                because=[], evidence=[], source_count=0, computed_at=now,
+                because=list(self._details.get(name, {}).get("because", [])),
+                evidence=list(self._details.get(name, {}).get("evidence", [])),
+                source_count=0, computed_at=now,
             )
             for name, v in self._drives.items()
         }
@@ -154,10 +158,12 @@ def _fake_writer(monkeypatch, *, body: str | None = "今天风挺大，窗户没
     """
     calls: dict[str, list] = {"generate": [], "post": []}
 
-    def fake_generate(adapter_ref, drives, recent, impulse_why, clock=""):
+    def fake_generate(adapter_ref, drives, recent, impulse_why, clock="",
+                      context=None):
         calls["generate"].append({
             "adapter_ref": adapter_ref, "drives": dict(drives),
             "recent": list(recent), "impulse_why": impulse_why, "clock": clock,
+            "context": context,
         })
         if boom_at == "generate":
             raise RuntimeError("模型炸了")
@@ -188,7 +194,8 @@ class Rig:
                  drives: dict | None = None, last_contact=..., messages: list | None = None,
                  rng: float = 0.0, now: datetime = NOW, attention_raises: bool = False,
                  body: str | None = "今天风挺大，窗户没关", post_id: str | None = "post-1",
-                 boom_at: str | None = None, recent: list | None = None) -> None:
+                 boom_at: str | None = None, recent: list | None = None,
+                 drive_details: dict | None = None) -> None:
         self.mode = mode
         self.now = now
         self.store = FakeStore(state)
@@ -198,6 +205,7 @@ class Rig:
                 now - timedelta(minutes=999) if last_contact is ... else last_contact
             ),
             raise_on_drives=attention_raises,
+            details=drive_details,
         )
         self.sessions = FakeSessions(messages)
         self.bridge = FakeBridge(post_id=post_id or "post-1", recent=recent)
@@ -454,7 +462,7 @@ def test_the_dice_can_win(monkeypatch):
 
 
 def test_shadow_only_computes_and_never_posts(monkeypatch):
-    """🔴 shadow 只算不发：骰子中了也**不生成、不落帖、不动计数**。
+    """🔴 shadow 真生成正文，但**绝不落帖、绝不动计数**。
 
     这是「线上验证两步走」的第一步（设计文档第七节）：先看它一天想发几条。
     影子模式里落一条真帖是这个功能最坏的一种坏 —— 她会在 Moments 里看到
@@ -462,11 +470,16 @@ def test_shadow_only_computes_and_never_posts(monkeypatch):
     偷偷加 `count` 也一样坏：影子会吃掉真实配额，等开 `on` 的时候
     一天只剩一条。
 
+    ⚠️ 2026-09-18 改：shadow **要**生成正文。原来直接 return 的话，
+    糖糖验收标准的后一半（「发出来的东西像不像他自言自语」）三天完全没被
+    观测到 —— `writer.generate` 一次都没跑过。现在先生成、记进记录、
+    打进日志，但绝不调 `writer.post`、绝不动计数。
+
     能挡：shadow 分支后面忘了 `return`（接着往下真的发一条）；
-          shadow 里调 `generate`（白花模型的钱）；shadow 里落盘计数。
+          shadow 里落盘计数；shadow 不生成（那样测试 11 会红）。
     不能挡：`why_not_posted` 的措辞 —— 只钉了「本来会发」这个意思在不在。
     """
-    rig = Rig(monkeypatch, mode="shadow", rng=0.0)
+    rig = Rig(monkeypatch, mode="shadow", rng=0.0, body="今天的风")
 
     rec = rig.run()
 
@@ -474,10 +487,57 @@ def test_shadow_only_computes_and_never_posts(monkeypatch):
     assert rec.dice == 0.0, "shadow 也要照常掷骰子 —— 不然分布是假的"
     assert rec.dice_p is not None and rec.dice_p > 0
     assert "本来会发" in rec.why_not_posted, "影子记录要说清这一刻本来会发"
-    assert rig.calls["generate"] == [], "shadow 不花模型的钱"
+    assert rec.body == "今天的风", "shadow 要记下「这一刻他会写什么」"
+    assert len(rig.calls["generate"]) == 1, "shadow 也要生成（验收的后一半）"
     assert rig.calls["post"] == []
     assert rig.bridge.posts == [], "shadow 绝不落帖"
     assert rig.store.writes == [], "shadow 不许动计数（那会偷偷吃掉真实配额）"
+
+
+def test_shadow_generates_a_body_but_never_posts_or_counts(monkeypatch):
+    """🔴 shadow 命中：`reason="shadow"`、`body=<正文>`、`posted=False`，
+    `writer.post` 和计数**一次都没被碰过**。
+
+    糖糖要的验收标准有两半：「他一天想发几条」和「发出来的东西像不像他
+    自言自语」。原来 shadow 在第 ⑦ 步直接 return，`writer.generate`
+    一次都没跑过 —— 后一半三天完全没有观测到。现在先生成、记进记录、
+    打进日志，但绝不落库。
+
+    能挡：shadow 那一步改回直接 return（不生成，这条会红在 body 上）、
+          顺手调了 `writer.post` / `store.set_source_state`（吃真实配额）。
+    不能挡：正文写得好不好 —— 那是线上人看的事。
+    """
+    rig = Rig(monkeypatch, mode="shadow", rng=0.0, body="今天的风")
+
+    rec = rig.run()
+
+    assert rec.reason == "shadow"
+    assert rec.body == "今天的风"
+    assert rec.posted is False
+    assert len(rig.calls["generate"]) == 1, "shadow 这一步要真的生成一次"
+    assert rig.calls["post"] == [], "shadow 绝不调 writer.post"
+    assert rig.store.writes == [], "shadow 绝不动计数"
+
+
+def test_shadow_generation_failure_is_recorded_as_write_failed(monkeypatch):
+    """shadow 想发但写不出来：`reason="write_failed"`、`body=""`、照样不落库。
+
+    「本来会发出去」和「想发但写不出来」必须在日志里**数得开** ——
+    前者是设计（shadow 不落帖），后者是坏了（模型没给 / 超长 / 调用炸了）。
+    混成一个数的话，模型挂三天看起来也像「他这三天什么都没想写」。
+
+    能挡：生成失败时照样记 `reason="shadow"`、或者把半截正文记下来。
+    不能挡：失败的具体原因（超长 / 空文本 / 异常）—— 那是 writer 的测试。
+    """
+    rig = Rig(monkeypatch, mode="shadow", rng=0.0, body=None)
+
+    rec = rig.run()
+
+    assert rec.reason == "write_failed"
+    assert rec.body == ""
+    assert rec.posted is False and rec.post_id is None
+    assert rig.calls["post"] == []
+    assert rig.bridge.posts == [] and rig.store.writes == []
 
 
 # ---------------------------------------------------------------- 成功落盘
@@ -494,6 +554,8 @@ def test_a_successful_post_is_written_to_the_store(monkeypatch):
           `at` 和 `last_post_at` 用了两个不同的时刻。
     不能挡：落盘失败怎么办（那是 `logger.warning` 之后照样返回，走不出去红）。
     """
+    #: v4 起心情是采样的 —— 钉住随机源，uniform=0 落在第一个（longing）
+    monkeypatch.setattr("moments.loop.random.uniform", lambda a, b: 0.0)
     rig = Rig(monkeypatch, messages=[
         {"role": "user", "text": "在吗", "created_at": "2026-09-15T11:00:00+00:00"},
         {"role": "assistant", "text": "在", "created_at": "2026-09-15T11:01:00+00:00"},
@@ -502,6 +564,7 @@ def test_a_successful_post_is_written_to_the_store(monkeypatch):
     rec = rig.run()
 
     assert rec.posted is True and rec.post_id == "post-1" and rec.reason == ""
+    assert rec.body == "今天风挺大，窗户没关", "发了的那条要把正文记进 body"
     state = rig.store.source_state["moments"]
     assert state == {
         "date": "2026-09-15",
@@ -520,6 +583,55 @@ def test_a_successful_post_is_written_to_the_store(monkeypatch):
     assert rig.calls["post"][0]["bridge"] is rig.bridge
     assert rig.calls["post"][0]["drive"] == "longing", "落库要的是主导 drive 的**名字**"
     assert rig.calls["post"][0]["text"] == "今天风挺大，窗户没关"
+
+
+def test_the_posted_drive_never_names_an_excluded_drive(monkeypatch):
+    """🔴 落库的 `drive` 也只从**参与算分**的 drive 里挑。
+
+    `impulse.py` 的 `_lead()` 已经只从算分的那几个里挑（不然 `why` 会说谎）。
+    落库这一个字段是同一条链的下一截：concern 0.9 但没参与算分，
+    这一条帖子是 longing 0.7 压出来的 —— 前端按 `drive` 渲染成
+    「担心她」，糖糖就以为他是因为担心她才写的，而正文根本不是那件事。
+    账本（`note_moment`）用的也是这个字段，一起受影响。
+
+    能挡：`_sample_mood` 的采样池只含参与算分的 drive（这条会红成 `concern`）。
+    不能挡：正文内容对不对 —— 那只能人看。
+    """
+    monkeypatch.setattr("moments.loop.random.uniform", lambda a, b: 0.0)
+    rig = Rig(monkeypatch, drives={"concern": 0.9, "longing": 0.7,
+                                   "playfulness": 0.6})
+
+    rec = rig.run()
+
+    assert rec.posted is True
+    assert rig.calls["post"][0]["drive"] == "longing", (
+        "concern 没参与算分，不该被记成这条帖子的 drive")
+
+
+def test_the_mood_is_sampled_from_the_vector_not_argmax(monkeypatch):
+    """她 09-21 的 v4：心情是**采样**出来的，不是取最大。
+
+    心里 longing 0.7 / playfulness 0.6 的人，那 0.6 的促狭也该有
+    说话的时候 —— uniform 落进 playfulness 的累计区间就归它。
+    """
+    monkeypatch.setattr("moments.loop.random.uniform", lambda a, b: 0.71)
+    rig = Rig(monkeypatch, drives={"longing": 0.7, "playfulness": 0.6})
+
+    rec = rig.run()
+
+    assert rec.posted is True
+    # total=1.3，r=0.71 越过 longing 的 [0, 0.7] 区间 → 落在 playfulness
+    assert rig.calls["post"][0]["drive"] == "playfulness"
+
+
+def test_the_mood_sampling_pool_excludes_concern(monkeypatch):
+    """concern 权重再大也不在采样池里：池子只含参与算分的 drive。"""
+    seen = set()
+    for _ in range(30):
+        seen.add(loop._sample_mood(
+            {"concern": 0.95, "longing": 0.4, "curiosity": 0.3}))
+    assert "concern" not in seen
+    assert seen <= {"longing", "curiosity"}
 
 
 def test_the_count_resets_when_the_day_rolls_over(monkeypatch):
@@ -565,14 +677,19 @@ def test_generate_failure_never_escapes(monkeypatch, caplog):
     assert rec is not None and rec.reason == "write_failed"
     assert rec.posted is False and rec.post_id is None
     assert rig.calls["post"] == [], "没有正文就不该落库"
-    assert rig.bridge.posts == [] and rig.store.writes == [], "没发出去不占配额"
+    assert rig.bridge.posts == []
+    #: 「不占配额」= 不碰 count / last_post_at。2026-09-23 起写失败会记一笔欠账
+    #: （owed_at，见 OWED_TTL_MIN），那只是「下一 tick 补写」，不吃配额
+    assert all(set(w["value"]) <= {"owed_at"} for w in rig.store.writes), (
+        "没发出去不占配额", rig.store.writes)
 
     boom = Rig(monkeypatch, boom_at="generate")
     with caplog.at_level(logging.WARNING):
         rec2 = boom.run()  # ← 抛出来的话这条测试就红在异常上
 
     assert rec2.reason == "write_failed"
-    assert boom.bridge.posts == [] and boom.store.writes == []
+    assert boom.bridge.posts == []
+    assert all(set(w["value"]) <= {"owed_at"} for w in boom.store.writes), boom.store.writes
     assert _warnings(caplog) == 1, "炸了必须留痕，不然线上只有「最近没发帖」"
 
 
@@ -723,6 +840,131 @@ def test_drives_failure_does_not_blow_up(monkeypatch, caplog):
     assert _warnings(caplog) == 1
 
 
+# ---------------------------------------------------------------- 真素材
+
+
+def test_the_loop_passes_because_and_evidence_to_the_prompt(monkeypatch):
+    """🔴 Drive 的 `because` / `evidence` 要原样递给 `writer.generate`。
+
+    提示词只拿到「被一件事勾着 0.46」的话，模型会自己编一个场景出来
+    （2026-09-18 实测编出了「她昨晚只睡了六个多小时」）。Drive 本来就
+    带着「因为哪些 concern」和「她说过什么原话」—— 递下去，它就不用编。
+
+    能挡：`_read_drive_context` 写了但 `post_tick` 没接（死代码）、
+          只递 because 丢掉 evidence、把 intensity 也塞进去。
+    不能挡：模型会不会真的照素材写 —— 那只能看线上。
+    """
+    rig = Rig(monkeypatch, drives={"curiosity": 0.7, "longing": 0.6},
+              drive_details={"curiosity": {
+                  "because": ["哥德巴赫猜想"],
+                  "evidence": ["她说想看那个证明"],
+              }})
+
+    rig.run()
+
+    context = rig.calls["generate"][0]["context"]
+    assert context["curiosity"] == {
+        "because": ["哥德巴赫猜想"],
+        "evidence": ["她说想看那个证明"],
+    }
+    #: 没有素材的 drive 也要有那两把空列表 —— 形状每次一样，
+    #: 提示词那边才不用分「没有这个键」和「有这个键但是空的」两种情况
+    assert context["longing"] == {"because": [], "evidence": []}
+
+
+def test_drive_context_failure_is_logged_and_swallowed(caplog):
+    """`_read_drive_context` 读不出来 → `{}` + WARNING，**不许静默、不许冒泡**。
+
+    这个函数跑在后台线程里，异常冒出去就是整条循环死掉（症状是
+    「他忽然不想发帖了」，日志干净）。读不出来是**安全方向**：
+    生成照跑，只是没有真素材 —— 总比编一个强。
+
+    能挡：异常往外抛、静默吞掉（那样线上只会看到「他最近发得很空」，
+          查不出是 resonance 的形状变了）。
+    不能挡：返回的 dict 形状 —— 那是上一条。
+    """
+    class DeadDrives:
+        def drives(self, now):
+            raise RuntimeError("resonance 挂了")
+
+    with caplog.at_level(logging.WARNING):
+        out = loop._read_drive_context(DeadDrives(), NOW)
+
+    assert out == {}
+    assert _warnings(caplog) == 1, "读不出素材必须留痕（不许静默）"
+
+
+def test_a_context_failure_does_not_stop_the_post(monkeypatch, caplog):
+    """素材读失败**生成照跑**：这一 tick 照样发，只是提示词里没有因为/原话。
+
+    这条和上一条是配套的：上一条钉「返回 {} + 留痕」，这一条钉
+    「loop 真的用了那个空 dict 继续跑」，两张合起来才是安全方向。
+
+    能挡：把 `_read_drive_context` 的失败当成整轮失败（`write_failed`）、
+          或者因此干脆不生成。
+    不能挡：提示词里少了素材之后模型写得怎么样 —— 那只能看线上。
+    """
+    rig = Rig(monkeypatch, drives={"longing": 0.7, "playfulness": 0.6})
+
+    class FlakyDrives:
+        """第一次（`_read_drives`）成功，第二次（`_read_drive_context`）炸。"""
+
+        def __init__(self, inner):
+            self.inner = inner
+            self.calls = 0
+
+        def drives(self, now):
+            self.calls += 1
+            if self.calls > 1:
+                raise RuntimeError("第二次读炸了")
+            return self.inner.drives(now)
+
+    rig.attention = FlakyDrives(rig.attention)
+
+    with caplog.at_level(logging.WARNING):
+        rec = rig.run()
+
+    assert rec is not None and rec.posted is True
+    assert rig.calls["generate"][0]["context"] == {}
+    messages = [r.getMessage() for r in caplog.records
+                if r.levelno == logging.WARNING]
+    assert any("素材" in m for m in messages), "素材读失败要留痕（不许静默）"
+
+
+def test_那句人话在一行日志里只出现一次(monkeypatch, caplog):
+    """🔴 `why_not_posted` 不许把 `impulse.why` 拼进去。
+
+    `record.log()` 的格式串里这两段是**相邻的两格**（`…｜%s｜%s｜body=%s`），
+    所以谁把 why 拼进 why_not_posted，那句中文就在同一行里出现两遍。
+    2026-09-21 线上就是这样：below_threshold 占了一天 96 个 tick 的一半，
+    半天的 journalctl 都在重复同一句话。
+
+    判据是「整句 `why` 出现几次」，不是找某几个字 ——
+    `why` 本身以「，没到阈值 0.45」结尾，而 `why_not_posted` 也该提阈值，
+    按字找会把这种正常的重叠误判成重复。
+
+    能挡：在任何一个 not-posted 分支里顺手 `：{imp.why}`。
+    不能挡：换个说法把 why 的内容手抄一遍（那得靠 review）。
+    """
+    #: longing 0.1 → inner 约 0.1，乘上时机也到不了 0.45，走 below_threshold
+    rig = Rig(monkeypatch, mode="shadow", drives={"longing": 0.1})
+    rec = rig.run()
+    assert rec is not None and rec.reason == "below_threshold"
+    assert rec.impulse.why, "空的 why 会让下面那个 count 恒等于 0，白测"
+
+    caplog.clear()
+    with caplog.at_level(logging.INFO):
+        rec.log(logging.getLogger("test_moments_loop"))
+    lines = [r.getMessage() for r in caplog.records if "Moments｜" in r.getMessage()]
+    assert len(lines) == 1, f"该恰好打一行，打了 {len(lines)} 行"
+
+    got = lines[0].count(rec.impulse.why)
+    assert got == 1, (
+        f"那句人话在一行里出现了 {got} 次（该 1 次）：{rec.impulse.why!r}\n"
+        f"整行：{lines[0]}"
+    )
+
+
 def test_loop_source_stays_inside_its_boundaries():
     """🔴 R9 / R10 的源码哨兵（读的是**文本**，不是调用图）。
 
@@ -741,3 +983,71 @@ def test_loop_source_stays_inside_its_boundaries():
     assert "api/push/send" not in src, "R10：发帖不推送"
     assert "notify" not in src, "R10：发帖不推送"
     assert "from temporal import to_local" in src, "本地日要问 temporal 要"
+
+
+# ---------------------------------------------------------------- 欠一条（2026-09-23）
+#
+# shadow 09-21→23：「本来会发」4 次、4 次全是生成失败（3 次凌晨超时、1 次 max_tokens）。
+# 骰子好不容易中了，一次瞬时故障就把那条扔了。现在记一笔欠账，
+# OWED_TTL_MIN 内冲动还过阈值就下一 tick 直接补写，不再掷骰子。
+
+def test_写不出来记欠账_而且不抹掉今天的计数和上一帖时间(monkeypatch):
+    prev = (NOW - timedelta(hours=5)).isoformat()
+    rig = Rig(monkeypatch, body=None,
+              state={"date": "2026-09-15", "count": 1, "last_post_at": prev})
+    rec = rig.run()
+    assert rec.reason == "write_failed"
+    st = rig.store.source_state["moments"]
+    assert st.get("owed_at"), "写失败没记欠账 —— 下一 tick 又得重新掷骰子"
+    assert st["count"] == 1 and st["last_post_at"] == prev, (
+        "记欠账把今天的计数 / 上一帖时间抹了 —— 上限和间隔一起失效")
+
+
+def test_欠着的下一tick不掷骰子直接补写_发出去就清账(monkeypatch):
+    rig = Rig(monkeypatch, body=None)
+    rig.run()
+    rig.now = NOW + timedelta(minutes=15)
+    rig.rng = FakeRng(0.99)                    # 真掷的话必然不中
+    rig.calls = _fake_writer(monkeypatch, body="补上了")
+    rec = rig.run()
+    assert rec.posted and rec.body == "补上了"
+    assert rig.rng.calls == 0, "欠着的那条还在掷骰子 —— 故障一次就等于重新抽签"
+    assert "owed_at" not in rig.store.source_state["moments"], "发出去了还挂着欠账"
+
+
+def test_欠账过期就不补了(monkeypatch):
+    rig = Rig(monkeypatch, body=None)
+    rig.run()
+    #: 写死 61：跟着常量走的话，常量被改成一年，这条测试也跟着推一年（变异验证抓到的）
+    rig.now = NOW + timedelta(minutes=61)
+    rig.rng = FakeRng(0.99)
+    rig.calls = _fake_writer(monkeypatch, body="迟到的")
+    rec = rig.run()
+    assert rec.reason == "dice" and rig.rng.calls == 1, "一小时前的心情还在补"
+
+
+def test_连着失败_欠账从第一次算起不续命(monkeypatch):
+    rig = Rig(monkeypatch, body=None)
+    rig.run()
+    first = rig.store.source_state["moments"]["owed_at"]
+    rig.now = NOW + timedelta(minutes=15)
+    rig.run()
+    assert rig.store.source_state["moments"]["owed_at"] == first
+
+
+def test_欠着但冲动掉下去了_不补(monkeypatch):
+    rig = Rig(monkeypatch, body=None)
+    rig.run()
+    rig.now = NOW + timedelta(minutes=15)
+    rig.attention = FakeAttention(drives={"longing": 0.05},
+                                  last_contact=NOW - timedelta(minutes=999))
+    rig.calls = _fake_writer(monkeypatch, body="不该出现")
+    rec = rig.run()
+    assert rec.reason == "below_threshold" and rig.calls["generate"] == []
+
+
+def test_shadow不记欠账_不写任何状态(monkeypatch):
+    """shadow 绝不写 source_state（上面 test_shadow_generation_failure_* 那条规矩）。"""
+    rig = Rig(monkeypatch, mode="shadow", body=None)
+    rig.run()
+    assert rig.store.writes == []

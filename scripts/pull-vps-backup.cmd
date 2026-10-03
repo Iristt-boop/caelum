@@ -50,23 +50,39 @@ rem
 rem A .part file makes an interruption harmless: the real name only ever holds
 rem a file that finished AND matched the expected byte count.
 rem Use forward slashes: "%DST%/%NAME%" . Never write "%DST%\" (see fix 1).
+rem
+rem 2026-09-19 fix (five): retry. 09-18 the scp died at 6.1 MB of ~19 MB
+rem (the 22-port flakiness documented in PROJECT.md 14) and the script gave
+rem up for the whole day -- newest complete offsite copy sat at 09-16 while
+rem /root/backups/auto kept rotating. One noon shot a day is not a chain,
+rem it is a coin flip. Now: up to 3 attempts, 60 s apart. The size check
+rem must sit INSIDE the loop: scp can exit 0 on a short write (fix 4).
+set /a TRY=0
+
+:retry
+set /a TRY+=1
 del "%DST%\%NAME%.part" >nul 2>&1
 scp -o "BatchMode=yes" -q %VPS%:/root/backups/auto/%NAME% "%DST%/%NAME%.part" >> "%LOG%" 2>&1
-if errorlevel 1 (
-  echo [%date% %time%] scp FAILED: %NAME% >> "%LOG%"
-  del "%DST%\%NAME%.part" >nul 2>&1
-  exit /b 1
-)
+if errorlevel 1 goto :retry_wait
 
 rem Byte-for-byte size check. scp can exit 0 on a short write; size cannot lie.
 set GOT=0
 for %%A in ("%DST%\%NAME%.part") do set GOT=%%~zA
-if not "%GOT%"=="%WANT%" (
-  echo [%date% %time%] SIZE MISMATCH %NAME%: got %GOT% want %WANT% >> "%LOG%"
+if "%GOT%"=="%WANT%" goto :retry_done
+
+echo [%date% %time%] SIZE MISMATCH %NAME%: got %GOT% want %WANT% >> "%LOG%"
+
+:retry_wait
+if %TRY% geq 3 (
+  echo [%date% %time%] scp FAILED: %NAME% after %TRY% attempts >> "%LOG%"
   del "%DST%\%NAME%.part" >nul 2>&1
   exit /b 1
 )
+echo [%date% %time%] attempt %TRY% failed, retrying in 60 s >> "%LOG%"
+timeout /t 60 /nobreak >nul
+goto :retry
 
+:retry_done
 move /y "%DST%\%NAME%.part" "%DST%\%NAME%" >nul
 if errorlevel 1 (
   echo [%date% %time%] ERROR: cannot rename %NAME%.part >> "%LOG%"

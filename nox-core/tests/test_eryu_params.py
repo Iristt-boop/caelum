@@ -68,7 +68,7 @@ class FakeClient:
 def test_search_sends_q_not_keyword():
     """eryu.py:480 —— `qs.get("q")`，发 keyword 会被回 400 missing q。"""
     client = FakeClient({"songs": [{"id": 1, "name": "x", "artist": "y"}]})
-    make_handlers(client)["eryu_search"]({"keyword": "起风了"})
+    make_handlers(client)["listen_search"]({"keyword": "起风了"})
 
     params = client.find("/music/search")
     assert params.get("q") == "起风了"
@@ -78,46 +78,8 @@ def test_search_sends_q_not_keyword():
 def test_search_does_not_send_limit():
     """服务端硬编码只取 6 条，不认 limit。发了是噪音，条数在 Core 侧截。"""
     client = FakeClient({"songs": []})
-    make_handlers(client)["eryu_search"]({"keyword": "x", "limit": 3})
+    make_handlers(client)["listen_search"]({"keyword": "x", "limit": 3})
     assert "limit" not in client.find("/music/search")
-
-
-def test_analyze_reads_ready_result():
-    """服务端给的是 `{"status": "ready", "analysis": {...}}`
-    （server/eryu.py:988），不是 `{"ready": True, "result": ...}`。
-
-    Core 原来找 `ready`/`result`，所以分析结果早就躺在 music_cache 里
-    也永远匹配不上，只会回一句「任务已提交」。
-    """
-    client = FakeClient({
-        "ok": True, "status": "ready",
-        "analysis": {"songId": "77426", "name": "测试曲", "bpm": 103,
-                     "key": "G", "energy": 0.101, "dynamics": 0.061,
-                     "brightness": 2461.0, "harmonicRatio": 0.71},
-    })
-    out = make_handlers(client)["eryu_analyze"]({"song_id": "77426"})
-
-    assert "BPM: 103" in out
-    assert "测试曲" in out
-    # ⚠️ 能量是 0~1 不是 0~10。原来写死 /10，会把 0.101 显示成 0.101/10
-    assert "0.101" in out
-    assert "/10" not in out
-
-
-def test_analyze_never_triggers_vps_job():
-    """**故意不 POST /music/analyze**。
-
-    VPS 没装 librosa，触发只会跑一个必定失败的任务，还会留下
-    `_analyze_error.txt` —— 把「还没分析」弄脏成「分析失败」。
-    分析在糖糖电脑上跑，结果回传即可。
-    """
-    client = FakeClient({"ok": True, "status": "none"})
-    out = make_handlers(client)["eryu_analyze"]({"song_id": "999"})
-
-    assert not any(p == "/music/analyze" for _, p, _ in client.calls)
-    assert "还没有分析过" in out
-    # 要给模型指一条退路，别让它硬猜
-    assert "eryu_get_lyric" in out
 
 
 def test_save_memory_sends_camel_case_and_note_action():
@@ -127,7 +89,7 @@ def test_save_memory_sends_camel_case_and_note_action():
     **不存 notes，还返回 200** —— 看起来完全像成功了。
     """
     client = FakeClient()
-    make_handlers(client)["eryu_save_memory"](
+    make_handlers(client)["listen_memory_save"](
         {"song_id": "123", "notes": "她说这首像夏天", "tags": "夏天"}
     )
 
@@ -150,7 +112,7 @@ def test_search_parses_flattened_shape():
         "id": 1330348068, "name": "起风了",
         "artist": "冯沁苑(买辣椒也用券)", "album": "起风了", "cover": "",
     }]})
-    out = make_handlers(client)["eryu_search"]({"keyword": "起风了"})
+    out = make_handlers(client)["listen_search"]({"keyword": "起风了"})
 
     assert "1330348068" in out
     assert "冯沁苑(买辣椒也用券)" in out
@@ -159,11 +121,11 @@ def test_search_parses_flattened_shape():
 def test_play_posts_to_remote_queue():
     """点播 = 写进 `/music/remote` 队列，她的播放器每 5 秒轮询取走。
 
-    2026-08-08 之前 `eryu_play` 只调 `/music/url` 下载缓存，
+    2026-08-08 之前 `listen_play` 只调 `/music/url` 下载缓存，
     **从来没写过这个队列** —— 所以它从头到尾就没让任何设备播过歌。
     """
     client = FakeClient({"ok": True, "url": "/music/file/1.mp3", "cached": True})
-    out = make_handlers(client)["eryu_play"](
+    out = make_handlers(client)["listen_play"](
         {"song_id": "1330348068", "name": "起风了", "artist": "周深"})
 
     body = client.find("/music/remote")
@@ -174,13 +136,13 @@ def test_play_posts_to_remote_queue():
 
 def test_search_exposes_cover():
     """搜索结果必须带 cover —— 否则模型手上没有封面地址，
-    `eryu_play` 想带也带不了，糖糖的唱片中间就永远是个音符占位
+    `listen_play` 想带也带不了，糖糖的唱片中间就永远是个音符占位
     （2026-08-10 她发现的）。"""
     client = FakeClient({"songs": [{
         "id": 3353721067, "name": "晚霞(SUN DOWN)", "artist": "MULA SAKEE",
         "album": "晚霞", "cover": "https://p2.music.126.net/xxx.jpg",
     }]})
-    out = make_handlers(client)["eryu_search"]({"keyword": "晚霞"})
+    out = make_handlers(client)["listen_search"]({"keyword": "晚霞"})
     assert "cover=https://p2.music.126.net/xxx.jpg" in out
 
 
@@ -195,11 +157,73 @@ def test_play_backfills_missing_cover():
         "songs": [{"id": 3353721067, "name": "晚霞(SUN DOWN)",
                    "cover": "https://p2.music.126.net/found.jpg"}],
     })
-    make_handlers(client)["eryu_play"](
+    make_handlers(client)["listen_play"](
         {"song_id": "3353721067", "name": "晚霞(SUN DOWN)", "artist": "MULA SAKEE"})
 
     body = client.find("/music/remote")
     assert body["song"]["cover"] == "https://p2.music.126.net/found.jpg"
+
+
+class RoutedClient(FakeClient):
+    """按路径回不同的东西 —— POST /music/remote 的回包里是 co-listening 换过封面的歌。"""
+
+    def __init__(self, routes: dict, posts: dict | None = None) -> None:
+        super().__init__()
+        self.routes, self.posts = routes, posts or {}
+
+    def get(self, path, params=None):
+        self.calls.append(("GET", path, params or {}))
+        return FakeResult(data=self.routes.get(path, {}))
+
+    def post(self, path, body=None):
+        self.calls.append(("POST", path, body or {}))
+        return FakeResult(data=self.posts.get(path, {"ok": True}))
+
+
+FAKE_COVER = "https://p1.music.126.net/2RSgYVAPtYV4nHwu4ArqzQ==/109951165604594760.jpg"
+REAL_COVER = "https://p2.music.126.net/1pRVSJLGh5-NjCGmzGYDXg==/109951164728421732.jpg"
+
+
+def test_play_封面以co_listening换过的为准(monkeypatch):
+    """🔴 2026-09-28：模型抄的封面会错（09-21 Merry-Go-Round 存的是 404 的假地址），
+    Music 页和聊天歌卡都是裂图。co-listening 收到点播按 songId 换成官方的 ——
+    歌卡和记忆要用换过的那个，不用模型给的。"""
+    from tools import context as tool_context
+
+    cards = []
+    ctx = type("Ctx", (), {"attach_music": lambda self, sid, **kw: cards.append((sid, kw))})()
+    monkeypatch.setattr(tool_context, "current", lambda: ctx)
+    client = RoutedClient(
+        {"/music/url": {"ok": True, "url": "x", "cached": True}},
+        {"/music/remote": {"ok": True, "song": {"songId": "442454", "name": "Merry-Go-Round",
+                                                "cover": REAL_COVER}}},
+    )
+    make_handlers(client)["listen_play"]({
+        "song_id": "442454", "name": "Merry-Go-Round", "artist": "久石譲",
+        "cover": FAKE_COVER, "reason": "你说想听点轻快的钢琴",
+    })
+    assert cards == [("442454", {"name": "Merry-Go-Round", "artist": "久石譲", "cover": REAL_COVER})]
+    assert client.find("/music/memory")["cover"] == REAL_COVER
+
+
+def test_play_回包的不是这首就不换(monkeypatch):
+    """对不上 songId 就别拿别人的封面（老版本服务端 / 回包异常）。"""
+    client = RoutedClient(
+        {"/music/url": {"ok": True}},
+        {"/music/remote": {"ok": True, "song": {"songId": "999", "cover": "https://other.jpg"}}},
+    )
+    make_handlers(client)["listen_play"]({"song_id": "442454", "name": "M", "cover": "https://mine.jpg",
+                                        "reason": "你说想听点轻快的钢琴"})
+    assert client.find("/music/memory")["cover"] == "https://mine.jpg"
+
+
+def test_play_绝不GET回读点播队列():
+    """🔴 GET /music/remote 是**读完即删**。点完歌再 GET 一次，她的播放器就收不到了
+    —— 09-28 第一版为了拿官方封面就这么写了，上线约半小时 Nox 点的歌全丢。"""
+    client = RoutedClient({"/music/url": {"ok": True}},
+                          {"/music/remote": {"ok": True, "song": {"songId": "1", "cover": "c"}}})
+    make_handlers(client)["listen_play"]({"song_id": "1", "name": "某首", "reason": "你说想听点轻快的钢琴"})
+    assert not [c for c in client.calls if c[0] == "GET" and c[1] == "/music/remote"]
 
 
 def test_play_saves_reason():
@@ -209,7 +233,7 @@ def test_play_saves_reason():
     只加播放计数、notes 一个字不存，**还返回 200**。
     """
     client = FakeClient({"ok": True, "url": "x", "cached": True})
-    make_handlers(client)["eryu_play"]({
+    make_handlers(client)["listen_play"]({
         "song_id": "1", "name": "晚霞", "artist": "MULA SAKEE",
         "reason": "你说昨晚总醒，这首慢得能睡着",
     })
@@ -223,7 +247,7 @@ def test_play_saves_reason():
 def test_play_without_reason_skips_note():
     """没写理由就别往记忆里塞空的。"""
     client = FakeClient({"ok": True, "url": "x", "cached": True})
-    make_handlers(client)["eryu_play"]({"song_id": "1", "name": "某首"})
+    make_handlers(client)["listen_play"]({"song_id": "1", "name": "某首"})
     assert not any(p == "/music/memory" for _, p, _ in client.calls)
 
 
@@ -235,7 +259,7 @@ def test_play_rejects_filler_reason():
     """
     for filler in ("这是一首很好听的歌", "根据你的喜好推荐", "好听"):
         client = FakeClient({"ok": True, "url": "x", "cached": True})
-        make_handlers(client)["eryu_play"](
+        make_handlers(client)["listen_play"](
             {"song_id": "1", "name": "某首", "reason": filler})
         assert not any(p == "/music/memory" for _, p, _ in client.calls), filler
 
@@ -243,7 +267,7 @@ def test_play_rejects_filler_reason():
 def test_play_sends_queue():
     """一次给一串 —— 只给一首的话三分钟后就没声了。"""
     client = FakeClient({"ok": True, "url": "x", "cached": True})
-    out = make_handlers(client)["eryu_play"]({
+    out = make_handlers(client)["listen_play"]({
         "song_id": "1", "name": "第一首", "artist": "A", "cover": "c1",
         "queue": [
             {"song_id": "2", "name": "第二首", "artist": "B", "cover": "c2"},
@@ -261,7 +285,7 @@ def test_play_sends_queue():
 def test_play_queue_capped_and_dedup():
     """最多 10 首；正在放的那首不许再排进队列（否则会立刻重播一遍）。"""
     client = FakeClient({"ok": True, "url": "x", "cached": True})
-    make_handlers(client)["eryu_play"]({
+    make_handlers(client)["listen_play"]({
         "song_id": "1", "name": "当前",
         "queue": [{"song_id": "1"}] + [{"song_id": str(i)} for i in range(2, 20)],
     })
@@ -274,7 +298,7 @@ def test_play_queue_capped_and_dedup():
 def test_play_without_queue_still_works():
     """不给 queue 时不该塞一个空数组进去。"""
     client = FakeClient({"ok": True, "url": "x", "cached": True})
-    make_handlers(client)["eryu_play"]({"song_id": "1", "name": "就这一首"})
+    make_handlers(client)["listen_play"]({"song_id": "1", "name": "就这一首"})
     assert "queue" not in client.find("/music/remote")
 
 
@@ -285,14 +309,14 @@ def test_play_without_name_does_not_fabricate():
     那种拿 ID 冒充歌名、歌手还是空的东西。
     """
     client = FakeClient({"ok": True, "url": "x", "cached": True})
-    out = make_handlers(client)["eryu_play"]({"song_id": "999"})
+    out = make_handlers(client)["listen_play"]({"song_id": "999"})
     assert "song_id=999" in out
 
 
 def test_play_unavailable_does_not_queue():
     """拿不到音频就别往队列里塞 —— 塞了她那边会放一首空的。"""
     client = FakeClient({"ok": False, "error": "no url, may need VIP"})
-    out = make_handlers(client)["eryu_play"]({"song_id": "1"})
+    out = make_handlers(client)["listen_play"]({"song_id": "1"})
 
     assert "拿不到音频" in out
     assert not any(p == "/music/remote" for _, p, _ in client.calls)
@@ -304,7 +328,7 @@ def test_recent_parses_songs():
         "songId": 1382576173, "name": "Cruel Summer",
         "artist": "Taylor Swift", "playedAt": "2026-08-08T15:30:00+00:00",
     }]})
-    out = make_handlers(client)["eryu_recent"]({})
+    out = make_handlers(client)["listen_recent"]({})
 
     assert "Cruel Summer" in out
     assert "Taylor Swift" in out
@@ -313,7 +337,7 @@ def test_recent_parses_songs():
 
 def test_recent_empty_is_not_an_error():
     client = FakeClient({"ok": True, "songs": []})
-    assert "没在共听页面听歌" in make_handlers(client)["eryu_recent"]({})
+    assert "没在共听页面听歌" in make_handlers(client)["listen_recent"]({})
 
 
 def test_roam_reads_singular_song():
@@ -325,7 +349,7 @@ def test_roam_reads_singular_song():
     client = FakeClient({"ok": True, "song": {
         "songId": 3410722310, "name": "FLY", "artist": "河铉雨", "album": "아파트 OST",
     }})
-    out = make_handlers(client)["eryu_roam"]({})
+    out = make_handlers(client)["listen_roam"]({})
 
     assert "3410722310" in out
     assert "FLY" in out
@@ -335,7 +359,7 @@ def test_roam_reads_singular_song():
 def test_roam_does_not_send_limit():
     """服务端不认 limit（一次就一首），发了是噪音。"""
     client = FakeClient({"ok": True, "song": {"songId": 1, "name": "x"}})
-    make_handlers(client)["eryu_roam"]({})
+    make_handlers(client)["listen_roam"]({})
     assert client.find("/music/roam") == {}
 
 
@@ -345,7 +369,7 @@ def test_daily_uses_id_not_song_id():
     client = FakeClient({"ok": True, "songs": [{
         "id": 29747526, "name": "Who Says", "artist": "Selena Gomez", "album": "For You",
     }]})
-    out = make_handlers(client)["eryu_daily"]({})
+    out = make_handlers(client)["listen_from_liked"]({})
 
     assert "29747526" in out
     assert "Who Says" in out
@@ -354,14 +378,14 @@ def test_daily_uses_id_not_song_id():
 def test_daily_empty_explains_why():
     """空的时候要说清楚是种子歌单没歌，不是坏了。"""
     client = FakeClient({"ok": True, "songs": []})
-    assert "Liked" in make_handlers(client)["eryu_daily"]({})
+    assert "Liked" in make_handlers(client)["listen_from_liked"]({})
 
 
 def test_remote_poll_must_not_be_registered():
-    """`eryu_remote_poll` 和 `eryu_play` 抢同一个一次性队列。
+    """`eryu_remote_poll` 和 `listen_play` 抢同一个一次性队列。
 
     两个都注册的话，小克 poll 的时候会把自己刚点给她的歌取走 ——
-    她那边永远等不到。实现还留着，但**不许注册**。
+    她那边永远等不到。09-28 起实现也删了：注册表和 handlers 里都不许再出现。
     """
     from tools.eryu import register_all
 
@@ -373,8 +397,9 @@ def test_remote_poll_must_not_be_registered():
 
     register_all(FakeLoop(), FakeClient())
 
-    assert "eryu_recent" in registered
+    assert "listen_recent" in registered
     assert "eryu_remote_poll" not in registered
+    assert "eryu_remote_poll" not in make_handlers(FakeClient())
 
 
 def test_id_based_gets_use_plain_id():
@@ -383,8 +408,33 @@ def test_id_based_gets_use_plain_id():
     client = FakeClient({"name": "x", "notes": "n"})
     handlers = make_handlers(client)
 
-    handlers["eryu_get_lyric"]({"song_id": "1"})
+    handlers["listen_lyric"]({"song_id": "1"})
     assert client.find("/music/lyric") == {"id": "1"}
 
-    handlers["eryu_get_memory"]({"song_id": "2"})
+    handlers["listen_memory_get"]({"song_id": "2"})
     assert client.find("/music/memory") == {"id": "2"}
+
+
+def test_共听工具统一叫_listen():
+    """09-28 co-listening 第二期改名：eryu_* / netease_* → listen_*。
+
+    挡「新加一个工具又顺手起了旧前缀」—— 前端设置页和通话念词只认 listen_，
+    旧前缀的会掉进「其他」组。eryu_analyze（砍掉的分析）也不许回来。
+    """
+    from tools import netease
+    from tools.eryu import register_all
+
+    names: list[str] = []
+
+    class FakeLoop:
+        def register(self, spec, handler):
+            names.append(spec.name)
+
+    register_all(FakeLoop(), FakeClient())
+    netease.register_all(FakeLoop(), object())
+
+    assert len(names) == 19, names
+    assert all(n.startswith("listen_") for n in names), [n for n in names if not n.startswith("listen_")]
+    assert len(set(names)) == len(names), "改名撞车了"
+    assert {"listen_daily", "listen_from_liked", "listen_play"} <= set(names)
+    assert not any("analyze" in n for n in names)

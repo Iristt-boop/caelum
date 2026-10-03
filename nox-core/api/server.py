@@ -34,11 +34,14 @@ from pydantic import BaseModel, Field
 
 from agent import meter, vision
 from agent.llm import Message
+from agent import tasks as task_mod
 from attention.service import (
     DEJECTION_KEY,
+    JEALOUSY_KEY,
     LONGING_KEY,
     PLAYFUL_KEY,
     REGRET_KEY,
+    SULK_KEY,
     CARE_INTERVAL_S,
     DEFAULT_INTERVAL_S,
     AttentionService,
@@ -50,6 +53,7 @@ from attention.care.watching import WatchingCheck
 from attention.events import ExperienceEvent
 from attention.dejection import looks_like_giving_up
 from attention import appraisal_llm
+from attention import dream as dream_loop
 from attention.appraisal import ANCHOR_PREFIX, RuleAppraiser
 from attention.appraisal_llm import LLMAppraiser
 from tools import luckin as luckin_tools
@@ -105,6 +109,7 @@ from temporal.resolver import resolve as temporal_resolve
 from temporal.result import TemporalResult
 from day import build_day
 from context.compactor import maybe_compact
+from data.origin import her_words
 from data.store import Store
 from nox import Nox
 from personality.mood import now_cst
@@ -668,15 +673,46 @@ def _build_attention(core: Nox, sessions: "Sessions", db: Store) -> AttentionSer
             except Exception:  # noqa: BLE001
                 logger.exception("知识小课堂装配失败，这条线不跑")
 
+        # 主动来电（2026-09-19，她拍板：PWA 真来电、OS 不做）。
+        # NOX_CALL 三档：off（默认，源空转零开销）/ shadow（只记他想打的时机）/ on。
+        # 快源 60 秒一 tick，频率的硬杠（一天一次、隔天、18:00-22:30）全在源里
+        _call_source = None
+        _call_utility = None
+        try:
+            from attention.sources.call import CallSource, mode as _call_mode
+            _call_source = CallSource(
+                astore,
+                log_dir=os.path.dirname(str(core.cfg.db_path)),
+            )
+            fast_sources.append(_call_source)
+            if _call_mode() != "off":
+                _call_cfg = getattr(core.cfg, "utility", None)
+                if _call_cfg is not None and getattr(_call_cfg, "usable", False):
+                    from agent.adapters import make_adapter as _make_call_adapter
+                    _call_utility = meter.tag(_make_call_adapter(_call_cfg), "call")
+            logger.info("主动来电接线：mode=%s（shadow 只记不打，on 才真响铃）",
+                        _call_mode())
+        except Exception:  # noqa: BLE001
+            logger.exception("主动来电装配失败，这条线不跑")
+
         svc = AttentionService(astore, provider, speaker=speaker, waker=waker,
                                todo_source=todo_source, fast_sources=fast_sources,
                                gate=gate, time_source=time_source, world=world,
                                watching=watching, shared_sources=[shared_source],
                                self_sources=self_sources,
                                topics=topics_pool, card_source=card_source,
-                               rhythm=rhythm)
+                               rhythm=rhythm,
+                               call_bridge=core.bridge,
+                               call_utility=_call_utility)
         # svc 建完才有 longing —— 回填取值函数（rhythm.gap_window 每次现取）
         rhythm.longing_ref = lambda: getattr(svc, "longing", None)
+        if _call_source is not None:
+            _call_source.longing_ref = svc.longing
+        # svc 建完才有 longing —— 回填取值函数（rhythm.gap_window 每次现取）
+        rhythm.longing_ref = lambda: getattr(svc, "longing", None)
+        # 她睡着时他自言自语可以提一句夜里的梦（2026-09-23）。只读 JSONL，
+        # 梦那条线本身照旧不推送、不占 Care 额度（dream.py 的边界不动）
+        svc.dream_log_path = dream_loop._log_path(os.path.dirname(str(core.cfg.db_path)))
 
         # 体重 / 生理期：HealthKit 那条同步坏了（体重 14 天一条没有，
         # 经期表被快捷指令写坏），改成他在对话里主动记进 World Model
@@ -806,6 +842,80 @@ def _build_moments(core: Any, attention: Any, meter: Any) -> dict | None:
         return None
 
 
+def _read_dream_log(data_dir: str, limit: int = 5) -> list[dict]:
+    """读 Dream shadow 的 JSONL，**新的在前**。
+
+    ⚠️ 只读：不生成、不缓存、不碰任何状态。梦是影子期的产物（2026-09-18 她
+    拍板：不开口、不推送、不写 OB），全部产出就这一个文件 —— 她要看的时候
+    自己来看（World 页「梦」那一块）。
+
+    两条容错，都是实测会遇到的：
+      · 文件不在 / 是空的 → 回空列表（**这不是故障**，是还没做过梦）
+      · 半截行（写到一半被杀）→ 跳过那一行，不整份挂掉
+    """
+    path = dream_loop._log_path(data_dir)
+    try:
+        if not path.exists():
+            return []
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:  # noqa: BLE001
+        logger.warning("读 dream 日志失败：%s", exc)
+        return []
+
+    out: list[dict] = []
+    for line in reversed(lines):          # 从最后一行往前：日志会一直长
+        if len(out) >= limit:
+            break
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            out.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return out
+
+
+def _build_dream(core: Any, meter: Any) -> dict | None:
+    """Dream 的接线（夜间做梦）。关掉/缺件就 None。
+
+    抄 `_build_moments` 的先例：缺件宁可不起，不许起一个半残的循环 ——
+    少 utility 是梦永远生成不出来，所以它是必需件。返回的字典直接
+    `run_dream_loop(**parts)`。
+
+    ## 产出形式（她 2026-09-21 拍板，改了 shadow 期的边界）
+
+    Moments 常态发（`NOX_DREAM_POST=on` 才发，走 `moments.writer.post`
+    同一条路：不推送、不占 Care 额度）+ 归档进 OB（他得记得自己做过
+    梦，对话里才能偶尔主动讲）。**早报明确不带** —— 她的原话：早报
+    东西太多了，无限繁殖了该。
+
+    ## 🔴 仍然不许碰的东西
+
+    梦不是开口：不走 Orchestrator、不碰 push/send、不占 Care 额度、
+    不进早报。bridge/ob 只是「发帖」和「归档」两只手，不是说话的嘴。
+    """
+    if dream_loop.mode() == "off":
+        logger.debug("Dream shadow 是 off（NOX_DREAM_SHADOW 没开），这条线不跑")
+        return None
+    try:
+        utility = core.router.light_adapter if core.router else None
+        if utility is None:
+            logger.warning("没有 utility 模型，Dream shadow 不起")
+            return None
+        utility = meter.tag(utility, "dream-shadow")
+        return {
+            "utility": utility,
+            "data_dir": os.path.dirname(str(core.cfg.db_path)),
+            "buckets_dir": dream_loop.buckets_dir(),
+            "bridge": getattr(core, "bridge", None),
+            "ob": getattr(core, "ob", None),
+        }
+    except Exception:  # noqa: BLE001
+        logger.exception("Dream 接线装配失败，这条线不跑")
+        return None
+
+
 def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
     started = datetime.now(timezone.utc)
 
@@ -879,6 +989,15 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
     _expired = core.orders.expire_stale()
     if _expired:
         logger.info("启动时收掉 %d 张过期的待确认单", _expired)
+
+    # 长任务（2026-09-22）。第六个库，同 orders 的理由：状态天生要改，
+    # world/sessions 的契约都装不下。启动第一件事收尸 —— 上一个进程
+    # 在跑的任务没人管了，不标记的话在她眼里就是永远卡在 running
+    core.tasks = task_mod.TaskStore(Path(core.cfg.db_path).parent / "tasks.db")
+    _interrupted = core.tasks.interrupt_running()
+    if _interrupted:
+        logger.info("启动时把 %d 个在跑的长任务标成 interrupted（progress 保留，可续跑）",
+                    _interrupted)
 
     attention = _build_attention(core, sessions, db)
     #: 🔴 感知层那条线交给 attention —— 躁动要知道"她此刻在用什么"。
@@ -1002,6 +1121,31 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
                 logger.info("Moments 循环启动：mode=%s", moments_loop.mode())
         except Exception:  # noqa: BLE001
             logger.exception("Moments 接线失败，这条线不跑")
+        # Dream shadow（2026-09-18）—— 夜里他自己的梦，先只落日志一周，
+        # 她看完「都会梦到什么」再拍产出形式。整段 try 照 Moments 的理由：
+        # 接线里一个 AttributeError 不能拖垮整个 Core，而这分支本地不活。
+        try:
+            _dream = _build_dream(core, meter)
+            if _dream is not None:
+                # 🔴 先 declare 再起循环（审计 1.4）：从没成功过的循环
+                # 也要在台账里存在。梦一晚至多一次，节奏见
+                # dream.DECLARE_EVERY_S；beat 在 night_tick 成功后打
+                heartbeat.declare("dream_tick", every_s=dream_loop.DECLARE_EVERY_S)
+                tasks.append(asyncio.create_task(dream_loop.run_dream_loop(**_dream)))
+                logger.info("Dream shadow 循环启动")
+        except Exception:  # noqa: BLE001
+            logger.exception("Dream 接线失败，这条线不跑")
+        # 长任务 runner（2026-09-22）。默认开 —— 它是惰性的：没有她确认过的
+        # 任务就只是在队上等，不花一分钱。NOX_TASKS_DISABLED 留给排查日
+        try:
+            if os.getenv("NOX_TASKS_DISABLED", "") not in ("1", "true"):
+                # 🔴 先 declare 再起循环（审计 1.4）：从没跑过也要在台账里存在
+                heartbeat.declare(task_mod.HEARTBEAT_JOB, every_s=task_mod.BEAT_S)
+                tasks.append(asyncio.create_task(
+                    task_mod.run_task_loop(core=core, store=core.tasks)))
+                logger.info("长任务循环启动（并发=1）")
+        except Exception:  # noqa: BLE001
+            logger.exception("长任务接线失败，这条线不跑")
         try:
             yield
         finally:
@@ -1113,7 +1257,8 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
             logger.exception("卡片声称检查失败（不影响对话）")
 
     def _turn_ends(sid: str, text: str = "", reply: str = "",
-                   message_time: Any = None) -> None:
+                   message_time: Any = None,
+                   shared_image: bool = False) -> None:
         """一轮结束、消息真的落库之后，把这轮新留的纸条基准线校准到现在。
 
         ⚠️ **不做这一步，整条唤醒链永远不会触发，而且是静默的。**
@@ -1143,6 +1288,23 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
         except Exception as exc:  # noqa: BLE001
             logger.warning("压缩触发失败（不影响对话）: %s", exc)
 
+        # 🔴 **下面每一个「读她说了什么」的消费方，读的都是 `text`，
+        # 不是 `raw_text`**（糖糖 2026-09-28：理解层只吃她的原话）。
+        #
+        # 落进她会话的 user 消息不全是她说的：共影把场景描述和字幕拼成
+        # 「【共影·主动】…你想说一句」塞进主会话，09-22 那晚 Temporal、
+        # 规则情绪、醋意、记忆抽取、意义推断全都把它当她的话读了一遍。
+        # 判断收在 `data/origin.her_words` 一处。
+        #
+        # ⚠️ 只换「读文字」的那部分。纸条基准线、想念回落这些
+        # 「她有没有来过」的副作用不读文字，照旧每轮都跑 ——
+        # 共影·主动那种她根本没开口的轮次算不算「来过」，是另一个问题，
+        # 不在这道闸里顺手改。
+        raw_text = text
+        text = her_words(sid, raw_text)
+        if raw_text and not text:
+            logger.info("这轮不是她的原话（%.12s…），理解层不读", raw_text.strip())
+
         # 时间语义第二层（2026-09-14）：她这句话里的**时间关系**是什么。
         #
         # 🔴 **独立 contract，不挂理解层**（糖糖拍的）—— 职责不同：
@@ -1167,7 +1329,9 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
         # 记忆抽取 shadow（Phase 3，2026-09-16）：一轮结束后把对话片段交给
         # OB 的 extract_memory —— 只抽取记日志、不落库，积累一周数据人工
         # 看抽取质量。🔴 同一道测试会话闸门：测试流量会把 shadow 数据搅浑
-        if not is_test_session(sid):
+        # 程序拼的轮次整轮不抽：只剩他那句的话，抽出来的是他对片子的吐槽。
+        # 纯图片轮（raw_text 本来就空）照旧 —— 那是她发的图
+        if not is_test_session(sid) and (text or not raw_text):
             try:
                 _ob_extract_async(sid, text, reply)
             except Exception as exc:  # noqa: BLE001
@@ -1237,6 +1401,23 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
         except Exception:  # noqa: BLE001
             logger.exception("想念/后悔/低落回落失败（不影响对话）")
 
+        # 醋意 / 委屈（2026-09-23）。
+        #
+        # 委屈：她回话了 —— **不清零**，掉到一半然后十分钟减半（sulk.py）。
+        #   这一轮他已经带着满格的委屈回过了（上下文是这一轮开始时建的），
+        #   从下一轮起才是余温 —— 「哼，终于理我了」然后软下来。
+        # 醋意：她这句话里提到了别人（男生 / 聚会……），记一笔（jealousy.py）。
+        #: ⚠️ 用参数 `text`，不是 `req.text`（同上面低落那段栽过的坑）
+        try:
+            attention.sulk.on_contact(_now_utc)
+            attention.store.set_source_state(SULK_KEY, attention.sulk.to_dict())
+            if text:
+                attention.jealousy.on_message(_now_utc, text)
+                attention.store.set_source_state(
+                    JEALOUSY_KEY, attention.jealousy.to_dict())
+        except Exception:  # noqa: BLE001
+            logger.exception("醋意/委屈更新失败（不影响对话）")
+
         # Resonance V1：让对话进入 Attention。
         #
         # ⚠️ 现阶段**没有任何规则匹配 `source="chat"`** —— 事件会落到
@@ -1244,6 +1425,40 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
         # 这是**故意的**：V1 只打通管道，先证明事件在流动，
         # 规则留到 V2（见架构文档第七节的演进路线）。
         #
+        # 促狭（2026-08-27）：喂这一轮的 valence。
+        #
+        # 🔴 **每一轮都要喂，不管是什么 valence。**
+        # 只喂 playful 的话，她「哈哈哈」之后说十句正事，
+        # 窗口里还是三条 playful —— 他会一直贫下去。
+        # 正经的那些正是让气氛散掉的东西（见 playfulness.py）。
+        #
+        # 🔴 v4 机会机制第一批（她 09-22 拍板）：喂点提到文字闸门**之前**——
+        # 她甩表情包/发图片的轮次没有字，旧代码在 `if not text: return`
+        # 直接走了，促狭永远看不到她分享图片的时刻。
+        try:
+            if text:
+                #: ⚠️ appraiser 挂在 **evaluator** 上，不是 engine 上。
+                #: 写错属性路径的话 AttributeError 会被下面那个 except 吞掉，
+                #: 于是促狭永远是 0 —— 今天已经被同类问题咬过两次了
+                ap = _appraiser().appraise(text)
+                valence = ap.valence if ap is not None else "neutral"
+                cue = ap.cue if ap is not None else ""
+            elif shared_image:
+                #: ⚠️ 照片和表情包在这一层还分不开（bridge 的 meme 元数据
+                #: 没传进来）—— 第一批先都记成 playful：分享图片本身就是
+                #: 「想给你看个东西」的促狭行为。20 分钟窗口 + MAX 0.5
+                #: 压在开口阈值下，判错的代价有界
+                valence, cue = "playful", "发了个图片"
+            else:
+                valence, cue = None, ""
+            if valence is not None:
+                attention.playfulness.on_turn(_now_utc, valence=valence, cue=cue)
+                attention.store.set_source_state(
+                    PLAYFUL_KEY, attention.playfulness.to_dict()
+                )
+        except Exception:  # noqa: BLE001
+            logger.exception("促狭更新失败（不影响对话）")
+
         # 纯图片消息不造空事件。
         if not text:
             return
@@ -1257,28 +1472,6 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
                     origin_context={"sid": sid},
                 )
             )
-            # 促狭（2026-08-27）：喂这一轮的 valence。
-            #
-            # 🔴 **每一轮都要喂，不管是什么 valence。**
-            # 只喂 playful 的话，她「哈哈哈」之后说十句正事，
-            # 窗口里还是三条 playful —— 他会一直贫下去。
-            # 正经的那些正是让气氛散掉的东西（见 playfulness.py）。
-            try:
-                #: ⚠️ appraiser 挂在 **evaluator** 上，不是 engine 上。
-                #: 写错属性路径的话 AttributeError 会被下面那个 except 吞掉，
-                #: 于是促狭永远是 0 —— 今天已经被同类问题咬过两次了
-                ap = _appraiser().appraise(text)
-                attention.playfulness.on_turn(
-                    _now_utc,
-                    valence=ap.valence if ap is not None else "neutral",
-                    cue=ap.cue if ap is not None else "",
-                )
-                attention.store.set_source_state(
-                    PLAYFUL_KEY, attention.playfulness.to_dict()
-                )
-            except Exception:  # noqa: BLE001
-                logger.exception("促狭更新失败（不影响对话）")
-
             logger.info(
                 "ConversationEvent 进入 Attention：%.40s｜%s（%s）",
                 text, decision.action, decision.reason,
@@ -1303,6 +1496,9 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
         ## 第一版的实验目标**只有一个**
 
             message → Intent → Resolver → TemporalResult → shadow log
+
+        （2026-09-28 第二版：message → 一组 TemporalEvent → 每个各自
+        Resolver → 各自一条 shadow log。一句话可能有好几个时间。）
 
         **不做 Todo 匹配**（糖糖 2026-09-14 明确要求）。理由：
         现在要测的是「自然语言 → 时间语义」能不能稳定工作。
@@ -1341,17 +1537,18 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
 
         def _run() -> None:
             try:
-                intent = TemporalExtractor(lambda: utility).extract(text)
-                if intent is None:
-                    return          # 她没说时间 —— 常态，不记
-                resolution = temporal_resolve(intent, ref)
-                TemporalResult(
-                    text=text, intent=intent, resolution=resolution,
-                    reference_time=ref,
-                    applied=False,
-                    why_not_applied=f"shadow 模式（NOX_TEMPORAL={temporal_extract.mode()}）",
-                    todo_match_status="not_attempted",
-                ).log()
+                # 一句话一组事件（2026-09-28）。空列表 = 她没说时间，常态，不记
+                events = TemporalExtractor(lambda: utility).extract(text)
+                for i, ev in enumerate(events, 1):
+                    TemporalResult(
+                        text=text, event=ev,
+                        resolution=temporal_resolve(ev.intent, ref),
+                        reference_time=ref,
+                        applied=False,
+                        why_not_applied=f"shadow 模式（NOX_TEMPORAL={temporal_extract.mode()}）",
+                        todo_match_status="not_attempted",
+                        index=i, of=len(events),
+                    ).log()
             except Exception:  # noqa: BLE001
                 # 不许静默（docs/LOGGING.md）。这一层挂了的表现是
                 # 「shadow 日志忽然没了」，而那看起来和「她最近没说时间」一样
@@ -1538,6 +1735,34 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
         logger.info("本地执行端已启用：ws /agent/local")
     else:
         logger.info("没配 CAELUM_LINK_SECRET，本地执行端不启用")
+
+    @app.get("/debug/tasks")
+    async def debug_tasks() -> dict:
+        """卡死诊断（2026-09-19）：列出所有 asyncio 任务悬在哪里。
+
+        背景：回复卡死那轮，请求在 core 里静默悬了 5 分 49 秒而 py-spy
+        只看得到 MainThread idle —— asyncio 任务挂在 await 上时线程视图
+        是看不见的。这个端点把每个任务挂起点的栈直接掏出来看。
+        只绑 127.0.0.1，不出公网。
+        """
+        import asyncio as _asyncio
+        import traceback as _traceback
+        tasks = []
+        for t in _asyncio.all_tasks():
+            if t is _asyncio.current_task():
+                continue
+            try:
+                stack = "".join(_traceback.format_stack(t.get_stack()))[-2000:] if t.get_stack() else ""
+            except Exception:  # noqa: BLE001
+                stack = "(栈取不到)"
+            tasks.append({
+                "name": t.get_name(),
+                "coro": str(t.get_coro())[:120],
+                "done": t.done(),
+                "stack": stack,
+            })
+        tasks.sort(key=lambda x: -len(x["stack"]))
+        return {"count": len(tasks), "tasks": tasks}
 
     @app.get("/health")
     def health() -> dict:
@@ -2074,6 +2299,82 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
             "scan_only": luckin_order_flow.is_native_scan(pay_url),
         }
 
+    # ---------------------------------------------------------------- 长任务
+    #
+    # 🔴 确认端点就是 R8 那道闸（Nox-长任务循环-v1-设计.md 3.4）：
+    # start_long_task 工具只落 proposed，模型物理上够不到 running。
+    # 她点「跑」→ claim → confirmed → runner（并发=1）接手。
+
+    def _tasks():
+        return getattr(core, "tasks", None)
+
+    #: 状态 → 给她的人话（前端任务卡直接显示）
+    _TASK_STATE_TEXT = {
+        task_mod.PROPOSED: "等她点「跑」",
+        task_mod.CONFIRMED: "排队中，马上开跑",
+        task_mod.RUNNING: "正在后台跑",
+        task_mod.DONE: "完成",
+        task_mod.FAILED: "没跑成",
+        task_mod.CANCELLED: "已取消",
+        task_mod.INTERRUPTED: "中途断了（重启），可以接着跑",
+    }
+
+    @app.get("/api/nox/tasks/{tid}")
+    def nox_task_get(tid: str) -> dict:
+        """任务现在的样子：状态 + 进度尾部。前端任务卡轮询用。"""
+        store = _tasks()
+        if store is None:
+            raise HTTPException(status_code=503, detail="长任务链路没启用")
+        row = store.get(tid)
+        if row is None:
+            raise HTTPException(status_code=404, detail="没有这个任务")
+        return {
+            "ok": True, "id": tid, "status": row["status"],
+            "goal": row["goal"], "steps_hint": row.get("steps_hint") or "",
+            "result": row.get("result") or "",
+            "created_at": row["created_at"],
+            "started_at": row.get("started_at"),
+            "finished_at": row.get("finished_at"),
+            # 时间正序（旧→新）：时间线直接照着画
+            "progress": [
+                {"at": p["at"], "step": p["step"], "kind": p["kind"]}
+                for p in store.progress(tid, limit=100)
+            ],
+        }
+
+    @app.post("/api/nox/tasks/{tid}/confirm")
+    def nox_task_confirm(tid: str) -> dict:
+        """她点了「跑」（或对中断的任务点了「接着跑」）。
+
+        claim 是原子的：连点两次只有一次能把状态翻走。这里只翻状态，
+        真跑在 runner 手里 —— 所以这个端点不会超时，也不需要重试保护。
+        """
+        store = _tasks()
+        if store is None:
+            raise HTTPException(status_code=503, detail="长任务链路没启用")
+        row = store.claim(tid)
+        if row is None:
+            cur = store.get(tid)
+            if cur is None:
+                raise HTTPException(status_code=404, detail="没有这个任务")
+            return {"ok": False, "state": cur["status"],
+                    "detail": _TASK_STATE_TEXT.get(cur["status"], cur["status"])}
+        return {"ok": True, "state": task_mod.CONFIRMED,
+                "detail": "已排队，马上开跑（一次只跑一个，前面有活就稍等）"}
+
+    @app.post("/api/nox/tasks/{tid}/cancel")
+    def nox_task_cancel(tid: str) -> dict:
+        store = _tasks()
+        if store is None:
+            raise HTTPException(status_code=503, detail="长任务链路没启用")
+        row = store.cancel(tid)
+        if row is None:
+            raise HTTPException(status_code=404, detail="没有这个任务")
+        if row["status"] == task_mod.CANCELLED:
+            return {"ok": True, "state": task_mod.CANCELLED,
+                    "detail": "已停。手头这步做完就收尾。"}
+        return {"ok": True, "state": row["status"], "note": "这个任务已经结束了"}
+
     @app.get("/api/nox/facts")
     def nox_facts(type: str, days: int = 30) -> dict:
         """某类事实的历史。App 的周期记录读它。"""
@@ -2094,6 +2395,10 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
                 for e in rows
             ],
         }
+
+    #: 服务商的人话名字（Models 页每一列的标题）。新加一家没写进来也不会空着 —— 露 BACKENDS 里的 key
+    PROVIDER_LABELS = {"deepseek": "DeepSeek", "openrouter": "OpenRouter", "zhipu": "智谱 GLM",
+                       "anthropic": "Anthropic", "dashscope": "阿里百炼"}
 
     def _backend_of(llm: Any) -> str:
         """从 LLMConfig 反推是哪家。
@@ -2130,10 +2435,16 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
              **({"price": pricing_cny[c.model]} if c.model in pricing_cny else {})}
             for k, c in (getattr(cfg, "models", {}) or {}).items()
         ]
+        # 服务商 = 清单里用到的每一家 + 现在主线 / 杂活用的那家（09-29 糖糖：「每加入一个模型就
+        # 自动更新」—— 原来写死 deepseek / openrouter 两家，切到 GLM 之后 zhipu 根本不在这张表里，
+        # 前端也就不知道它配没配 key）。加模型、加一家都不用再改这里
+        used = [c["backend"] for c in choices]
+        used += [_backend_of(x) for x in (primary, getattr(cfg, "utility", None)) if x is not None]
         providers = {}
-        for name, label in (("deepseek", "DeepSeek"), ("openrouter", "OpenRouter")):
+        for name in dict.fromkeys(b for b in used if b):
             b = BACKENDS.get(name)
-            providers[name] = {"label": label, "configured": bool(b and b.api_key)}
+            providers[name] = {"label": PROVIDER_LABELS.get(name, name),
+                               "configured": bool(b and b.api_key)}
 
         utility = getattr(cfg, "utility", None)
         return {
@@ -2342,6 +2653,30 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
             raise HTTPException(status_code=503, detail="话题池没启用")
         return {"ok": True, "items": pool.topics_for_ui()}
 
+    @app.get("/api/nox/dreams")
+    def nox_dreams(limit: int = 5) -> dict:
+        """他夜里做的梦 —— Dream shadow 的 JSONL，只读投影（2026-09-19 接给 World）。
+
+        每一条的形状（`attention/dream.py` 写的）：
+
+            date       哪一晚
+            dream      梦的正文
+            materials  取材：从哪些记忆里挑的（name / age_h / importance / arousal）
+            echo       回响：那条更老的、被这个梦勾起来的记忆
+
+        ⚠️ 影子期（2026-09-18 她拍板）：梦不开口、不推送、不写 OB —— 产出就
+        这一个文件。所以这里**只读文件**：不生成、不缓存、不碰状态。
+        没有文件/没有记录 → 空列表 + mode，让前端如实说「还没做过梦」；
+        那不是故障，是还没到那一步。
+        """
+        data_dir = os.path.dirname(str(core.cfg.db_path))
+        n = max(1, min(int(limit or 5), 30))
+        return {
+            "ok": True,
+            "mode": dream_loop.mode(),
+            "items": _read_dream_log(data_dir, n),
+        }
+
     @app.post("/api/nox/topics/{topic_id}/status")
     def nox_topic_status(topic_id: str, body: dict) -> dict:
         """人工决策：followed / dismissed。
@@ -2539,7 +2874,8 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
         # ⚠️ 完整历史 + 这轮新增。只传 r.messages 的话，通话轮会把
         # 内存缓存削成截断后那几条，下一次文字聊天跟着丢上下文（见 _for_voice）
         sessions.put(sid, list(history) + r.messages[len(sent):])
-        _turn_ends(sid, req.text or "", r.text or "", message_time=msg_at)
+        _turn_ends(sid, req.text or "", r.text or "", message_time=msg_at,
+                   shared_image=bool(req.images))
 
         result = r.result
         # 失败时给人话；但如果模型已经说了什么（比如截断的半截），
@@ -2616,9 +2952,20 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
                     elif ev.type == "tool_start":
                         # 他要动手了。**通话期间唯一的进度信号** ——
                         # 工具跑十几秒，这条流在那段时间里什么都不吐（见 agent/llm.py）
-                        yield _sse({"type": "tool_start", "tool": ev.tool})
+                        # 2026-09-19 起带入参预览（工具调用展示）
+                        frame = {"type": "tool_start", "tool": ev.tool}
+                        if getattr(ev, "args", None):
+                            frame["args"] = ev.args
+                        yield _sse(frame)
                     elif ev.type == "tool_end":
-                        yield _sse({"type": "tool_end", "tool": ev.tool, "ok": ev.ok})
+                        # 2026-09-19 起带结果摘要/耗时/子步骤 —— 没有就不进帧，
+                        # 前端对「缺字段」和「空」一视同仁
+                        frame = {"type": "tool_end", "tool": ev.tool, "ok": ev.ok}
+                        for k in ("summary", "duration_ms", "sub_commands"):
+                            v = getattr(ev, k, None)
+                            if v:
+                                frame[k] = v
+                        yield _sse(frame)
                     elif ev.type == "done":
                         final = getattr(ev, "result", None)
             except Exception as exc:  # noqa: BLE001

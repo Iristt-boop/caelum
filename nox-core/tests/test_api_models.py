@@ -73,3 +73,29 @@ def test_models_survives_a_bare_fake_core(monkeypatch, tmp_path):
     assert d["ok"] is True
     assert d["choices"] == []
     assert d["current"]["backend"] == ""
+
+
+def test_providers_follow_the_model_list(monkeypatch, tmp_path):
+    """09-29：服务商名单跟着模型清单走 —— 原来写死 deepseek / openrouter，切到 GLM 之后
+    zhipu 不在名单里，Models 页就少一列、也不知道它配没配 key。"""
+    nox = ModelFakeNox()
+    nox.cfg.primary.base_url = "https://open.bigmodel.cn/api/paas/v4"
+    nox.cfg.models["glm-5.3"] = ModelChoice("glm-5.3", "zhipu", "GLM 5.3")
+    d = _client(monkeypatch, tmp_path, nox=nox).get("/api/nox/models").json()
+    assert d["current"]["backend"] == "zhipu"
+    assert list(d["providers"]) == ["deepseek", "openrouter", "zhipu"]
+    assert d["providers"]["zhipu"]["label"] == "智谱 GLM"
+    assert isinstance(d["providers"]["zhipu"]["configured"], bool)
+    #: 清单里没用到的家（anthropic / dashscope）不占一列
+    assert "dashscope" not in d["providers"]
+
+
+def test_a_new_backend_gets_a_column_without_touching_the_api(monkeypatch, tmp_path):
+    """新加一家、没来得及写人话名字：名单里照样有它，名字露 key，不空着。"""
+    import config
+
+    monkeypatch.setitem(config.BACKENDS, "moonshot", config.Backend("openai_compat", "https://x.test/v1", ("NOPE_KEY",)))
+    nox = ModelFakeNox()
+    nox.cfg.models["kimi"] = ModelChoice("kimi-k3", "moonshot", "Kimi")
+    d = _client(monkeypatch, tmp_path, nox=nox).get("/api/nox/models").json()
+    assert d["providers"]["moonshot"] == {"label": "moonshot", "configured": False}

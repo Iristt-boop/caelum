@@ -14,7 +14,7 @@ from typing import Any
 
 from agent import vision
 from agent.adapters import make_adapter, supports_vision
-from agent.llm import LLMAdapter, Message
+from agent.llm import LLMAdapter, Message, strip_stage_tags
 from agent.loop import AgentLoop
 from config import Config, _build_llm, config as default_config
 from context import ContextProviderRegistry
@@ -54,6 +54,7 @@ from tools import luckin as luckin_tools
 from tools import reading as reading_tools
 from tools import room as room_tools
 from tools import search as search_tools
+from tools import tasks as tasks_tools
 from tools import tracker as tracker_tools
 from tools import train as train_tools
 from tools import watching as watching_tools
@@ -424,6 +425,17 @@ class Nox:
             self.luckin_client = None
             logger.info("未配置 NOX_LUCKIN_MCP_URL/NOX_LUCKIN_TOKEN，跳过 luckin 瑞幸工具")
 
+        # 长任务（2026-09-22，设计：Nox-长任务循环-v1-设计.md）。
+        # start_long_task 只出确认卡，真跑在确认端点后面的 runner 手里
+        # （agent/tasks.py）。store 在 api/server.py 才建 —— 传取值函数，
+        # 同上面 luckin 的 store_ref；session_id 同样取当下的那一轮。
+        tasks_tools.register_all(
+            self.loop,
+            store_ref=lambda: getattr(self, "tasks", None),
+            session_id_ref=context.session_id,
+        )
+        logger.info("长任务工具已注册（立任务走确认卡）")
+
         # 启动时取一次核心准则，之后**永不重取**。
         # 不做定时刷新：糖糖明确说了不需要，需要新记忆时他会自己调
         # recall_memory。定时刷新会让缓存前缀变动，得不偿失。
@@ -749,7 +761,8 @@ class Nox:
     def _dynamic(self, text: str, voice: bool, scene: str | None = None,
                  has_images: bool = False,
                  session_id: str | None = None,
-                 session_started: datetime | None = None) -> str:
+                 session_started: datetime | None = None,
+                 recall: str | None = None) -> str:
         """组装每轮可变的提示：情绪 +（语音模式下）该情景的通话指令。
 
         两者都走 dynamic_system，跟在缓存断点之后 —— 静态前缀一个字都不能变。
@@ -773,7 +786,7 @@ class Nox:
             has_understanding=has_live_anchor(getattr(self, "attention", None)),
         )
         parts = [self.context.render(
-            names, turn=Turn(text=text, voice=voice, scene=scene))]
+            names, turn=Turn(text=text, voice=voice, scene=scene, recall=recall))]
         if voice:
             parts.append(scenes.get(scene).render())
         # 共听模式：检测到音乐相关请求时注入 MUSIC_SCENE
@@ -821,7 +834,7 @@ class Nox:
         ## 为什么必须有这一步
 
         Provider 是按 TTL 缓存的（`health` 6 小时、`todo` 30 分钟、`music` 3 分钟），
-        而写路径（`record_period` / `add_todo` / `eryu_play` …）成功之后
+        而写路径（`record_period` / `add_todo` / `listen_play` …）成功之后
         **没有任何人通知缓存**。于是下一轮拼提示时递给他的还是**写之前**那份快照：
 
             她：我来例假了       → 他调 record_period，真写进 World Model 了
@@ -871,13 +884,16 @@ class Nox:
         model: str | None = None,
         session_id: str | None = None,
         session_started: datetime | None = None,
+        recall: str | None = None,
     ) -> RouteResult:
+        """`recall`：翻记忆用的话，只有他主动开口时才传（见 context/base.py 的 Turn.recall）。"""
         text, images = self._see(text, images, model)
         # 三层情绪渲染成一段动态提示，跟在缓存断点之后发 ——
         # 每轮都变，绝不能混进静态前缀（见 personality/mood.py 开头）
         dynamic = self._dynamic(text, voice, scene, has_images=bool(images),
                                 session_id=session_id,
-                                session_started=session_started)
+                                session_started=session_started,
+                                recall=recall)
         result = self.router.handle(
             text, history, dynamic_system=dynamic, images=images,
             voice=voice, scene=scene, adapter=self.adapter_for(model),
@@ -895,6 +911,11 @@ class Nox:
         cleaned, meme_tags = intimate_tools.extract_text_tags(cleaned)
         if meme_tags:
             result.attachments.extend({"type": "meme", "tag": t} for t in meme_tags)
+        # 舞台标签（[softly] [intimacy …]）剥掉 —— 主动消息走的就是这条非流式路（2026-09-29）。
+        # 语音模式不剥：那边的语气标签要送 TTS。
+        # 🔴 控制标记 [SKIP] [NEXT 60] 留着：speaker / 唤醒链要读，它们自己会剥
+        if not voice:
+            cleaned = strip_stage_tags(cleaned, keep_control=True)
         if detected:
             self.mood.update(detected)
             logger.debug(
@@ -954,6 +975,10 @@ class Nox:
                         result.attachments.extend(
                             {"type": "meme", "tag": t} for t in meme_tags
                         )
+                    # 完整正文也剥一遍舞台标签（流里已经被 MoodTagFilter 挡了，
+                    # 这里管的是落库 / 进历史那一份 —— 留着会教他下次接着写）
+                    if not voice:
+                        cleaned = strip_stage_tags(cleaned)
                     if detected:
                         self.mood.update(detected)
                         self._save_state()

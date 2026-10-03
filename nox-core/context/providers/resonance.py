@@ -57,6 +57,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from attention.resonance import DRIVE_WORDS
 from context.base import BaseContextProvider, Turn
 
 logger = logging.getLogger(__name__)
@@ -75,16 +76,8 @@ _BANDS = ((0.35, "有点"), (0.65, "挺"), (1.01, "很"))
 #:
 #: ⚠️ 措辞是他的内心独白，不是给她看的文案。改之前先想一遍
 #: "他会这么形容自己吗"。
-_WORDS = {
-    "concern": "担心她",
-    "longing": "想她",
-    "regret": "过意不去",
-    "dejection": "提不起劲",
-    "playfulness": "想逗她",
-    #: 2026-09-04 加。**唯一一个和她无关的** ——
-    #: 措辞特意不带"她"字，那正是这一条存在的意义
-    "curiosity": "被一件事勾着",
-}
+#: 词表只有一张，在情绪层（2026-09-23 收拢，理由见那边的注释）
+_WORDS = DRIVE_WORDS
 
 #: 不进他上下文的 Drive，以及为什么（见模块头）。
 _SKIP = {"restlessness"}

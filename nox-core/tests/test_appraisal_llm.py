@@ -402,3 +402,118 @@ def test_丢弃时日志要带上它推断了什么(caplog):
     #: ③ 她的原话和分数也要在，否则对不上是哪一句
     assert "算了" in text
     assert "0.5" in text or "0.55" in text
+
+
+# ---------------------------------------------------------------- 投票（2026-09-21）
+#
+# 接多数票的理由在 appraise_turn 的注释里（150 条标注实测：同一 prompt
+# 单跑三次抓到 7/8/11，误记恒为 10；多数票把误记压到 8）。
+#
+# ⚠️ 上面那 45 个测试**压不到这里**：FakeAdapter 每次返回同一段文本，
+# 三次投票和跑一次结果完全一样。所以投票逻辑必须由下面这几条单独看着。
+
+
+class SequenceAdapter:
+    """每次调用依次吐出一段不同的文本 —— 用来造出「三次跑出不同结果」。"""
+
+    def __init__(self, texts):
+        self.texts = list(texts)
+        self.calls = 0
+
+    def complete(self, messages, tools, **kw):
+        i = min(self.calls, len(self.texts) - 1)
+        self.calls += 1
+        return Turn(stop_reason="end_turn", text=self.texts[i], usage=Usage())
+
+
+def test_votes_actually_asks_three_times(monkeypatch):
+    """默认就该问三次 —— 只问一次的话下面几条全是空转。"""
+    monkeypatch.delenv("NOX_APPRAISAL_VOTES", raising=False)
+    fake = SequenceAdapter([_reply()] * 3)
+    LLMAppraiser(fake).appraise_turn("我不想干了", "怎么了乖")
+    assert fake.calls == 3
+
+
+def test_majority_of_three_carries():
+    """两次说有、一次说没有 → 记。"""
+    ap = LLMAppraiser(SequenceAdapter([
+        _reply(), _reply(valence="none"), _reply(),
+    ])).appraise_turn("我不想干了", "怎么了乖")
+    assert ap is not None
+    assert ap.anchor == "毕设"
+
+
+def test_minority_is_dropped():
+    """只有一次说有 → 不记。**这一条就是误记从 10 降到 8 的来源。**"""
+    ap = LLMAppraiser(SequenceAdapter([
+        _reply(), _reply(valence="none"), _reply(valence="none"),
+    ])).appraise_turn("随口一句", "嗯")
+    assert ap is None
+
+
+def test_broken_json_counts_as_a_no_vote():
+    """JSON 坏掉的那次算「不记」的一票，不是直接放弃整轮。"""
+    ap = LLMAppraiser(SequenceAdapter([
+        _reply(), "这不是 JSON", _reply(),
+    ])).appraise_turn("我不想干了", "怎么了乖")
+    assert ap is not None, "两次好的应当盖过一次坏的"
+
+
+def test_median_not_max_is_chosen():
+    """采用中位那次，不是最自信那次 —— 跑飞的那次往往正是最自信的。"""
+    ap = LLMAppraiser(SequenceAdapter([
+        _reply(confidence=0.65, meaning="低"),
+        _reply(confidence=0.99, meaning="最自信但跑飞了"),
+        _reply(confidence=0.80, meaning="中位"),
+    ])).appraise_turn("我不想干了", "怎么了乖")
+    assert ap is not None
+    assert ap.meaning == "中位", "拿到的是 %r" % ap.meaning
+
+
+def test_votes_1_restores_old_behaviour(monkeypatch):
+    """留一条退路：设成 1 就是接投票之前的行为，一次调用。"""
+    monkeypatch.setenv("NOX_APPRAISAL_VOTES", "1")
+    fake = SequenceAdapter([_reply()])
+    ap = LLMAppraiser(fake).appraise_turn("我不想干了", "怎么了乖")
+    assert fake.calls == 1
+    assert ap is not None
+
+
+# ---- 变异验证补的三条（2026-09-23 部署前）
+
+def test_even_votes_tie_goes_to_no(monkeypatch):
+    """平票倒向不记（「宁可漏，不可错」）。默认 3 票碰不到平票，只有设成偶数才会 ——
+    所以这条要单独钉，不然 `<=` 写成 `<` 没人发现。"""
+    monkeypatch.setenv("NOX_APPRAISAL_VOTES", "2")
+    ap = LLMAppraiser(SequenceAdapter([_reply(), _reply(valence="none")])).appraise_turn(
+        "我不想干了", "怎么了乖")
+    assert ap is None
+
+
+class FlakyAdapter(SequenceAdapter):
+    """第二次调用直接失败（429 / 超时那种），其余照常。"""
+
+    def complete(self, messages, tools, **kw):
+        self.calls += 1
+        if self.calls == 2:
+            return Turn(stop_reason="error", text="", usage=Usage(),
+                        error="RateLimitError: 429")
+        return Turn(stop_reason="end_turn", text=self.texts[0], usage=Usage())
+
+
+def test_one_failed_call_is_a_no_vote_not_a_lost_turn(monkeypatch):
+    """三次里一次调用挂了（线上这两天 429 不少）：算「不记」一票，
+    另外两次说记照样记 —— 不能因为一次限流把整轮丢掉。"""
+    monkeypatch.delenv("NOX_APPRAISAL_VOTES", raising=False)
+    fake = FlakyAdapter([_reply()])
+    ap = LLMAppraiser(fake).appraise_turn("我不想干了", "怎么了乖")
+    assert fake.calls == 3
+    assert ap is not None
+
+
+def test_votes_capped_at_five(monkeypatch):
+    """上限 5：再多也压不动误记，白花钱还拖长后置链路。"""
+    monkeypatch.setenv("NOX_APPRAISAL_VOTES", "9")
+    fake = SequenceAdapter([_reply()] * 9)
+    LLMAppraiser(fake).appraise_turn("我不想干了", "怎么了乖")
+    assert fake.calls == 5

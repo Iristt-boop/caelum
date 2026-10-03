@@ -268,7 +268,8 @@ _db.pragma("journal_mode = WAL");
 _db.pragma("synchronous = NORMAL");
 
 const db = {
-  run(sql, params = []) { _db.prepare(sql).run(...(Array.isArray(params) ? params : [params])); },
+  //: 回 better-sqlite3 的 `{ changes, lastInsertRowid }`。sql.js 时代的调用点不看返回值，照旧不受影响
+  run(sql, params = []) { return _db.prepare(sql).run(...(Array.isArray(params) ? params : [params])); },
   exec(sql, params = []) {
     const rows = _db.prepare(sql).all(...(Array.isArray(params) ? params : [params]));
     if (!rows.length) return [];
@@ -277,7 +278,7 @@ const db = {
   },
 };
 
-function dbRun(sql, params = []) { db.run(sql, params); }
+function dbRun(sql, params = []) { return db.run(sql, params); }
 // 迁移专用：列已存在是预期，其余失败必须留一行日志再继续启动
 //（规范见 docs/LOGGING.md——「静默失败」是这个系统反复栽的形状）
 function dbTry(sql) {
@@ -293,12 +294,15 @@ function dbAll(sql, params = []) {
 }
 
 // 聊天消息落库（搜索 / 历史恢复用）；meta 存 thinking / 语音卡片 / 图片等附加信息
+// 返回这一行的 rowid（= /api/messages 里那条的 `id`），没落上回 null。
+// Core 的 Care 账本拿它把「这次开口」和原话对上 —— 账本只存 id，不存原文（2026-08-18）
 function saveMessage(sessionId, role, content, meta = "") {
-  if (!content && !meta) return;
+  if (!content && !meta) return null;
   try {
     const metaStr = typeof meta === "string" ? meta : JSON.stringify(meta);
-    dbRun(`INSERT INTO conversations VALUES (?,?,?,?,?)`, [sessionId || "", role, content || "", new Date().toISOString(), metaStr]);
-  } catch (e) { console.log("[Bridge] saveMessage failed:", e.message); }
+    const info = dbRun(`INSERT INTO conversations VALUES (?,?,?,?,?)`, [sessionId || "", role, content || "", new Date().toISOString(), metaStr]);
+    return info ? Number(info.lastInsertRowid) : null;
+  } catch (e) { console.log("[Bridge] saveMessage failed:", e.message); return null; }
 }
 
 // 情绪标签只给 TTS 用，进入聊天记录/字幕前必须剥掉
@@ -427,6 +431,55 @@ dbTry(`ALTER TABLE usage_log ADD COLUMN model TEXT`)
 dbTry(`ALTER TABLE usage_log ADD COLUMN task TEXT`)
 // Web Push 订阅（iOS PWA 锁屏推送）
 db.run(`CREATE TABLE IF NOT EXISTS push_subs (endpoint TEXT PRIMARY KEY, sub TEXT, created_at TEXT)`);
+
+// ============ 主动来电（2026-09-19，她拍板：PWA 真来电，不要先发消息问） ============
+//
+// 他（nox-core 的 Care 体系）决定打 → POST /api/call/invite 登记一通电话
+// → Web Push 弹「来电」+ App 内轮询兜底 → 她接听 → 通话引擎以接听方启动
+// → 挂断回写时长。没接/拒接的降级（发条留言）是 core 侧跟进的事，bridge 只记账。
+//
+// 🔴 invite 不落 conversations —— 响铃阶段「这通电话还不存在」：
+//    她接了，开场白才以他的身份落进会话（answer 里做）；
+//    她没接，这通电话只留在这张表 + core 的跟进留言里。
+db.run(`CREATE TABLE IF NOT EXISTS calls (
+  id TEXT PRIMARY KEY, created_at TEXT, status TEXT,
+  reason TEXT, opener TEXT,
+  answered_at TEXT, ended_at TEXT, duration_s INTEGER)`);
+
+const CALL_RING_SECONDS = 45;
+
+// 未接通的通话条（2026-09-26）：sweep 转 missed / 她按拒接时往会话落一条。
+// 接通那通由 answer 端点落（content=开场白，时长 /api/call/end 回填）。
+// content 这行字给模型/搜索看；前端 CallBubble 照 metadata.call 渲染，不显示它
+function recordUnansweredCall(id, status, reason) {
+  try {
+    saveMessage(latestSessionId(), "assistant", "未接通的电话", {
+      proactive: true,
+      call: { id, status, reason: (reason || "").slice(0, 120) },
+    });
+  } catch (e) { console.log("[Call] 通话条落库失败:", e.message); }
+}
+
+function sweepCalls(now = Date.now()) {
+  // 响铃超时 = 没接。惰性清扫：任何读呼叫状态的入口顺手做，
+  // 不挂定时器（这表一天写不了几行，没必要养一个后台循环）
+  // 2026-09-26：转 missed 的同一刻落通话条 —— 糖糖那通 18:49 的 missed
+  // 她这边什么都没看到。sweep 在 core 90s 的 status 查询里必被触发，
+  // 所以通话条总是赶在留言前面进会话
+  const rows = dbAll("SELECT id, reason, created_at FROM calls WHERE status='ringing'");
+  for (const r of rows) {
+    const age = (now - Date.parse(r.created_at)) / 1000;
+    if (Number.isFinite(age) && age > CALL_RING_SECONDS) {
+      dbRun("UPDATE calls SET status='missed' WHERE id=?", [r.id]);
+      recordUnansweredCall(r.id, "missed", r.reason);
+    }
+  }
+}
+
+function latestSessionId() {
+  const r = dbAll("SELECT id FROM conversations WHERE role='user' AND content != '' ORDER BY rowid DESC LIMIT 1");
+  return r[0]?.id || "";
+}
 
 // 订阅清单（Settings → Notifications 页）：endpoint 掩码，别把整条
 // 订阅地址甩到前端 —— 它等同一把推送凭证
@@ -681,7 +734,7 @@ if (PUSH_ENABLED) {
   );
 }
 
-async function sendPushAll(title, body) {
+async function sendPushAll(title, body, data) {
   if (!PUSH_ENABLED) {
     console.error("[Bridge] sendPushAll 被调用但推送未启用，跳过:", title);
     return { sent: 0, failed: 0, results: [], error: "push disabled" };
@@ -689,9 +742,12 @@ async function sendPushAll(title, body) {
   const rows = dbAll("SELECT endpoint, sub FROM push_subs");
   const results = [];
   let sent = 0, failed = 0;
+  // data：结构化载荷（来电是 {type:"call", callId}）—— SW 靠它做点击路由。
+  // 老调用不传就原样只带 title/body，行为不变
+  const payload = JSON.stringify(data ? { title, body, data } : { title, body });
   for (const r of rows) {
     try {
-      const res = await webpush.sendNotification(JSON.parse(r.sub), JSON.stringify({ title, body }));
+      const res = await webpush.sendNotification(JSON.parse(r.sub), payload);
       sent += 1;
       results.push({ endpoint: r.endpoint, ok: true, status: res?.statusCode });
     } catch (e) {
@@ -1034,6 +1090,10 @@ async function coreMode(req, res, requestId) {
   // 工具调用名列表。从 Core 的 done 事件里收，存进 metadata.toolsUsed
   // 和 segments 一起落库 —— 前端不管当场看还是翻历史都能展开看。
   let toolsUsed = [];
+  // 工具调用轨迹（2026-09-19）：两级结构 {tool_name, arguments, sub_commands...}。
+  // tool_start 压入、tool_end 补全，done 时随消息落 metadata.toolsTrace ——
+  // 她翻历史时能看到每次调用的入参和子步骤，不只是工具名清单
+  let toolsTrace = [];
   // Core 收不到 session_id 时会自己 uuid4 生成一个，并在 done 帧里报出来。
   // 这里必须接住它回传给前端 —— 否则前端下一轮又传空，Core 又建一个新会话，
   // 表现成「每说一句话就多一个 Recents 窗口，而且他永远记不住上一句」。
@@ -1104,8 +1164,76 @@ async function coreMode(req, res, requestId) {
     const decoder = new TextDecoder();
     let buf = "";
 
+    /* 🔴 上游静默看门狗（2026-09-19 卡死事故，二版修复）。
+     *
+     * 心跳（下面那行 `: ka`）解决的是「链路上某一环掐静默连接」，但它顺手
+     * 把**前端**那双"多久没字节"的眼睛喂活了 —— 上游卡 5 分钟，前端就跟着
+     * 转 5 分钟，因为每 5 秒都有字节到达。所以"判死"必须由离上游最近的这层
+     * 来做，规矩是**数帧不数字节**：
+     *
+     *   · lastFrameAt 只在真的解析出一帧 `data:` 时更新 —— 心跳不算，
+     *     TCP 上的半截缓冲也不算；
+     *   · 静默满 SLOW_AFTER_MS 起，每 SLOW_EVERY_MS 补一帧
+     *     `{"type":"slow"}`：它是**真事件**，前端据此能显示"还在等"，
+     *     而不是一个无信息量的转圈；同时它把前端的判活时钟喂着 ——
+     *     这样两头不会互相打架；
+     *   · 静默超过 STALL_MS 判定卡死：掐上游 → 补一帧 error → 走统一收尾
+     *     补 done。**保证前端一定收到终态**，loading 一定落得下来。
+     *
+     * ⚠️ STALL_MS 别往下调太多：GLM-5 是关不掉思考的模型，而 core 目前
+     * 只转发 `delta.content`，thinking 那段是真的一个字都不吐（adapters.py
+     * 只认 content）。等哪天把 reasoning_content 也转出来，这个阈值才能
+     * 安全地收到 60 秒级。现在 180 秒 = core 自己那轮的墙钟预算。
+     */
+    // 三个阈值都可调：线上按默认值跑，测试把它们压到毫秒级才验得动
+    // （bridge/test/chat-stall.test.js 就是靠这个把「静默 3 分钟」缩成 1 秒的）
+    const KA_EVERY_MS = Number(process.env.NOX_BRIDGE_KA_MS || 5000);      // 心跳间隔
+    const SLOW_AFTER_MS = Number(process.env.NOX_BRIDGE_SLOW_MS || 45000);  // 静默多久开始告诉她"上游有点慢"
+    const SLOW_EVERY_MS = 15000;   // slow 帧之间的最小间隔
+    const STALL_MS = Number(process.env.NOX_BRIDGE_STALL_MS || 180000);     // 静默多久判定卡死
+    let lastFrameAt = Date.now();
+    let lastSlowAt = 0;
+    let stalled = false;
+
     while (true) {
-      const { done, value } = await reader.read();
+      // 🔴 keepalive（2026-09-19 卡死事故，二版调参）：她实测卡死点在
+      // **工具执行后 5~12 秒的静默窗口**（17:55:07 工具完 → 17:55:14 页面断开）。
+      // 工具跑完到第二轮文字开始之间天生有一段无字节期，链路上任何一环
+      // 掐静默连接的话，她那头就是「调用完工具就断」。规矩：**5 秒**没等到
+      // 下一帧就写一行 SSE 注释（`: ka`）—— 比观测到的最短致死静默（~12s）
+      // 更密；浏览器/代理都当心跳，前端解析器天然忽略，但字节到达会喂活看门狗。
+      const readPromise = reader.read().then((v) => ({ v }), (e) => ({ err: e }));
+      let r;
+      do {
+        r = await Promise.race([
+          readPromise,
+          new Promise((res) => setTimeout(() => res({ ka: true }), KA_EVERY_MS)),
+        ]);
+        if (r.ka) {
+          if (clientGone) { upstreamAbort.abort(); break; }
+          const silent = Date.now() - lastFrameAt;
+          if (silent >= STALL_MS) {
+            stalled = true;
+            console.log(
+              `[Bridge] ${requestId.slice(0, 6)} 上游静默 ${Math.round(silent / 1000)}s，` +
+              `判定卡死，掐断上游`
+            );
+            try { upstreamAbort.abort(); } catch { /* 已经断了 */ }
+            break;
+          }
+          res.write(": ka\n\n");
+          if (silent >= SLOW_AFTER_MS && Date.now() - lastSlowAt >= SLOW_EVERY_MS) {
+            lastSlowAt = Date.now();
+            res.write(`data: ${JSON.stringify({
+              type: "slow", seconds: Math.round(silent / 1000),
+            })}\n\n`);
+          }
+        }
+      } while (r.ka);
+      if (stalled) break;           // 上游卡死 → 跳出读循环，走下面那段统一收口
+      if (r.ka) break;              // 她先断开 → 这条流跟着收摊（不落库，见外层 catch 的同款处理）
+      if (r.err) throw r.err;       // 读挂了 → 外面 catch 走「连不上脑子」
+      const { done, value } = r.v;
       if (done) break;
       buf += decoder.decode(value, { stream: true });
 
@@ -1118,6 +1246,8 @@ async function coreMode(req, res, requestId) {
         if (!line) continue;
         let ev;
         try { ev = JSON.parse(line.slice(6)); } catch { continue; }
+        // 真事件到了：上游还活着（这才是判活的那只时钟）
+        lastFrameAt = Date.now();
 
         if (ev.type === "text") {
           fullReply += ev.text;
@@ -1192,16 +1322,50 @@ async function coreMode(req, res, requestId) {
             res.write(`data: ${JSON.stringify({ type: "order", ...order })}\n\n`);
             saveMessage(sessionId, "assistant", "", { order });
             console.log(`[Bridge] Core 发待确认单 ${order.orderId}`);
+          } else if (ev.kind === "task" && ev.task_id) {
+            // 长任务确认卡（2026-09-22）。此时**还没有开跑** ——
+            // 她在卡上点「跑」才会在 nox-core 的后台 runner 执行，
+            // 走 /api/nox/tasks/:tid/confirm。状态是活的，前端轮询着刷新
+            // （同 order 卡：不能只信落库的快照）。
+            const task = { taskId: String(ev.task_id), card: ev.card || {} };
+            res.write(`data: ${JSON.stringify({ type: "task", ...task })}\n\n`);
+            saveMessage(sessionId, "assistant", "", { task });
+            console.log(`[Bridge] Core 发长任务卡 ${task.taskId}`);
           }
         } else if (ev.type === "tool_start" || ev.type === "tool_end") {
           // 他动手的实时进度（2026-09-07）。原样透传，**不落库** ——
-          // 这是过程不是内容，翻历史时该看到的是 done 里那份 toolsUsed 清单。
+          // 这是过程不是内容，翻历史时该看到的是落库的 toolsTrace。
           //
           // 🔴 它的用处几乎全在语音通话上：工具跑十几秒，这条流在那段时间里
           // 一个字都不吐，电话里就是一段纯粹的死寂。有了这两帧，
           // 界面能说出「他在写文件」，她才分得清干活和卡死。
+          //
+          // 2026-09-19 起顺带攒轨迹：tool_start 压入一条 running，
+          // tool_end 按工具名补全（同轮同名工具连续调用不会串 —— 串行执行）。
+          if (ev.type === "tool_start") {
+            toolsTrace.push({
+              tool_name: ev.tool || "", type: "use_tool", status: "running",
+              arguments: ev.args || {}, sub_commands: [],
+            });
+          } else {
+            const entry = [...toolsTrace].reverse()
+              .find((t) => t.tool_name === (ev.tool || "") && t.status === "running");
+            if (entry) {
+              entry.status = ev.ok === false ? "error" : "success";
+              if (ev.summary) entry.summary = ev.summary;
+              if (ev.duration_ms) entry.duration_ms = ev.duration_ms;
+              if (Array.isArray(ev.sub_commands)) entry.sub_commands = ev.sub_commands;
+            }
+          }
           res.write(`data: ${JSON.stringify({
             type: ev.type, tool: ev.tool || "", ok: ev.ok !== false,
+            ...(ev.type === "tool_start" && ev.args ? { args: ev.args } : {}),
+            ...(ev.type === "tool_end" && ev.summary ? { summary: ev.summary } : {}),
+            ...(ev.type === "tool_end" && ev.duration_ms ? { duration_ms: ev.duration_ms } : {}),
+            ...(ev.type === "tool_end" && ev.sub_commands ? { sub_commands: ev.sub_commands } : {}),
+            // 详情页的 Output（2026-09-22）：原始返回（core 侧已截 2000 字）
+            ...(ev.type === "tool_end" && ev.result !== undefined ? { result: ev.result } : {}),
+            ...(ev.type === "tool_end" && ev.result_truncated ? { result_truncated: true } : {}),
           })}\n\n`);
         } else if (ev.type === "error") {
           res.write(`data: ${JSON.stringify({ type: "error", message: ev.message })}\n\n`);
@@ -1215,6 +1379,13 @@ async function coreMode(req, res, requestId) {
             toolsUsed = ev.tools_used;
             res.write(`data: ${JSON.stringify({
               type: "tools", tools: ev.tools_used,
+            })}\n\n`);
+          }
+          // 工具调用轨迹（2026-09-19）：收尾帧 —— 前端把 running 状态
+          // 定格成最终态；轨迹随消息落 metadata.toolsTrace，翻历史能回看
+          if (toolsTrace.length) {
+            res.write(`data: ${JSON.stringify({
+              type: "tools_trace", trace: toolsTrace,
             })}\n\n`);
           }
           // Core 内部有六种结局，失败时它已经把人话放进 message 了
@@ -1243,6 +1414,21 @@ async function coreMode(req, res, requestId) {
           );
         }
       }
+    }
+
+    /* 上游卡死的收口（2026-09-19）。上面跳出读循环时这一轮**还没有终态**，
+     * 前端那边 loading 就还挂着 —— 所以必须补一帧 error 让话术落到屏幕上，
+     * 后面的统一收尾再补 done，loading 才落得下来。
+     *
+     * ⚠️ 这里没走 catch：catch 是「连不上脑子」那条路（连接层就失败了），
+     * 我们现在是**连上了但上游不回话**，语义不同，得让她分得清 ——
+     * 前者多半是他那边网络/服务的事，后者是模型/上游在拖。 */
+    if (stalled) {
+      const friendly = "我这边卡在上游了（跑完工具之后一直没等到回音），先停在这儿。再说一次，我接着。";
+      console.log(`[Bridge] ${requestId.slice(0, 6)} 已掐断上游，回一帧 error 让前端解锁`);
+      res.write(`data: ${JSON.stringify({ type: "error", message: friendly })}\n\n`);
+      // 有半句就留半句（跟她屏幕上看到的一致），一个字都没有才用这句话术兜底
+      fullReply = fullReply || friendly;
     }
   } catch (e) {
     /* 她自己打断的，不是故障 —— 别往她屏幕上写「连不上脑子」。
@@ -1277,6 +1463,9 @@ async function coreMode(req, res, requestId) {
     if (toolsUsed.length) {
       meta.toolsUsed = toolsUsed;
     }
+    if (toolsTrace.length) {
+      meta.toolsTrace = toolsTrace;
+    }
     saveMessage(coreSid, "assistant", fullReply,
                 Object.keys(meta).length ? meta : "");
   }
@@ -1295,7 +1484,8 @@ const MEME_TAGS = new Set([
   "暖被窝", "累了", "亲个嘴", "老婆第一", "老婆说的都对", "呜呜呜", "在吗", "抱抱",
   "对不起", "爱你的形状", "躺好了", "很气", "忙完想我", "脸红爱你", "忧愁",
   "where my kiss", "暗中窃听", "小情绪", "emmm", "别说了", "满头问号", "请求通话",
-  "wink", "哼哼", "超想要", "一大口亲亲", "发红包", "拒收消息", "余额不足",
+  "wink", "哼哼", "超想要", "一大口亲亲", "发红包", "拒收消息", "余额不足",  // 2026-09-28 呆猫八条
+  "不喜欢我那你别干活了", "不愿意", "举爪开心", "举爱心", "仰头瞪眼卖萌", "仰头竖尾爱心", "偷看", "可怜巴巴流泪", "大手拍头", "大眼卖萌蹲姿", "女仆装端蛋糕", "张嘴大笑傻乐", "心满意足甩尾", "扭屁股爱心", "挥手打招呼", "挨砸委屈哭", "星星眼亮晶晶", "星星眼期待", "比V卖萌", "流泪大眼哭哭", "炸毛弓背哈气", "爱心眼心动", "献玫瑰", "玩手机吃瓜", "看书如何变强", "看手机脸红", "眯眼坏笑挑眉", "眯眼坏笑蹲坐", "眯眼挑眉斜视", "瞪眼萌版", "瞪眼嗯嗯嗯", "竖尾巴炸毛生气", "等你回消息", "聚光灯眼冒星光", "肇事咪逃走", "蟑螂装瞪眼", "被亲", "被捏脸星星眼", "被捧脸流泪感动", "被揉脸爱心", "装傻", "趴地流泪卖惨", "问号疑惑", "震惊爆炸瞪眼", "骄傲", "黑化坏笑持刀",
 ]);
 
 app.post("/api/chat", async (req, res) => {
@@ -1421,6 +1611,8 @@ app.post("/api/translate", async (req, res) => {
 // ==============================================================
 const ELEVEN_KEY = process.env.ELEVENLABS_API_KEY || process.env.ELEVEN_KEY || "";
 const ELEVEN_VOICE = process.env.ELEVENLABS_VOICE_ID || process.env.ELEVEN_VOICE || "gGOcFXG638t1tfyhocY5";
+//: 只给测试换成本地假上游用（验「第一次合成就存进缓存」那条路）。线上不设
+const ELEVEN_TTS_BASE = process.env.ELEVENLABS_TTS_BASE || "https://api.elevenlabs.io";
 const VOICE_TAG_RE = /\[(?:whining|excited|pouting|softly|sniffling|laughing|eager|pause|whispers?|sighs?|giggles?)\]/gi;
 const DASHSCOPE_API_KEY = process.env.DASHSCOPE_API_KEY || process.env.QWEN_ASR_API_KEY || "";
 const DASHSCOPE_BASE_URL = (process.env.DASHSCOPE_BASE_URL || process.env.QWEN_ASR_BASE_URL || "https://dashscope.aliyuncs.com/compatible-mode/v1").replace(/\/$/, "");
@@ -1618,7 +1810,83 @@ const TTS_MAX_CHARS = 2000;
 //
 // 以前是 `await r.arrayBuffer()` 先收全再 res.end() —— 整段合成完才开始传，
 // 首字出声要多等一到两秒。前端本来就用 MediaSource 在等着喂，是这一层拖了后腿。
-async function pipeTts(upstream, res) {
+// ==================== 语音条缓存 + 收藏（2026-09-29）====================
+//
+// 她问：「现在的语音是播放第一次就下载下来了，还是每播放一次就要耗费一次额度？」
+// —— 每次都耗。bridge 不缓存，前端只在那条语音条还挂在屏幕上时留着 blob，
+// 刷新 / 重开 App 再点就又去 ElevenLabs 合成一遍。而且 v3 每次合成语气都不一样，
+// 重播听到的已经不是第一次那一版。
+//
+//   tts-cache/  按「文本」存第一次合成的结果。可重建，**不进备份**，超 300MB 删最旧的
+//   voice-favs/ 她收藏的那几条。**要备份**（scripts/caelum-backup.sh），删了就找不回那个声音
+const TTS_CACHE_DIR = path.join(DATA_DIR, "tts-cache");
+const VOICE_FAV_DIR = path.join(DATA_DIR, "voice-favs");
+const TTS_CACHE_MAX_BYTES = 300 * 1024 * 1024;
+fs.mkdirSync(TTS_CACHE_DIR, { recursive: true });
+fs.mkdirSync(VOICE_FAV_DIR, { recursive: true });
+
+/** 同一句话（带情绪标签的原文，和 /api/tts 送进 v3 的是同一份）→ 同一个文件 */
+function ttsKey(text) {
+  return crypto.createHash("sha256").update("phone|" + text).digest("hex").slice(0, 40);
+}
+function ttsCachePath(text) {
+  return path.join(TTS_CACHE_DIR, `${ttsKey(text)}.mp3`);
+}
+/** 先写临时文件再改名 —— 写一半被读到就是一段残音频 */
+function writeAtomic(file, buf) {
+  const tmp = `${file}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, buf);
+  fs.renameSync(tmp, file);
+}
+let ttsCacheWrites = 0;
+function saveTtsCache(file, buf) {
+  try {
+    writeAtomic(file, buf);
+    if (++ttsCacheWrites % 50 === 0) pruneTtsCache();
+  } catch (e) {
+    console.error("[TTS] 缓存写不进去（不影响播放）:", e.message);
+  }
+}
+function pruneTtsCache() {
+  try {
+    const files = fs.readdirSync(TTS_CACHE_DIR).filter((f) => f.endsWith(".mp3"))
+      .map((f) => { const p = path.join(TTS_CACHE_DIR, f); const s = fs.statSync(p); return { p, size: s.size, t: s.mtimeMs }; })
+      .sort((a, b) => a.t - b.t);
+    let total = files.reduce((n, f) => n + f.size, 0);
+    for (const f of files) {
+      if (total <= TTS_CACHE_MAX_BYTES) break;
+      fs.unlinkSync(f.p);
+      total -= f.size;
+    }
+  } catch (e) {
+    console.error("[TTS] 缓存清理失败:", e.message);
+  }
+}
+
+/** 收藏时缓存里没有（缓存上线前播过的、或者没播过就收藏）才合成一次。非流式，拿整段 buffer */
+async function synthVoiceOnce(withTags) {
+  if (!ELEVEN_KEY) { console.error("[VoiceFav] 没配 ElevenLabs key，合成不了"); return null; }
+  const clean = withTags.replace(VOICE_TAG_RE, "").replace(/\s{2,}/g, " ").trim();
+  for (const [modelId, text] of [["eleven_v3", withTags], ["eleven_turbo_v2_5", clean]]) {
+    try {
+      const r = await fetch(`${ELEVEN_TTS_BASE}/v1/text-to-speech/${ELEVEN_VOICE}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "xi-api-key": ELEVEN_KEY },
+        body: JSON.stringify({ text, model_id: modelId, voice_settings: { stability: 0.34, style: 0.84 } }),
+        signal: AbortSignal.timeout(30000),
+      });
+      if (r.ok) return Buffer.from(await r.arrayBuffer());
+      console.error(`[VoiceFav] ${modelId} 合成失败:`, r.status);
+    } catch (e) {
+      console.error(`[VoiceFav] ${modelId} 合成异常:`, e.message);
+    }
+  }
+  return null;
+}
+
+// `collect`（可选）：顺手收一份完整音频给 TTS 缓存用（2026-09-29）。
+// 只有**完整流完**才标 collect.complete —— 半路她切走了的那份是残的，不能存
+async function pipeTts(upstream, res, collect = null) {
   if (!res.headersSent) {
     res.setHeader("Content-Type", "audio/mpeg");
     // 关掉 Caddy/nginx 的缓冲，否则它会把流重新攒成一坨
@@ -1627,17 +1895,21 @@ async function pipeTts(upstream, res) {
   }
   const reader = upstream.body.getReader();
   let bytes = 0;
+  let cut = false;
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
     bytes += value.length;
+    const buf = Buffer.from(value);
+    if (collect) collect.chunks.push(buf);
     // 下游断了（她挂了电话 / 切走了）就别再拉了，省 API 额度
-    if (!res.write(Buffer.from(value))) {
+    if (!res.write(buf)) {
       await new Promise((resolve) => res.once("drain", resolve));
     }
-    if (res.destroyed) { try { await reader.cancel(); } catch {} break; }
+    if (res.destroyed) { cut = true; try { await reader.cancel(); } catch {} break; }
   }
   res.end();
+  if (collect) collect.complete = !cut && bytes > 0;
   return bytes;
 }
 
@@ -1709,6 +1981,18 @@ app.post("/api/tts", async (req, res) => {
    */
   const chain = pickChain(profile, engine);
 
+  // 🔴 语音条缓存（2026-09-29 她问「是不是每播一次都耗一次额度」—— 是的，原来每次都重新合成）。
+  // 只给**带 cache:true 的请求**（聊天语音条）：通话那条路每句都是新的，存了也没人再听。
+  // 命中直接给文件：不花额度，而且每次都是同一个声音（v3 每次合成语气都不一样）。
+  const cacheFile = req.body.cache === true && !profile && !engine ? ttsCachePath(withTags) : null;
+  if (cacheFile && fs.existsSync(cacheFile)) {
+    res.setHeader("Content-Type", "audio/mpeg");
+    res.setHeader("X-TTS-Engine", "cache");
+    res.setHeader("Access-Control-Expose-Headers", "X-TTS-Engine");
+    console.log(`[TTS] 缓存命中 ${path.basename(cacheFile)}`);
+    return res.sendFile(cacheFile);
+  }
+
   const sendEngine = (name) => {
     //: ⚠️ 一定要在写 body 之前设。设完头再降级是不行的 ——
     //: 头已经发出去了，改不回来（下面每一档失败后都查 headersSent 就是这个道理）
@@ -1720,7 +2004,7 @@ app.post("/api/tts", async (req, res) => {
   /** ElevenLabs 两档共用。v3 保留情绪标签（英语陪练的命根子），turbo 用剥净的文本。 */
   async function tryEleven(name, modelId, body, timeout) {
     try {
-      const r = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${ELEVEN_VOICE}/stream`, {
+      const r = await fetch(`${ELEVEN_TTS_BASE}/v1/text-to-speech/${ELEVEN_VOICE}/stream`, {
         method: "POST",
         headers: { "Content-Type": "application/json", "xi-api-key": ELEVEN_KEY },
         body: JSON.stringify({
@@ -1733,8 +2017,11 @@ app.post("/api/tts", async (req, res) => {
       if (r.ok && r.body) {
         sendEngine(name);
         const t0 = Date.now();
-        const bytes = await pipeTts(r, res);
+        //: 只缓存 ElevenLabs 的（edge 是降级音质，存进去就永远是那个声音了）
+        const collect = cacheFile ? { chunks: [], complete: false } : null;
+        const bytes = await pipeTts(r, res, collect);
         console.log(`[TTS] ${name} 流式 ${bytes}B / ${Date.now() - t0}ms`);
+        if (collect?.complete) saveTtsCache(cacheFile, Buffer.concat(collect.chunks));
         return true;
       }
       console.error(`[TTS] ${name} failed:`, r.status);
@@ -1795,6 +2082,70 @@ app.post("/api/tts", async (req, res) => {
   //: 整条链都没成。**说出来**，别回一个 200 的空 body（那是静默失败）
   console.error("[TTS] 整条降级链都失败了");
   if (!res.headersSent) res.status(502).json({ error: "tts_all_failed" });
+});
+
+// ---------------- 语音条收藏（2026-09-29 她要的：Console 里第二个页签）----------------
+// 收藏的是**那一段音频**，不是那句文字 —— 同一句话重新合成就是另一个语气了。
+// key = ttsKey(原文)：同一句收藏两次是同一条（幂等），也正好对上 tts-cache 里那份。
+db.run(`CREATE TABLE IF NOT EXISTS voice_favorites (
+  id TEXT PRIMARY KEY, key TEXT UNIQUE, tts TEXT, en TEXT, zh TEXT,
+  message_id TEXT, session_id TEXT, created_at TEXT)`);
+
+const favFile = (id) => path.join(VOICE_FAV_DIR, `${id}.mp3`);
+const favRow = (r) => ({ id: r.id, tts: r.tts, en: r.en, zh: r.zh, message_id: r.message_id,
+  session_id: r.session_id, created_at: r.created_at });
+
+app.get("/api/voice-favorites", (req, res) => {
+  const rows = dbAll("SELECT * FROM voice_favorites ORDER BY created_at DESC");
+  res.json({ ok: true, items: rows.map(favRow) });
+});
+
+app.post("/api/voice-favorites", async (req, res) => {
+  const tts = String(req.body?.tts || "").trim().slice(0, TTS_MAX_CHARS);
+  if (!tts) return res.status(400).json({ error: "tts required" });
+  const key = ttsKey(tts);
+  const had = dbAll("SELECT * FROM voice_favorites WHERE key=?", [key])[0];
+  if (had) return res.json({ ok: true, item: favRow(had), existed: true });
+
+  //: 先有音频再落库 —— 反过来的话，合成失败会留下一条点了没声音的收藏
+  const cached = ttsCachePath(tts);
+  let audio = fs.existsSync(cached) ? fs.readFileSync(cached) : null;
+  const from = audio ? "cache" : "synth";
+  if (!audio) {
+    audio = await synthVoiceOnce(tts);
+    if (!audio) return res.status(502).json({ error: "合成失败，没收藏上" });
+    saveTtsCache(cached, audio);        // 顺手进缓存，聊天里再点就是同一个声音
+  }
+  const id = randomUUID();
+  writeAtomic(favFile(id), audio);
+  const row = {
+    id, key, tts, en: String(req.body?.en || stripVoiceTags(tts)).slice(0, 2000),
+    zh: String(req.body?.zh || "").slice(0, 2000),
+    message_id: req.body?.message_id != null ? String(req.body.message_id) : null,
+    session_id: req.body?.session_id ? String(req.body.session_id).slice(0, 64) : null,
+    created_at: new Date().toISOString(),
+  };
+  dbRun(`INSERT INTO voice_favorites (id, key, tts, en, zh, message_id, session_id, created_at)
+         VALUES (?,?,?,?,?,?,?,?)`,
+    [row.id, key, row.tts, row.en, row.zh, row.message_id, row.session_id, row.created_at]);
+  console.log(`[VoiceFav] 收藏 ${id.slice(0, 8)}（${from}，${audio.length}B）: ${row.en.slice(0, 30)}`);
+  res.json({ ok: true, item: favRow(row), from });
+});
+
+app.get("/api/voice-favorites/:id/audio", (req, res) => {
+  const row = dbAll("SELECT id FROM voice_favorites WHERE id=?", [req.params.id])[0];
+  const file = row && favFile(row.id);
+  if (!file || !fs.existsSync(file)) return res.status(404).json({ error: "not found" });
+  res.setHeader("Content-Type", "audio/mpeg");
+  res.sendFile(file);
+});
+
+app.delete("/api/voice-favorites/:id", (req, res) => {
+  const row = dbAll("SELECT id FROM voice_favorites WHERE id=?", [req.params.id])[0];
+  if (!row) return res.status(404).json({ error: "not found" });
+  dbRun("DELETE FROM voice_favorites WHERE id=?", [row.id]);
+  try { fs.unlinkSync(favFile(row.id)); } catch (e) { console.error("[VoiceFav] 删音频文件失败:", e.message); }
+  res.json({ ok: true });
 });
 
 // ==============================================================
@@ -2149,7 +2500,11 @@ if (fs.existsSync(frontendDist)) {
     maxAge: "1y",
     immutable: true,
     setHeaders(res, filePath) {
-      if (filePath.endsWith("index.html")) {
+      // 🔴 .html **全部** no-cache，不只 index.html：toy.html / nox-voice.html
+      // 这些 public/ 下的手写页没有内容哈希，文件名永远不变 —— 上面的
+      // maxAge 1y + immutable 会把它们按年缓存，改了页面她手机上永远拿旧的，
+      // 而且移动端没有顺手硬刷新这回事。2026-09-20 中继页改 SSE 就差点被吞。
+      if (filePath.endsWith(".html")) {
         res.setHeader("Cache-Control", "no-cache, must-revalidate");
       }
     },
@@ -2672,6 +3027,39 @@ app.get("/api/music/recent", async (req, res) => {
 });
 
 // ==============================================================
+// ==============================================================
+// 🌍 World 页的两个只读出口（2026-09-21 补桥）
+//
+// 数据源住在 Nox Core :8100（/api/nox/topics 话题池投影、/api/nox/dreams
+// Dream shadow 的 JSONL 只读投影），但 R7 写死「前端只打 bridge」——
+// 这半截一直没人接，World 页「外面」「梦」两块一起 404。
+// 纯透传：不改形不缓存，Core 挂了 502，前端说人话。
+app.get("/api/nox/topics", async (req, res) => {
+  try {
+    const r = await fetch(`${NOX_CORE_URL}/api/nox/topics`, {
+      signal: AbortSignal.timeout(8000),
+    });
+    res.status(r.status).json(await r.json());
+  } catch (e) {
+    console.warn("[world] 话题池透传失败:", e.message);
+    res.status(502).json({ ok: false, error: `core 不可达: ${e.message}` });
+  }
+});
+
+app.get("/api/nox/dreams", async (req, res) => {
+  try {
+    const limit = Math.min(Math.max(parseInt(req.query.limit) || 5, 1), 30);
+    const r = await fetch(`${NOX_CORE_URL}/api/nox/dreams?limit=${limit}`, {
+      signal: AbortSignal.timeout(8000),
+    });
+    res.status(r.status).json(await r.json());
+  } catch (e) {
+    console.warn("[world] 梦透传失败:", e.message);
+    res.status(502).json({ ok: false, error: `core 不可达: ${e.message}` });
+  }
+});
+
+// ==============================================================
 // 🎬 共影观影状态 / 记录（2026-08-22，技术方案 v2.0 的 P1）
 //
 // 在这之前共影是一座孤岛：Movies.jsx 自己拼一段字符串塞进 /api/chat，
@@ -2926,6 +3314,34 @@ app.get("/api/nox/orders/:oid", noxOrderProxy("", "GET", 8000));
 app.get("/api/nox/orders/:oid/pay", noxOrderProxy("/pay", "GET", 8000));
 app.post("/api/nox/orders/:oid/confirm", noxOrderProxy("/confirm", "POST", 30000));
 app.post("/api/nox/orders/:oid/cancel", noxOrderProxy("/cancel", "POST", 8000));
+
+// 长任务（2026-09-22，Nox-长任务循环-v1-设计.md）。同 noxOrderProxy 的理由：
+// R7「前端只打 bridge」，这边只做透明代理。确认只是翻状态（真跑在 nox-core
+// 的后台 runner），不需要下单那种 30s 宽限
+const noxTaskProxy = (path, method, timeoutMs) => async (req, res) => {
+  const tid = String(req.params.tid || "");
+  if (!/^task-[a-z0-9]{6,}$/i.test(tid)) {
+    return res.status(400).json({ ok: false, error: "任务号格式不对" });
+  }
+  try {
+    const r = await fetch(`${NOX_CORE_URL}/api/nox/tasks/${tid}${path}`, {
+      method,
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    res.status(r.status).json(await r.json());
+  } catch (e) {
+    console.error(`[nox-task] ${method} ${tid}${path} 失败:`, e.message);
+    // 确认超时 ≠ 没确认成 —— nox-core 的 claim 是幂等的，刷新页面看状态就知道
+    res.status(504).json({
+      ok: false,
+      error: e.message,
+      detail: "没能确认结果，先别重复点。稍后刷新页面看任务状态。",
+    });
+  }
+};
+app.get("/api/nox/tasks/:tid", noxTaskProxy("", "GET", 8000));
+app.post("/api/nox/tasks/:tid/confirm", noxTaskProxy("/confirm", "POST", 8000));
+app.post("/api/nox/tasks/:tid/cancel", noxTaskProxy("/cancel", "POST", 8000));
 
 // 可切换的模型清单 + 当前系统默认（Models 设置页）。
 // 切换不走这里 —— 聊天请求带 model 短名，coreMode 本来就透传
@@ -3716,8 +4132,25 @@ app.get("/api/messages", (req, res) => {
       [sid]
     ).reverse()));
   }
-  // test- 前缀 = 小克(CC)的测试专用频道，不进糖糖的时间线
-  res.json(signMsgRows(dbAll("SELECT rowid AS id, id AS sessionId, role, content, timestamp, metadata FROM conversations WHERE id NOT LIKE 'test-%' ORDER BY rowid DESC LIMIT 200").reverse()));
+  /* 🔴 不带 sessionId 的那条（「最近 200 条」）**必须和 /api/conv-sessions
+   * 用同一把尺子**：只认 32 位纯小写 hex（2026-09-19 会话不同步事故）。
+   *
+   * 这里原来只排除 `test-` 前缀（小克的测试频道）。而 PWA 的「恢复会话」兜底
+   * 就是拿这条列表的**最后一条**的 sessionId 当自己的会话 —— 上一晚端到端
+   * 验证留下的 `sse-verify-final` 不在 `test-` 之列，于是她那台设备把它捡成了
+   * 自己的对话：捡走之后它不在 Recents 里（白名单挡着）、界面上删不掉、
+   * OS 也永远追不上 —— 表现成「OS 的会话和 pwa 不同步」，她 20:32–20:46
+   * 说的话全落在那个影子会话里。
+   *
+   * 现在的白名单顺带把 `test-` 那类也挡住了（它们都不是 hex），所以原来那句
+   * 注释里的意图还在，只是不再靠前缀。**别把它改回前缀判断。**
+   */
+  res.json(signMsgRows(dbAll(
+    "SELECT rowid AS id, id AS sessionId, role, content, timestamp, metadata " +
+    "FROM conversations " +
+    "WHERE length(id) = 32 AND id NOT GLOB '*[^0-9a-f]*' " +
+    "ORDER BY rowid DESC LIMIT 200"
+  ).reverse()));
 });
 
 // 设置 KV（头像等）
@@ -3809,28 +4242,197 @@ app.post("/api/daily-push", async (req, res) => {
 // 不落的话会出现「锁屏弹了一句话，点进去聊天里什么都没有」——
 // 和 /api/daily-push 第 3 步是同一件事，那边是 bridge 自己发起所以自己存，
 // 这条是 Core 发起的，bridge 不知情，得由调用方把 session_id 带过来。
+// 主动消息带的附件 → 落库的 metadata。**形状必须和 /chat/stream 那条一模一样**
+// （上面 ev.kind === "voice" / "music" / "meme" / "image" 那几支），手机和 OS 翻历史
+// 认的就是这几种；形状一歪就是「库里有、界面上没有」。
+// 🔴 2026-09-28 补：原来这个端点只收文字 —— 他主动找她时发的语音条，Core 那边
+// 生成了，走到这里被丢掉（09-27 00:31 那条哄睡的语音就这么没了）
+function proactiveAttachmentMeta(att) {
+  if (!att || typeof att !== "object") return null;
+  if (att.type === "voice" && att.tts) {
+    return { voice: { en: stripVoiceTags(String(att.tts)), tts: String(att.tts), zh: String(att.zh || "") } };
+  }
+  if (att.type === "music" && att.song_id) {
+    return { music: { songId: String(att.song_id), name: att.name || "", artist: att.artist || "", cover: att.cover || "" } };
+  }
+  if (att.type === "meme" && att.tag) return { meme: String(att.tag) };
+  if (att.type === "image" && att.url) {
+    return { image: String(att.url), album: att.album || "", favorited: !!att.favorited };
+  }
+  return null;
+}
+const ATT_WORD = { voice: "发来一条语音", music: "给你点了一首歌", meme: "发来一个表情", image: "发来一张图" };
+
 app.post("/api/push/send", async (req, res) => {
   const title = (req.body?.title || "Nox").toString().slice(0, 50);
-  const body = (req.body?.body || "").toString().slice(0, 300);
+  const text = (req.body?.body || "").toString().slice(0, 300);
   const sid = (req.body?.session_id || "").toString().slice(0, 64);
+  const atts = (Array.isArray(req.body?.attachments) ? req.body.attachments : [])
+    .slice(0, 8).map((a) => [a, proactiveAttachmentMeta(a)]).filter(([, m]) => m);
+  // 只发了一条语音、没写字也是一条正经的主动消息；锁屏上总得有句话
+  const body = text.trim() ? text : (atts.length ? ATT_WORD[atts[0][0].type] : "");
   if (!body.trim()) return res.status(400).json({ error: "body is required" });
   let saved = false;
+  let messageId = null;
   if (sid) {
-    saveMessage(sid, "assistant", body, { proactive: true });
-    saved = true;
+    //: message_id = 这次开口落下的**第一条**的 rowid（有字是那句字，只发语音就是那条语音）。
+    //  Care 账本只存 id 不存原文，拿它对回原话（2026-08-18；这段 09-27 只改在线上，09-28 收回仓库）
+    const ids = [];
+    if (text.trim()) ids.push(saveMessage(sid, "assistant", text, { proactive: true }));
+    for (const [, meta] of atts) ids.push(saveMessage(sid, "assistant", "", { ...meta, proactive: true }));
+    messageId = ids.find((x) => x != null) ?? null;
+    saved = messageId != null;
   }
   const subs = dbAll("SELECT COUNT(*) AS c FROM push_subs")[0]?.c || 0;
   // 没有订阅不是错误 —— 她可能还没在这台设备上装 PWA。如实回报条数，
   // 让调用方能在日志里看出「推了但没人收」，而不是以为成功了
   await sendPushAll(title, body);
-  console.log(`[Push] 主动推送 -> ${subs} 个订阅${saved ? ` (session=${sid})` : ""}: ${body.slice(0, 40)}`);
-  res.json({ ok: true, subs, saved });
+  console.log(`[Push] 主动推送 -> ${subs} 个订阅${saved ? ` (session=${sid})` : ""}: ${body.slice(0, 40)}`
+    + (atts.length ? ` +${atts.map(([a]) => a.type).join(",")}` : ""));
+  // message_id 是 conversations 的 rowid，没落库就是 null。转成字符串 ——
+  // Core 那边账本的 message_id 是 str，Moments 的帖子 id 也走同一个字段
+  res.json({ ok: true, subs, saved, message_id: messageId == null ? null : String(messageId), attachments: atts.length });
+});
+
+// ============ 主动来电：端点 ============
+// 调用方：core（invite/status，带 NOX_TOKEN）和 PWA（current/answer/decline/end，
+// main.jsx 全局 fetch 已带 X-Nox-Token）。这组端点和 push/send 同一鉴权档。
+
+// core 决定打了 → 登记 + 弹「来电」推送。opener 是他开口的第一句（core 生成好的），
+// 她接听的那一刻才落进会话 —— 响铃阶段这通电话还不存在
+app.post("/api/call/invite", async (req, res) => {
+  const reason = (req.body?.reason || "").toString().slice(0, 300);
+  const opener = (req.body?.opener || "").toString().slice(0, 500);
+  if (!reason.trim()) return res.status(400).json({ error: "reason is required" });
+  sweepCalls();
+  const id = `call-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const created = new Date().toISOString();
+  dbRun("INSERT INTO calls (id, created_at, status, reason, opener) VALUES (?,?,?,?,?)",
+    [id, created, "ringing", reason, opener]);
+  // 推送载荷带 data.callId —— SW 靠它把点击路由成「进来电屏」；
+  // 通知本身就是铃声（系统通知音 + vibrate），页面活着时 App 内轮询兜底
+  const r = await sendPushAll("Nox 来电", reason.slice(0, 120) || "他想跟你说两句话", { type: "call", callId: id });
+  console.log(`[Call] 来电 ${id} -> ${r.sent} 个订阅: ${reason.slice(0, 40)}`);
+  res.json({ ok: true, id, expires_in: CALL_RING_SECONDS, pushed: r.sent });
+});
+
+// App 内轮询 / SW 深链进来取当前来电。没有就是 null —— 12 秒一次的心跳，别让它贵
+app.get("/api/call/current", (req, res) => {
+  sweepCalls();
+  const r = dbAll("SELECT id, reason, opener, created_at FROM calls WHERE status='ringing' ORDER BY created_at DESC LIMIT 1");
+  if (!r[0]) return res.json({ ok: true, call: null });
+  const expires_in = Math.max(0, CALL_RING_SECONDS - (Date.now() - Date.parse(r[0].created_at)) / 1000);
+  res.json({ ok: true, call: { ...r[0], expires_in: Math.round(expires_in) } });
+});
+
+// 她接了。开场白此刻才以他的身份落进会话（跟早报同一套：
+// 先落库再推送，她回话时他得知道自己打过这通电话）
+app.post("/api/call/answer", (req, res) => {
+  sweepCalls();
+  const id = (req.body?.id || "").toString().slice(0, 64);
+  const r = dbAll("SELECT * FROM calls WHERE id=?", [id]);
+  if (!r[0]) return res.status(404).json({ error: "no such call" });
+  if (r[0].status !== "ringing") return res.status(409).json({ error: `call is ${r[0].status}` });
+  dbRun("UPDATE calls SET status='answered', answered_at=? WHERE id=?", [new Date().toISOString(), id]);
+  const sid = latestSessionId();
+  let saved = null;
+  if (r[0].opener && sid) {
+    // 2026-09-26：call 从裸 id 升级成对象 —— 前端 CallBubble 靠它渲染通话条
+    saveMessage(sid, "assistant", r[0].opener, {
+      proactive: true,
+      call: { id, status: "answered", reason: (r[0].reason || "").slice(0, 120) },
+    });
+    saved = sid;
+  }
+  console.log(`[Call] ${id} 已接听${saved ? ` (session=${sid})` : "（无会话可落）"}`);
+  res.json({ ok: true, sid, opener: r[0].opener || "" });
+});
+
+// 她拒接。core 的跟进定时器稍后会看到这个状态，把「留言」发出来
+app.post("/api/call/decline", (req, res) => {
+  const id = (req.body?.id || "").toString().slice(0, 64);
+  const r = dbAll("SELECT status, reason FROM calls WHERE id=?", [id]);
+  if (!r[0]) return res.status(404).json({ error: "no such call" });
+  if (r[0].status === "ringing") {
+    dbRun("UPDATE calls SET status='declined' WHERE id=?", [id]);
+    recordUnansweredCall(id, "declined", r[0].reason);
+    console.log(`[Call] ${id} 被拒接`);
+  }
+  res.json({ ok: true });
+});
+
+// 通话页挂断时回写时长（fire-and-forget，失败不重试 —— 记账件，不是业务件）
+app.post("/api/call/end", (req, res) => {
+  const id = (req.body?.id || "").toString().slice(0, 64);
+  const dur = Math.max(0, Math.round(Number(req.body?.duration) || 0));
+  dbRun("UPDATE calls SET status=CASE WHEN status='answered' THEN 'ended' ELSE status END, ended_at=?, duration_s=? WHERE id=?",
+    [new Date().toISOString(), dur, id]);
+  // 2026-09-26：时长回填进通话条消息 —— 她重开 App 看到「语音通话 3:24」。
+  // 🔴 不能一条 UPDATE 全表 json_extract：历史消息的 metadata 有非 JSON 串，
+  // json_extract 碰到就抛 malformed JSON 炸掉整个语句。先倒序找目标行（通话条
+  // 刚落库，就在表尾附近），再按 rowid 定点 json_set
+  const hit = dbAll(
+    "SELECT rowid FROM conversations WHERE json_valid(metadata) AND json_extract(metadata,'$.call.id')=? ORDER BY rowid DESC LIMIT 1",
+    [id],
+  );
+  if (hit[0]) {
+    dbRun("UPDATE conversations SET metadata=json_set(metadata,'$.call.duration_s',?) WHERE rowid=?",
+      [dur, hit[0].rowid]);
+  }
+  console.log(`[Call] ${id} 结束，${dur}s`);
+  res.json({ ok: true });
+});
+
+// core 的跟进定时器用。传 id 精确查；也用于验收时看状态
+app.get("/api/call/status", (req, res) => {
+  sweepCalls();
+  const id = (req.query?.id || "").toString().slice(0, 64);
+  if (id) {
+    const r = dbAll("SELECT id, status, reason, opener, duration_s FROM calls WHERE id=?", [id]);
+    if (!r[0]) return res.status(404).json({ error: "no such call" });
+    return res.json({ ok: true, call: r[0] });
+  }
+  const r = dbAll("SELECT id, status, reason, created_at, duration_s FROM calls ORDER BY created_at DESC LIMIT 10");
+  res.json({ ok: true, calls: r });
 });
 
 // ============ 设备控制（二十七章遗留项目：state 中继模式）============
-// 小克调 toy_set/toy_stop → 状态落库 → 中继页(/toy.html)轮询 → Web Bluetooth → 设备
+// 小克调 toy_set/toy_stop → 状态落库 → 中继页(/toy.html)收 SSE 推送 → Web Bluetooth → 设备
 const getToyState = () => { try { return JSON.parse(dbAll("SELECT value FROM settings WHERE key='toy_state'")[0]?.value || "{}"); } catch { return {}; } };
-const setToyState = (s) => dbRun("INSERT OR REPLACE INTO settings VALUES ('toy_state', ?)", [JSON.stringify({ ...s, updated_at: Date.now() })]);
+
+// 状态推送（SSE，2026-09-20）。原来中继页只能 setInterval 每秒轮询，而浏览器
+// 对后台页的定时器狠得很：隐藏约 5 分钟后降到一分钟一次 —— 她的体感是
+// 「Nox 调了 toy_set，要切回中继页设备才动」。SSE 是网络事件，不吃定时器
+// 节流，状态落库的同一刻就推给页面，页面挂在后台也照收。
+// 🔴 EventSource 带不了自定义 header —— token 走 ?token=（readAuthToken 的三个来源之一）。
+const toySseClients = new Set();
+function broadcastToyState(s) {
+  const frame = `data: ${JSON.stringify(s)}\n\n`;
+  for (const c of toySseClients) {
+    try { c.write(frame); } catch { toySseClients.delete(c); }
+  }
+}
+const setToyState = (s) => {
+  const next = { ...s, updated_at: Date.now() };
+  dbRun("INSERT OR REPLACE INTO settings VALUES ('toy_state', ?)", [JSON.stringify(next)]);
+  broadcastToyState(next);
+};
+app.get("/api/toy/stream", (req, res) => {
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no");   // 不然 Caddy 把流攒成一坨，「推送一顿一顿」
+  res.write(`data: ${JSON.stringify(getToyState())}\n\n`);   // 先补发当前状态，页面重连不丢最后一条指令
+  toySseClients.add(res);
+  req.on("close", () => toySseClients.delete(res));
+});
+// 心跳用注释行（": ping"）—— 不触发客户端 onmessage，只防中间层掐闲连接。
+// 写坏了的连接等它自己的 close 事件清场；unref 保证它永远不挡进程退出。
+setInterval(() => {
+  for (const c of toySseClients) {
+    try { c.write(": ping\n\n"); } catch { toySseClients.delete(c); }
+  }
+}, 25000).unref();
 
 // 这里原来有 /api/obsidian —— Core 够不着本机 Agent 那条 WS，
 // 所以开个 REST 口子让它转发，由她电脑上的 Agent 写 Obsidian 文件。
@@ -4206,6 +4808,14 @@ app.get("/api/health", async (req, res) => {
   const staleJobs = Array.isArray(core.body?.background_stale)
     ? core.body.background_stale : [];
 
+  // 同一类洞的第二处：OB 的外部通道（embedding / rerank，都是百炼）。
+  // 2026-09-22 百炼欠费断了三小时 —— OB 活着、/health 200、这里全绿，
+  // 只是他想不起来了。OB 自己记台账（channel_health.py），这里照搬结论。
+  // `alert` 是给 caelum-watch 推手机用的那句话：**必须是固定文案，不带次数**——
+  // 看门狗拿正文算指纹做冷却，带了会变的数字就每 5 分钟吵她一次
+  const failingChannels = Array.isArray(ombre.body?.channels_failing)
+    ? ombre.body.channels_failing : [];
+
   const checks = {
     bridge: { ok: true },
     nox_core: { ok: core.ok, ms: core.ms, http: core.http, error: core.error, model: core.body?.model },
@@ -4216,6 +4826,16 @@ app.get("/api/health", async (req, res) => {
       ? { ok: false, stale: staleJobs, error: `后台活计停了：${staleJobs.join(", ")}` }
       : { ok: core.ok, jobs: Object.keys(core.body?.background || {}).length },
     ombre: { ok: ombre.ok, ms: ombre.ms, http: ombre.http, error: ombre.error, buckets: ombre.body?.buckets, decay: ombre.body?.decay_engine },
+    // 单独一项，理由同 nox_background：「OB 挂了」和「OB 在但检索通道断了」修法不同
+    memory_channels: failingChannels.length
+      ? {
+          ok: false,
+          failing: failingChannels,
+          channels: ombre.body?.channels,
+          error: `记忆检索通道在失败：${failingChannels.join(", ")}`,
+          alert: `记忆检索的 ${failingChannels.join(" / ")} 在失败（多半是百炼欠费或服务挂了），他现在想不起来或想不准`,
+        }
+      : { ok: ombre.ok, rerank_mode: ombre.body?.rerank_mode },
     eryu: { ok: eryu.ok, ms: eryu.ms, http: eryu.http, error: eryu.error },
     co_reading: { ok: reading.ok, ms: reading.ms, http: reading.http, error: reading.error },
     co_watching: { ok: watching.ok, ms: watching.ms, http: watching.http, error: watching.error },

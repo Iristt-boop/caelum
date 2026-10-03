@@ -78,17 +78,27 @@ class RhythmModulator:
         self._pending: list[dict[str, Any]] = []
         #: 已判定的，最旧先出，最多 WINDOW 条
         self._history: list[dict[str, Any]] = []
+        #: 每条开口判定落定时回调一次（Growth Loop 第 0 期的经历账本，2026-09-28）。
+        #: rhythm 只留最近 5 条、判完就忘；长期的账由回调方记。
+        #: service 建好后回填（同 longing_ref 的做法），没接就不记
+        self.on_judged: Callable[[dict[str, Any]], None] | None = None
         self._load()
 
     # ------------------------------------------------------------ 记录
 
-    def on_spoke(self, now: datetime) -> None:
+    def on_spoke(self, now: datetime, ctx: dict[str, Any] | None = None) -> None:
         """他主动开口了，开始等她回。
 
         ⚠️ pending 会堆积：他连着说三条她都没回，三条全在等。
         正是该这样 —— 回复率按条算，不是只看最近一条。
+
+        `ctx` 是开口**这一刻**的情境（她什么状态、沉默多久），原样带到判定时交给
+        `on_judged`。必须现在取 —— 4 小时后判定时她早换了状态（growth/experience.py）。
         """
-        self._pending.append({"at": now.isoformat(), "replied": None})
+        entry: dict[str, Any] = {"at": now.isoformat(), "replied": None}
+        if ctx:
+            entry["ctx"] = ctx
+        self._pending.append(entry)
         self._save()
 
     def on_contact(self, now: datetime) -> None:
@@ -99,8 +109,20 @@ class RhythmModulator:
                 p["replied"] = True
                 p["reply_at"] = now.isoformat()
                 hit = True
+                self._judged(p)
         if hit:
             self._save()
+
+    def _judged(self, entry: dict[str, Any]) -> None:
+        """一条开口判定落定了，交给回调。回调挂了不许连累节奏本身。"""
+        if self.on_judged is None:
+            return
+        try:
+            self.on_judged(entry)
+        except Exception:  # noqa: BLE001
+            # 不许静默（docs/LOGGING.md）：这条断了的表现是成长账本「最近没新经历」，
+            # 看起来和「他最近没主动找她」一模一样
+            logger.exception("开口判定的回调失败（节奏照常，这条经历没记上）")
 
     def tick(self, now: datetime) -> None:
         """快循环每轮调一次：到期的判定掉，判定完的滚进历史窗口。"""
@@ -115,6 +137,7 @@ class RhythmModulator:
                     continue
                 p["replied"] = False
                 changed = True
+                self._judged(p)
             if p["replied"] is not None:
                 self._history.append(p)
             else:

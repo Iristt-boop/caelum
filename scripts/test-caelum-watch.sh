@@ -195,6 +195,19 @@ check "正文点名 ombre" "$(grep -c 'ombre' "$PUSHLOG")" "1"
 unset FLAP
 
 echo
+echo "-- 带 alert 的项要推人话，不推键名（记忆检索通道，2026-09-23）--"
+reset; FLAP=1
+echo '{"status":"degraded","checks":{"memory_channels":{"ok":false,"error":"x 3 次","alert":"记忆检索的 rerank 在失败"}}}' > "$SANDBOX/health"
+run >/dev/null
+check "正文是那句人话" "$(grep -c '记忆检索的 rerank 在失败' "$PUSHLOG")" "1"
+check "不是键名" "$(grep -c 'memory_channels' "$PUSHLOG")" "0"
+# 🔴 error 里的次数变了，指纹不许变 —— 否则冷却失效、每 5 分钟吵一次
+echo '{"status":"degraded","checks":{"memory_channels":{"ok":false,"error":"x 7 次","alert":"记忆检索的 rerank 在失败"}}}' > "$SANDBOX/health"
+run >/dev/null; run >/dev/null
+check "次数变了也还在冷却里，没再推" "$(pushes)" "1"
+unset FLAP
+
+echo
 echo "-- 🔴 推送失败不许记账（下一轮还要再试）--"
 reset; FLAP=1
 echo 500 > "$SANDBOX/pushcode"

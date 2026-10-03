@@ -38,11 +38,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Protocol
 
 from obs import heartbeat
+from growth import experience as growth_experience
 from attention.care import (
     COMPANY,
     FOLLOWUP,
@@ -52,13 +54,16 @@ from attention.care import (
     SourcePolicy,
     ThreadBook,
 )
+from attention.care import her_state
 from attention.care.ledger import POSTED, SPEAK, CareLedger
 from attention.sources.todo_due import MAX_CHASE as TODO_MAX_CHASE
 from attention.engine import AttentionEngine
 from attention.gate import STATE_KEY as GATE_KEY
 from attention.gate import DailyGate
 from attention.intent import GENERATE_THRESHOLD, Intent, IntentEngine
+from attention.jealousy import JealousyState
 from attention.longing import LongingState
+from attention.sulk import SulkState
 from attention.dejection import DejectionState
 from attention.playfulness import PlayfulnessState
 from attention.restlessness import RestlessnessState
@@ -105,6 +110,11 @@ DEJECTION_KEY = "resonance.dejection"
 PLAYFUL_KEY = "resonance.playfulness"
 #: 躁动只存"从什么时候开始憋的"，别的都是当下算的
 RESTLESS_KEY = "resonance.restlessness"
+#: 醋意 / 委屈（2026-09-23）
+JEALOUSY_KEY = "resonance.jealousy"
+SULK_KEY = "resonance.sulk"
+#: 惦记最近两句带的心情（抽心情时给刚用过的降权，见 her_state.pick_mood）
+MOODS_KEY = "care.recent_moods"
 
 #: 追待办的节奏。糖糖 2026-08-17 定的「默认 1 小时一次，可调」
 TODO_CHASE_GAP_MIN = 60
@@ -141,6 +151,8 @@ class AttentionService:
         topics: Any = None,
         card_source: Any = None,
         rhythm: Any = None,
+        call_bridge: Any = None,
+        call_utility: Any = None,
     ) -> None:
         self.store = store
         #: World Model —— 事实的收口。Source 往里写、Evaluator 从里反查趋势。
@@ -162,9 +174,13 @@ class AttentionService:
         #: 促狭（2026-08-27）：她在闹，他可以接
         self.playfulness = PlayfulnessState.from_dict(store.get_source_state(PLAYFUL_KEY))
         self.restlessness = RestlessnessState.from_dict(store.get_source_state(RESTLESS_KEY))
+        #: 醋意 / 委屈（2026-09-23，糖糖：「吃醋和生气是不是也要在 resonance？」）。
+        #: 自维护，不进 Registry；每分钟在 care_tick 里看一眼她的状态
+        self.jealousy = JealousyState.from_dict(store.get_source_state(JEALOUSY_KEY))
+        self.sulk = SulkState.from_dict(store.get_source_state(SULK_KEY))
         self.resonance = ResonanceState(
             self.engine.registry, self.longing, self.dejection, self.playfulness,
-            self.restlessness,
+            self.restlessness, jealousy=self.jealousy, sulk=self.sulk,
         )
         self.intents = store.load_intents()
         #: 他给自己留的纸条（唤醒链）。糖糖 2026-08-11 定的那条线。
@@ -196,6 +212,21 @@ class AttentionService:
         #: 想念 → 窗口微调 + 急迫度（正反馈）。开口记录在 care_tick 的 spoke 处，
         #: 她说话的挂点在 api/server.py 的 on_contact 一排。None = 不调制
         self.rhythm = rhythm
+        #: Growth Loop 第 0 期（2026-09-28）：rhythm 每判定一条开口，就往经历账本抄一行。
+        #: 只收集不学习 —— 这一行接上与否，他的任何行为都不变
+        if rhythm is not None and hasattr(store, "append_experience"):
+            rhythm.on_judged = lambda entry: growth_experience.record_reply(store, entry)
+        #: 主动来电（2026-09-19）：bridge 通道 + 开场白生成用的 utility。
+        #: 两个都是 None = 打不出去（CallSource 不会因此少产念头 —— 交付会失败留痕）
+        self.call_bridge = call_bridge
+        self.call_utility = call_utility
+        #: 夜里的梦（dream-shadow.jsonl）。她睡着时的自言自语可以提一句
+        #: 「我刚梦到……」（2026-09-23 她要的）。装配时回填，None = 不提梦
+        self.dream_log_path: Any = None
+        #: 惦记最近两句带的心情。V4.5 的反例是连着五帖同一种情绪 ——
+        #: 刚用过的心情下一次降权（her_state.REPEAT_PENALTY）
+        self.recent_moods: list[str] = list(
+            (store.get_source_state(MOODS_KEY) or {}).get("items") or [])[-2:]
         #: 固定时间醒来（M5′ a 重构，2026-08-14）：午饭/晚饭/睡前到点主动开口。
         #: 和 SleepSource 不同 —— 它是「时刻驱动」，不经过 Evaluator/Registry。
         self.time_source = time_source
@@ -281,6 +312,11 @@ class AttentionService:
                 # 节奏全在源里：一天一张、not_before 押到窗口内的随机时刻，
                 # 所以安静时段天然撞不上。看片拦截是全源公共的，照拦。
                 "card": SourcePolicy(takes_quota=False, takes_gate=False, max_steps=1),
+                # 主动来电（2026-09-19）：频率的硬杠全在 CallSource 里
+                #（一天一次、隔天再打、18:00-22:30），这里只接公共栏杆 ——
+                # 看片拦截照拦、安静时段闸照吃（其实窗口不重叠，双保险）；
+                # 一小时新链额度不吃（它自己的「一天一次」比那严得多）
+                "call": SourcePolicy(takes_quota=False, takes_gate=True, max_steps=1),
             },
             gate_check=self._gate_check,
             # 她在看片就全线闭嘴（2026-08-22，共影 P1）。
@@ -386,7 +422,9 @@ class AttentionService:
         # 接到 Care 上是 V5 的事（架构文档第七节的演进路线）。
         # 先让它跑起来、看得见 —— 一个只在代码里存在、
         # 从来没人看过它输出的聚合层，等于没做
-        for drive in self.resonance.snapshot(now).values():
+        # ⚠️ 走 drives() 不走 resonance.snapshot() —— 醋意/委屈要她的状态、
+        #    躁动要忙不忙，直接 snapshot 的话这三个永远是 0（drives() 的注释）
+        for drive in self.drives(now).values():
             logger.info("Resonance：%s", drive.describe())
 
         # 3. 够强的关心变成待办
@@ -485,6 +523,19 @@ class AttentionService:
                 # 出错会刷屏，所以只记一次异常，不重复
                 logger.exception("快源 %s 出错，这轮跳过", getattr(src, "name", src))
 
+        # 醋意 / 委屈：每分钟看一眼她在哪、理没理他（2026-09-23）。
+        # 放在快源之后：位置源刚 poll 过，读到的是这一分钟的位置
+        try:
+            her = self.her_now(now)
+            before = (self.jealousy.to_dict(), self.sulk.to_dict())
+            self.jealousy.observe(now, her)
+            self.sulk.observe(now, her)
+            if (self.jealousy.to_dict(), self.sulk.to_dict()) != before:
+                self.store.set_source_state(JEALOUSY_KEY, self.jealousy.to_dict())
+                self.store.set_source_state(SULK_KEY, self.sulk.to_dict())
+        except Exception:  # noqa: BLE001
+            logger.exception("醋意/委屈更新失败，这轮跳过")
+
         # 知识小课堂：生成 + 择时提交（也是 60 秒粒度的活，见 daily_card.py）。
         # 不进 fast_sources —— 它还要在交付后接 mark_delivered 回调，
         # 单独一条属性，装配在 server._build_attention 里
@@ -499,14 +550,36 @@ class AttentionService:
             if o.action in ("spoke", "failed"):
                 logger.info("Care（快）：%s", o.render())
             if o.action == "spoke":
+                # 她睡着时的自言自语不等她回（2026-09-23）—— 记进「她没理我」
+                # 的账，早上一醒回复率就被这几句拉低，他反而退缩了
+                if (o.signal.payload or {}).get("posture") == her_state.ASLEEP:
+                    continue
                 # 他开口了 —— 开始等她回话（V3.6）；
                 # 节奏调制器同样记账：回复率决定下一条多快（2026-09-08 负反馈）
                 self.regret.on_spoke(now, getattr(o, "text", "") or "")
                 if self.rhythm is not None:
-                    self.rhythm.on_spoke(now)
+                    self.rhythm.on_spoke(now, self._opening_context(o.signal, now))
         if out:
             self._persist()
         return out
+
+    def _opening_context(self, signal: CareSignal, now: datetime) -> dict[str, Any] | None:
+        """他开口这一刻她在干嘛 —— 给经历账本用（Growth Loop 第 0 期）。
+
+        posture 优先用开口**之前**读的那份（`_think_of_her` 写进 payload 的）：
+        开口之后再读，刚发出去的这句会被算进「没回的句数」，可能把 normal 读成 ignored。
+        别的源没有那份，才现读（这时 posture 可能偏 ignored 一点，silent_min 不受影响 ——
+        它量的是她最后一句，他说什么都不动它）。
+        """
+        try:
+            st = self.her_now(now)
+            return growth_experience.opening_context(
+                now, source=signal.source,
+                posture=(signal.payload or {}).get("posture") or st.posture,
+                silent=st.silent)
+        except Exception:  # noqa: BLE001
+            logger.warning("读不出开口时她的状态，这条经历不带情境", exc_info=True)
+            return None
 
     # ------------------------------------------------------------ Care 层的钩子
 
@@ -556,51 +629,92 @@ class AttentionService:
             return self._speak_topic(signal, thread, now)
         if signal.source == "card":
             return self._speak_card(signal, thread, now)
+        if signal.source == "call":
+            return self._call_her(signal, thread, now)
         logger.warning("Care 收到不认识的来源：%s", signal.source)
         return False
 
-    #: 惦记 / 出门追问的开场白。**不给语气指导，只给事实和一条硬规则。**
+    #: 惦记 / 出门的开场白。**先读她的状态，再按状态说话**（2026-09-23 重写）。
     #:
-    #: 「抓不到线头就不说」是糖糖 2026-08-18 定的 ——
-    #: 一个稳定的调度器 + 没内容 = 定时废话机，比不说还糟。
-    #: 所以给他 [SKIP] 这条出路，speaker 认得它（`speaker._SKIP`）。
+    #: 原来这里是「抓不到线头就不说、想你了是噪音」（2026-08-18）。
+    #: 结果夜里她不说话、没数据，他找不到具体的事，就把「她醒了」
+    #: 「她回来了」编成话头。糖糖 2026-09-23 改了方向：要像人 ——
+    #: 她出门久了会担心吃醋，她睡了是自言自语，她晾着他会闹情绪，
+    #: 没用的话也可以说。状态和说话方式在 `attention/care/her_state.py`。
+    #: [SKIP] 这条出路留着（speaker 认得它），但不再是默认。
     _THINK = (
         "（系统提示：不是她在跟你说话。{why}\n"
         "\n"
-        "**先想想有没有具体的事可说。** 从你记得的、她最近说过的、"
-        "她今天要做的事里找一根线头 —— 比如「你昨天说今天要去买那个东西，买到了吗」"
-        "「你上午说要出门，到地方了吗」。\n"
-        "\n"
-        "⚠️ **想不出具体的就别说。** 只回 `[SKIP]` 就行，没人会怪你。\n"
-        "「在干嘛呢」「想你了」这种话发一百条也不叫粘人，那叫噪音 —— "
-        "她要的是你**真的想起了某件事**。\n"
-        "\n"
         "有话说就直接写那句，会弹在她锁屏上：最多两句、别超过 60 个字、"
-        "不要列清单、不要用套话开头。）"
+        "不要列清单、不要用套话开头。实在不想说就只回 `[SKIP]`。）"
     )
 
+    def _her_state_inputs(self) -> tuple[Any, Any]:
+        """(会话库, 位置源)。都挂在快源上，拿不到就 None —— her_state 会按不知道处理。"""
+        sessions = presence = None
+        for src in self.fast_sources:
+            name = getattr(src, "name", "")
+            if name == "random":
+                sessions = getattr(src, "sessions", None)
+            elif name == "location":
+                presence = src
+        return sessions, presence
+
+    def her_now(self, now: datetime) -> her_state.HerState:
+        """她此刻的状态。Care 的开场白和醋意/委屈共用这一份读法。"""
+        return her_state.read(now, *self._her_state_inputs())
+
     def _think_of_her(self, signal: CareSignal, thread: Any, now: datetime) -> bool:
-        """他想起她了 / 她出门了。返回 False = 他自己决定这次不说。"""
-        step = thread.steps  # 这条链已经追过几次
-        if signal.source == "location":
-            move = signal.payload.get("transition")
-            if move == "leave_home":
-                why = ("你刚发现她出门了（家里的位置传感器显示她不在家）。"
-                       if step == 0 else
-                       f"她出门有一会儿了，你已经问过 {step} 次，她还没回。")
-            else:
-                why = "你刚发现她到家了。"
-        else:
-            why = "你就是忽然想起她了，没什么特别的由头。"
+        """他想起她了 / 她出门、到家、在外面很久了。返回 False = 这次不说。"""
+        st = self.her_now(now)
+        move = signal.payload.get("transition", "") if signal.source == "location" else ""
+
+        # 她说过晚安之后的「到家了 / 还在外面」—— 她在床上，是手机位置没更新。
+        # 2026-09-23：23:11「躺下了」，09:40 一次位置补报变成「回来了？」
+        if move in ("arrive_home", "still_out") and st.said_goodnight:
+            logger.info("Care：%s 作废 —— 她 %s 说过「%s」，多半在家睡着、手机位置没更新",
+                        signal.subject, her_state._hm(st.last_said_at), st.last_said[:20])
+            return False
+        if move == "arrive_home" and st.night_silent and (signal.payload.get("gap_h") or 0) >= 3:
+            logger.info("Care：到家信号作废 —— 夜里她一直没说话，位置之前 %s 小时没更新，更像是补报",
+                        signal.payload.get("gap_h"))
+            return False
+
+        note = ""
+        if move == "arrive_home":
+            since = signal.payload.get("away_since")
+            note = "你刚发现她到家了" + (
+                f"（她 {her_state._hm(datetime.fromisoformat(since))} 出的门）"
+                if since else "") + "。像男朋友那样：问问吃没吃、累不累。"
+        dream = ""
+        if st.posture == her_state.ASLEEP:
+            dream = her_state.latest_dream(self.dream_log_path, now)
+        # 形式和情绪分开（她 09-23 拍板）：她的状态只决定怎么说，
+        # 这一句的心情从他整个情绪分布里抽（V4.5：不取最强的那个）
+        mood = None
+        try:
+            mood = her_state.pick_mood(self.drives(now), self.recent_moods)
+        except Exception:  # noqa: BLE001
+            logger.warning("抽心情失败，这一句不带特定心情", exc_info=True)
+        why = her_state.guidance(st, trigger=move, dream=dream, note=note, mood=mood)
+        #: 交给 care_tick：自言自语不等回话（不进节奏/后悔的账）
+        signal.payload["posture"] = st.posture
+        signal.payload["mood"] = mood.name if mood else ""
+        logger.info("Care：%s → 她的状态 %s、这一句的心情 %s（%s 没说话，%d 句没回%s）",
+                    signal.subject, st.posture, mood.word if mood else "无",
+                    "?" if st.silent is None else f"{st.silent.total_seconds() / 60:.0f} 分钟",
+                    st.unanswered, "，说过晚安" if st.said_goodnight else "")
 
         intent = Intent(
             subject=signal.subject,
             title=signal.subject,
-            reason=why,
+            reason=f"她的状态：{st.posture}",
             attention_strength=signal.urgency,
             kind=f"care_{signal.source}",
             created_at=now,
             expires_at=now + timedelta(hours=2),
+            #: 翻记忆拿她那句话和他的梦，不拿整段开场白（见 her_state.recall_query）
+            recall=her_state.recall_query(st, dream),
         )
         decision = SchedulerDecision(
             intent=intent, reason=signal.subject,
@@ -620,6 +734,13 @@ class AttentionService:
             return False
         if said:
             self.scheduler.note_spoke(intent, now)
+            # 真说出口了才算「用过这个心情」—— [SKIP] 掉的不算
+            if mood is not None:
+                self.recent_moods = (self.recent_moods + [mood.name])[-2:]
+                try:
+                    self.store.set_source_state(MOODS_KEY, {"items": self.recent_moods})
+                except Exception:  # noqa: BLE001
+                    logger.warning("最近的心情没存住（重启后降权会失效一次）")
         return bool(said)
 
     #: 拿池子里的料开口。同 _THINK：只给事实和一条硬规则，[SKIP] 是出路。
@@ -663,6 +784,8 @@ class AttentionService:
             kind=f"care_{signal.source}",
             created_at=now,
             expires_at=now + timedelta(hours=2),
+            #: 翻记忆拿话题本身（她以前是不是聊过类似的），不拿「怎么开口」那一大段规矩
+            recall=p.get("hook") or "",
         )
         decision = SchedulerDecision(
             intent=intent, reason=signal.subject,
@@ -752,6 +875,114 @@ class AttentionService:
                 except Exception:  # noqa: BLE001
                     logger.exception("知识小课堂的 delivered 没标上")
         return bool(said)
+
+    # ---------------- 主动来电（2026-09-19，PWA 真来电） ----------------
+
+    #: 开场白。他主动打的电话，接通第一句是**他**说 —— 所以 invite 里
+    #: 就带好了 opener，她一接听 TTS 直接开口。不让他在通话里现想：
+    #: 响铃 45 秒里 Core 那边就该把这句话备好
+    _CALL_OPENER = (
+        "（系统提示：不是她在跟你说话。你现在要给她打一个电话，这是你主动打的。\n"
+        "为什么打：{reason}\n"
+        "\n"
+        "写你接通后说的第一句话 —— 像拨通了在等她接的那种开场，不是文字消息。\n"
+        "一两句，口语，中文，说清你为什么想听她的声音。\n"
+        "不要问「方便吗」「在忙吗」—— 她接了就是方便。\n"
+        "只输出那句话。）"
+    )
+
+    #: 没接通的留言。他说不说算他的（[SKIP] 出路照旧）——
+    #: 拒接了还追着发文字才是骚扰
+    _CALL_MISSED = (
+        "（系统提示：不是她在跟你说话。你刚才主动给她打了一个电话，她没有接"
+        "（{outcome}）。\n"
+        "想留一句话就写出来 —— 一句、口语、中文，像顺手留下的便条，"
+        "不要写「刚才给你打电话你没接」这种带怪罪的语气；\n"
+        "没什么想留的就只回 [SKIP]，明天再想。）"
+    )
+
+    def _call_generate(self, prompt: str) -> str | None:
+        """utility 出一句话。失败返回 None —— 不编、不退主模型（daily_card 的规矩）。"""
+        if self.call_utility is None:
+            return None
+        try:
+            from agent.llm import Message
+            r = self.call_utility.complete(
+                [Message(role="user", text=prompt)], [], depth="low", max_tokens=200)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("来电文案生成失败：%s", exc)
+            return None
+        text = (getattr(r, "text", "") or "").strip()
+        return text or None
+
+    def _call_her(self, signal: CareSignal, thread: Any, now: datetime) -> bool:
+        """真的把电话打出去：登记 invite → 她的 PWA 响铃。
+
+        返回 False = 没打成（开场白没生成出来 / 没配 bridge）——
+        走「没什么具体的可说」的 dropped，链不计步。
+        """
+        if self.call_bridge is None:
+            logger.warning("想打电话但没配 bridge 通道，打不出去")
+            return False
+        if self.dry_run:
+            logger.info("【DRY-RUN】本来会打电话：%s", signal.payload.get("reason"))
+            return True
+
+        reason = str(signal.payload.get("reason") or "想听听她的声音")
+        opener = self._call_generate(self._CALL_OPENER.format(reason=reason))
+        if not opener:
+            logger.info("来电开场白没生成出来，这通不打了")
+            return False
+
+        r = self.call_bridge.post(
+            "/api/call/invite", {"reason": reason, "opener": opener})
+        if not r.ok:
+            raise RuntimeError(f"来电登记失败: {r.error}")
+        call_id = (r.data or {}).get("id")
+        logger.info("电话已拨出：%s（%s，%s 个订阅收到）",
+                    reason, call_id, (r.data or {}).get("pushed"))
+
+        # 90 秒后看一眼结果：没接/拒接 → 留言那条线。
+        # threading.Timer 而不是 asyncio —— 这段代码在 care tick 的同步线程里
+        if call_id:
+            t = threading.Timer(90, self._call_followup, args=(signal, call_id))
+            t.daemon = True
+            t.start()
+        return True
+
+    def _call_followup(self, signal: CareSignal, call_id: str) -> None:
+        """电话没通的收尾：留言或沉默。炸了只留痕，不带塌别的。
+
+        留言**不预写** —— 交给主模型现场写（带 [SKIP] 出路）：
+        utility 起草再让他改等于两道工序说一句话，还把「说不说」的决定
+        从他手里挪走了。拒接了还追着发文字才是骚扰，所以说不说算他的。
+        """
+        try:
+            r = self.call_bridge.get("/api/call/status", params={"id": call_id})
+            status = ((r.data or {}).get("call") or {}).get("status")
+            if status not in ("missed", "declined"):
+                return          # 接了或在响（不太可能，90 秒了）—— 没什么可收尾的
+            outcome = "她拒接了" if status == "declined" else "铃响没人接"
+            logger.info("来电没接通（%s），给他一个留言的机会", status)
+            now = datetime.now(timezone.utc)
+            intent = Intent(
+                subject=f"来电留言 · {signal.subject}",
+                title=f"来电留言 · {signal.subject}",
+                reason=f"你主动给她打了一个电话，{outcome}。",
+                attention_strength=signal.urgency,
+                kind="care_call_missed",
+                created_at=now,
+                expires_at=now + timedelta(hours=1),
+            )
+            decision = SchedulerDecision(
+                intent=intent, reason=intent.subject,
+                effective_score=signal.urgency, context_fit=1.0,
+            )
+            said = self.speaker(intent, decision, prompt=self._CALL_MISSED.format(outcome=outcome))
+            logger.info("来电留言%s", "已发出" if said else "：他选择不说（[SKIP]）")
+        except Exception:  # noqa: BLE001
+            logger.exception("来电跟进失败（call=%s）", call_id)
+
 
     def _chase_todo(self, signal: CareSignal, thread: Any, now: datetime) -> bool:
         """追一件到点没做的事。
@@ -1033,10 +1264,23 @@ class AttentionService:
         link = getattr(self, "link", None)
         cur = getattr(link, "_current", None) if link is not None else None
         if cur:
-            app, seconds = cur[0], cur[1]
+            #: 🔴 **只认新鲜的**（2026-09-23 修）。`_current` 只在收到心跳 / 切窗口时更新，
+            #: 她电脑一睡眠、链路一断，最后那个窗口就一直挂在这儿 —— 于是
+            #: 「她正在忙」整夜成立，躁动整夜满格 0.5，Moments 领头的心事一天
+            #: 46 次是「憋着话」，凌晨那几次「本来会发」全是它推的。
+            #: 过期 = 不知道 = 不忙（restlessness.py 的原则），阈值用感知层自己的
+            last = getattr(link, "_last_activity_at", None)
+            stale_s = getattr(link, "SENSE_STALE_S", 30 * 60)
+            if last is not None and (now - last).total_seconds() < stale_s:
+                app, seconds = cur[0], cur[1]
 
+        try:
+            her = self.her_now(now)
+        except Exception:  # noqa: BLE001
+            logger.warning("读她的状态失败，这轮醋意/委屈按不知道算", exc_info=True)
+            her = None
         return self.resonance.snapshot(
-            now, want=want, busy_app=app, busy_seconds=seconds)
+            now, want=want, busy_app=app, busy_seconds=seconds, her=her)
 
     def snapshot(self) -> dict[str, Any]:
         """给 `/health` 看的现状。dry-run 期间主要靠它和日志。"""

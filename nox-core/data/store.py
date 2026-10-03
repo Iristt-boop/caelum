@@ -68,6 +68,14 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+#: 他主动开口时的开场白以 role='user' 落库，不是她说的话（见 last_user_message）。
+#: 线上实测只有「（系统提示：」一种（全角括号）；另几种写法是防以后改提示词时漏掉
+_NOT_SYSTEM_PROMPT = (
+    "text NOT LIKE '（系统提示%' AND text NOT LIKE '(系统提示%' "
+    "AND text NOT LIKE '[系统%' AND text NOT LIKE '系统提示%'"
+)
+
+
 @dataclass
 class SessionInfo:
     id: str
@@ -469,10 +477,16 @@ class Store:
 
         唤醒链靠这个判断「她回了没有」—— 醒来之前先看一眼，
         她要是已经回话了，这条链就该直接结束，别再追问。
+        惦记（ThinkingSource）也拿它当锚点：她说完话之后 20–90 分钟想起她。
         """
+        # 🔴 **跳过他自己的开场白**（同 last_user_message，2026-09-23 线上库核出来的）。
+        #    不跳过的话，他随便哪条线主动开一次口（哪怕最后 [SKIP]），唤醒链就当
+        #    「她回话了」当场撤掉 —— 线上 30 次「她回话了」里 6 次是这么撤的，
+        #    她其实还没回（最长的一次她 175 分钟后才回来）
         with self._lock:
             row = self._conn.execute(
                 "SELECT created_at FROM messages WHERE session_id = ? AND role = 'user' "
+                f"AND {_NOT_SYSTEM_PROMPT} "
                 "ORDER BY seq DESC LIMIT 1",
                 (session_id,),
             ).fetchone()
@@ -482,6 +496,48 @@ class Store:
             return datetime.fromisoformat(row["created_at"])
         except ValueError:
             return None
+
+    def last_user_message(self, session_id: str) -> tuple[str, datetime] | None:
+        """她在这个会话里说的最后一句话 + 时刻。没说过就是 None。
+
+        Care 判断她的状态用（`attention/care/her_state.py`）：
+        说的是「晚安 / 躺下了」，她就进了睡着的状态 —— 这比任何钟点表都准
+        （2026-09-23：她 23:11 说「躺下了」，钟点表以为她 01:00 才睡）。
+        """
+        # 🔴 **跳过他自己的开场白**（2026-09-23 部署后在线上库里抓到的）。
+        #    他主动开口时，Care 给他的那段「（系统提示：这不是糖糖在跟你说话……」
+        #    是以 role='user' 落库的（近 7 天 259 条）。不跳过的话，「她最后一句」
+        #    永远是他自己上一次开口的时刻 —— 认不出她的晚安、委屈永远起不来。
+        #    测试用假会话库，没有这种行，所以没抓到。
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT text, created_at FROM messages WHERE session_id = ? AND role = 'user' "
+                f"AND {_NOT_SYSTEM_PROMPT} "
+                "ORDER BY seq DESC LIMIT 1",
+                (session_id,),
+            ).fetchone()
+        if row is None or not row["created_at"]:
+            return None
+        try:
+            return (row["text"] or "", datetime.fromisoformat(row["created_at"]))
+        except ValueError:
+            return None
+
+    def count_assistant_since(self, session_id: str, since: datetime) -> int:
+        """某个时刻之后他发了几条。「她几条没回」用。
+
+        `created_at` 是 UTC ISO，边界也换成 UTC ISO 再比字符串（同 messages_between）。
+        """
+        # ⚠️ 他回的 `[SKIP]`（决定这次不说）也落库了（近 7 天 111 条）——
+        #    那不是「说了一句她没回」，不算
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT COUNT(*) AS n FROM messages WHERE session_id = ? "
+                "AND role = 'assistant' AND created_at > ? "
+                "AND TRIM(text) NOT LIKE '[SKIP]%'",
+                (session_id, since.astimezone(timezone.utc).isoformat()),
+            ).fetchone()
+        return int(row["n"])
 
     def stats(self) -> dict:
         with self._lock:

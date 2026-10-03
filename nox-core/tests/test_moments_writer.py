@@ -61,7 +61,11 @@ class FakeAdapter:
 class DeadAdapter:
     """调用就炸 —— 模型挂了 / 网络断了。"""
 
+    def __init__(self):
+        self.calls = 0
+
     def complete(self, messages, tools, **kw):
+        self.calls += 1
         raise RuntimeError("模型挂了")
 
 
@@ -115,12 +119,13 @@ def _warnings(caplog) -> int:
 # ---------------------------------------------------------------- 提示词
 
 
-def test_all_four_rules_are_in_the_system_prompt():
-    """四条约束**一条都不能少**，而且 `_RULES` 必须真的是四条。
+def test_all_five_rules_are_in_the_system_prompt():
+    """五条约束**一条都不能少**，而且 `_RULES` 必须真的是五条。
 
     少了「不是对着她讲」，这个功能就退化成「他对着她写小作文」；
     少了「只是背景」，一个月后打开全是「今天好想老婆」；
-    少了「别重复」和「两三句」，它会变成日记。
+    少了「别重复」和「两三句」，它会变成日记；
+    少了第 5 条，模型会接着编「她昨晚只睡了六个多小时」这种看着像真的细节。
 
     能挡：把约束写进 `_PROMPT` 里一份、`_RULES` 里留一份空的（那样两条
           对不上），或者删掉其中任意一条；也挡「空集/半集」当通过。
@@ -130,7 +135,7 @@ def test_all_four_rules_are_in_the_system_prompt():
     system, _user = writer.build_prompt({"longing": 0.4}, [], "想留一条痕迹",
                                         "9月15日 周一 晚上21:30")
 
-    assert len(_RULES) == 4, "空集 / 半集不是通过"
+    assert len(_RULES) == 5, "空集 / 半集不是通过"
     for rule in _RULES:
         assert rule in system, f"这条约束没进 system：{rule!r}"
     #: 单钉一次这个措辞：它是整件事的边界（设计文档第四节第 1 条）
@@ -223,6 +228,137 @@ def test_impulse_why_is_only_a_footnote():
     assert why in user
     line = next(l for l in user.splitlines() if why in l)
     assert "别写进正文" in line, f"注脚那一行没写明它不是素材：{line!r}"
+
+
+def test_a_because_and_an_evidence_are_fed_in_as_real_material():
+    """🔴 `context` 里的 `because` / `evidence` 要进提示词 —— 给真素材，它就不用编。
+
+    2026-09-18 实测：提示词只给「担心她 0.58」的话，模型自己补出了
+    「她昨晚又只睡了六个多小时」这种具体场景。Drive 本来就带着
+    `because`（哪些 concern）和 `evidence`（原话）—— 设计文档第一节写的
+    就是「帖子读的是那个 Drive 和它的 evidence」。
+
+    能挡：`build_prompt` 收了 `context` 却整段不拼（红线之一）、
+          只拼 because 不拼 evidence、把 evidence 拼成没有引号的裸文本。
+    不能挡：模型会不会**照着**真素材写 —— 那只能看线上。
+    """
+    _system, user = writer.build_prompt(
+        {"curiosity": 0.46}, [], "想留一条痕迹", "9月18日 周五 凌晨00:18",
+        context={"curiosity": {
+            "because": ["哥德巴赫猜想"],
+            "evidence": ["她说想看那个证明"],
+        }},
+    )
+
+    assert "哥德巴赫猜想" in user
+    assert "她说想看那个证明" in user
+
+
+def test_missing_context_leaves_no_empty_hole():
+    """`context=None`（或者某个 drive 没 context）**不炸、也不留空坑**。
+
+    那一行只写气氛词 —— 不许写成「· 想她 —— 因为：」后面直接换行。
+    空坑会教模型「因为后面本来该有东西，那我自己编一个」，正是这一版
+    要治的病。
+
+    能挡：`context.get(...)` 不判 None（AttributeError）、
+          或者不判空就无条件拼 `" —— 因为："`。
+    不能挡：模型看不看得懂那条只有气氛词的行。
+    """
+    _system, user = writer.build_prompt({"longing": 0.4}, [], "想留一条痕迹",
+                                        "9月18日 周五 凌晨00:18",
+                                        context=None)
+
+    assert "想她" in user
+    assert "因为：" not in user, "没有 context 就不该出现「因为：」"
+    assert not any(line.rstrip().endswith("因为：") for line in user.splitlines())
+
+    #: 同一个 drive 有 context、另一个没有：没有的那个也不许出现空坑
+    _system2, user2 = writer.build_prompt(
+        {"longing": 0.4, "curiosity": 0.46}, [], "想留一条痕迹",
+        "9月18日 周五 凌晨00:18",
+        context={"curiosity": {"because": ["哥德巴赫猜想"], "evidence": []}},
+    )
+    assert "想她" in user2 and "哥德巴赫猜想" in user2
+    assert not any(line.rstrip().endswith("因为：") for line in user2.splitlines())
+
+
+def test_because_and_evidence_are_capped():
+    """每个 drive 最多 2 条 `because`、1 条 `evidence`，各截到 60 字。
+
+    账本和提示词都不该被一条长文本撑爆。截断只在这一层做 —— 记进
+    `MomentRecord` 的那份快照是原样的，不然事后复算会看到被削过的数据。
+
+    能挡：不截条数（5 条全进去）、不截长度（200 字整段进去）。
+    不能挡：60 这个数合不合适 —— 那是为了不让一条长文本挤掉别的材料。
+    """
+    long_because = "累" * 200
+    _system, user = writer.build_prompt(
+        {"curiosity": 0.46}, [], "想留一条痕迹", "9月18日 周五 凌晨00:18",
+        context={"curiosity": {
+            "because": [long_because],
+            "evidence": [],
+        }},
+    )
+    assert "累" * 60 in user, "截到 60 字之后那 60 个字该在"
+    assert "累" * 61 not in user, "没截干净，长文本整段进去了"
+
+    _system2, user2 = writer.build_prompt(
+        {"curiosity": 0.46}, [], "想留一条痕迹", "9月18日 周五 凌晨00:18",
+        context={"curiosity": {
+            "because": [f"第{i}条理由" for i in range(1, 6)],
+            "evidence": [f"第{i}句原话" for i in range(1, 4)],
+        }},
+    )
+    assert "第1条理由" in user2 and "第2条理由" in user2
+    assert "第3条理由" not in user2, "because 只进 2 条"
+    assert "第1句原话" in user2
+    assert "第2句原话" not in user2, "evidence 只进 1 条"
+
+
+def test_no_number_or_drive_name_leaks_into_the_prompt_with_context():
+    """🔴 有 `context` 之后**一个数值、一个 drive 名都不许进提示词**。
+
+    这是「Drive 是心理背景，不是内容」在加了素材之后仍然要成立的那一半。
+    加了 because/evidence 以后很容易顺手把 `longing 0.4` 也拼进去当上下文，
+    那等于告诉模型「照着这个写」。
+
+    能挡：拼 context 时把 drive 名或 intensity 带上、或者把 drives 的
+          原始键当括号写在气氛词旁边。
+    不能挡：**正文**里会不会冒出数值 —— 那要等落库之后才看得见。
+    """
+    _system, user = writer.build_prompt(
+        {"longing": 0.4, "curiosity": 0.46}, [], "想留一条痕迹",
+        "9月18日 周五 凌晨00:18",
+        context={"curiosity": {
+            "because": ["哥德巴赫猜想"],
+            "evidence": ["她说想看那个证明"],
+        }},
+    )
+
+    assert "0.4" not in user
+    assert "0.46" not in user
+    assert "longing" not in user
+    assert "curiosity" not in user
+
+
+def test_the_fifth_rule_forbids_inventing_details():
+    """🔴 第 5 条硬约束在 system 里，而且钉住那句「一个都不许编」。
+
+    这条是改动二里最严重那件事的落点：模型编出了「她昨晚又只睡了
+    六个多小时」「九点半她还亮着头像」—— 糖糖会把它当成他真的看见了。
+    给真素材（上一条）和禁编（这一条）是**配套的两条**，少任何一条
+    都只是半副药。
+
+    能挡：删掉第 5 条、或者把它写进 `_PROMPT` 却没进 `_RULES`
+          （那样 `len(_RULES) == 5` 会红）。
+    不能挡：模型会不会真的不编 —— 提示词测试的共同上限。
+    """
+    system, _user = writer.build_prompt({"longing": 0.4}, [], "想留一条痕迹",
+                                        "9月18日 周五 凌晨00:18")
+
+    assert len(_RULES) == 5
+    assert "一个都不许编" in system
 
 
 # ---------------------------------------------------------------- 生成
@@ -492,3 +628,32 @@ def test_drive_words_moved_to_the_package_root():
         Path(__file__).resolve().parents[1] / "moments" / "impulse.py"
     ).read_text(encoding="utf-8")
     assert "_WORDS = {" not in impulse_source, "旧的那份还留着，迟早各自漂移"
+
+
+class FlakyThenGoodAdapter:
+    """第一次调用炸（超时那类瞬时失败），第二次给正文。"""
+
+    def __init__(self, text: str):
+        self.text = text
+        self.calls = 0
+
+    def complete(self, messages, tools, **kw):
+        self.calls += 1
+        if self.calls == 1:
+            raise TimeoutError("Request timed out.")
+        return Turn(stop_reason="end", text=self.text)
+
+
+def test_generate_retries_once_after_transient_failure():
+    """她 09-22 拍板：失败重摇一次 —— 影子数据 2/2 全灭里大头是瞬时失败。"""
+    adapter = FlakyThenGoodAdapter("今晚的云走得很慢。")
+    text = writer.generate(adapter, {"longing": 0.4}, [], "测试")
+    assert text == "今晚的云走得很慢。"
+    assert adapter.calls == 2
+
+
+def test_generate_two_failures_stay_none():
+    """两次都败才真放弃 —— 重试不是无限重试。"""
+    adapter = DeadAdapter()
+    assert writer.generate(adapter, {"longing": 0.4}, [], "测试") is None
+    assert adapter.calls == 2

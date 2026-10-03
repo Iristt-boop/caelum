@@ -49,6 +49,7 @@ from __future__ import annotations
 import logging
 
 from agent.llm import ToolSpec
+from tools import context
 from tools.http import RestClient
 from tools.untrusted import ingest
 
@@ -209,6 +210,26 @@ def make_handlers(client: RestClient) -> dict:
 
         data = res.data if isinstance(res.data, dict) else {}
         took = data.get("response_time")
+
+        # 工具调用展示（2026-09-19）：把「搜到了哪些网页」上报一层 —— 她要来源。
+        #
+        # 只报**标题 + 链接**：正文片段是给模型读的（`_format` 那份），
+        # 不是给她读的。链接单独占一个字段而不是塞进 desc —— 前端要把它渲染成
+        # 可点的东西（`ToolContext.report_step(url=…)`）。
+        #
+        # ⚠️ 放在 `_format` 之前、且只读 `results` 里的 title/url：这两个字段
+        # 是展示用的，不进他的上下文；进上下文的那份一个字都没变。
+        ctx = context.current()
+        if ctx is not None:
+            for r in (data.get("results") or [])[:10]:
+                if not isinstance(r, dict):
+                    continue
+                url = (r.get("url") or "").strip()
+                if not url:
+                    continue
+                ctx.report_step(((r.get("title") or "").strip() or url)[:80],
+                                type="source", url=url)
+
         out = _format(data, query)
         logger.info("web_search %r depth=%s 用时=%ss 结果=%d",
                     query, body["search_depth"], took, len(data.get("results") or []))

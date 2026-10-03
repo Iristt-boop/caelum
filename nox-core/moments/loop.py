@@ -61,7 +61,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from moments import writer
-from moments.impulse import THRESHOLD, Signals, impulse
+from moments.impulse import EXCLUDED_FROM_INNER, THRESHOLD, Signals, impulse
 from moments.record import MODES, MomentRecord
 from obs import heartbeat
 from temporal import to_local
@@ -81,6 +81,14 @@ MIN_GAP_MIN = 180
 P_MAX = 0.15
 #: source_state 里的键
 STATE_KEY = "moments"
+#: 🔴 正文没写出来时「欠一条」多久内还算数（分钟）。
+#:
+#: 2026-09-21→23 shadow 里「本来会发」4 次、**4 次全是生成失败**（3 次凌晨超时、
+#: 1 次 max_tokens），骰子好不容易中了，一次瞬时故障就把这条帖子扔了。
+#: 失败后记一笔欠账，这段时间里只要冲动还过阈值，下一 tick **不再掷骰子**直接重写 ——
+#: 那一刻「想发」已经成立过了，没写出来是模型的事，不是他改主意了。
+#: 过了这段时间就作废：两小时后的心情已经不是那一刻的了，不补。
+OWED_TTL_MIN = 60
 #: 循环节奏（秒）。和 attention_tick 同一个量级
 TICK_SECONDS = 900
 #: 心跳台账里的活计名。declare 过之后看门狗自动覆盖它
@@ -151,6 +159,29 @@ def _minutes_since(when: Any, now: datetime) -> int | None:
     return int((now - when).total_seconds() // 60)
 
 
+def _owed(state: Mapping[str, Any], now: datetime) -> bool:
+    """上一次想发却没写出来，而且还在 OWED_TTL_MIN 之内。"""
+    since = _minutes_since(state.get("owed_at"), now)
+    return since is not None and since < OWED_TTL_MIN
+
+
+def _set_owed(store: Any, state: Mapping[str, Any], now: datetime | None) -> None:
+    """记一笔 / 清掉欠账。**保留其它键**（date / count / last_post_at）——
+    整个覆盖的话，一次失败就把今天的计数和上一帖的时间抹了，上限和间隔一起失效。
+    已经欠着的不刷新时间：欠账从第一次失败算起，不能靠连续失败无限续命。"""
+    new = dict(state)
+    if now is None:
+        new.pop("owed_at", None)
+    elif not _owed(state, now):
+        new["owed_at"] = now.astimezone(timezone.utc).isoformat()
+    else:
+        return
+    try:
+        store.set_source_state(STATE_KEY, new)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Moments 欠账状态没存住：%s: %s", type(exc).__name__, exc)
+
+
 def _read_drives(attention: Any, now: datetime) -> dict[str, float]:
     """`attention.drives(now)` → `{name: intensity}`。**只读**。
 
@@ -166,6 +197,43 @@ def _read_drives(attention: Any, now: datetime) -> dict[str, float]:
     except Exception as exc:  # noqa: BLE001
         #: 这个函数跑在后台线程里，冒出去就是整条循环死掉（那才是最难查的坏）
         logger.warning("读 drives 失败，这一 tick 当作心里没事：%s: %s",
+                       type(exc).__name__, exc)
+        return {}
+
+
+def _read_drive_context(attention: Any, now: datetime) -> dict[str, dict]:
+    """`{name: {"because": [...], "evidence": [...]}}` —— 给正文当**真素材**。
+
+    🔴 为什么要这个：提示词只给「担心她 0.58」的话，模型会自己编一个场景出来
+    （2026-09-18 实测编出了「她昨晚只睡了六个多小时」这种看着像真的数字）。
+    Drive 本来就带着 `because`（哪些 concern）和 `evidence`（原话）——
+    给它真素材，它就不用编。设计文档第一节写的就是「帖子读的是那个 Drive
+    和它的 evidence」。
+
+    读不出来 / 抛异常 → 返回 `{}` + `logger.warning`（**不许静默**），
+    生成照跑，只是没素材 —— 那是安全方向。
+    """
+    try:
+        raw = attention.drives(now)
+        return {
+            str(name): {
+                "because": [
+                    str(item).strip()
+                    for item in (getattr(drive, "because", None) or [])
+                    if str(item).strip()
+                ],
+                "evidence": [
+                    str(item).strip()
+                    for item in (getattr(drive, "evidence", None) or [])
+                    if str(item).strip()
+                ],
+            }
+            for name, drive in raw.items()
+        }
+    except Exception as exc:  # noqa: BLE001
+        #: 这个函数跑在后台线程里，冒出去就是整条循环死掉。读不出素材是
+        #: **安全方向**：生成照跑、只是没有因为/原话，总比让模型自己编强。
+        logger.warning("读 drive 素材（because/evidence）失败，这一 tick 没有真素材：%s: %s",
                        type(exc).__name__, exc)
         return {}
 
@@ -196,16 +264,38 @@ def _turns_today(sessions: Any, now: datetime) -> int:
         return 0
 
 
-def _lead_drive(drives: Mapping[str, float]) -> str:
-    """压着的那几件事里最重的那件 —— `writer.post` 要的是**名字**，不是数值。
+def _sample_mood(drives: Mapping[str, float]) -> str:
+    """这一帖的心情从**情绪向量里抽**出来，不取 argmax（她 09-21 的 v4）。
 
-    认不出来（空集）就回空串：这里**不编**一个名字出来。空集在冲动过阈值时
-    不可能出现（`value = inner × timing`，inner 算法是空集 → 0），所以走到这儿
-    空串成不了「有 drive 但说不出是哪条」的假象。
+    她 2026-09-21 的原话：Resonance 不该代表「当前最强情绪」，而是
+    「心理空间里的情绪状态分布」。一个 70% 担心 + 20% 想念 + 10% 好奇
+    的人，说出口的那句完全可能是那 20% —— 心情是**采样**出来的。
+    正文那边不用改：`writer._background` 本来就把整条向量的气氛都喂给了
+    模型，这里只决定**帖子的标签和账本来源**。
+
+    权重 = 各自强度。🔴 只在**参与算分**的 drive 里抽（concern 被排除，
+    同 `impulse._lead` 的规矩）：concern 0.9 不参与算分时，这一帖不是它
+    压出来的，标签也就不能是它 —— 不然前端渲染成「担心她」，账本记成
+    那个来源，而正文根本不是那件事。空集回空串（冲动过阈值时空集不可能
+    出现，同 `_lead_drive` 时代的论证）。
+
+    🔴 **一次采样，两处同用**：帖子的 `drive` 和 `note_moment` 的
+    `drive` 必须是同一个值 —— 抽两次可能不一致，账本就和帖子对不上了。
     """
-    if not drives:
+    scored = {
+        name: value for name, value in drives.items()
+        if name not in EXCLUDED_FROM_INNER and value > 0
+    }
+    if not scored:
         return ""
-    return max(drives.items(), key=lambda kv: kv[1])[0]
+    total = sum(scored.values())
+    r = random.uniform(0, total)
+    acc = 0.0
+    for name, value in scored.items():
+        acc += value
+        if r <= acc:
+            return name
+    return next(reversed(list(scored.keys())))
 
 
 def post_probability(value: float, *, threshold: float = THRESHOLD,
@@ -288,7 +378,13 @@ def post_tick(*, mode: str, store: Any, attention: Any, sessions: Any,
             at=now, mode=mode, signals=signals, impulse=imp, threshold=THRESHOLD,
             dice=None, dice_p=None, posted=False, post_id=None,
             reason="below_threshold",
-            why_not_posted=f"冲动 {imp.value:.2f} 没到阈值 {THRESHOLD}：{imp.why}",
+            #: 🔴 **别把 `imp.why` 拼进来**（2026-09-21 摘掉的）：
+            #: `record.log()` 的格式串里 `why_not_posted` 和 `impulse.why`
+            #: 是**相邻的两段**，拼进来那句人话就在同一行里出现两遍 ——
+            #: below_threshold 占了一天 96 个 tick 里的一半，半天的日志都在重复。
+            #: 两个 sink 都不缺这份信息：`to_dict()` 里 `why` 是独立的键，
+            #: 日志里它就跟在后面一格。
+            why_not_posted=f"冲动 {imp.value:.2f} 没到阈值 {THRESHOLD}",
         ))
 
     #: ④ 今天发满了。计数从 `source_state` 来，所以**重启也记得** ——
@@ -321,9 +417,16 @@ def post_tick(*, mode: str, store: Any, attention: Any, sessions: Any,
 
     #: ⑥ 掷骰子。**到这一步才掷** —— 前面几条闸门用的都是「确定性信号」，
     #: 掷了骰子再回头判断的话，没过阈值的 tick 也会在日志里留下「差点就发」
-    dice_p = post_probability(imp.value)
-    dice = rng.random()
-    if dice >= dice_p:
+    owed = _owed(state, now)
+    if owed:
+        #: 上一 tick 骰子中了、正文没写出来 —— 这次直接写，不再掷（见 OWED_TTL_MIN）
+        dice, dice_p = None, None
+        logger.info("Moments：补上次没写出来的那条（%s 分钟前想发的）",
+                    _minutes_since(state.get("owed_at"), now))
+    else:
+        dice_p = post_probability(imp.value)
+        dice = rng.random()
+    if not owed and dice >= dice_p:
         return _finish(MomentRecord(
             at=now, mode=mode, signals=signals, impulse=imp, threshold=THRESHOLD,
             dice=dice, dice_p=dice_p, posted=False, post_id=None,
@@ -334,17 +437,49 @@ def post_tick(*, mode: str, store: Any, attention: Any, sessions: Any,
             ),
         ))
 
+    def _generate_body() -> str | None:
+        """生成一条正文。**绝不让异常往外冒**（跑在后台线程里）。
+
+        shadow 和 on 都走它：shadow 要的是「本来会发的那条长什么样」，
+        on 要的是真发出去的那条 —— 两边的提示词必须一模一样，
+        否则验收看的不是同一条线。
+        """
+        clock = to_local(now).strftime("%Y-%m-%d %H:%M")
+        context = _read_drive_context(attention, now)
+        try:
+            recent = writer.recent_posts(bridge)
+            return writer.generate(adapter_ref, signals.drives, recent, imp.why,
+                                   clock, context=context)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("发帖生成炸了：%s: %s", type(exc).__name__, exc)
+            return None
+
     #: ⑦ shadow：算了、也想发，**故意不落帖**。骰子照样掷（不然 shadow 记下来的
-    #: 分布不是他真正会发的分布），但绝不调 writer、绝不打 bridge、
-    #: 绝不动计数 —— 动了就偷偷吃掉真实配额。
+    #: 分布不是他真正会发的分布），正文也照真生成 —— 糖糖的验收标准有一半是
+    #: 「发出来的东西像不像他自言自语」，不生成的话那半边三天都观测不到。
+    #: 但绝不调 `writer.post`、绝不打 bridge 的 post、绝不动计数 ——
+    #: 动了就偷偷吃掉真实配额。
     if mode == "shadow":
+        body = _generate_body()
+        if body is None:
+            #: ⚠️ shadow **不记欠账** —— shadow 绝不写 source_state（见 test_shadow_*：
+            #: 影子偷偷动状态就可能吃掉真实配额）。欠账只在 on 里有
+            return _finish(MomentRecord(
+                at=now, mode=mode, signals=signals, impulse=imp, threshold=THRESHOLD,
+                dice=dice, dice_p=dice_p, posted=False, post_id=None,
+                reason="write_failed", body="",
+                why_not_posted=(
+                    "shadow：这一刻本来会发，但正文没生成出来"
+                    "（模型没给 / 超长 / 调用炸了），这一轮不发"
+                ),
+            ))
         return _finish(MomentRecord(
             at=now, mode=mode, signals=signals, impulse=imp, threshold=THRESHOLD,
             dice=dice, dice_p=dice_p, posted=False, post_id=None,
-            reason="shadow",
+            reason="shadow", body=body,
             why_not_posted=(
                 "shadow：这一刻本来会发（过了阈值、没到上限也没到间隔、骰子中了），"
-                "只是影子模式故意不落帖"
+                "正文已经生成、记在这条记录里，只是影子模式故意不落帖"
             ),
         ))
 
@@ -352,23 +487,21 @@ def post_tick(*, mode: str, store: Any, attention: Any, sessions: Any,
     #: 冒出去就是整条循环死掉（`service.py` 那种「进程活着、日志不响、
     #: 而那件事已经不发生了」）。拿不到正文 / 拿不到 id 一律 `write_failed`，
     #: 它和「骰子没中」要能分开数 —— 一个是设计，一个是坏了。
-    clock = to_local(now).strftime("%Y-%m-%d %H:%M")
-    try:
-        recent = writer.recent_posts(bridge)
-        body = writer.generate(adapter_ref, signals.drives, recent, imp.why, clock)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("发帖生成炸了：%s: %s", type(exc).__name__, exc)
-        body = None
+    body = _generate_body()
     if body is None:
+        _set_owed(store, state, now)
         return _finish(MomentRecord(
             at=now, mode=mode, signals=signals, impulse=imp, threshold=THRESHOLD,
             dice=dice, dice_p=dice_p, posted=False, post_id=None,
-            reason="write_failed",
-            why_not_posted="正文没生成出来（模型没给 / 超长 / 调用炸了），这一轮不发",
+            reason="write_failed", body="",
+            why_not_posted=("正文没生成出来（模型没给 / 超长 / 调用炸了），"
+                            f"记一笔欠账，{OWED_TTL_MIN} 分钟内冲动还在就下一 tick 补写"),
         ))
 
     try:
-        post_id = writer.post(bridge, body, _lead_drive(signals.drives), imp.why)
+        #: 一次采样两处同用（帖子的 drive 和账本的 drive 必须一致，见 _sample_mood）
+        mood = _sample_mood(signals.drives)
+        post_id = writer.post(bridge, body, mood, imp.why)
     except Exception as exc:  # noqa: BLE001
         logger.warning("发帖落库炸了：%s: %s", type(exc).__name__, exc)
         post_id = None
@@ -408,8 +541,7 @@ def post_tick(*, mode: str, store: Any, attention: Any, sessions: Any,
         logger.warning("attention 上没有 note_moment（假对象 / 老版本），这条帖子不进账本")
     else:
         try:
-            note_moment(post_id=post_id, drive=_lead_drive(signals.drives),
-                        why=imp.why)
+            note_moment(post_id=post_id, drive=mood, why=imp.why)
         except Exception as exc:  # noqa: BLE001
             logger.warning("Moments 记账炸了（帖子已经发出去了，账本里少一笔）：%s: %s",
                            type(exc).__name__, exc)
@@ -417,7 +549,7 @@ def post_tick(*, mode: str, store: Any, attention: Any, sessions: Any,
     return _finish(MomentRecord(
         at=now, mode=mode, signals=signals, impulse=imp, threshold=THRESHOLD,
         dice=dice, dice_p=dice_p, posted=True, post_id=post_id,
-        reason="", why_not_posted="",
+        reason="", why_not_posted="", body=body,
     ))
 
 

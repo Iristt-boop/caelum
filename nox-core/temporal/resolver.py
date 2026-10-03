@@ -31,7 +31,11 @@ from temporal.intent import Intent
 #:
 #: `upper_bound` 是 deadline 专用的一档 —— 见 `Resolution` 的注释，
 #: 它**不是**一种"粗一点的 date"。
-PRECISIONS = frozenset({"date", "datetime", "slot", "upper_bound", "none"})
+#:
+#: `range`（2026-09-28）是**一段持续的时间**：「这三个小时」「接下来两小时」。
+#: 和 `slot` 一样左闭右开，但不是「某天的某个时段」—— 两端是任意时刻，
+#: 也没有 `date`（一段可能跨午夜，硬挑一天就是编造）。
+PRECISIONS = frozenset({"date", "datetime", "slot", "range", "upper_bound", "none"})
 
 
 @dataclass(frozen=True)
@@ -91,7 +95,7 @@ class Resolution:
         下游连写 `when <= r.upper_bound` 的机会都没有。
 
             upper_bound  when <  upper_bound      ← **严格小于**，右开
-            slot         lo   <= when < hi        ← 左闭右开
+            slot / range lo   <= when < hi        ← 左闭右开
             date         when 落在那一天
 
         `none` 和 `datetime` 直接抛：
@@ -103,7 +107,7 @@ class Resolution:
                 f"这个结果没解析出来（{self.unresolved_reason}），不该被消费")
         if self.precision == "upper_bound":
             return when < self.upper_bound      # ⚠️ 不是 <=
-        if self.precision == "slot":
+        if self.precision in ("slot", "range"):
             lo, hi = self.range
             return lo <= when < hi
         if self.precision == "date":
@@ -236,7 +240,15 @@ def resolve(intent: Intent, reference_time: datetime) -> Resolution:
     elif kind == "duration":
         delta = timedelta(days=intent.days or 0, hours=intent.hours or 0,
                           minutes=intent.minutes or 0)
-        return Resolution(precision="datetime", at=ref + delta)
+        # 🔴 方向是她说的，**这里不猜**（2026-09-28）。第一版一律 `ref + delta`，
+        #    「这3个小时我都连不上你」落到了三小时之后。`Intent` 保证 direction 有值。
+        if intent.span:
+            # 一段持续的时间：过去那段一直延续到她说话的这一刻，
+            # 未来那段从这一刻开始。**不收成一个点**（同 slot 的规矩）
+            lo, hi = (ref - delta, ref) if intent.direction == "past" else (ref, ref + delta)
+            return Resolution(precision="range", range=(lo, hi))
+        at = ref - delta if intent.direction == "past" else ref + delta
+        return Resolution(precision="datetime", at=at)
 
     # ---------------------------------------------------------- 上界
     elif kind == "deadline":

@@ -43,7 +43,7 @@ logger = logging.getLogger(__name__)
 #: 「她在读什么」说的是现在，半年前翻过两页不算
 READING_WINDOW = timedelta(hours=48)
 
-#: 一起听的回灌上限。更早的歌 `eryu_experience` 本来就看得到，
+#: 一起听的回灌上限。更早的歌 `listen_experience` 本来就看得到，
 #: 不用在这里一次性灌几百条旧事实进 world.db
 LISTENING_WINDOW = timedelta(days=14)
 

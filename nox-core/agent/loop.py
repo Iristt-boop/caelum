@@ -30,6 +30,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from collections.abc import Callable, Iterator
@@ -380,7 +381,9 @@ class AgentLoop:
         #
         # ⚠️ MoodTagFilter 只认 [mood: 前缀 —— ElevenLabs 的情绪标签
         # （[whining] [softly] 等）必须原样保留送到 TTS，不能被误伤。
-        mood_filter = MoodTagFilter()
+        #: 舞台标签（[softly] [SKIP] [intimacy …]）只在文字聊天里吞 —— `split` 关着就是
+        #: 语音模式，那边的语气标签是给 TTS 的（2026-09-29）
+        mood_filter = MoodTagFilter(strip_stage=split)
         # 语音模式关掉分段：||| 会被 TTS 当成正文念出来
         splitter = SegmentSplitter() if split else None
 
@@ -458,10 +461,28 @@ class AgentLoop:
             # （非流式那条 `run()` 没有这个问题 —— 那边本来就是等全部做完才回。）
             outcomes = []
             for c in turn.tool_calls:
-                yield StreamEvent("tool_start", tool=c.name)
+                if ctx is not None:
+                    ctx.pending_steps = []
+                yield StreamEvent("tool_start", tool=c.name,
+                                  args=_arg_preview(c.arguments))
+                started = time.monotonic()
                 outcome = self._execute(c, tracker, ctx)
+                steps = list(ctx.pending_steps) if ctx is not None else []
+                if ctx is not None:
+                    ctx.pending_steps = []
+                # 详情页的 Output（她 09-22 的三层导航需求）：原始返回
+                # 截到 2000 字 —— 整段塞进 toolsTrace 会把落库的
+                # metadata 撑爆，详情页「结果太长」的提示就是给它配的
+                result_text = (getattr(outcome.result, "content", "") or "").strip()
+                yield StreamEvent(
+                    "tool_end", tool=c.name, ok=not outcome.failed,
+                    summary=_outcome_summary(outcome),
+                    duration_ms=int((time.monotonic() - started) * 1000),
+                    sub_commands=steps,
+                    result=result_text[:2000],
+                    result_truncated=len(result_text) > 2000,
+                )
                 outcomes.append(outcome)
-                yield StreamEvent("tool_end", tool=c.name, ok=not outcome.failed)
             messages.append(
                 Message(role="tool_results", tool_results=[o.result for o in outcomes])
             )
@@ -533,6 +554,37 @@ class AgentLoop:
 
         tracker.record(outcome, call.name)
         return outcome
+
+
+def _arg_preview(arguments: dict, limit: int = 300) -> dict:
+    """工具入参预览（工具调用展示，2026-09-19）。
+
+    值逐个截断、总长封顶 —— 这是给人看「他调了什么」的卡片，
+    不是审计日志；下划线开头的内部键（如 _parse_error）不进卡片。
+    """
+    out: dict = {}
+    total = 0
+    for k, v in (arguments or {}).items():
+        if str(k).startswith("_"):
+            continue
+        s = v if isinstance(v, str) else json.dumps(v, ensure_ascii=False, default=str)
+        if len(s) > 80:
+            s = s[:80] + "…"
+        out[k] = s
+        total += len(s)
+        if total > limit:
+            out["…"] = "参数过长，已截断"
+            break
+    return out
+
+
+def _outcome_summary(outcome: guard.ToolOutcome) -> str:
+    """工具结果的一行摘要，拼在工具条目尾部。失败时摘错误首行。"""
+    text = (getattr(outcome.result, "content", "") or "").strip()
+    if not text:
+        return "（无返回内容）" if not outcome.failed else "（失败，无详情）"
+    first = text.splitlines()[0].strip()
+    return first[:120] + ("…" if len(first) > 120 else "")
 
 
 def adapter_name(adapter: LLMAdapter) -> str:

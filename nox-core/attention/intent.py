@@ -77,6 +77,9 @@ class Intent:
     expires_at: datetime = field(default_factory=lambda: _now() + DEFAULT_TTL)
     #: 每次被 Scheduler 看到/触发都记一笔。M5 的 Feedback 会往里加结果。
     action_history: list[dict[str, Any]] = field(default_factory=list)
+    #: 开口时拿什么去翻记忆（见 context/base.py 的 Turn.recall）。None = 用提示原文。
+    #: 只在这一次开口里有用，**不落盘**（to_dict 不带它）
+    recall: str | None = None
 
     @property
     def base_priority(self) -> float:

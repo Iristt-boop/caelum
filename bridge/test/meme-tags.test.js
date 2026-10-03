@@ -87,3 +87,23 @@ test("清单不是空的（正则没抠错就该有几十个）", () => {
     assert.ok(list.length >= 40, `${name} 只抠出 ${list.length} 个 tag，正则怕是失配了`);
   }
 });
+
+/** memes.js 里 tag → 路径。 */
+function memePaths(src) {
+  const block = src.split("export const memes = {")[1].split("};")[0];
+  return Object.fromEntries([...block.matchAll(/^\s*(?:"([^"]+)"|'([^']+)'|([^\s:'"]+))\s*:\s*'([^']+)'/gm)]
+    .map((m) => [m[1] ?? m[2] ?? m[3], m[4]]));
+}
+
+test("每个表情的图片文件真的在（2026-09-28 加呆猫八条时补的）", async () => {
+  //: 清单对上了、文件没拷进 public/memes，表现是**聊天里一个空白框** —— 清单测试看不见这种
+  const { existsSync } = await import("node:fs");
+  const appPaths = memePaths(read("nox-app", "frontend", "src", "memes.js"));
+  const osPaths = memePaths(read("nox-app", "caelum-os-ui", "src", "lib", "memes.js"));
+  const gone = Object.entries(appPaths)
+    .filter(([, p]) => !existsSync(join(here, "..", "..", "nox-app", "frontend", "public", p)));
+  assert.deepEqual(gone, [], "图片文件不存在");
+  //: 桌面端的 /memes 代理到主站，所以两边路径必须指向同一个文件
+  const diff = Object.keys(appPaths).filter((t) => osPaths[t] !== appPaths[t]);
+  assert.deepEqual(diff, [], "同一个 tag 两个前端指的不是同一张图");
+});

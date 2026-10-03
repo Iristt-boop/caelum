@@ -392,8 +392,9 @@ def _fake_writer(monkeypatch, *, body: str | None = "今天风挺大，窗户没
     """把 `writer.generate` / `writer.post` 换成记账版。"""
     calls: dict[str, list] = {"generate": [], "post": []}
 
-    def fake_generate(adapter_ref, drives, recent, impulse_why, clock=""):
-        calls["generate"].append({"impulse_why": impulse_why})
+    def fake_generate(adapter_ref, drives, recent, impulse_why, clock="",
+                      context=None):
+        calls["generate"].append({"impulse_why": impulse_why, "context": context})
         return body
 
     def fake_post(bridge, text, drive, impulse_why):
@@ -457,6 +458,9 @@ def test_loop发成功会记一笔(monkeypatch):
           传错 `why`（只剩「他发过帖」，不知道为什么）。
     不能挡：`drive` 之外的字段（`recorded_at` 之类）—— 这里只断这三个。
     """
+    # 🔴 v4 采样（09-22）：心情是从向量里抽的，钉住随机源 ——
+    #    uniform=0 落在第一个参与算分的 drive（longing）上，断言才稳定
+    monkeypatch.setattr("moments.loop.random.uniform", lambda a, b: 0.0)
     rig = LoopRig(monkeypatch, post_id="post-777")
 
     rec = rig.run()
@@ -466,7 +470,7 @@ def test_loop发成功会记一笔(monkeypatch):
     call = rig.attention.moment_calls[0]
     assert call["post_id"] == "post-777", "要拿 bridge 给的那个 id"
     assert call["why"] == rec.impulse.why, "冲动那句原样传下去"
-    assert call["drive"] == "longing", "主导 drive 的名字（0.7 压着 0.6）"
+    assert call["drive"] == "longing", "采样被钉住：落在 longing 上"
 
 
 def test_没发出去就不记账(monkeypatch):

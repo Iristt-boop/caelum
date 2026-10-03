@@ -124,7 +124,10 @@ class HATrackerSource:
                 "latitude": lat,
                 "longitude": lng,
                 "trigger": "ha_home",
-                "timestamp": data.get("last_changed", ""),
+                # 🔴 最后一次**上报**的时刻，不是最后一次**变化**（2026-09-23）：
+                # last_changed 是跳成 not_home 那一刻，之后手机再没报过也看不出来
+                "timestamp": (data.get("last_reported") or data.get("last_updated")
+                              or data.get("last_changed", "")),
                 "battery": None,
                 "accuracy": None,
             }
@@ -136,7 +139,10 @@ class HATrackerSource:
             "latitude": lat,
             "longitude": lng,
             "trigger": "ha_away",
-            "timestamp": data.get("last_changed", ""),
+            # 🔴 最后一次**上报**的时刻，不是最后一次**变化**（2026-09-23）：
+                # last_changed 是跳成 not_home 那一刻，之后手机再没报过也看不出来
+                "timestamp": (data.get("last_reported") or data.get("last_updated")
+                              or data.get("last_changed", "")),
             "battery": None,
             "accuracy": None,
         }
@@ -182,6 +188,10 @@ class BridgeLocationSource:
 
 
 # ── Provider ─────────────────────────────────────────────────────
+
+#: 位置多旧就在给他看的那句话里注明（分钟）
+STALE_NOTE_MIN = 60
+
 
 class LocationProvider(BaseContextProvider):
     """她在哪、刚到家还是刚出门。"""
@@ -532,6 +542,15 @@ class LocationProvider(BaseContextProvider):
         lines = [
             f"【位置】糖糖现在{tag_text}{trigger_text}{bat_text}。"
         ]
+        # 位置旧了要明说（2026-09-23）：她手机 18:59 之后再没报过，
+        # 他一整晚都以为她在外面。旧数据不是「她在哪」，是「她上次在哪」
+        age = movement.get("time_since_last_report") or 0
+        if age >= STALE_NOTE_MIN:
+            h = age / 60
+            lines.append(
+                f"（但这是 {h:.0f} 小时前的位置，之后她手机没再上报 —— 她现在在哪其实不确定）"
+                if h >= 1.5 else
+                f"（这是 {age:.0f} 分钟前的位置）")
 
         if poi_nearby:
             lines.append(f"附近：{'、'.join(poi_nearby)}。")

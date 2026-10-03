@@ -252,3 +252,70 @@ def test_not_hardcoded_into_the_lineup():
 
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))
+
+
+# ---------------------------------------------------------------- 他主动开口时翻什么（2026-09-27）
+
+def test_他主动开口时拿recall去翻_不拿整段提示():
+    """rerank shadow 三天：拿整段开场白去翻，「修复对话记忆bug」被塞进 105 次里的 71 次。"""
+    ob = FakeOB()
+    prompt = "（系统提示：不是她在跟你说话。现在是 08:55。\n不要问需要她现在回答的问题……）"
+    MemoryProvider(ob).get_state(Turn(text=prompt, recall="感觉撑得睡不着了"))
+    assert [c["query"] for c in ob.calls] == ["感觉撑得睡不着了"]
+
+
+def test_recall是空串就不翻_哪怕提示很长():
+    """空串 = 拼提示的一方说了「这次没有具体的线头」，不能退回去拿模板翻。"""
+    ob = FakeOB()
+    s = MemoryProvider(ob).get_state(Turn(text="（系统提示：不是她在跟你说话。……）", recall=""))
+    assert ob.calls == []
+    assert s["relevant"] == []
+
+
+def test_她发来的话照旧用原话():
+    ob = FakeOB()
+    MemoryProvider(ob).get_state(Turn(text="你还记得我怕冷吗"))
+    assert ob.calls[0]["query"] == "你还记得我怕冷吗"
+
+
+# ---------------------------------------------------------------- 每轮一行账（2026-09-28）
+
+def _recall_lines(caplog):
+    return [r.getMessage() for r in caplog.records if r.getMessage().startswith("记忆：")]
+
+
+def test_每轮记一行_带进去哪几条(caplog):
+    """翻记忆开到几乎每轮之后，翻到了什么日志里一行都没有 —— 回头评不了准不准。"""
+    caplog.set_level("INFO", logger="context.providers.memory")
+    MemoryProvider(FakeOB()).get_state(Turn(text="你还记得我怕冷吗"))
+    (line,) = _recall_lines(caplog)
+    assert "你还记得我怕冷吗" in line and "刚检索" in line
+    assert "2 条" in line and "她说过怕冷" in line and "第一天是 6 月 10 日" in line
+
+
+def test_沿用缓存要标出来_并且说出是哪句的检索(caplog):
+    """缓存按名字存 5 分钟：这轮带进去的可能是上一句话的检索结果，账上必须分得清。"""
+    caplog.set_level("INFO", logger="context.providers.memory")
+    ob = FakeOB()
+    p = MemoryProvider(ob)
+    p.get_state(Turn(text="你还记得我怕冷吗"))
+    p.get_state(Turn(text="今天吃什么"))
+    assert len(ob.calls) == 1
+    first, second = _recall_lines(caplog)
+    assert "刚检索" in first and "沿用" not in first
+    assert "沿用" in second and "今天吃什么" in second
+    assert "检索词「你还记得我怕冷吗」" in second
+
+
+def test_挂了走旧结果也记_没有旧结果不重复记(caplog):
+    caplog.set_level("INFO", logger="context.providers.memory")
+    p = MemoryProvider(FakeOB())
+    p.get_state(Turn(text="第一次"))
+    p.cache.set(p.name, p.cache.get(p.name).value, timedelta(0))
+    p.ob = FakeOB(ok=False)
+    p.get_state(Turn(text="第二次"))
+    assert "检索挂了" in _recall_lines(caplog)[-1]
+
+    caplog.clear()
+    MemoryProvider(FakeOB(ok=False)).get_state(Turn(text="随便问问"))
+    assert _recall_lines(caplog) == [], "基类已经 warning 过，这里不该再记一条「0 条」冒充没想起来"

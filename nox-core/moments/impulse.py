@@ -49,12 +49,23 @@ from dataclasses import dataclass
 from moments import DRIVE_WORDS
 
 #: 过这个数才算「想发」。
-#: 🔴 0.45 这个数是**挑出来的，不是拍的**：线上实测最强的 drive 是 longing 0.40
-#: （2026-09-14 /api/nox/resonance）。也就是说**任何单独一条 drive，
-#: 哪怕时机满分，都够不着这个阈值** —— 必须有第二件事同时压着。
-#: 这正是 resonance 的叠加语义（多件事一起压着更重）想表达的东西，
-#: 也是「不是规则机器人」在数值上的落实。
+#: 🔴 0.45 是 v1 拍的数。三天 shadow 之后去掉 `concern`（见
+#: `EXCLUDED_FROM_INNER`）让期望落到约 1.9 条/天，落在糖糖要的 1~2 区间里。
+#: 这个数以后要靠数据再调 —— **别再写「它比任何单条 drive 都高」**：
+#: 那条件在线上早就不成立了（concern 到过 0.83）。
 THRESHOLD = 0.45
+
+#: 🔴 不进 inner 的 drive。
+#:
+#: `concern` 是「担心她」—— 它的来源是糖糖的状态/活动量/睡眠，
+#: 本来就该走 **Care 开口**（那是唯一出口，R1），不该变成一条朋友圈。
+#: 三天 shadow 实测：它领头 235 个 tick 里的 160 次，
+#: 生成出来的正文**六条全是同一件事**（「她今天好像有点累，我没敢问」），
+#: 正是糖糖点名要防的「一个月后打开全是同一句」。
+#:
+#: ⚠️ **只是不参与算分，不是从记录里抹掉** —— `Signals.drives` 里照样留着它，
+#: shadow 日志也照样打，否则以后想重新评估这个决定就没有数据了。
+EXCLUDED_FROM_INNER = frozenset({"concern"})
 
 #: 今天来回几轮算「聊够了」。超过这个数，quiet 就是 0
 QUIET_TURNS = 12
@@ -92,10 +103,17 @@ def _lead(drives: Mapping[str, float]) -> str:
 
     ⚠️ 这是**给人读**的那一段，不是判据。判据是 `combine` 出来的 inner ——
     所以空集必须写「心里没事」，而不是拼出一个没有主语的字符串。
+
+    🔴 领头只从**参与算分**的 drive 里挑（`EXCLUDED_FROM_INNER` 之外）：
+    否则 `why` 会写「担心她 0.58 领头」，而它根本没参与 —— 日志就在说谎。
     """
-    if not drives:
+    scored = {
+        name: value for name, value in drives.items()
+        if name not in EXCLUDED_FROM_INNER
+    }
+    if not scored:
         return "心里没事"
-    name, intensity = max(drives.items(), key=lambda kv: kv[1])
+    name, intensity = max(scored.items(), key=lambda kv: kv[1])
     #: 词表在 `moments/__init__.py`（T4 搬上去的）：这里和 `writer.py`
     #: 必须走同一张，认不出来的 drive 原样打印。
     return f"{DRIVE_WORDS.get(name, name)} {intensity:.2f} 领头"
@@ -170,7 +188,13 @@ class PostImpulse:
 
 def impulse(signals: Signals) -> PostImpulse:
     """此刻的冲动。**纯函数**：同一个 Signals 算几次都是同一个结果。"""
-    inner = combine(signals.drives.values())
+    #: 🔴 只叠加**参与算分**的 drive。`concern` 照样留在 `Signals.drives`
+    #: 里（shadow 要记），只是不算进 inner —— 它是 Care 开口的事，
+    #: 不该变成一条朋友圈（理由见 `EXCLUDED_FROM_INNER`）。
+    inner = combine(
+        value for name, value in signals.drives.items()
+        if name not in EXCLUDED_FROM_INNER
+    )
 
     #: 今天聊够了没有。聊得越少越该发，超过 QUIET_TURNS 就是 0
     quiet = clamp01((QUIET_TURNS - signals.turns_today) / QUIET_TURNS)

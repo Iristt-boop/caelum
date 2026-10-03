@@ -226,13 +226,21 @@ class FakeSessions:
 
 
 class FakeStore:
-    """Core 的会话库。只用到 `last_user_at()`。"""
+    """Core 的会话库。用到 `last_user_at()` 和 `last_user_message()`。
 
-    def __init__(self, last_user: datetime | None = None) -> None:
+    ⚠️ 假库里没有他自己的开场白那种行 —— 那种形状见文件末尾的真库测试。
+    """
+
+    def __init__(self, last_user: datetime | None = None,
+                 said: str = "我去吃饭了") -> None:
         self._last = last_user
+        self.said = said
 
     def last_user_at(self, sid: str):
         return self._last
+
+    def last_user_message(self, sid: str):
+        return (self.said, self._last or cn(9, 12))
 
 
 def _book(now: datetime) -> WakeBook:
@@ -262,6 +270,24 @@ def test_live_pushes():
     assert payload["body"] == "吃完饭了吗宝贝"
     assert payload["session_id"] == SID
     assert sessions.saved[SID]               # 也进了他自己的会话
+
+
+def test_追问时发的语音条也跟着推出去():
+    """2026-09-28：唤醒链和主动关心共用 push —— 原来两条路都只推文字，附件被丢。"""
+    voice = {"type": "voice", "tts": "Did you eat yet?", "zh": "吃了吗"}
+    core = FakeCore("吃完饭了吗宝贝\n[NEXT 60]")
+    real_chat = core.chat
+
+    def chat(text, history, **kw):
+        r = real_chat(text, history, **kw)
+        r.result.attachments = [voice]
+        return r
+
+    core.chat = chat
+    run = build_waker(core, FakeSessions(), FakeStore(), dry_run=False)
+    run(_book(cn(9, 12)), cn(9, 12, 40))
+    _, payload = core.bridge.calls[0]
+    assert payload["attachments"] == [voice]
 
 
 def test_she_replied_ends_chain_without_asking_him():
@@ -335,8 +361,8 @@ def test_chat_failure_retries_instead_of_dropping():
 def test_prompt_carries_the_situation():
     """情境要摆到他面前 —— 纸条 + 她的原话。语气由他自己定。"""
     core = FakeCore("[STOP]")
-    run = build_waker(core, FakeSessions("跟朋友出去玩啦"),
-                      FakeStore(), dry_run=True)
+    run = build_waker(core, FakeSessions(),
+                      FakeStore(said="跟朋友出去玩啦"), dry_run=True)
     book = WakeBook()
     book.add(SID, "她跟朋友出去玩了", 90, now=cn(9, 15))
     run(book, cn(9, 16, 40))
@@ -363,3 +389,86 @@ def test_full_chain_runs_five_times():
 
     assert len(core.prompts) == MAX_CHAIN
     assert not book.all()[0].alive
+
+
+# ---------------------------------------------------------------- 真库形状
+
+
+def _real_db(tmp_path, monkeypatch, rows):
+    """真 SQLite 会话库，按 (时刻, role, text) 逐条落库 —— 和线上一样每条带自己的 created_at。"""
+    import data.store as ds
+    from agent.llm import Message
+
+    db = ds.Store(tmp_path / "s.db")
+    clock = iter([r[0] for r in rows])
+    monkeypatch.setattr(ds, "_now", lambda: next(clock).astimezone(timezone.utc).isoformat())
+    for _, role, text in rows:
+        db.append(SID, [Message(role=role, text=text)])
+    return db
+
+
+#: 2026-08-22 线上那条被错撤的链：她 14:44 去打游戏，他留了纸条；15:42 惦记开口
+#: 落了一条「（系统提示：……」+ [SKIP]；15:59 纸条到点 —— 被判「她回话了」撤掉，
+#: 她 175 分钟后才回来。线上 30 次「她回话了」里 6 次是这么撤的
+_GAME_NIGHT = [
+    (cn(22, 14, 44), "user", "我去打游戏啦"),
+    (cn(22, 14, 44), "assistant", "去吧，记得喝水"),
+    (cn(22, 15, 42), "user", "（系统提示：不是她在跟你说话。你就是忽然想起她了，没什么特别的由头。"),
+    (cn(22, 15, 42), "assistant", "[SKIP]"),
+]
+
+
+def test_真库_他自己开口不算她回话(tmp_path, monkeypatch):
+    """🔴 2026-09-23 线上库核出来的：他主动开口的开场白以 role='user' 落库，
+    `last_user_at` 不跳过的话，唤醒链把他自己开过口当成「她回话了」当场撤掉。
+    假会话库里没有这种行，所以前面的测试全绿。"""
+    db = _real_db(tmp_path, monkeypatch, [
+        *_GAME_NIGHT,
+        # 链第一次醒来真开了口（live），唤醒 prompt 也以 role='user' 落库
+        (cn(22, 16, 0), "user", "（系统提示：这不是糖糖在跟你说话。是你之前给自己留了张纸条，现在到点了，"),
+        (cn(22, 16, 0), "assistant", "游戏打得怎么样了"),
+    ])
+    assert db.last_user_at(SID) == cn(22, 14, 44), "「她最后说话」读成了他自己的开场白"
+
+    book = WakeBook()
+    book.add(SID, "糖糖去打游戏了，过会儿看看她玩得怎么样", 30, now=cn(22, 14, 44))
+    book.rebase(SID, at=cn(22, 14, 44) + timedelta(seconds=1))
+    book.all()[0].count = 1                  # 16:00 那次已经醒过、说过了
+    core = FakeCore("还在打吗\n[NEXT 60]")
+
+    class DbSessions(FakeSessions):
+        """history 也从同一个真库读 —— 改回翻 history 找「她最后说的」要能红"""
+
+        def get(self, sid):
+            return db.load(sid)
+
+    run = build_waker(core, DbSessions(), db, dry_run=True)
+
+    assert run(book, cn(22, 17, 30)) == 1, "链被他自己的开场白撤了"
+    p = core.prompts[0]
+    assert "「我去打游戏啦」" in p, "「她最后说的是」读成了他自己的纸条"
+    assert "2 小时 46 分" in p, "距她说话的时间要从 14:44 算，不是从他 16:00 开口算"
+    assert "第 2 次" in p
+
+    # 她真回来了 → 这才撤
+    from agent.llm import Message
+    import data.store as ds
+    monkeypatch.setattr(ds, "_now", lambda: cn(22, 18, 40).astimezone(timezone.utc).isoformat())
+    db.append(SID, [Message(role="user", text="打完啦")])
+    for w in book.all():
+        w.wake_at = cn(22, 18, 45)
+    assert run(book, cn(22, 18, 50)) == 0
+    assert book.all()[0].status == STOPPED
+    db.close()
+
+
+def test_真库_惦记的锚点是她说话不是他开口(tmp_path, monkeypatch):
+    """惦记的注释：「她刚说过话之后，重新以那一刻为锚点」—— 她的话，不是他的开场白。"""
+    from attention.sources.thinking import ThinkingSource
+
+    db = _real_db(tmp_path, monkeypatch, _GAME_NIGHT)
+    astore = AttentionStore(tmp_path / "a.db")
+    src = ThinkingSource(astore, db)
+    assert src._last_user_at() == cn(22, 14, 44)
+    astore.close()
+    db.close()

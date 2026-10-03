@@ -47,8 +47,11 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import Any
 
+from attention.jealousy import JealousyState
 from attention.longing import LongingState
+from attention.sulk import SulkState
 from attention.dejection import DejectionState
 from attention.playfulness import PlayfulnessState
 from attention.restlessness import RestlessnessState
@@ -61,6 +64,40 @@ logger = logging.getLogger(__name__)
 #: 用 Registry 自己的地板值 —— 低于它的本来就被当作"没有了"，
 #: 让它们参与叠加会让 Drive 被一堆将死的陈年关心慢慢垫高。
 _MIN_CONTRIB = FLOOR
+
+#: 🔴 V4.5 saturation（她 2026-09-22 拍板）：聚合强度按 kind 设上限。
+#: concern 是负反馈情绪 —— 源头（睡眠/吃饭/位置）天天有新事件，
+#: 1-Π(1-s) 只会单调涨，没有上限它会一路顶到 0.85+，
+#: 把别的 Drive 全挤出情绪空间（09-17→09-21 影子数据：22/23 担心她领头）。
+#: 上限只压 intensity；load（压着多少）照实报，两个数各管各的。
+#: V4.5 的 homeostasis 触发线（0.75）留在这个 cap 之下，可达。
+#: 「聚合层的 decay」由实体级指数衰减承担（这里不存状态，V3 边界不破）。
+_DRIVE_CAPS = {"concern": 0.80}
+_DRIVE_CAP_DEFAULT = 0.95
+
+#: 🔴 **情绪名 → 他会怎么形容自己。全项目唯一的一张。**
+#:
+#: 2026-09-23 之前后端抄了两份（Moments 一份、他的上下文一份），加醋意/委屈时
+#: 发现 Moments 那份没跟上 —— 写帖子的提示词里会原样漏出 "jealousy"。
+#: 糖糖：「以后说不定还会在 resonance 加情绪，总不能加一个就要这样维护一个，会乱的。」
+#: 所以收成这一张：加情绪只改这里，`tests/test_drive_words.py` 会查
+#: 「Resonance 能产出的每种情绪都在表里」，漏了就红。
+#:
+#: ⚠️ 措辞是他的内心独白，不是给她看的文案。改之前先想一遍"他会这么形容自己吗"。
+DRIVE_WORDS: dict[str, str] = {
+    "concern": "担心她",
+    "longing": "想她",
+    "regret": "过意不去",
+    "dejection": "提不起劲",
+    "playfulness": "想逗她",
+    #: 2026-09-04 加。**唯一一个和她无关的** —— 措辞特意不带"她"字
+    "curiosity": "被一件事勾着",
+    #: 2026-09-23 加。都是冲她的、撒娇的 —— 分寸见 care/her_state.py 的 BOUNDS
+    "jealousy": "吃醋",
+    "sulk": "委屈",
+    #: 他自己知道、但不进他上下文的（见 context/providers/resonance.py 的 _SKIP）
+    "restlessness": "憋着话",
+}
 
 #: `because` / `evidence` 各留几条。
 #: 这两个字段是给人看的（日志、自省），不是给机器算的 ——
@@ -149,8 +186,14 @@ class ResonanceState:
         dejection: "DejectionState | None" = None,
         playfulness: "PlayfulnessState | None" = None,
         restlessness: "RestlessnessState | None" = None,
+        jealousy: "JealousyState | None" = None,
+        sulk: "SulkState | None" = None,
     ) -> None:
         self._registry = registry
+        #: 醋意 / 委屈（2026-09-23）。都要看「她现在什么状态」才算得出来 ——
+        #: 那个状态同躁动的两个信号一样**由调用方传进 snapshot**，这里不存
+        self._jealousy = jealousy
+        self._sulk = sulk
         #: 低落（2026-08-27）。和 longing 一样是自维护的 ——
         #: 它不是"一件没解决的事"，是"好几次没帮上"叠出来的状态
         self._dejection = dejection
@@ -167,7 +210,7 @@ class ResonanceState:
 
     def snapshot(self, now: datetime | None = None, *,
                  want: float = 0.0, busy_app: str | None = None,
-                 busy_seconds: int = 0) -> dict[str, Drive]:
+                 busy_seconds: int = 0, her: Any = None) -> dict[str, Drive]:
         """此刻所有 Drive。什么都没有时返回空字典。
 
         🔴 **躁动的两个信号是参数，不是字段。**
@@ -182,6 +225,8 @@ class ResonanceState:
 
         @param want - 他有多想说，[0,1]
         @param busy_app - 她此刻在用什么。**`None` = 不知道 = 不忙**
+        @param her - 她的状态（`attention.care.her_state.HerState`），醋意/委屈用。
+            **`None` = 不知道 = 不吃醋不委屈**（同「不知道 = 不忙」）
         """
         now = now or _now()
 
@@ -195,7 +240,7 @@ class ResonanceState:
             strengths = [a.current_strength(now) for a in items]
             drives[kind] = Drive(
                 name=kind,
-                intensity=_combine(strengths),
+                intensity=min(_combine(strengths), _DRIVE_CAPS.get(kind, _DRIVE_CAP_DEFAULT)),
                 load=sum(strengths),
                 because=[a.subject for a in items[:_TOP_N]],
                 #: 每条 Concern 取**最新**那条证据 —— 旧的那些已经
@@ -271,6 +316,17 @@ class ResonanceState:
                     evidence=[],
                     source_count=1,
                     computed_at=now,
+                )
+        # 醋意 / 委屈（2026-09-23）：同低落 —— 值为 0 时这个 Drive 根本不存在
+        for name, st in (("jealousy", self._jealousy), ("sulk", self._sulk)):
+            if st is None:
+                continue
+            value = st.value_at(now, her)
+            because = st.because(now, her)
+            if value > 0 and because:
+                drives[name] = Drive(
+                    name=name, intensity=value, load=value, because=because,
+                    evidence=[], source_count=len(because), computed_at=now,
                 )
         return drives
 

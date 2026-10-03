@@ -31,6 +31,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
+from temporal.event import TemporalEvent
 from temporal.intent import Intent
 from temporal.resolver import Resolution
 
@@ -63,12 +64,14 @@ class TemporalResult:
 
     `intent` 和 `resolution` **是两个对象**（契约第三节），
     这里只是把它们和锚点装在一起，不是把它们合并。
+    **一句话几个事件就是几个 TemporalResult**，各自一条日志。
     """
 
     #: 她原话（截断存日志用）
     text: str
-    #: ① 模型说了什么
-    intent: Intent
+    #: ① 模型说了什么：哪个时间词、修饰哪件事、什么性质、什么关系
+    #: （2026-09-28 起是一个事件，不再是光秃秃的 Intent —— 见 temporal/event.py）
+    event: TemporalEvent
     #: ② Resolver 算了什么
     resolution: Resolution
     #: 解析用的锚点 —— **必须是 message_time**，没有它没法复算
@@ -85,6 +88,13 @@ class TemporalResult:
     todo_match_status: str = "not_attempted"
     #: 匹配上了才有。第一版恒为 None，但**不许**靠它反推「有没有试过」
     todo_id: str | None = None
+    #: 这是她这句话里的第几个事件（从 1 数）/ 一共几个。同一句的几条日志靠它认亲
+    index: int = 1
+    of: int = 1
+
+    @property
+    def intent(self) -> Intent:
+        return self.event.intent
 
     def __post_init__(self) -> None:
         if not self.applied and not self.why_not_applied:
@@ -103,7 +113,8 @@ class TemporalResult:
     def to_dict(self) -> dict[str, Any]:
         return {
             "text": self.text[:60],
-            "intent": self.intent.to_dict(),
+            "event": self.event.to_dict(),
+            "index": self.index, "of": self.of,
             "resolution": self.resolution.to_dict(),
             "reference_time": self.reference_time.isoformat(),
             "applied": self.applied,
@@ -116,20 +127,23 @@ class TemporalResult:
     # ------------------------------------------------------------ 出口
 
     def log(self) -> None:
-        """shadow 的出口。**三段一行打完**，别分三条 —— 分开的话
-        journalctl 里它们会被别的日志冲散，拼不回来。
+        """shadow 的出口。**真的一行打完**，别分行。
+
+        ⚠️ 2026-09-28 改：原来用换行拼成三行，journald 按行切开，
+        grep「时间理解」只拿得到第一行 —— 09-22 复盘时就因此误判成
+        「只记了未接、没记解析」。①②③ 用「｜」串在同一行里。
         """
         r = self.resolution
         landed = (
             r.to_dict() if r.ok
             else f"未解析（{r.unresolved_reason}）"
         )
+        ev = self.event
         logger.info(
-            "时间理解｜她说「%.40s」\n"
-            "  ① 模型认成：%s\n"
-            "  ② 锚点 %s → %s\n"
-            "  ③ %s｜待办归属：%s",
-            self.text,
+            "时间理解｜她说「%.40s」[%d/%d]｜「%s」→ %s（%s）"
+            "｜① 模型认成：%s｜② 锚点 %s → %s｜③ %s｜待办归属：%s",
+            " ".join(self.text.split()), self.index, self.of,
+            ev.expression, ev.event, ev.act,
             self.intent.to_dict(),
             self.reference_time.isoformat(),
             landed,
