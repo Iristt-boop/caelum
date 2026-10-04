@@ -305,11 +305,33 @@ function saveMessage(sessionId, role, content, meta = "") {
   } catch (e) { console.log("[Bridge] saveMessage failed:", e.message); return null; }
 }
 
-// 情绪标签只给 TTS 用，进入聊天记录/字幕前必须剥掉
+// 情绪标签只给 TTS 用，进入聊天记录/字幕前必须剥掉。
+// 🔴 不用白名单（2026-10-04）：原来只认 softly/laughing 那十来个，他自己写的
+// [low, amused] [teasing] 全漏，中文对照里的 [笑] [轻声] 压根没人剥 ——
+// 她在语音条底下看到一排方括号。现在**方括号里的短标签一律剥**，中英文、全角都算；
+// 说话本身不会带方括号。剥完再把标签两边留下的空格收一收（中文之间不该有空格）
+const DISPLAY_TAG_RE = /\s*[[［][^[\]［］\n]{1,40}[\]］]\s*/g;
+const CJK = "\\u3000-\\u303f\\u3400-\\u9fff\\uff00-\\uffef"; // 中文标点 + 汉字 + 全角
+const CJK_GAP_RE = new RegExp(`([${CJK}]) +(?=[${CJK}])`, "g");
 function stripVoiceTags(t) {
-  return (t || "")
-    .replace(/\[(?:whining|excited|pouting|softly|sniffling|laughing|eager|pause|whispers?|sighs?|giggles?)\]/gi, "")
-    .replace(/\s{2,}/g, " ").trim();
+  return String(t || "")
+    .replace(DISPLAY_TAG_RE, " ")
+    .replace(/ {2,}/g, " ")
+    .replace(CJK_GAP_RE, "$1")
+    .trim();
+}
+
+// 读历史时也剥一遍 —— 修之前落库的那些语音条，元数据里还带着标签
+function cleanVoiceMeta(metaStr) {
+  if (!metaStr || !metaStr.includes('"voice"')) return metaStr;
+  try {
+    const m = JSON.parse(metaStr);
+    if (!m?.voice || typeof m.voice !== "object") return metaStr;
+    m.voice = { ...m.voice, en: stripVoiceTags(m.voice.en || m.voice.tts), zh: stripVoiceTags(m.voice.zh) };
+    return JSON.stringify(m);
+  } catch {
+    return metaStr; // 坏 JSON 原样给，前端自己会兜
+  }
 }
 
 // 通话指令已移到 Core 的 personality/scenes.py（中英两个情景各一份）。
@@ -1287,11 +1309,12 @@ async function coreMode(req, res, requestId) {
             // 语音条。合成在前端点播放时才发生（POST /api/tts），
             // 这里只把「这句要作为语音发」这个意图和文本传出去
             const display = stripVoiceTags(ev.tts);
+            const zh = stripVoiceTags(ev.zh);
             res.write(`data: ${JSON.stringify({
-              type: "voice", text: display, tts: ev.tts, zh: ev.zh || "",
+              type: "voice", text: display, tts: ev.tts, zh,
             })}\n\n`);
             saveMessage(sessionId, "assistant", "", {
-              voice: { en: display, tts: ev.tts, zh: ev.zh || "" },
+              voice: { en: display, tts: ev.tts, zh },
             });
             console.log(`[Bridge] Core 发语音 ${display.slice(0, 30)}`);
           } else if (ev.kind === "music" && ev.song_id) {
@@ -1613,7 +1636,6 @@ const ELEVEN_KEY = process.env.ELEVENLABS_API_KEY || process.env.ELEVEN_KEY || "
 const ELEVEN_VOICE = process.env.ELEVENLABS_VOICE_ID || process.env.ELEVEN_VOICE || "gGOcFXG638t1tfyhocY5";
 //: 只给测试换成本地假上游用（验「第一次合成就存进缓存」那条路）。线上不设
 const ELEVEN_TTS_BASE = process.env.ELEVENLABS_TTS_BASE || "https://api.elevenlabs.io";
-const VOICE_TAG_RE = /\[(?:whining|excited|pouting|softly|sniffling|laughing|eager|pause|whispers?|sighs?|giggles?)\]/gi;
 const DASHSCOPE_API_KEY = process.env.DASHSCOPE_API_KEY || process.env.QWEN_ASR_API_KEY || "";
 const DASHSCOPE_BASE_URL = (process.env.DASHSCOPE_BASE_URL || process.env.QWEN_ASR_BASE_URL || "https://dashscope.aliyuncs.com/compatible-mode/v1").replace(/\/$/, "");
 const DASHSCOPE_ASR_MODEL = process.env.DASHSCOPE_ASR_MODEL || process.env.QWEN_ASR_MODEL || "qwen3-asr-flash";
@@ -1866,7 +1888,7 @@ function pruneTtsCache() {
 /** 收藏时缓存里没有（缓存上线前播过的、或者没播过就收藏）才合成一次。非流式，拿整段 buffer */
 async function synthVoiceOnce(withTags) {
   if (!ELEVEN_KEY) { console.error("[VoiceFav] 没配 ElevenLabs key，合成不了"); return null; }
-  const clean = withTags.replace(VOICE_TAG_RE, "").replace(/\s{2,}/g, " ").trim();
+  const clean = stripVoiceTags(withTags);
   for (const [modelId, text] of [["eleven_v3", withTags], ["eleven_turbo_v2_5", clean]]) {
     try {
       const r = await fetch(`${ELEVEN_TTS_BASE}/v1/text-to-speech/${ELEVEN_VOICE}`, {
@@ -1959,7 +1981,7 @@ app.post("/api/tts", async (req, res) => {
   }
   const withTags = raw.slice(0, TTS_MAX_CHARS);
   // 剥情绪标签的版本，给不认标签的降级模型用
-  const clean = raw.replace(VOICE_TAG_RE, "").replace(/\s{2,}/g, " ").trim().slice(0, TTS_MAX_CHARS);
+  const clean = stripVoiceTags(raw).slice(0, TTS_MAX_CHARS);
 
   /* 引擎顺序 —— **按端分，不是全局一个默认**。
    *
@@ -2119,8 +2141,8 @@ app.post("/api/voice-favorites", async (req, res) => {
   const id = randomUUID();
   writeAtomic(favFile(id), audio);
   const row = {
-    id, key, tts, en: String(req.body?.en || stripVoiceTags(tts)).slice(0, 2000),
-    zh: String(req.body?.zh || "").slice(0, 2000),
+    id, key, tts, en: stripVoiceTags(req.body?.en || tts).slice(0, 2000),
+    zh: stripVoiceTags(req.body?.zh).slice(0, 2000),
     message_id: req.body?.message_id != null ? String(req.body.message_id) : null,
     session_id: req.body?.session_id ? String(req.body.session_id).slice(0, 64) : null,
     created_at: new Date().toISOString(),
@@ -4120,17 +4142,24 @@ app.get("/api/search", (req, res) => {
 // 消息存储（兼容旧 Nox 前端调用）— rowid 作为消息唯一 id，id 列是 sessionId
 //: 消息行里的图片签名（0.8）。metadata 是 JSON 字符串，要用 JSON 版。
 function signMsgRows(rows) {
-  return rows.map((r) => ({ ...r, metadata: signUploadsInJson(r.metadata) }));
+  return rows.map((r) => ({ ...r, metadata: cleanVoiceMeta(signUploadsInJson(r.metadata)) }));
 }
 
 app.get("/api/messages", (req, res) => {
   // 带 sessionId 时只返回该会话（Recents 点开某条会话用），按时间正序
   const sid = req.query.sessionId;
   if (sid) {
-    return res.json(signMsgRows(dbAll(
-      "SELECT rowid AS id, id AS sessionId, role, content, timestamp, metadata FROM conversations WHERE id = ? ORDER BY rowid DESC LIMIT 500",
-      [sid]
-    ).reverse()));
+    // 翻页（2026-10-04）：她往上翻到某条就「上文没了」—— 原来只给最后 500 行、
+    // 手机再只留 200。现在 `before=<id>` 取那条之前的 `limit` 行，翻到顶再要一页。
+    // 不带 before 还是「最后 N 行」，OS 和老版本手机不受影响
+    const limit = Math.min(500, Math.max(1, parseInt(req.query.limit, 10) || 500));
+    const before = parseInt(req.query.before, 10);
+    const rows = Number.isFinite(before) && before > 0
+      ? dbAll("SELECT rowid AS id, id AS sessionId, role, content, timestamp, metadata FROM conversations WHERE id = ? AND rowid < ? ORDER BY rowid DESC LIMIT ?",
+        [sid, before, limit])
+      : dbAll("SELECT rowid AS id, id AS sessionId, role, content, timestamp, metadata FROM conversations WHERE id = ? ORDER BY rowid DESC LIMIT ?",
+        [sid, limit]);
+    return res.json(signMsgRows(rows.reverse()));
   }
   /* 🔴 不带 sessionId 的那条（「最近 200 条」）**必须和 /api/conv-sessions
    * 用同一把尺子**：只认 32 位纯小写 hex（2026-09-19 会话不同步事故）。
@@ -4250,7 +4279,7 @@ app.post("/api/daily-push", async (req, res) => {
 function proactiveAttachmentMeta(att) {
   if (!att || typeof att !== "object") return null;
   if (att.type === "voice" && att.tts) {
-    return { voice: { en: stripVoiceTags(String(att.tts)), tts: String(att.tts), zh: String(att.zh || "") } };
+    return { voice: { en: stripVoiceTags(String(att.tts)), tts: String(att.tts), zh: stripVoiceTags(att.zh) } };
   }
   if (att.type === "music" && att.song_id) {
     return { music: { songId: String(att.song_id), name: att.name || "", artist: att.artist || "", cover: att.cover || "" } };
