@@ -153,6 +153,28 @@ def test_night_tick_success_and_dedupe(buckets, night_env):
     assert len(log.read_text(encoding="utf-8").strip().splitlines()) == 1
 
 
+@pytest.mark.parametrize("nights_ago, dreams", [(1, False), (2, False), (3, True), (5, True)])
+def test_最多三晚一场梦(buckets, night_env, nights_ago, dreams):
+    """她 2026-10-04：「关于做梦的内容很多」—— 09-25 起 10 天发了 9 条。"""
+    now = datetime.now(CST)
+    dream._write_state(night_env["data_dir"],
+                       {"last_date": (now - timedelta(days=nights_ago)).date().isoformat()})
+    u = _Utility()
+    rec = dream.night_tick(utility=u, buckets_dir=buckets, data_dir=night_env["data_dir"], now=now)
+    assert (rec is not None) is dreams
+    assert bool(u.calls) is dreams, "挡下来的那晚不该去调模型（白花钱）"
+
+
+def test_提示词要能看懂_不要意象接龙(buckets, night_env):
+    """她 10-04：「太抽象了，我都有点看不懂」。原提示词是「比喻可以不讲道理」。"""
+    u = _Utility()
+    dream.night_tick(utility=u, buckets_dir=buckets, data_dir=night_env["data_dir"],
+                     now=datetime.now(CST))
+    prompt = u.calls[0][0][0].text
+    assert "比喻可以不讲道理" not in prompt
+    assert "一读就懂" in prompt and "一个清楚的场景" in prompt
+
+
 def test_night_tick_generation_failure_writes_nothing(buckets, night_env):
     u = _Utility()
     u.text = RuntimeError("utility 挂了")

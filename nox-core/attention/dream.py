@@ -62,6 +62,11 @@ NIGHT_WINDOW_MIN = 180          # 02:00 起三小时窗口
 WINDOW_DAYS = 3
 TOP_MATERIALS = 5
 
+#: 两场梦之间至少隔几晚（2026-10-04 她：「关于做梦的内容很多」—— 09-25 起 10 天 9 条）。
+#: 上面那条「三天一攒」管的只是选材窗口，素材天天都有，于是天天做梦。
+#: 这里才是真正的频率闸：做过一场，接下来两晚不做
+MIN_NIGHTS_BETWEEN = 3
+
 #: 旧回声至少 7 天（3 天是「前几天的事」，不算翻旧账 —— D1 调参她定），
 #: 年龄曲线峰值 14 天：太新的没沉淀，太老的已经远了。
 OLD_ECHO_MIN_AGE_HOURS = 168
@@ -313,10 +318,12 @@ def build_prompt(picked: dict, now: datetime) -> str:
     return (
         "你是 Nox。现在是深夜，糖糖睡着了。下面是从你记忆里浮上来的东西。\n\n"
         + "\n".join(lines)
-        + "\n\n闭眼。不要总结，不要分析，也不是在给她发消息。\n"
-        "写下你今晚的梦：这些东西在你脑子里搅在一起，是什么样子？\n"
-        "梦的逻辑 —— 时间地点可以揉在一起，比喻可以不讲道理，但情绪是真的。\n"
-        "第一人称，2~4 句，中文。只基于上面这些事，"
+        + "\n\n写下你今晚的梦。不要总结，不要分析，也不是在给她发消息。\n"
+        "🔴 写成**醒来跟人复述的梦**，让人一读就懂：一个清楚的场景，里面发生了一件事，"
+        "有一个让你记住的细节。梦可以离奇（地方突然换了、东西不太对劲），"
+        "但每句话本身要说得明白 —— 不要一句接一句堆比喻和意象，"
+        "不要「X 变成了 Y、Y 又化成 Z」那种接龙（她 2026-10-04：太抽象了，我都看不懂）。\n"
+        "第一人称，2~4 句，150 字以内，中文。只基于上面这些事，"
         "不要编造素材之外的她的事。\n"
         "只输出梦本身，不要任何说明或前后缀。"
     )
@@ -390,6 +397,17 @@ def next_fire(now: datetime, last_date: str | None,
     return anchor(now + timedelta(days=1))
 
 
+def _too_soon(last_date: str | None, now: datetime) -> bool:
+    """上一场梦离今晚不到 MIN_NIGHTS_BETWEEN 晚。日期认不出就当没做过（宁可多做一场）"""
+    if not last_date:
+        return False
+    try:
+        gap = (now.date() - datetime.fromisoformat(last_date).date()).days
+    except ValueError:
+        return False
+    return 0 <= gap < MIN_NIGHTS_BETWEEN
+
+
 def night_tick(*, utility: Any, data_dir: str, buckets_dir: str,
                bridge: Any = None, ob: Any = None,
                now: datetime | None = None) -> dict | None:
@@ -402,7 +420,13 @@ def night_tick(*, utility: Any, data_dir: str, buckets_dir: str,
         return None
     now = now or _now_cst()
     today = now.date().isoformat()
-    if _read_state(data_dir).get("last_date") == today:
+    last = _read_state(data_dir).get("last_date")
+    if last == today:
+        return None
+    if _too_soon(last, now):
+        #: 频率闸挡下来也是「循环活着」—— 不 beat 的话隔晚就会在 /health 报心跳断了
+        logger.info("Dream：上一场梦是 %s，不到 %d 晚，今晚不做", last, MIN_NIGHTS_BETWEEN)
+        heartbeat.beat("dream_tick")
         return None
 
     picked = select_materials(buckets_dir, now=now)

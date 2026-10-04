@@ -713,8 +713,10 @@ class AttentionService:
             kind=f"care_{signal.source}",
             created_at=now,
             expires_at=now + timedelta(hours=2),
-            #: 翻记忆拿她那句话和他的梦，不拿整段开场白（见 her_state.recall_query）
-            recall=her_state.recall_query(st, dream),
+            #: 翻记忆只拿她那句话，不拿整段开场白（见 her_state.recall_query）。
+            #: 🔴 不再拿梦去翻（2026-10-04）：拿梦翻出来的就是那个梦的桶，他照着又讲一遍 ——
+            #: 梦只在 Moments 讲（见 her_state.guidance 梦那段）
+            recall=her_state.recall_query(st),
         )
         decision = SchedulerDecision(
             intent=intent, reason=signal.subject,

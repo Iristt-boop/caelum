@@ -52,7 +52,10 @@ class FakeMcp:
 #: 少数工具有**调用前置条件**，空参数进不去（那是有意的，见下面
 #: `test_missing_coords_never_reaches_the_api`）。这里给它们一份最小合法参数，
 #: 否则通用冒烟会被前置条件挡住，看起来像"透传坏了"。
-_MIN_ARGS = {"luckin_shops": {"longitude": "116.397", "latitude": "39.909"}}
+_MIN_ARGS = {
+    "luckin_shops": {"longitude": "116.397", "latitude": "39.909"},
+    "didi_estimate": {"origin": "116.397428,39.90923", "destination": "116.481488,39.990464"},
+}
 
 
 @pytest.mark.parametrize("module", [amap_tools, didi_tools, galatea_tools, kd100_tools, luckin_tools, mcd_tools, train_tools])
@@ -86,10 +89,12 @@ def test_missing_coords_never_reaches_the_api():
 @pytest.mark.parametrize("module", [amap_tools, didi_tools, galatea_tools, kd100_tools, luckin_tools, mcd_tools, train_tools])
 def test_failure_raises_not_silence(module):
     """MCP 失败必须 raise —— 吞了他会编造「查到了」（ha.py 的老教训）。"""
-    handlers = module.make_handlers(FakeMcp(ok=False))
+    client = FakeMcp(ok=False)
+    handlers = module.make_handlers(client)
     first_name = list(handlers)[0]
-    with pytest.raises(RuntimeError):
-        handlers[first_name]({})
+    with pytest.raises(RuntimeError, match="连接失败"):
+        handlers[first_name](_MIN_ARGS.get(first_name, {}))
+    assert client.calls, "要真打到服务端再失败，不是前置检查挡下来的"
 
 
 def test_server_tool_mapping_covers_all_specs():
@@ -109,6 +114,65 @@ def test_didi_has_no_ordering_tools():
     for s in didi_tools._SPECS:
         assert "create" not in didi_tools.SERVER_TOOLS[s.name]
         assert "cancel" not in didi_tools.SERVER_TOOLS[s.name]
+
+
+def test_didi_sends_the_servers_field_names():
+    """🔴 滴滴服务端要 from_lng/from_lat/from_name/to_*，不是 origin/destination。
+
+    2026-10-02 国庆她在外面让他叫车，原样转发 origin/destination，
+    两次都「缺少必填参数」，他放弃了，她说「看来滴滴有bug，算啦。我自己打」。
+    """
+    client = FakeMcp(ok=True, text="快车 约 45 元")
+    h = didi_tools.make_handlers(client)
+    h["didi_estimate"]({"origin": "116.397428, 39.90923", "origin_name": "天安门",
+                        "destination": "116.481488,39.990464", "destination_name": "望京"})
+    assert client.calls[-1] == ("taxi_estimate", {
+        "from_lng": "116.397428", "from_lat": "39.90923", "from_name": "天安门",
+        "to_lng": "116.481488", "to_lat": "39.990464", "to_name": "望京",
+    })
+
+    h["didi_ride_link"]({"origin": "116.397428,39.90923", "destination": "116.481488,39.990464"})
+    assert client.calls[-1] == ("taxi_generate_ride_app_link", {
+        "from_lng": "116.397428", "from_lat": "39.90923", "to_lng": "116.481488", "to_lat": "39.990464",
+    })
+    h["didi_ride_link"]({"origin": "116.4,39.9", "destination": "116.5,40.0", "product_category": "1"})
+    assert client.calls[-1][1]["product_category"] == "1"
+
+    h["didi_order_status"]({"order_id": "abc"})
+    assert client.calls[-1] == ("taxi_query_order", {"order_id": "abc"})
+
+
+def test_didi_estimate_always_sends_names():
+    """from_name / to_name 服务端必填。他漏了地名也要填上，不然又是「缺少必填参数」。"""
+    client = FakeMcp(ok=True, text="ok")
+    didi_tools.make_handlers(client)["didi_estimate"](
+        {"origin": "116.4,39.9", "destination": "116.5,40.0"})
+    args = client.calls[-1][1]
+    assert args["from_name"] and args["to_name"]
+
+
+@pytest.mark.parametrize("bad", ["", "116.4", "116.4,39.9,1", "天安门,望京", None])
+def test_didi_bad_coords_explain_themselves(bad):
+    """坐标不对就当场说清楚要什么形状，别打上去换一句看不懂的报错。"""
+    client = FakeMcp(ok=True, text="不该走到这里")
+    with pytest.raises(RuntimeError, match="origin"):
+        didi_tools.make_handlers(client)["didi_estimate"]({"origin": bad, "destination": "116.5,40.0"})
+    assert client.calls == []
+
+
+def test_mcp_error_inside_taskgroup_is_unwrapped():
+    """服务端的真话不许被 TaskGroup 套娃吃掉（10-02 日志里只有「1 sub-exception」）。"""
+    from tools.mcp_client import McpClient
+
+    class Boom(McpClient):
+        async def acall(self, tool, args=None):
+            raise ExceptionGroup("unhandled errors in a TaskGroup", [
+                ExceptionGroup("unhandled errors in a TaskGroup", [ValueError("缺少必填参数")])])
+
+    r = Boom("http://x", name="didi").call("taxi_estimate", {})
+    assert not r.ok
+    assert "缺少必填参数" in r.error
+    assert "sub-exception" not in r.error
 
 
 # ------------------------------------------------------------ scout 中文热榜

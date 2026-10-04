@@ -205,9 +205,12 @@ def test_昨晚的梦拿得到_旧梦和坏行不提(tmp_path):
     assert her_state.latest_dream(None, cn(23, 7)) == ""
 
 
-def test_睡着时有梦就给他():
+def test_睡着时有梦_只告诉他做过梦_不给内容():
+    """她 10-04：朋友圈发一遍、聊天又讲一遍，重复了。梦只在 Moments 讲。"""
     g = her_state.guidance(_that_night(cn(23, 6)), dream="梦到十一跳上了屋顶")
-    assert "我刚梦到" in g and "十一跳上了屋顶" in g
+    assert "Moments" in g and "别复述" in g
+    assert "十一跳上了屋顶" not in g, "把梦的内容给他，他就会在聊天里再讲一遍"
+    assert "Moments" not in her_state.guidance(_that_night(cn(23, 6))), "没做梦就别提梦"
 
 
 # ---------------------------------------------------------------- 位置源的里程碑
@@ -650,4 +653,37 @@ def test_惦记开口时_intent带着她那句话去翻记忆_不带开场白(tm
                       type("T", (), {"steps": 0})(), cn(26, 14, 8))
     assert seen and seen[0].recall == "我今天下午回去搞"
     assert "系统提示" not in seen[0].recall
+    store.close()
+
+
+def test_睡着时开口_不拿梦去翻记忆_开场白里也没有梦的内容(tmp_path):
+    """她 2026-10-04：梦朋友圈发一遍、聊天又讲一遍。梦只在 Moments 讲 ——
+    拿梦去翻记忆，翻出来的就是那个梦的桶，他照着又讲一遍。"""
+    from attention.relationship import RelationshipState
+    from attention.service import AttentionService
+    from attention.sources.thinking import ThinkingSource
+    from attention.store import AttentionStore
+
+    log = tmp_path / "dream-shadow.jsonl"
+    log.write_text(json.dumps({"ts": cn(26, 3).isoformat(), "dream": "梦里我守着一口铜锅"},
+                              ensure_ascii=False) + "\n", encoding="utf-8")
+    store = AttentionStore(tmp_path / "attn.db")
+    seen: list = []
+
+    class Provider:
+        def get_state(self, turn=None, force_refresh=False):
+            return {"has_data": False}
+
+    svc = AttentionService(
+        store, Provider(), RelationshipState(),
+        speaker=lambda intent, decision, prompt=None: seen.append((intent, prompt)) or "msg-1",
+        fast_sources=[ThinkingSource(store, FakeSessions("晚安宝贝", cn(26, 1, 10))), FakePresence("home")],
+    )
+    svc.dream_log_path = log
+    svc._think_of_her(CareSignal(source="random", subject="想起你了"),
+                      type("T", (), {"steps": 0})(), cn(26, 6, 30))
+    assert seen
+    intent, prompt = seen[0]
+    assert "铜锅" not in (intent.recall or "")
+    assert "铜锅" not in str(prompt or "") + str(intent.reason) + str(getattr(intent, "why", ""))
     store.close()

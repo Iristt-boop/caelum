@@ -60,11 +60,11 @@ class McpClient:
                     False,
                     error=f"{self.name}.{tool}: 不能在运行中的事件循环里调同步接口",
                 )
-            logger.warning("%s.%s 失败: %s", self.name, tool, exc)
-            return CallResult(False, error=f"{self.name}.{tool}: {type(exc).__name__}: {exc}")
+            logger.warning("%s.%s 失败: %s", self.name, tool, _describe(exc))
+            return CallResult(False, error=f"{self.name}.{tool}: {_describe(exc)}")
         except Exception as exc:  # noqa: BLE001 —— 外部服务的故障不许穿透到对话
-            logger.warning("%s.%s 失败: %s", self.name, tool, exc)
-            return CallResult(False, error=f"{self.name}.{tool}: {type(exc).__name__}: {exc}")
+            logger.warning("%s.%s 失败: %s", self.name, tool, _describe(exc))
+            return CallResult(False, error=f"{self.name}.{tool}: {_describe(exc)}")
 
     async def acall(self, tool: str, args: dict[str, Any] | None = None) -> CallResult:
         # 延迟导入：没装 mcp 包时，只有真用到才报错
@@ -91,7 +91,7 @@ class McpClient:
         try:
             return asyncio.run(self._alist())
         except Exception as exc:  # noqa: BLE001
-            return CallResult(False, error=f"{self.name}: {type(exc).__name__}: {exc}")
+            return CallResult(False, error=f"{self.name}: {_describe(exc)}")
 
     async def _alist(self) -> CallResult:
         from mcp import ClientSession
@@ -109,6 +109,23 @@ class McpClient:
             return await asyncio.wait_for(run(), timeout=self.timeout)
         except asyncio.TimeoutError:
             return CallResult(False, error=f"{self.name} 列工具超时")
+
+
+def _leaves(exc: BaseException) -> list[BaseException]:
+    subs = getattr(exc, "exceptions", None)
+    if not subs:
+        return [exc]
+    return [leaf for sub in subs for leaf in _leaves(sub)]
+
+
+def _describe(exc: BaseException) -> str:
+    """把 anyio 的 TaskGroup 套娃拆到最里层。
+
+    滴滴服务端回「缺少必填参数」，到我们这儿被包成两层
+    「unhandled errors in a TaskGroup (1 sub-exception)」—— 他看不懂、日志里也看不到，
+    国庆那天他连试两次同样的错参数就放弃了（2026-10-02）。
+    """
+    return "; ".join(f"{type(e).__name__}: {e}" for e in _leaves(exc))
 
 
 def _text_of(resp: Any) -> str:

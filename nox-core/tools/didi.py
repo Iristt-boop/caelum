@@ -5,8 +5,13 @@
 算好价格、生成打车链接发给她，扣扳机的永远是她。要先接沙箱
 （mcp-servers-sandbox，Mock 数据）跑通，再切生产。
 
-坐标红线（滴滴服务端强制）：经纬度必须是**字符串**「经度,纬度」，
+坐标红线（滴滴服务端强制）：经纬度必须是**字符串**，
 且必须用 amap_search_poi 实时查，不许凭记忆给 —— 服务端会报 -32010。
+
+参数形状（2026-10-04 修）：对他暴露的是「经度,纬度」一串 + 地名，和高德一致；
+滴滴服务端要的是拆开的 from_lng / from_lat / from_name / to_*。
+以前原样转发 origin/destination，国庆当天每次都「缺少必填参数」。
+拆字段的事在 `_to_server()` 里做，别让模型自己拼六个字段。
 """
 
 from __future__ import annotations
@@ -48,17 +53,21 @@ def _spec(name: str, description: str, params: dict) -> ToolSpec:
     )
 
 
+_ROUTE_PROPS = {
+    "origin": {"type": "string", "description": "起点，「经度,纬度」字符串（amap_search_poi 查到的 location）"},
+    "origin_name": {"type": "string", "description": "起点地名"},
+    "destination": {"type": "string", "description": "终点，「经度,纬度」字符串"},
+    "destination_name": {"type": "string", "description": "终点地名"},
+}
+
 ESTIMATE = _spec(
     "didi_estimate",
     "查打车价格预估和可用车型。「打个车过去多少钱」「叫车贵不贵」时用。"
     "起终点坐标先用 amap_search_poi 查好（字符串「经度,纬度」）。",
     {
         "type": "object",
-        "properties": {
-            "origin": {"type": "string", "description": "起点，「经度,纬度」字符串"},
-            "destination": {"type": "string", "description": "终点，「经度,纬度」字符串"},
-        },
-        "required": ["origin", "destination"],
+        "properties": dict(_ROUTE_PROPS),
+        "required": ["origin", "origin_name", "destination", "destination_name"],
     },
 )
 
@@ -70,8 +79,11 @@ RIDE_LINK = _spec(
     {
         "type": "object",
         "properties": {
-            "origin": {"type": "string", "description": "起点，「经度,纬度」"},
-            "destination": {"type": "string", "description": "终点，「经度,纬度」"},
+            **_ROUTE_PROPS,
+            "product_category": {
+                "type": "string",
+                "description": "她点名要的车型代码（didi_estimate 结果里的品类代码，多个用英文逗号）。她没指定就别传",
+            },
         },
         "required": ["origin", "destination"],
     },
@@ -92,9 +104,35 @@ ORDER_STATUS = _spec(
 _SPECS = (ESTIMATE, RIDE_LINK, ORDER_STATUS)
 
 
+def _split_lnglat(value: object, field: str) -> tuple[str, str]:
+    parts = [p.strip() for p in str(value or "").split(",")]
+    if len(parts) != 2 or not all(parts):
+        raise RuntimeError(f"{field} 要是「经度,纬度」一串（amap_search_poi 的 location），收到的是 {value!r}")
+    try:
+        float(parts[0]), float(parts[1])
+    except ValueError:
+        raise RuntimeError(f"{field} 不是数字坐标：{value!r}") from None
+    return parts[0], parts[1]
+
+
+def _to_server(tool: str, args: dict) -> dict:
+    """对他的参数形状 → 滴滴服务端的参数形状。查单不用转。"""
+    if tool == "didi_order_status":
+        return dict(args)
+    from_lng, from_lat = _split_lnglat(args.get("origin"), "origin")
+    to_lng, to_lat = _split_lnglat(args.get("destination"), "destination")
+    out = {"from_lng": from_lng, "from_lat": from_lat, "to_lng": to_lng, "to_lat": to_lat}
+    if tool == "didi_estimate":
+        out["from_name"] = str(args.get("origin_name") or "起点")
+        out["to_name"] = str(args.get("destination_name") or "终点")
+    elif args.get("product_category"):
+        out["product_category"] = str(args["product_category"])
+    return out
+
+
 def make_handlers(client: McpClient) -> dict[str, object]:
     def _call(tool: str, args: dict) -> str:
-        r = client.call(SERVER_TOOLS[tool], args)
+        r = client.call(SERVER_TOOLS[tool], _to_server(tool, args))
         if not r.ok:
             raise RuntimeError(f"滴滴查询失败: {r.error}")
         return r.text or "（滴滴没返回内容）"
