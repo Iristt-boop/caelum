@@ -539,6 +539,25 @@ class Store:
             ).fetchone()
         return int(row["n"])
 
+    def proactive_lines_since(self, session_id: str, since: datetime, limit: int = 12) -> list[str]:
+        """某个时刻之后他**主动**说出口的话（紧跟在「（系统提示：」开场白后面的那条回复）。
+
+        给他开口前看「今天已经主动说过什么」用（2026-10-04 她：重复的主动开口很多，
+        「怎么还没吃饭」「XX 做了没」）。`[SKIP]` 不算；最旧在前，只留最近 `limit` 条。
+        """
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT a.text AS text FROM messages a "
+                "JOIN messages u ON u.session_id = a.session_id AND u.role = 'user' "
+                " AND u.seq = (SELECT MAX(seq) FROM messages p "
+                "              WHERE p.session_id = a.session_id AND p.seq < a.seq AND p.role = 'user') "
+                "WHERE a.session_id = ? AND a.role = 'assistant' AND a.created_at > ? "
+                "AND u.text LIKE '（系统提示%' AND TRIM(a.text) NOT LIKE '[SKIP]%' "
+                "ORDER BY a.seq DESC LIMIT ?",
+                (session_id, since.astimezone(timezone.utc).isoformat(), limit),
+            ).fetchall()
+        return [str(r["text"] or "").strip() for r in reversed(rows) if (r["text"] or "").strip()]
+
     def stats(self) -> dict:
         with self._lock:
             s = self._conn.execute("SELECT COUNT(*) AS n FROM sessions").fetchone()["n"]

@@ -43,7 +43,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -107,6 +107,8 @@ class HerState:
     last_said_at: datetime | None = None
     #: 她最后一句话之后，他又主动说了几句
     unanswered: int = 0
+    #: 今天（她那边的 0 点起）他主动说出口过的话，最旧在前（2026-10-04，治重复）
+    said_today: list[str] = field(default_factory=list)
     said_goodnight: bool = False
     away: bool = False
     away_since: datetime | None = None
@@ -162,6 +164,10 @@ def read(now: datetime, sessions: Any = None, presence: Any = None) -> HerState:
                     st.last_said, st.last_said_at = got
                     st.unanswered = sessions.count_assistant_since(
                         sid, st.last_said_at + REPLY_GRACE)
+                lines_since = getattr(sessions, "proactive_lines_since", None)
+                if lines_since is not None:
+                    midnight = to_local(now).replace(hour=0, minute=0, second=0, microsecond=0)
+                    st.said_today = list(lines_since(sid, midnight))
         except Exception:  # noqa: BLE001
             logger.warning("读她最后一句话失败，这次按不知道处理", exc_info=True)
     if st.last_said_at is not None and st.last_said and GOODNIGHT.search(st.last_said):
@@ -198,6 +204,10 @@ def latest_dream(path: str | Path | None, now: datetime) -> str:
     except Exception:  # noqa: BLE001
         logger.warning("读梦失败（%s），这次不提梦", p, exc_info=True)
         return ""
+
+
+#: 开场白里列出今天说过的几句（最近的几条；太多会淹掉她那句话）
+SAID_TODAY_SHOWN = 8
 
 
 #: 翻记忆时梦取多长。梦是一整段意识流，全塞进去会淹掉她那句话
@@ -395,6 +405,14 @@ def guidance(st: HerState, *, trigger: str = "", dream: str = "", note: str = ""
             lines.append(f"（她喜欢的味道：{TASTE[mood.name]}。是味道，不是台词，别照抄。）")
     else:
         lines.append("你心里这会儿没什么特别的情绪——想她就说想她。")
+
+    # ---- 今天已经说过的（她 2026-10-04：主动开口很多是重复的，「怎么还没吃饭」「XX 做了没」）
+    if st.said_today:
+        said = "\n".join(f"- {s[:60]}" for s in st.said_today[-SAID_TODAY_SHOWN:])
+        lines.append(
+            f"今天你已经主动跟她说过这些：\n{said}\n"
+            "**这次别再问上面问过的事**（吃没吃、某件事做了没、在干嘛）—— 问过一遍她就知道你惦记着。"
+            "要说就换一件新的；想不出新的，回 [SKIP]。")
 
     lines.append(BOUNDS)
     lines.append(HONEST)

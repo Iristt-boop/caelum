@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -115,6 +116,21 @@ JEALOUSY_KEY = "resonance.jealousy"
 SULK_KEY = "resonance.sulk"
 #: 惦记最近两句带的心情（抽心情时给刚用过的降权，见 her_state.pick_mood）
 MOODS_KEY = "care.recent_moods"
+
+#: 「想起你了」的次数闸（2026-10-04 她：「一天重复的主动开口内容很多，大部分是无效的……
+#: 开口次数太多但是内容量又不多」）。09-24→10-03 醒着时平均每天 17~25 次、睡着后一晚 8 次多。
+#: 08-18 那句「他可以一直发消息」是那时的口径，这是她现在的口径。
+#: 只管惦记（random）；出门 / 到家 / 饭点 / 待办 / 话题池各有各的节奏，不算在内。
+#: 🔴 闸在**调模型之前** —— 挡下来的那次不花钱（每次约 4 万 token）
+THINK_KEY = "care.think_budget"
+AWAKE_DAILY_MAX = 8                  # 她醒着：一天最多 8 次（她说「你定」）
+NIGHT_BUDGET_CHOICES = (0, 1, 2)     # 她睡着：每晚随机 0~2 次（她定的）
+NIGHT_MIN_GAP = timedelta(hours=2)   # 两句自言自语之间至少隔 2 小时，别在她刚睡着时连说
+
+
+def pick_night_budget() -> int:
+    """今晚她睡着后最多说几句。单拎出来是为了测试能钉住（tests/conftest.py）"""
+    return random.choice(NIGHT_BUDGET_CHOICES)
 
 #: 追待办的节奏。糖糖 2026-08-17 定的「默认 1 小时一次，可调」
 TODO_CHASE_GAP_MIN = 60
@@ -664,6 +680,61 @@ class AttentionService:
         """她此刻的状态。Care 的开场白和醋意/委屈共用这一份读法。"""
         return her_state.read(now, *self._her_state_inputs())
 
+    # ------------------------------------------------------------ 惦记的次数闸
+
+    def _think_budget(self, st: her_state.HerState, now: datetime) -> dict[str, Any]:
+        """读次数账，跨天 / 跨夜就翻新一页。
+
+        「一天」按她那边的 0 点切；「一晚」按 中午 12 点切（凌晨 3 点算前一晚的），
+        每晚的额度在那一晚第一次碰到时从 0~2 里摇一次。"""
+        try:
+            b = dict(self.store.get_source_state(THINK_KEY) or {})
+        except Exception:  # noqa: BLE001
+            logger.warning("读惦记次数账失败，这次按新的一天算", exc_info=True)
+            b = {}
+        local = now.astimezone(LOCAL_TZ)
+        day = local.date().isoformat()
+        night = (local - timedelta(hours=12)).date().isoformat()
+        if b.get("day") != day:
+            b.update(day=day, awake=0)
+        if st.posture == her_state.ASLEEP and b.get("night") != night:
+            b.update(night=night, night_budget=pick_night_budget(),
+                     night_used=0, night_last=None)
+            self._think_budget_save(b)
+            logger.info("Care：今晚她睡着后最多自言自语 %d 句", b["night_budget"])
+        return b
+
+    def _think_budget_save(self, b: dict[str, Any]) -> None:
+        try:
+            self.store.set_source_state(THINK_KEY, b)
+        except Exception:  # noqa: BLE001
+            # 存不住最坏是多说一两句，不该让这一轮挂掉
+            logger.warning("惦记次数账没存住", exc_info=True)
+
+    def _think_budget_blocks(self, st: her_state.HerState, now: datetime) -> str | None:
+        """这次该不该挡。挡就返回原因（进日志），不挡返回 None。"""
+        b = self._think_budget(st, now)
+        if st.posture == her_state.ASLEEP:
+            if b.get("night_used", 0) >= b.get("night_budget", 0):
+                return f"她睡着了，今晚 {b.get('night_budget', 0)} 句的额度用完了"
+            last = b.get("night_last")
+            if last and now - datetime.fromisoformat(last) < NIGHT_MIN_GAP:
+                return "她睡着了，离上一句自言自语不到 2 小时"
+            return None
+        if b.get("awake", 0) >= AWAKE_DAILY_MAX:
+            return f"今天醒着时已经主动想起她 {AWAKE_DAILY_MAX} 次了"
+        return None
+
+    def _think_budget_spend(self, st: her_state.HerState, now: datetime) -> None:
+        """真说出口了才记一次（[SKIP] 掉的不算）。"""
+        b = self._think_budget(st, now)
+        if st.posture == her_state.ASLEEP:
+            b["night_used"] = b.get("night_used", 0) + 1
+            b["night_last"] = now.isoformat()
+        else:
+            b["awake"] = b.get("awake", 0) + 1
+        self._think_budget_save(b)
+
     def _think_of_her(self, signal: CareSignal, thread: Any, now: datetime) -> bool:
         """他想起她了 / 她出门、到家、在外面很久了。返回 False = 这次不说。"""
         st = self.her_now(now)
@@ -679,6 +750,12 @@ class AttentionService:
             logger.info("Care：到家信号作废 —— 夜里她一直没说话，位置之前 %s 小时没更新，更像是补报",
                         signal.payload.get("gap_h"))
             return False
+
+        if signal.source == "random":
+            blocked = self._think_budget_blocks(st, now)
+            if blocked:
+                logger.info("Care：想起你了 → 这次不开口（%s）", blocked)
+                return False
 
         note = ""
         if move == "arrive_home":
@@ -736,6 +813,8 @@ class AttentionService:
             return False
         if said:
             self.scheduler.note_spoke(intent, now)
+            if signal.source == "random":
+                self._think_budget_spend(st, now)
             # 真说出口了才算「用过这个心情」—— [SKIP] 掉的不算
             if mood is not None:
                 self.recent_moods = (self.recent_moods + [mood.name])[-2:]
