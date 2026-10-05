@@ -82,6 +82,10 @@ class RhythmModulator:
         #: rhythm 只留最近 5 条、判完就忘；长期的账由回调方记。
         #: service 建好后回填（同 longing_ref 的做法），没接就不记
         self.on_judged: Callable[[dict[str, Any]], None] | None = None
+        #: Growth Loop 第 1 期 shadow（2026-10-05）：**真摇时间**的那次 `gap_window`
+        #: 交给它看一眼，它去算「如果 P1 生效，这个窗口本来会是多少」并写日志。
+        #: 🔴 **窗口的返回值不受它影响** —— shadow 期间他的行为一个字都不变
+        self.window_observer: Callable[..., None] | None = None
         self._load()
 
     # ------------------------------------------------------------ 记录
@@ -181,12 +185,24 @@ class RhythmModulator:
             return 0.0
         return max(0.0, min(1.0, v))
 
-    def gap_window(self, lo_min: float, hi_min: float) -> tuple[float, float]:
-        """源调这个拿窗口。`lo/hi` 是源的默认值（分钟）。"""
+    def gap_window(self, lo_min: float, hi_min: float, *, why: str = "",
+                   at: datetime | None = None) -> tuple[float, float]:
+        """源调这个拿窗口。`lo/hi` 是源的默认值（分钟）。
+
+        `why` 只在**真要摇下一次开口**时传（惦记 / 话题的 `_schedule`）：
+        传了才通知 `window_observer`。快照接口也调这里，不传 —— 否则每读一次状态就记一行。
+        """
         f = GAP_FACTOR_MAX - (GAP_FACTOR_MAX - GAP_FACTOR_MIN) * self._longing()
         cold = self._cold_window()
         base = cold if cold else (lo_min, hi_min)
-        return (base[0] * f, base[1] * f)
+        window = (base[0] * f, base[1] * f)
+        if why and self.window_observer is not None:
+            try:
+                self.window_observer(why=why, at=at or datetime.now(timezone.utc),
+                                     window=window, cold=cold is not None)
+            except Exception:  # noqa: BLE001
+                logger.exception("节奏窗口的观察者失败（窗口照常）")
+        return window
 
     def urgency_boost(self) -> float:
         """念头急迫度乘数。越想她，同一轮撞车时这个念头越靠前。"""

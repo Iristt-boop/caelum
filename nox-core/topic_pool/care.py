@@ -139,7 +139,7 @@ class TopicSource:
         """摇下一个点。秒级精度不取整 —— 取整就有节拍（同 ThinkingSource）。"""
         lo_min, hi_min = MIN_GAP_H * 60, MAX_GAP_H * 60
         if self.rhythm is not None:
-            lo_min, hi_min = self.rhythm.gap_window(lo_min, hi_min)
+            lo_min, hi_min = self.rhythm.gap_window(lo_min, hi_min, why="话题", at=anchor)
         seconds = random.uniform(lo_min * 60, hi_min * 60)
         self._next_at = anchor + timedelta(seconds=seconds)
         self._save()

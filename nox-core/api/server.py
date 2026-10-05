@@ -1921,6 +1921,28 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
             },
         }
 
+    @app.get("/api/nox/growth")
+    def nox_growth() -> dict:
+        """Growth Loop 的成长日志雏形（第 1 期 shadow，2026-10-05）—— **只读**。
+
+        现在只有 P1 时段回应度：哪个时段找她，她相对更容易很快接住。
+        从经历账本现算（`growth/patterns.py`），shadow 期间**不影响他任何行为**。
+        设计稿 `CAELUM-GROWTH-LOOP-设计.md` 四·六节。
+        """
+        if attention is None or not hasattr(attention.store, "list_experiences"):
+            return {"ok": True, "enabled": False, "now": now_cst().isoformat(), "p1": []}
+        from growth import patterns as growth_patterns
+        from growth.experience import KIND_PROACTIVE_REPLY
+
+        rows = attention.store.list_experiences(KIND_PROACTIVE_REPLY)
+        p1 = growth_patterns.receptive(rows, datetime.now(timezone.utc))
+        return {
+            "ok": True, "enabled": True, "now": now_cst().isoformat(),
+            "stage": "shadow",
+            "ledger_rows": len(rows),
+            "p1": [p1[b].to_dict() for b in growth_patterns.BUCKET_ORDER if b in p1],
+        }
+
     def _pulse_events(since: int) -> list[dict]:
         """账本里 `seq > since` 的那些。**没有账本就是空，不假装。**"""
         if attention is None or attention.ledger is None:

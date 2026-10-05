@@ -46,6 +46,7 @@ from typing import Any, Callable, Protocol
 
 from obs import heartbeat
 from growth import experience as growth_experience
+from growth import patterns as growth_patterns
 from attention.care import (
     COMPANY,
     FOLLOWUP,
@@ -232,6 +233,9 @@ class AttentionService:
         #: 只收集不学习 —— 这一行接上与否，他的任何行为都不变
         if rhythm is not None and hasattr(store, "append_experience"):
             rhythm.on_judged = lambda entry: growth_experience.record_reply(store, entry)
+            #: 第 1 期 shadow（2026-10-05）：每次真摇开口时间，记一行「P1 生效的话本来会是多少」。
+            #: 只写日志，rhythm 返回的窗口不变
+            rhythm.window_observer = lambda **kw: growth_patterns.shadow(store, **kw)
         #: 主动来电（2026-09-19）：bridge 通道 + 开场白生成用的 utility。
         #: 两个都是 None = 打不出去（CallSource 不会因此少产念头 —— 交付会失败留痕）
         self.call_bridge = call_bridge

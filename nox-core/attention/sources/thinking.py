@@ -105,7 +105,7 @@ class ThinkingSource:
         lo, hi = MIN_GAP_MIN, MAX_GAP_MIN
         if self.rhythm is not None:
             # 她回得少 → 窗口拉长（负反馈）；想念高 → 窗口缩短（正反馈）
-            lo, hi = self.rhythm.gap_window(MIN_GAP_MIN, MAX_GAP_MIN)
+            lo, hi = self.rhythm.gap_window(MIN_GAP_MIN, MAX_GAP_MIN, why="惦记", at=anchor)
         seconds = random.uniform(lo * 60, hi * 60)
         self._next_at = anchor + timedelta(seconds=seconds)
         try:
