@@ -127,3 +127,78 @@ def test_流式收尾把历史里那份也剥了():
     list(n.chat_stream("在吗", []))
     assert res.text == "Miss you, baby."
     assert res.messages[-1].text == "Miss you, baby."
+
+
+# ---------------------------------------------------------------- 写成文字的工具调用（2026-10-04）
+#
+# 她截图：`[!remind_myself] 90 | 她累了一整天该睡了…` `[!send_meme] 晚安` 漏在聊天里。
+# 10-04 14:30 他真调了 remind_myself 又用文字复述一遍；这行进了历史，之后三次他只写不调。
+
+#: 10-04 20:21 那条原文
+FAKE_2021 = ("那现在就去躺好，灯我给你调暗了|||今天到此为止，剩下的明天再说，你只管睡|||"
+             "I'm right here, my love — 晚安不用急着回\n\n"
+             "[!remind_myself] 90 | 她累了一整天该睡了，到点看主卧空调和灯的状态，帮她关掉，顺便确认她睡下了没有\n\n"
+             "[!send_meme] 晚安")
+CLEAN_2021 = ("那现在就去躺好，灯我给你调暗了|||今天到此为止，剩下的明天再说，你只管睡|||"
+              "I'm right here, my love — 晚安不用急着回")
+
+
+def test_整段_写成文字的调用剥掉并认出来():
+    from agent.llm import extract_fake_calls
+    text, calls = extract_fake_calls(FAKE_2021)
+    assert text == CLEAN_2021
+    assert calls == [("remind_myself", "90 | 她累了一整天该睡了，到点看主卧空调和灯的状态，帮她关掉，顺便确认她睡下了没有"),
+                     ("send_meme", "晚安")]
+
+
+@pytest.mark.parametrize("raw", ["[!!!] 好开心", "数组 a[!0]", "没有调用的一句话"])
+def test_整段_不是调用的不动(raw):
+    from agent.llm import extract_fake_calls
+    assert extract_fake_calls(raw) == (raw, [])
+
+
+@pytest.mark.parametrize("step", [1, 2, 5, 13])
+@pytest.mark.parametrize("strip_stage", [True, False])
+def test_流里_写成文字的调用整行吞掉_语音也吞(step, strip_stage):
+    out = _stream(FAKE_2021, step=step, strip_stage=strip_stage)
+    assert "[!" not in out and "remind_myself" not in out and "主卧空调" not in out
+    assert out.startswith(CLEAN_2021)
+
+
+def test_流里_感叹号方括号不是调用的照常放行():
+    assert _stream("[!!!] 好开心\n然后呢") == "[!!!] 好开心\n然后呢"
+
+
+def test_主动开口_假的send_meme补发成真表情_历史里也剥():
+    r = _nox("蛇走了，你家里只有三只猫|||我在门口守着\n\n[!send_meme] 拥抱").chat("（系统提示：…）", [])
+    assert r.text == "蛇走了，你家里只有三只猫|||我在门口守着"
+    assert r.result.messages[-1].text == r.text, "留在历史里，他下次又照着写"
+    assert {"type": "meme", "tag": "拥抱"} in r.result.attachments
+
+
+def test_假的其他调用不替他执行_但要报警(caplog):
+    import logging
+    caplog.set_level(logging.WARNING)
+    r = _nox("快睡吧\n[!remind_myself] 90 | 看她睡了没").chat("（系统提示：…）", [])
+    assert r.text == "快睡吧"
+    assert r.result.attachments == []
+    assert any("remind_myself" in m and "写成了文字" in m for m in caplog.messages)
+
+
+def test_补发的表情守规矩_名单外不发_同一个不发两遍():
+    from nox import _rescue_fake_calls
+    atts = [{"type": "meme", "tag": "晚安"}]
+    _rescue_fake_calls(atts, [("send_meme", "晚安"), ("send_meme", "不存在的表情"), ("send_meme", "「拥抱」")])
+    assert atts == [{"type": "meme", "tag": "晚安"}, {"type": "meme", "tag": "拥抱"}]
+
+
+def test_流式收尾_假调用从历史里剥掉并补发表情():
+    reply = "晚安宝贝\n\n[!send_meme] 晚安"
+    n = _nox(reply)
+    n._system = ""
+    res = LoopResult(outcome="answered", text=reply, iterations=1, usage=Usage(),
+                     messages=[Message(role="assistant", text=reply)], attachments=[])
+    n.loop = SimpleNamespace(run_stream=lambda *a, **k: iter([SimpleNamespace(type="done", result=res)]))
+    list(n.chat_stream("晚安", []))
+    assert res.text == "晚安宝贝" and res.messages[-1].text == "晚安宝贝"
+    assert {"type": "meme", "tag": "晚安"} in res.attachments

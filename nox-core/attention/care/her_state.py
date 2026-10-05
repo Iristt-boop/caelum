@@ -48,6 +48,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from agent.llm import extract_fake_calls
 from temporal import to_local
 
 logger = logging.getLogger(__name__)
@@ -167,7 +168,9 @@ def read(now: datetime, sessions: Any = None, presence: Any = None) -> HerState:
                 lines_since = getattr(sessions, "proactive_lines_since", None)
                 if lines_since is not None:
                     midnight = to_local(now).replace(hour=0, minute=0, second=0, microsecond=0)
-                    st.said_today = list(lines_since(sid, midnight))
+                    #: 历史里的旧回复可能带着写成文字的工具调用（`[!send_meme] 晚安`）——
+                    #: 原样给他看等于再教他一遍，剥掉再给
+                    st.said_today = [t for t in (extract_fake_calls(x)[0] for x in lines_since(sid, midnight)) if t]
         except Exception:  # noqa: BLE001
             logger.warning("读她最后一句话失败，这次按不知道处理", exc_info=True)
     if st.last_said_at is not None and st.last_said and GOODNIGHT.search(st.last_said):

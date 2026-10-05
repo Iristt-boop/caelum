@@ -14,7 +14,7 @@ from typing import Any
 
 from agent import vision
 from agent.adapters import make_adapter, supports_vision
-from agent.llm import LLMAdapter, Message, strip_stage_tags
+from agent.llm import MEME_TAGS, LLMAdapter, Message, extract_fake_calls, strip_stage_tags
 from agent.loop import AgentLoop
 from config import Config, _build_llm, config as default_config
 from context import ContextProviderRegistry
@@ -83,6 +83,24 @@ def _strip_mood_tag(result: RouteResult, cleaned: str) -> None:
         if m.role == "assistant" and m.text:
             m.text = cleaned
             break
+
+
+def _rescue_fake_calls(attachments: list, calls: list[tuple[str, str]]) -> None:
+    """他把工具调用写成了文字（`[!send_meme] 晚安`，见 agent/llm.py FAKE_CALL_RE）。
+
+    表情能补就补：名单里有、这轮还没发过、没超一轮两个的上限 —— 她本来就该收到它。
+    别的（假的 remind_myself 之类）**不替他执行**：参数是他随手写的文字，执行错了更糟；
+    只报警，让日志里看得见「他以为留了纸条，其实没有」。
+    """
+    for name, arg in calls:
+        tag = arg.strip().strip("\"'“”「」")
+        memes = [a for a in attachments if a.get("type") == "meme"]
+        if (name == "send_meme" and tag in MEME_TAGS
+                and all(a.get("tag") != tag for a in memes) and len(memes) < intimate_tools.MEMES_PER_TURN):
+            attachments.append({"type": "meme", "tag": tag})
+            logger.info("他把 send_meme 写成了文字，替他补发表情「%s」", tag)
+        else:
+            logger.warning("他把调用 %s 写成了文字、没真调（参数：%s）—— 已从正文剥掉", name, arg[:80])
 
 
 #: 欠卡账的落盘键。和 `attention/` 那几个键同一张 `source_state` 表 ——
@@ -911,6 +929,9 @@ class Nox:
         cleaned, meme_tags = intimate_tools.extract_text_tags(cleaned)
         if meme_tags:
             result.attachments.extend({"type": "meme", "tag": t} for t in meme_tags)
+        # 写成文字的工具调用（`[!send_meme] 晚安`）：剥掉，能补的补（2026-10-04 她截图）。语音也剥
+        cleaned, fake_calls = extract_fake_calls(cleaned)
+        _rescue_fake_calls(result.attachments, fake_calls)
         # 舞台标签（[softly] [intimacy …]）剥掉 —— 主动消息走的就是这条非流式路（2026-09-29）。
         # 语音模式不剥：那边的语气标签要送 TTS。
         # 🔴 控制标记 [SKIP] [NEXT 60] 留着：speaker / 唤醒链要读，它们自己会剥
@@ -975,6 +996,8 @@ class Nox:
                         result.attachments.extend(
                             {"type": "meme", "tag": t} for t in meme_tags
                         )
+                    cleaned, fake_calls = extract_fake_calls(cleaned)
+                    _rescue_fake_calls(result.attachments, fake_calls)
                     # 完整正文也剥一遍舞台标签（流里已经被 MoodTagFilter 挡了，
                     # 这里管的是落库 / 进历史那一份 —— 留着会教他下次接着写）
                     if not voice:

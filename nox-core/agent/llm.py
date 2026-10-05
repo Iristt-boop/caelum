@@ -279,6 +279,26 @@ _STAGE_IN_TEXT = re.compile(r"[ \t]*\[\s*[A-Za-z][^\[\]\n]{0,%d}\](?!\()" % STAG
 CONTROL_TAG_RE = re.compile(r"\[\s*(?:SKIP|PASS|STOP|NEXT|DONE)(?:\s+\d+)?\s*\]", re.IGNORECASE)
 
 
+#: 🔴 假工具调用：他把调用**写成了文字**（2026-10-04 她截图：
+#:   `[!remind_myself] 90 | 她累了一整天该睡了…`  `[!send_meme] 晚安`）。
+#: 起因是 10-04 14:30 那轮：他真调了 remind_myself，又在回复末尾用这种格式复述了一遍；
+#: 这行进了历史，之后三次他照着历史只写这行、不真调 —— 表情没发出去、纸条没留下。
+#: 形状：行内 `[!名字]` 起到行尾都是它（参数跟在后面）。**语音也剥**：TTS 会把它念出来
+FAKE_CALL_RE = re.compile(r"[ \t]*\[!\s*([A-Za-z_]\w*)\s*\]([^\n]*)")
+
+
+def extract_fake_calls(text: str | None) -> tuple[str | None, list[tuple[str, str]]]:
+    """把写成文字的工具调用从正文里拿出来：返回 (剥干净的正文, [(工具名, 参数原文)])。"""
+    if not text or "[!" not in text:
+        return text, []
+    calls = [(m.group(1), m.group(2).strip()) for m in FAKE_CALL_RE.finditer(text)]
+    if not calls:
+        return text, []
+    out = FAKE_CALL_RE.sub("", text)
+    out = re.sub(r"\n{3,}", "\n\n", out).strip()
+    return out, calls
+
+
 def strip_stage_tags(text: str | None, *, keep_control: bool = False) -> str | None:
     """整段文本里的舞台标签剥掉（非流式 / 收尾 / 主动消息用；流式那边是 MoodTagFilter 边流边挡）。
 
@@ -334,11 +354,18 @@ class MoodTagFilter:
         self._strip_stage = strip_stage
         #: 已闭合、像舞台标签的一段，等下一个字：是 `(` 就是 Markdown 链接，放行
         self._hold = ""
+        #: 正在吞一行假工具调用（`[!send_meme] 晚安`，见 FAKE_CALL_RE），吞到换行为止
+        self._eat_line = False
 
     def feed(self, chunk: str) -> str:
         """吃进增量，吐出可以安全显示的部分。"""
         out: list[str] = []
         for ch in chunk:
+            if self._eat_line:
+                if ch == "\n":
+                    self._eat_line = False
+                    self._line_start = True
+                continue
             # ── 刚闭合的疑似舞台标签：看这一个字决定去留
             if self._hold:
                 if ch == "(":
@@ -363,6 +390,15 @@ class MoodTagFilter:
             # ── '[' 缓冲：[mood: 或 [tag 或普通方括号
             if self._buf:
                 self._buf += ch
+                # 假工具调用 `[!名字]…`：确认是字母开头就整行吞掉（`[!!!]` 这种感叹不算）
+                if self._buf.startswith("[!"):
+                    rest = self._buf[2:].lstrip(" \t")
+                    if not rest:
+                        continue
+                    if rest[0].isascii() and (rest[0].isalpha() or rest[0] == "_"):
+                        self._buf = ""
+                        self._eat_line = ch != "\n"
+                        continue
                 lowered = self._buf.lower()
                 # 🔴 判定前剥掉 '[' 后的空白 —— `[ mood:心疼 ]` 这种带空格
                 #    变体曾整个漏到她眼前（2026-09-22 截图实锤）
@@ -417,6 +453,7 @@ class MoodTagFilter:
         """流结束时把剩下的放出去（确定是标记的除外）。"""
         parts: list[str] = []
         self._hold = ""       # 流到头了，后面没有 `(` —— 舞台标签，吞掉
+        self._eat_line = False
         if self._line is not None:
             resolved = self._resolve_line()
             if resolved:

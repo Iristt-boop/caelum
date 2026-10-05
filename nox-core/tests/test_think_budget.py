@@ -182,3 +182,9 @@ def test_一晚的额度跨过零点也是同一晚(tmp_path, monkeypatch):
     assert think(svc, cn(5, 23, 45)) is True
     assert think(svc, cn(6, 2, 0)) is False
     assert len(calls) == 1
+
+
+def test_今天说过的话里的假调用不再拿给他看():
+    """历史里那几条带着 `[!send_meme] 拥抱` —— 原样列给他就是再教他一遍。"""
+    st = her_state.read(cn(5, 15), Sessions("好的", cn(5, 14), ["我在门口守着\n\n[!send_meme] 拥抱", "[!send_meme] 晚安"]), Presence())
+    assert st.said_today == ["我在门口守着"]
