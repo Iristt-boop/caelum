@@ -1122,6 +1122,24 @@ async function coreMode(req, res, requestId) {
   // （2026-08-02 实测：十分钟聊出 11 个会话，每个都只有一问一答 2 条消息。）
   let coreSid = sessionId || null;
 
+  /* 🔴 这一轮的时间线（2026-10-05 她报）：「说个早安，然后 send meme。这一轮结束后，
+   * meme 会自动跳到会话的第一行，语音也是这样」。
+   *
+   * 原来组件（图 / 语音 / 歌 / 表情 / 订单卡 / 任务卡）一到就各自 saveMessage，
+   * 文字要等整轮说完才存成一条 —— 按存入先后排，组件全排到了这一轮文字**前面**。
+   * 当场看是对的（SSE 按顺序到），一刷新或定时同步就乱。
+   *
+   * 现在：文字攒在当前这一段里，组件一到就把前面的文字收成一条，组件排在它后面；
+   * 收尾时按这条时间线一条条落库。「说了什么 → 发了什么 → 又说了什么」。 */
+  const timeline = [];   // { text: [段...] } | { att: metadata }
+  const closeText = () => {
+    if (curSegment) { segments.push(curSegment); curSegment = ""; }
+    const segs = segments.map((s) => s.trim()).filter(Boolean);
+    segments.length = 0;
+    if (segs.length) timeline.push({ text: segs });
+  };
+  const keepAttachment = (meta) => { closeText(); timeline.push({ att: meta }); };
+
   // 图片先降采样再转给 Core —— 同样只压这次请求的副本，原图不动。
   // 前端传的可能是 {b64:...} 对象，也可能是字符串。
   const imgs = [];
@@ -1301,7 +1319,7 @@ async function coreMode(req, res, requestId) {
               type: "image", url: signUpload(ev.url),
               album: ev.album || "", favorited: !!ev.favorited,
             })}\n\n`);
-            saveMessage(sessionId, "assistant", "", {
+            keepAttachment({
               image: ev.url, album: ev.album || "", favorited: !!ev.favorited,
             });
             console.log(`[Bridge] Core 发图 ${ev.url}`);
@@ -1313,7 +1331,7 @@ async function coreMode(req, res, requestId) {
             res.write(`data: ${JSON.stringify({
               type: "voice", text: display, tts: ev.tts, zh,
             })}\n\n`);
-            saveMessage(sessionId, "assistant", "", {
+            keepAttachment({
               voice: { en: display, tts: ev.tts, zh },
             });
             console.log(`[Bridge] Core 发语音 ${display.slice(0, 30)}`);
@@ -1326,13 +1344,13 @@ async function coreMode(req, res, requestId) {
               name: ev.name || "", artist: ev.artist || "", cover: ev.cover || "",
             };
             res.write(`data: ${JSON.stringify({ type: "music", ...card })}\n\n`);
-            saveMessage(sessionId, "assistant", "", { music: card });
+            keepAttachment({ music: card });
             console.log(`[Bridge] Core 发音乐卡片 ${card.name || card.songId}`);
           } else if (ev.kind === "meme" && ev.tag) {
             // 表情包。前端 memes.js 按 tag 查图片 URL。
             // 落库 metadata 存 tag，翻历史时也能恢复显示。
             res.write(`data: ${JSON.stringify({ type: "meme", tag: ev.tag })}\n\n`);
-            saveMessage(sessionId, "assistant", "", { meme: ev.tag });
+            keepAttachment({ meme: ev.tag });
             console.log(`[Bridge] Core 发表情 ${ev.tag}`);
           } else if (ev.kind === "order" && ev.order_id) {
             // 待确认单卡片（2026-09-06）。此时**还没有下单** ——
@@ -1343,7 +1361,7 @@ async function coreMode(req, res, requestId) {
             // （不然一张早就下过的单，翻回去还是「确认下单」按钮）。
             const order = { orderId: String(ev.order_id), card: ev.card || {} };
             res.write(`data: ${JSON.stringify({ type: "order", ...order })}\n\n`);
-            saveMessage(sessionId, "assistant", "", { order });
+            keepAttachment({ order });
             console.log(`[Bridge] Core 发待确认单 ${order.orderId}`);
           } else if (ev.kind === "task" && ev.task_id) {
             // 长任务确认卡（2026-09-22）。此时**还没有开跑** ——
@@ -1352,7 +1370,7 @@ async function coreMode(req, res, requestId) {
             // （同 order 卡：不能只信落库的快照）。
             const task = { taskId: String(ev.task_id), card: ev.card || {} };
             res.write(`data: ${JSON.stringify({ type: "task", ...task })}\n\n`);
-            saveMessage(sessionId, "assistant", "", { task });
+            keepAttachment({ task });
             console.log(`[Bridge] Core 发长任务卡 ${task.taskId}`);
           }
         } else if (ev.type === "tool_start" || ev.type === "tool_end") {
@@ -1414,6 +1432,7 @@ async function coreMode(req, res, requestId) {
           // Core 内部有六种结局，失败时它已经把人话放进 message 了
           if (ev.ok === false && ev.message) {
             fullReply += (fullReply ? "\n\n" : "") + ev.message;
+            curSegment += (curSegment ? "\n\n" : "") + ev.message;
             res.write(`data: ${JSON.stringify({ type: "text", content: ev.message })}\n\n`);
           }
           // 用量落库（Console 页统计）。
@@ -1451,6 +1470,7 @@ async function coreMode(req, res, requestId) {
       console.log(`[Bridge] ${requestId.slice(0, 6)} 已掐断上游，回一帧 error 让前端解锁`);
       res.write(`data: ${JSON.stringify({ type: "error", message: friendly })}\n\n`);
       // 有半句就留半句（跟她屏幕上看到的一致），一个字都没有才用这句话术兜底
+      if (!fullReply) curSegment = friendly;
       fullReply = fullReply || friendly;
     }
   } catch (e) {
@@ -1465,31 +1485,39 @@ async function coreMode(req, res, requestId) {
      * **她根本没听见的话**，那比忘掉更让人发毛。 */
     if (clientGone || e.name === "AbortError") {
       console.log(`[Bridge] ${requestId.slice(0, 6)} 被打断，已停（这半句不落库）`);
+      // 已经发到她屏幕上的组件照旧落库（原来就是一到就存的）——
+      // 订单卡 / 任务卡丢了，她就没地方点确认了
+      for (const e of timeline) if (e.att) saveMessage(coreSid, "assistant", "", e.att);
       return;
     }
     console.log(`[Bridge] Core mode failed: ${e.message}`);
     const friendly = "我这会儿连不上自己的脑子，等一下再跟我说一次。";
     res.write(`data: ${JSON.stringify({ type: "error", message: friendly })}\n\n`);
+    if (!fullReply) curSegment = friendly;
     fullReply = fullReply || friendly;
   }
 
-  // 收尾：最后一段没有 split 事件收口，在这里补进去
-  if (curSegment) segments.push(curSegment);
-  if (fullReply) {
+  // 收尾：最后一段没有 split 事件收口，在这里补进去；然后按时间线一条条落库
+  closeText();
+  let firstText = true;
+  //: 同一轮的几条共用一个 turn —— 手机端按它归成一组，整轮只在最后挂一次时间戳（同当场看到的）
+  const turn = String(requestId).slice(0, 12);
+  const multi = timeline.length > 1;
+  for (const e of timeline) {
+    if (e.att) {
+      saveMessage(coreSid, "assistant", "", multi ? { ...e.att, turn } : e.att);
+      continue;
+    }
     // metadata 搭积木：segments / toolsUsed 按需往里面加，不为了传一个字段
     // 把另一个空数组也塞进去 —— 前端看到空数组和「没这个 key」行为一样，
-    // 白占数据库一行。
-    let meta = {};
-    if (segments.length > 1) {
-      meta.segments = segments.map((s) => s.trim()).filter(Boolean);
-    }
-    if (toolsUsed.length) {
-      meta.toolsUsed = toolsUsed;
-    }
-    if (toolsTrace.length) {
-      meta.toolsTrace = toolsTrace;
-    }
-    saveMessage(coreSid, "assistant", fullReply,
+    // 白占数据库一行。工具轨迹挂在这一轮的**第一条**文字上（前端的工具块画在回复开头）
+    const meta = {};
+    if (e.text.length > 1) meta.segments = e.text;
+    if (firstText && toolsUsed.length) meta.toolsUsed = toolsUsed;
+    if (firstText && toolsTrace.length) meta.toolsTrace = toolsTrace;
+    if (multi) meta.turn = turn;
+    firstText = false;
+    saveMessage(coreSid, "assistant", e.text.join("\n"),
                 Object.keys(meta).length ? meta : "");
   }
   res.write(`data: ${JSON.stringify({ type: "done", sessionId: coreSid })}\n\n`);
