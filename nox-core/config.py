@@ -525,8 +525,11 @@ class Config:
     # summary（context/compactor.py），最近窗口保留原文。历史不删除。
     # 总预算：静态前缀 ≈ 7k + 工具定义，加上历史/上下文/输出。DeepSeek
     # 128k 窗口，这里只规划"历史+摘要"这一段，别跟 128k 混淆。
+    #: 2026-10-05 20000 → 26000：现在量的是「水位之后的原文」（context/compactor.py）。
+    #: 减去 6.4k 预留 ≈ 19.6k 才压，压完留 recent_window_tokens（8k）——
+    #: 每次攒 ~11.6k 才压一回；她和他一天约 1.2 万 token，所以一天压一次左右
     context_budget_tokens: int = field(
-        default_factory=lambda: _env_int("NOX_CONTEXT_BUDGET_TOKENS", 20000))
+        default_factory=lambda: _env_int("NOX_CONTEXT_BUDGET_TOKENS", 26000))
     # 最近原文窗口：压缩时保留原文的 token 预算
     recent_window_tokens: int = field(
         default_factory=lambda: _env_int("NOX_RECENT_WINDOW_TOKENS", 8000))

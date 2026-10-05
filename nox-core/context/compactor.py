@@ -101,7 +101,13 @@ def plan_compaction(
     if not full_history:
         return CompactPlan([], [], False, "空历史")
 
-    total = estimate_tokens(full_history)
+    #: 🔴 只量**水位之后**那段（2026-10-05）。原来量的是全部历史 —— 八千多条的会话
+    #: 永远超预算，于是「窗口外每多出几条就压一次」，一天压好几回；
+    #: 每压一次摘要就变，摘要在历史最前面，整段前缀缓存跟着作废。
+    #: 现在模型看到的就是「摘要 + 水位之后的全部原文」（api/server.py Sessions），
+    #: 这段攒满预算才压一次，压完继续只往后追加 —— 一天一次左右
+    since = already if 0 <= already <= len(full_history) else 0
+    total = estimate_tokens(full_history[since:])
     # 预留：当前消息 + 输出 ≈ 6k（主模型 max_tokens 16000 的 40% 左右，
     # 具体值不精确没关系 —— 压缩只需要"快接近上限"的粗判断）
     reserve = max(4000, int(16000 * 0.4))

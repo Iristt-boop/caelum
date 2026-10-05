@@ -109,6 +109,7 @@ from temporal.resolver import resolve as temporal_resolve
 from temporal.result import TemporalResult
 from day import build_day
 from context.compactor import maybe_compact
+from context.token_budget import estimate_tokens, tail_within_budget
 from data.origin import her_words
 from data.store import Store
 from nox import Nox
@@ -360,10 +361,15 @@ class Sessions:
         history_limit: int,
         max_sessions: int = _MAX_SESSIONS,
         recent_window_tokens: int | None = None,
+        cap_tokens: int | None = None,
     ) -> None:
         self._store = store
         self._limit = history_limit
         self._recent_window_tokens = recent_window_tokens
+        #: 🔴 只追加模式的安全上限（2026-10-05）。给了它：窗口 = 摘要 + 水位之后的全部原文，
+        #: 平时**不从开头删**（删了前缀缓存每轮失配），只有超过它才截、并报警。
+        #: 不给（老测试 / 命令行）就还是原来那套：读库按 limit 截、缓存留最后 _MAX_HISTORY 条
+        self._cap_tokens = cap_tokens
         self._cache: OrderedDict[str, list[Message]] = OrderedDict()
         self._max = max_sessions
         #: 缓存是哪天建的。跨天要重读，理由见 get()
@@ -396,10 +402,14 @@ class Sessions:
         #    她手机上那一轮要等桌面那一轮读完。
         #    代价是两个线程可能同时读同一个会话：多读一次而已，
         #    结果一样，不会写坏东西。
-        restored = self._store.load(
-            sid, limit=self._limit,
-            recent_window_tokens=self._recent_window_tokens,
-        )
+        if self._cap_tokens is not None and hasattr(self._store, "load_window"):
+            _, upto = self._store.get_summary_state(sid)
+            restored = self._store.load_window(sid, upto, self._cap_tokens)
+        else:
+            restored = self._store.load(
+                sid, limit=self._limit,
+                recent_window_tokens=self._recent_window_tokens,
+            )
         if restored:
             logger.info("从库里恢复会话 %s，%d 条历史", sid[:8], len(restored))
             with self._lock:
@@ -439,12 +449,20 @@ class Sessions:
             logger.debug("会话 %s 落盘 %d 条", sid[:8], written)
 
         window = [m for m in history if m.role != "system"]
+        if self._cap_tokens is None:
+            window = window[-_MAX_HISTORY:]
+        elif estimate_tokens(window) > self._cap_tokens:
+            # 只追加模式下走到这儿 = 压缩一直没成，窗口长过了安全上限。截了会让缓存失配一次 ——
+            # 宁可失配，也不能让上下文无限涨
+            window = tail_within_budget(window, self._cap_tokens)
+            logger.warning("会话 %s 内存窗口超过安全上限 %d token，从开头截到 %d 条（压缩是不是没成？）",
+                           sid[:8], self._cap_tokens, len(window))
         # 🔴 换出和写入必须在同一把锁里。分开的话，A 线程正在
         #    `popitem` 淘汰最旧的，B 线程刚 `move_to_end` 把它变成最新的
         #    —— 被淘汰的就是刚用过的那个。表现成"他偶尔忘了刚说过的话"。
         dropped_sids: list[str] = []
         with self._lock:
-            self._cache[sid] = window[-_MAX_HISTORY:]
+            self._cache[sid] = window
             self._cache.move_to_end(sid)
             self._cached_on[sid] = now_cst().date()
             while len(self._cache) > self._max:
@@ -454,6 +472,12 @@ class Sessions:
         for dropped in dropped_sids:
             # 只淘汰内存缓存，库里还在 —— 下次访问会自动恢复
             logger.info("缓存超上限，换出 %s（库里仍保留）", dropped[:8])
+
+    def invalidate(self, sid: str) -> None:
+        """只扔内存缓存，下次 get 从库里按新水位重读。压缩落地后调（摘要和水位都变了）。"""
+        with self._lock:
+            self._cache.pop(sid, None)
+            self._cached_on.pop(sid, None)
 
     def drop(self, sid: str) -> bool:
         with self._lock:
@@ -932,6 +956,8 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
     sessions = Sessions(
         db, history_limit=core.cfg.history_limit,
         recent_window_tokens=core.cfg.recent_window_tokens,
+        #: 只追加：摘要 + 水位之后的全部原文；两倍压缩预算才是安全上限（见 Sessions.__init__）
+        cap_tokens=2 * core.cfg.context_budget_tokens,
     )
     #: 她电脑上那只手（Caelum Harness Gateway）。
     #: 见 D:\claude-code\CAELUM-HARNESS-ARCHITECTURE.md
@@ -1694,16 +1720,15 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
             # 压缩一天 59 次，之前完全没记账（见 agent/meter.py）
             utility = meter.tag(utility, "compaction")
             import threading
-            t = threading.Thread(
-                target=maybe_compact,
-                args=(
-                    db, utility, sid,
-                    core.cfg.recent_window_tokens,
-                    core.cfg.context_budget_tokens,
-                ),
-                kwargs={},
-                daemon=True,
-            )
+            def _run() -> None:
+                if maybe_compact(db, utility, sid,
+                                 core.cfg.recent_window_tokens,
+                                 core.cfg.context_budget_tokens):
+                    # 摘要和水位都变了：扔掉内存窗口，下一轮按新水位从库里重读。
+                    # 不扔的话窗口里还留着已经折进摘要的那段 —— 摘要和原文各说一遍
+                    sessions.invalidate(sid)
+
+            t = threading.Thread(target=_run, daemon=True)
             t.start()
         except Exception as exc:  # noqa: BLE001
             logger.warning("压缩启动失败: %s", exc)

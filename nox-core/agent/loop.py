@@ -30,6 +30,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import time
@@ -182,6 +183,7 @@ class AgentLoop:
         # 日志用的两个基准，必须在进 _run_inner 之前取（见 _tools_used）
         started = time.monotonic()
         base = len(history or [])
+        shape = cache_shape(system, list(self.tools.values()), history)
         result = self._run_inner(
             user_text, ctx, system=system, dynamic_system=dynamic_system,
             history=history, images=images, adapter=adapter,
@@ -194,6 +196,7 @@ class AgentLoop:
             elapsed_s=time.monotonic() - started,
             history_len=base,
             stream=False,
+            shape=shape,
         )
         return result
 
@@ -320,6 +323,7 @@ class AgentLoop:
         started = time.monotonic()
         base = len(history or [])
         model = adapter_name(adapter or self.adapter)
+        shape = cache_shape(system, list(self.tools.values()), history)
         finished = False
         try:
             for ev in self._stream_inner(
@@ -337,7 +341,7 @@ class AgentLoop:
                         log_turn(
                             result, model=model,
                             elapsed_s=time.monotonic() - started,
-                            history_len=base, stream=True,
+                            history_len=base, stream=True, shape=shape,
                         )
                 yield ev
         finally:
@@ -634,6 +638,25 @@ def _tools_used(messages: list[Message], history_len: int) -> list[str]:
     return names
 
 
+def cache_shape(system: str | None, tools: list[Any], history: list[Message] | None) -> str:
+    """这一轮请求前缀的「形状」：人设 / 工具 / 历史开头各一个指纹（2026-10-05，抄 usewhale/Whale 的 cache_shape）。
+
+    前缀缓存只认「从开头起一模一样」。命中掉下来时，对比相邻两轮这一串就知道是哪块变了：
+        sys  变了 → 人设被重新渲染了
+        tools 变了 → 工具注册 / 注销 / 换序
+        hist 开头变了 → 历史从前面被删了（窗口在滑）或摘要被改写（压缩了）
+    每轮只是正常往后长的话，hist 的指纹不变、条数在涨。
+    """
+    def h(obj: Any) -> str:
+        return hashlib.sha1(json.dumps(obj, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")).hexdigest()[:6]
+
+    specs = [getattr(t, "spec", t) for t in tools]
+    tool_sig = [(getattr(s, "name", ""), getattr(s, "description", ""), getattr(s, "parameters", None)) for s in specs]
+    hist = list(history or [])
+    head = [(m.role, m.text) for m in hist[:2]]
+    return f"sys={h(system or '')} tools={h(tool_sig)}/{len(specs)} hist={h(head)}+{len(hist)}"
+
+
 def log_turn(
     result: LoopResult,
     *,
@@ -642,6 +665,7 @@ def log_turn(
     history_len: int,
     stream: bool,
     path: str = "full",
+    shape: str = "",
 ) -> None:
     """一轮一行。**这是"他今天怪怪的"唯一能查的东西**（审计 1.2）。
 
@@ -675,6 +699,9 @@ def log_turn(
         shown or "-",
         u.input_tokens, u.output_tokens, u.cache_read_tokens, u.cache_write_tokens,
     )
+    if shape:
+        line += " shape=%s"
+        args += (shape,)
     if result.detail:
         line += " | %s"
         args += (result.detail,)

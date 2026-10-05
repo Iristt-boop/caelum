@@ -381,6 +381,40 @@ class Store:
             ]
         return dated
 
+    def load_window(self, session_id: str, from_index: int, cap_tokens: int | None = None) -> list[Message]:
+        """给模型看的历史：**水位之后的全部原文**（带日期分隔线），前面拼上摘要。
+
+        和 `load()` 的区别是不按「最近 N 条 / N token」截：截的话每多一轮窗口开头就往后挪，
+        前缀缓存每轮都失配（2026-10-05 查出来的 —— 命中的永远只有人设 + 工具那 3 万）。
+        水位只在压缩时才动，所以这段在两次压缩之间只往后长。
+
+        `from_index` 是 `load_full()` 顺序里的下标（= sessions.summary_upto）。
+        `cap_tokens`：安全上限。压缩一直失败时这段会无限长，超了才从开头截，并且报警。
+        """
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT role, text, created_at FROM messages WHERE session_id = ? ORDER BY seq",
+                (session_id,),
+            ).fetchall()
+            summary = self._conn.execute(
+                "SELECT summary FROM sessions WHERE id = ?", (session_id,)
+            ).fetchone()
+        start = from_index if 0 <= from_index <= len(rows) else 0
+        rows = rows[start:]
+        if cap_tokens is not None and rows:
+            plain = [Message(role=r["role"], text=r["text"]) for r in rows]
+            keep = len(tail_within_budget(plain, cap_tokens))
+            if keep < len(rows):
+                logger.warning("会话 %s 水位之后有 %d 条，超过安全上限 %d token，只带最近 %d 条"
+                               "（压缩是不是一直没成？）", session_id[:8], len(rows), cap_tokens, keep)
+                rows = rows[-keep:] if keep else []
+        dated = with_dates((r["role"], r["text"], r["created_at"]) for r in rows)
+        summary_text = summary["summary"] if summary else None
+        if summary_text:
+            from context.compactor import SUMMARY_HEADER
+            return [Message(role="system", text=SUMMARY_HEADER + summary_text), *dated]
+        return dated
+
     def load_full(self, session_id: str) -> list[Message]:
         """取该会话**全部** user/assistant 消息（不截断），供压缩用。
 
