@@ -62,8 +62,12 @@ DEPTHS = ("none", "low", "high")
 #: 例如 DeepSeek 的 low/high 都不发：实测它的 `low` 比默认还慢，
 #: 而它的默认本来就在思考，所以「想多点」= 什么都不传。
 _DIALECT: dict[str, tuple[str, dict[str, str]]] = {
-    # DeepSeek：只有「关掉」这一档说得通
-    "deepseek": ("reasoning_effort", {"none": "none"}),
+    # DeepSeek：只有「关掉」这一档说得通。
+    # 🔴 2026-10-05 起 low 也落到 none：主聊天 loop 默认传 low（GLM 那边 low = 不想），
+    # 原来这张表没有 low → 不发参数 → DeepSeek 用它默认的 high，一句「晚安」先想 171 token。
+    # 实测 deepseek-flash（V4.1）：不传 171 / low 211 / none 0 思考 token；
+    # 而且开思考和关思考是**两套缓存**，主聊天得固定一种。切过去试的时候要和 GLM 现在一样「不想」
+    "deepseek": ("reasoning_effort", {"none": "none", "low": "none"}),
     # 智谱 GLM 5 系：**关不掉**，只能调档
     # （原话：「该模型始终思考，不支持关闭思考，请使用 low、high 或 max」）
     # 所以我们的 none 只能落到它最省的 low —— 实测那一档 reasoning 真的是 0

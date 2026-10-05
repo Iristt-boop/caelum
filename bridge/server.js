@@ -4515,6 +4515,9 @@ const PRICING = {
   // vision 版文本与 flash 同价（图像单张 ≤384 tokens，按输入计，可忽略——官方口径）。
   // 🔴 2026-09-06：缺这条时落 DEFAULT_PRICE（Sonnet 估价），账单虚高约 20 倍
   "deepseek-v4-flash-vision-exp": { miss: 1, hit: 0.02, out: 2 },
+  // 2026-10-05：官方 /models 只剩 deepseek-flash（V4.1）。工作日 9-12、14-18 点翻倍（平时 1 / 0.02 / 4），
+  // 按她的作息（24% 在高峰）加权 —— 和 config.py PRICING_CNY 同一份
+  "deepseek-flash":    { miss: 1.24, hit: 0.025, out: 4.96 },
   "deepseek-v4-pro":   { miss: 3, hit: 0.025, out: 6 },
   // 智谱 GLM（2026-09-08 补）。官方口径：输入 0.8 / 输出 2.8 / 缓存命中 0.23。
   //

@@ -428,6 +428,10 @@ class Config:
         "glm-5.3-flash": {"in": 0.8, "hit": 0.2, "out": 2.8},
         "glm-4.6": {"in": 2, "hit": 0.5, "out": 8},
         "deepseek-v4-flash-vision-exp": {"in": 1, "hit": 0.02, "out": 2},
+        #: 2026-10-05 官方 /models 只剩 deepseek-flash（V4.1）和 deepseek-v4-pro。
+        #: 有峰谷价：工作日 9-12、14-18 点翻倍（平时 1 / 0.02 / 4）。这里按她 09-14→10-03
+        #: 的作息算的加权价（24% 落在高峰）—— 写平时价会低估，写高峰价会高估一倍
+        "deepseek-flash": {"in": 1.24, "hit": 0.025, "out": 4.96},
     }
 
     # ---- 可切换的模型 ----
@@ -439,7 +443,8 @@ class Config:
     # 换一个就得重写那 12K 前缀。给糖糖偶尔换口味用的，不该来回横跳。
     models: dict[str, ModelChoice] = field(default_factory=lambda: {
         # DeepSeek 直连（2026-07-31 上线的 V4）
-        "v4-flash": ModelChoice("deepseek-v4-flash", "deepseek", "DeepSeek V4 Flash"),
+        #: 2026-10-05 改名：deepseek-v4-flash 已经不在官方 /models 里了（只剩 deepseek-flash = V4.1，能看图）
+        "v4-flash": ModelChoice("deepseek-flash", "deepseek", "DeepSeek V4.1 Flash"),
         "v4-pro": ModelChoice("deepseek-v4-pro", "deepseek", "DeepSeek V4 Pro"),
         # 视觉版（2026-09-01 应糖糖加的，DeepSeek 官方第三个）。切到它
         # 当主线 = **原生看图**（supports_vision 对带 vision 的名字放行），

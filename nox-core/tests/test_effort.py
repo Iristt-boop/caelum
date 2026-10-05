@@ -60,10 +60,13 @@ def test_low_means_opposite_things():
     assert glm["reasoning_effort"] == "low"
 
 
-def test_deepseek_low_is_not_sent():
-    """DeepSeek 的 `low` 实测**比默认还慢**（reasoning 178 vs 69），
-    所以「稍微想想」在它这儿没有更好的说法 —— 不发，用它自己的默认。"""
-    assert effort.kwargs_for("deepseek-v4-flash", "low") == {}
+def test_deepseek_low_falls_to_none():
+    """🔴 主聊天 loop 传的是 low（GLM 那边 low = 不想）。DeepSeek 的 `low` 实测比默认还能想，
+    原来干脆不发 → 用它默认的 high：deepseek-flash 一句「晚安」先想 171 token（2026-10-05 实测）。
+    切到 DeepSeek 试的时候要和 GLM 现在一样不想，而且开/关思考是两套缓存，得固定一种 —— 落到 none。"""
+    assert effort.kwargs_for("deepseek-flash", "low") == {"reasoning_effort": "none"}
+    assert effort.kwargs_for("deepseek-v4-flash", "low") == {"reasoning_effort": "none"}
+    assert effort.kwargs_for("deepseek-flash", "high") == {}, "high 还是用它自己的默认（会想）"
 
 
 def test_unknown_model_sends_nothing():
