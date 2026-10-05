@@ -3405,6 +3405,29 @@ app.get("/api/nox/models", async (req, res) => {
   }
 });
 
+// 配置层 P1（只读）：厂商档案 / 功能槽位 —— Models 页「Routes」分区的数据源。
+// ⚠️ 逐路由代理（Core 加了接口这里就得加一条，通配会让「Core 挂了」看起来像 404）。
+// 🔴 **不能把 Core 的 503 翻成 200 + 空列表**：配置库没起来是「读不到」，不是「没有」。
+// FastAPI 的错误体是 {detail}，这里统一翻成 {ok:false, error}，前端据 ok:false 显示「读不到」并写明原因。
+const noxConfigProxy = (corePath, tag) => async (req, res) => {
+  try {
+    const r = await fetch(`${NOX_CORE_URL}${corePath}`, { signal: AbortSignal.timeout(8000) });
+    const body = await r.json().catch(() => null);
+    if (!r.ok || !body || body.ok === false) {
+      return res.json({
+        ok: false,
+        error: (body && (body.detail || body.error)) || `Core 回了 ${r.status}`,
+      });
+    }
+    res.json(body);
+  } catch (e) {
+    console.error(`[${tag}] 读配置失败:`, e.message);
+    res.json({ ok: false, error: e.message });
+  }
+};
+app.get("/api/nox/config/providers", noxConfigProxy("/api/nox/config/providers", "nox-config-providers"));
+app.get("/api/nox/config/slots", noxConfigProxy("/api/nox/config/slots", "nox-config-slots"));
+
 // World 页（户型图）：天 / 家里的设备 / 她在不在家 / 她在忙什么，一次取齐。
 // ⚠️ 超时给到 12 秒 —— 这条要串 ha-mcp 拿清单 + 并发查 HA 状态，
 // 比别的接口慢，8 秒会在设备多的时候偶发超时（那会让整张图无谓地黑掉）。
