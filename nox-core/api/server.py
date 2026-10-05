@@ -62,6 +62,7 @@ from orders import OrderStore
 #: ⚠️ 2026-09-06 漏了这一行，代价是一单真下出去了却被记成失败 ——
 #: 见下面 `nox_order_confirm` 里那段「下单已经成功」的注释
 from orders import luckin as luckin_order_flow
+from settings_store.startup import start_shadow as start_config_shadow
 
 #: 单子走不下去时给她的人话。**不许直接把状态字符串甩给她**
 _ORDER_STATE_TEXT = {
@@ -1024,6 +1025,12 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
     if _interrupted:
         logger.info("启动时把 %d 个在跑的长任务标成 interrupted（progress 保留，可续跑）",
                     _interrupted)
+
+    # 配置层影子（P0，2026-10-05，设计：Caelum-配置层-设计稿）。第七个库 settings.db：
+    # 把今天写死在 BACKENDS / config.models / NOX_* 环境变量里的配置灌进去，再从库里
+    # 重建一份与现状逐字段对账。**只观察、不生效 —— 库不被任何人读取，行为零变化。**
+    # 永远不会让启动失败（内部全兜住并留痕）；NOX_CONFIG_SHADOW=off 可关。
+    start_config_shadow(core)
 
     attention = _build_attention(core, sessions, db)
     #: 🔴 感知层那条线交给 attention —— 躁动要知道"她此刻在用什么"。
