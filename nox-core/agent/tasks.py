@@ -248,6 +248,18 @@ class TaskStore:
             self._conn.commit()
         return cur.rowcount
 
+    def count_waiting_for_her(self) -> int:
+        """等她点头的任务有几个：刚提议的 + 被中断等她点「接着跑」的（只读）。
+
+        这两种正是 `claim()` 肯翻成 confirmed 的状态，所以口径和「她能点的」一致。
+        给 `guide/world_map.py` 的「待她确认」用。
+        """
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT COUNT(*) FROM tasks WHERE status IN (?, ?)",
+                (PROPOSED, INTERRUPTED)).fetchone()
+        return int(row[0])
+
     def append_progress(self, tid: str, step: str, *, kind: str = "step",
                         payload: str | None = None) -> None:
         """追加一条进度。**只写不改** —— 它既是给模型续跑看的上下文，

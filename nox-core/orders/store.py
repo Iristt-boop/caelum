@@ -233,6 +233,19 @@ class OrderStore:
             self._conn.commit()
         return cur.rowcount
 
+    def count_pending(self, now: datetime | None = None) -> int:
+        """现在还等着她点头的单子有几张（只读；过了期但还没被收掉的不算）。
+
+        给 `guide/world_map.py` 的「待她确认」用：他该知道有几张卡在等她，
+        而不是凭印象说「我给你出过卡」。
+        """
+        now = now or _now()
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT COUNT(*) FROM orders WHERE state=? AND expires_at>?",
+                (PENDING, now.isoformat())).fetchone()
+        return int(row[0])
+
     def close(self) -> None:
         with self._lock:
             self._conn.close()

@@ -7,6 +7,7 @@
   - 不要往里塞时间戳、随机数、每轮变化的记忆
   - 核心准则启动时取一次就冻住
   - 人设改动要走重启，不要热更新
+  - guide（手册目录）每次启动由 guide/ 生成一次，同样只许启动时取，目录变化要走重启
 """
 
 from __future__ import annotations
@@ -76,12 +77,17 @@ class StaticPrefix:
     persona: str
     core_memory: str
     guard: str
+    #: 手册目录（`guide.loader.render_directory`）。**只放目录，不放正文** ——
+    #: 正文按需用 guide_read 翻，不占前缀。空 = 不追加，render() 与加这个字段之前逐字节相同。
+    guide: str = ""
 
     def render(self) -> str:
         parts = [self.persona.strip()]
         if self.core_memory.strip():
             parts.append("=== 关于你和糖糖的核心记忆 ===\n" + self.core_memory.strip())
         parts.append(self.guard.strip())
+        if self.guide.strip():
+            parts.append(self.guide.strip())
         return "\n\n".join(parts)
 
     @property
@@ -89,14 +95,16 @@ class StaticPrefix:
         return len(self.render())
 
 
-def build(core_memory: str = "") -> StaticPrefix:
+def build(core_memory: str = "", guide: str = "") -> StaticPrefix:
     """组装静态前缀。
 
     core_memory 由调用方在启动时从 OB 取一次传进来 —— 这个模块不主动去
     调 OB，免得有人在每轮对话里手滑调它，把缓存打碎。
+    guide 同理：调用方启动时从 `guide/` 生成目录传进来，这里不自己去读文件。
     """
     return StaticPrefix(
         persona=NOX_PERSONA,
         core_memory=core_memory,
         guard=GUARD_INSTRUCTION,
+        guide=guide,
     )
