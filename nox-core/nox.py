@@ -26,6 +26,9 @@ from context.providers import (
     MoodProvider, MusicProvider, ResonanceProvider, TimeProvider, TodoProvider,
     UnderstandingProvider, WeatherProvider,
 )
+from guide import loader as guide_loader
+from guide import tools as guide_tools
+from guide import wiring as guide_wiring
 from memory import tools as memory_tools
 from memory.archiver import ArchiveResult, Archiver
 from memory.ob_client import OmbreBrain
@@ -457,6 +460,11 @@ class Nox:
         # 启动时取一次核心准则，之后**永不重取**。
         # 不做定时刷新：糖糖明确说了不需要，需要新记忆时他会自己调
         # recall_memory。定时刷新会让缓存前缀变动，得不偿失。
+        #
+        # 手册目录同理：启动时从 guide/topics 读一次，进静态前缀；正文不进前缀，
+        # 由 guide_read 按需翻（设计：Nox-使用手册-设计稿）。文件不合格在这里炸，
+        # 炸在启动，好过某天他翻出半截的。
+        self._guide_topics = guide_loader.load_topics()
         self._prefix = self._build_prefix()
         self._system = self._prefix.render()
 
@@ -615,6 +623,15 @@ class Nox:
         # 12K 前缀就整段作废（tools/daily.py:238）。以后加工具往后排，别插队。
         planner_tools.register_all(self.loop, self.context)
 
+        # 手册 + 环境地图（只读）。同样往后排：登记在 planner 之后，不改前面任何
+        # 工具的位置。登记在这里而不是更早，是因为地图要读 self.loop / self.context
+        # 里已经注册好的东西。
+        guide_tools.register_all(
+            self.loop,
+            topics=self._guide_topics,
+            deps=guide_wiring.make_deps(self),
+        )
+
         # 归档器。摘要走 utility 模型（便宜那个），不占主线的钱和缓存。
         self.archiver = Archiver(self.ob, light or self.loop.adapter)
 
@@ -627,14 +644,15 @@ class Nox:
         )
 
     def _build_prefix(self) -> personality.StaticPrefix:
+        guide = guide_loader.render_directory(self._guide_topics)
         r = self.ob.core_principles()
         if not r.ok:
             # 记忆层挂了不该让 Nox 起不来 —— 他顶多显得健忘一点，
             # 而且 recall_memory 工具还在，之后恢复了照样能查。
             logger.warning("核心准则取不到，先空着启动: %s", r.error)
-            return personality.build("")
+            return personality.build("", guide)
         logger.info("核心准则 %d 字符已载入并冻结", len(r.text))
-        return personality.build(r.text)
+        return personality.build(r.text, guide)
 
     @property
     def system_prompt(self) -> str:
