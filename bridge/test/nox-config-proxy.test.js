@@ -56,7 +56,7 @@ test("两条路由把 Core 的视图原样带给前端", async () => {
 });
 
 test("🔴 Core 的配置库没起来（503）—— 必须是 ok:false 带原因，不能是空列表", async () => {
-  const detail = "配置库没起来（NOX_CONFIG_SHADOW 关着，或启动时失败了 —— 看日志里的「配置影子」）";
+  const detail = "配置库没起来 —— NOX_CONFIG_SHADOW 关着，或启动时失败了，看日志里的「配置影子」";
   const core = await fakeCore({
     "/api/nox/config/providers": { status: 503, body: { detail } },
     "/api/nox/config/slots": { status: 503, body: { detail } },
