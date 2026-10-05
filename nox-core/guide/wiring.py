@@ -39,7 +39,38 @@ def _backend_name(llm) -> str:
 def make_deps(nox) -> MapDeps:
     cfg = nox.cfg
 
+    def models_from_store(store) -> list[dict]:
+        """P1：模型段改读配置库（和 `/api/nox/config/slots` 同一个视图），不再直接读 cfg。
+
+        这样 P2 切到「库说了算」时，地图自然跟着变；P1 里它与 cfg 一致（P0 的影子账本盯着）。
+        """
+        from settings_store.seed import SLOT_ATTRS
+        from settings_store.views import slots_view
+
+        role_of = {slot: role for (slot, attr), (_, role) in zip(SLOT_ATTRS, _ROLES)}
+        rows = []
+        for item in slots_view(store)["slots"]:
+            if not item["ok"]:
+                # 槽位坏了：如实说，别当它不存在
+                rows.append({"role": role_of.get(item["slot"], item["slot"]), "backend": "（读不到）",
+                             "model": item["error"], "key_configured": False})
+                continue
+            pid = item["provider"]["id"]
+            backend = pid
+            if pid.startswith("env-"):                       # 环境变量直接指定的地址：显示主机名
+                p = store.provider(pid)
+                backend = urlparse((p or {}).get("base_url", "")).netloc or pid
+            rows.append({"role": role_of.get(item["slot"], item["slot"]), "backend": backend,
+                         "model": item["model"]["name"], "key_configured": item["key_configured"]})
+        return rows
+
     def models() -> list[dict]:
+        store = getattr(nox, "settings", None)
+        if store is not None:
+            try:
+                return models_from_store(store)
+            except Exception:  # noqa: BLE001 —— 库读不出来就退回 cfg，但要留痕
+                logger.warning("地图读配置库失败，退回读 cfg", exc_info=True)
         rows = []
         for attr, role in _ROLES:
             llm = getattr(cfg, attr, None)
