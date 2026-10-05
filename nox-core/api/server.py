@@ -63,6 +63,7 @@ from orders import OrderStore
 #: 见下面 `nox_order_confirm` 里那段「下单已经成功」的注释
 from orders import luckin as luckin_order_flow
 from settings_store.startup import start_shadow as start_config_shadow
+from settings_store.views import providers_view, slots_view
 
 #: 单子走不下去时给她的人话。**不许直接把状态字符串甩给她**
 _ORDER_STATE_TEXT = {
@@ -2512,6 +2513,29 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
             "choices": choices,
             "providers": providers,
         }
+
+    def _config_store():
+        """配置层的库（P0 起启动时建）。没起来就 503 —— 「读不到」不能被渲染成「没有」。"""
+        store = getattr(core, "settings", None)
+        if store is None:
+            raise HTTPException(
+                status_code=503,
+                detail="配置库没起来 —— NOX_CONFIG_SHADOW 关着，或启动时失败了，看日志里的「配置影子」")
+        return store
+
+    @app.get("/api/nox/config/providers")
+    def nox_config_providers() -> dict:
+        """配置层 P1：有哪些厂商、缓存怎么算、key 在不在（**只读，不含任何密钥**）。
+
+        Models 页「Routes」分区的数据源。key 只回「配没配」；地址已剥掉账号密码和查询串。
+        见 `settings_store/views.py`。
+        """
+        return {"ok": True, **providers_view(_config_store())}
+
+    @app.get("/api/nox/config/slots")
+    def nox_config_slots() -> dict:
+        """配置层 P1：功能槽位现在指向谁（主线 / 杂活 / 识图）。只读。"""
+        return {"ok": True, **slots_view(_config_store())}
 
     @app.get("/api/nox/tools")
     def nox_tools() -> dict:
