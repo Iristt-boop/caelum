@@ -413,6 +413,8 @@ def guidance(st: HerState, *, trigger: str = "", dream: str = "", note: str = ""
                     "别念记忆、别总结、别说「我记得」开头的报告腔。")
             if getattr(fond, "kind", "") == "photo" and getattr(fond, "query", ""):
                 line += f"想让她也看看那张照片，就用 send_gallery_image（query={fond.query}）。"
+            if getattr(fond, "kind", "") == "listen" and getattr(fond, "query", ""):
+                line += f"想再放给她听，就用 listen_play（{fond.query}），reason 写你为什么忽然想起它。"
             lines.append(line)
     else:
         lines.append("你心里这会儿没什么特别的情绪——想她就说想她。")

@@ -2497,10 +2497,53 @@ async function autoDescribeImage(url) {
     if (jd?.description) {
       dbRun(`UPDATE gallery SET description=? WHERE url=?`, [jd.description, url]);
       console.log(`[Gallery] 自动识图描述 ${String(url).slice(0, 30)}`);
+      return true;
     }
+    console.log(`[Gallery] 识图没给出描述 ${String(url).slice(0, 30)}`);
   } catch (e) {
     console.log("[Gallery] 自动识图失败:", e.message);
   }
+  return false;
+}
+
+/* 🔴 没描述的图慢慢补（2026-10-06）。
+ *
+ * 「想逗她」会从她收藏的照片里想起旧事（nox-core attention/fond.py），**只认带描述的** ——
+ * 不知道图里是什么，他没法说「想起你那张…」。上线那天她收藏的 2 张全是空的：
+ * 7 月的图早于自动识图；之后也有识图超时的，失败一次就永远空着，没人重试。
+ *
+ * 所以：每隔一阵挑几张没描述的本站图补一下，**一张一张串行**（识图要 10~40 秒，并发会把
+ * Core 的视觉模型挤爆）；收藏的排前面；同一张连挂 3 次就不再试（坏图别每轮都去撞）。 */
+const GALLERY_BACKFILL_MS = Number(process.env.NOX_GALLERY_BACKFILL_MS ?? 30 * 60 * 1000);  // 0 = 关
+const GALLERY_BACKFILL_BATCH = 5;
+const _describeFails = new Map();   // url → 失败次数（进程内，重启清零 = 重启后再给一次机会）
+let _backfillRunning = false;
+
+async function backfillGalleryDescriptions() {
+  if (_backfillRunning) return 0;
+  _backfillRunning = true;
+  let done = 0;
+  try {
+    const rows = dbAll(
+      `SELECT url FROM gallery WHERE (description IS NULL OR description='') AND url LIKE '/uploads/%'
+       ORDER BY favorited DESC, created_at DESC LIMIT 50`
+    ).filter((r) => (_describeFails.get(r.url) || 0) < 3).slice(0, GALLERY_BACKFILL_BATCH);
+    for (const { url } of rows) {
+      if (await autoDescribeImage(url)) done += 1;
+      else _describeFails.set(url, (_describeFails.get(url) || 0) + 1);
+    }
+    if (rows.length) console.log(`[Gallery] 补描述：这轮 ${rows.length} 张，成功 ${done}`);
+  } catch (e) {
+    console.log("[Gallery] 补描述这轮挂了:", e.message);
+  } finally {
+    _backfillRunning = false;
+  }
+  return done;
+}
+if (GALLERY_BACKFILL_MS > 0) {
+  // 启动后一分钟先跑一轮（别和启动抢），之后按间隔。unref：测试 / 退出时不拖着进程
+  setTimeout(backfillGalleryDescriptions, Math.min(60 * 1000, GALLERY_BACKFILL_MS)).unref();
+  setInterval(backfillGalleryDescriptions, GALLERY_BACKFILL_MS).unref();
 }
 
 app.get("/api/gallery/list", (req, res) => {
@@ -2558,6 +2601,11 @@ app.post("/api/gallery/save", (req, res) => {
 app.post("/api/gallery/:id/favorite", (req, res) => {
   const { favorited } = req.body;
   dbRun(`UPDATE gallery SET favorited=? WHERE id=?`, [favorited ? 1 : 0, req.params.id]);
+  // 收藏了但不知道是什么 → 现在就去识（「想逗她」只认带描述的收藏，见 backfillGalleryDescriptions）
+  if (favorited) {
+    const row = dbAll(`SELECT url, description FROM gallery WHERE id=?`, [req.params.id])[0];
+    if (row && !row.description && String(row.url || "").startsWith("/uploads/")) autoDescribeImage(row.url);
+  }
   res.json({ ok: true });
 });
 

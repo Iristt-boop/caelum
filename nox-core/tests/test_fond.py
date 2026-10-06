@@ -190,3 +190,136 @@ def test_不加开口次数_八次上限照旧(tmp_path, monkeypatch):
     for i in range(AWAKE_DAILY_MAX + 2):
         think(svc, cn(5, 15, i))
     assert len(calls) == AWAKE_DAILY_MAX
+
+
+# ---------------------------------------------------------------- 第三路：一起做过的事（10-06 晚）
+
+from attention.fond import _book_title, _clean_title  # noqa: E402
+
+
+class _Ev:
+    def __init__(self, days, raw):
+        self.observed_at = NOW - timedelta(days=days)
+        self.raw = raw
+
+
+class FakeWorld:
+    def __init__(self, facts):
+        self.facts = facts        # type → [(days, raw)]
+
+    def query(self, type_, *, days=None, limit=30, now=None):
+        return [_Ev(d, r) for d, r in self.facts.get(type_, [])]
+
+
+class FakeClient:
+    """按路径回数据；`fail` 里的路径回失败"""
+
+    def __init__(self, data, fail=()):
+        self.data, self.fail = data, set(fail)
+
+    def get(self, path, params=None):
+        if path in self.fail:
+            return SimpleNamespace(ok=False, error="502")
+        return SimpleNamespace(ok=True, data=self.data.get(path))
+
+
+WORLD = FakeWorld({
+    "listening_together": [
+        (15, {"song_id": "42", "title": "City Of Stars", "artist": "Ryan Gosling", "together_count": 1}),
+        (16, {"song_id": "42", "title": "City Of Stars", "artist": "Ryan Gosling", "together_count": 1}),  # 同一首老的一条
+        (1, {"song_id": "7", "title": "刚刚那首", "artist": "x", "together_count": 1}),                      # 太新
+    ],
+    "watching_session": [(14, {"session_id": "w1", "title": "The.Sheep.Detectives.2026.1080p中英字幕.mp4",
+                               "minutes": 14, "finished": False})],
+    "reading_progress": [(8, {"book_id": "大问题_简明哲学导论", "title": "大问题_简明哲学导论", "progress": 23})],
+})
+ERYU = FakeClient({"/music/memory": {"memories": {"42": {"togetherCount": 2, "notes": "你昨晚没睡好，放首能往下沉的"}}}})
+BRIDGE = FakeClient({"/api/tickets": {"items": [{"session_id": "w1", "title": "绵羊侦探团", "review": "一群羊破案，比想象中好看。"}]},
+                     "/api/gallery/list?filter=favorites": []})
+READING = FakeClient({"/api/annotations": [
+    {"id": "a0", "author": "nox", "parentId": "a1", "note": "他的回复不算她的批注"},
+    {"id": "a1", "author": "user", "quote": "你自己的哲学是对世界观的澄清", "note": "That's true"},
+]})
+
+
+def _shared_src(tmp_path, *, world=WORLD, eryu=ERYU, bridge=BRIDGE, reading=READING, rng=None):
+    return FondSource(store=AttentionStore(tmp_path / "a.db"), buckets_dir=None, bridge=bridge,
+                      world=world, eryu=eryu, reading=reading, rng=rng)
+
+
+def test_一起做过的事_三类都想得起_带上当时的细节(tmp_path):
+    #: rng 定成「取第一条」：批注挑哪条是随机的，不定住的话「把他的回复也算进来」要看运气才抓得到
+    got = {f.kind: f for _, f in _shared_src(tmp_path, rng=_PickFirst("shared"))._shared(NOW)}
+    assert set(got) == {"listen", "watch", "read"}
+    song = got["listen"]
+    assert song.key == "42", "太新的那首（1 天前）不算「想起」"
+    assert "City Of Stars" in song.detail and "2 次" in song.detail and "没睡好" in song.detail
+    assert "song_id=42" in song.query and song.age_days == 15
+    movie = got["watch"]
+    assert "绵羊侦探团" in movie.detail and "比想象中好看" in movie.detail, "票根上的片名和她的短评"
+    book = got["read"]
+    assert "大问题：简明哲学导论" in book.detail and "That's true" in book.detail
+    assert "他的回复" not in book.detail, "挑的是她的批注，不是他的回复"
+
+
+def test_细节取不到_只说事实_不抛(tmp_path):
+    broken = FakeClient({}, fail={"/music/memory", "/api/tickets", "/api/annotations"})
+    got = {f.kind: f for _, f in _shared_src(tmp_path, eryu=broken, bridge=broken, reading=broken)._shared(NOW)}
+    assert set(got) == {"listen", "watch", "read"}
+    assert "The Sheep Detectives" in got["watch"].detail, "没票根就用洗过的文件名"
+
+
+def test_没有world_这一路就没有(tmp_path):
+    assert _shared_src(tmp_path, world=None)._shared(NOW) == []
+
+
+def test_观影文件名洗成人话():
+    assert _clean_title("The.Sheep.Detectives.2026.1080p中英字幕.mp4") == "The Sheep Detectives"
+    assert _clean_title("摩登家庭S01E01 (AAC音轨).mkv") == "摩登家庭S01E01"
+    assert _clean_title("痴迷.mkv") == "痴迷"
+    assert _book_title("大问题_简明哲学导论") == "大问题：简明哲学导论"
+
+
+class _PickFirst:
+    """rng：挑路时记下有哪几路、挑指定那一路；路内取第一件"""
+
+    def __init__(self, family):
+        self.family, self.seen = family, None
+
+    def choice(self, seq):
+        seq = list(seq)
+        if all(isinstance(s, str) for s in seq):
+            self.seen = seq
+            return self.family
+        return seq[0]
+
+    def uniform(self, a, b):
+        return 0.0
+
+
+def test_先挑哪一路再挑哪一件_记忆再多也压不住一起做过的事(tmp_path, buckets):
+    rng = _PickFirst("shared")
+    s = FondSource(store=AttentionStore(tmp_path / "a.db"), buckets_dir=buckets, bridge=BRIDGE,
+                   world=WORLD, eryu=ERYU, reading=READING, rng=rng)
+    f = s.pick(NOW)
+    assert rng.seen == ["memory", "shared"], "照片那路没货（收藏为空）就不进候选"
+    assert f.kind in ("listen", "watch", "read")
+
+
+def test_一起做过的事用过也十四天不再想起(tmp_path):
+    s = _shared_src(tmp_path, rng=_PickFirst("shared"))
+    used = []
+    for _ in range(3):
+        f = s.pick(NOW)
+        used.append(f.kind)
+        s.mark_used(f, NOW)
+    assert sorted(used) == ["listen", "read", "watch"]
+    assert s.pick(NOW) is None
+
+
+def test_想起一起听的歌_提示他可以再放给她(tmp_path, monkeypatch):
+    f = fond_mod.Fond(kind="listen", key="42", title="一起听的《City Of Stars》", detail="你们一起听过《City Of Stars》",
+                      age_days=15, query="song_id=42, name=City Of Stars, artist=Ryan Gosling")
+    svc, calls = _svc(tmp_path, monkeypatch, fond=f)
+    think(svc, cn(5, 15))
+    assert "listen_play（song_id=42" in calls[0]

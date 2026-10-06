@@ -242,3 +242,11 @@ def test_create_app_把_attention_挂到_core_上(tmp_path, monkeypatch):
         assert callable(getattr(svc, "drives", None)), "挂上来的东西不认识 drives()"
     finally:
         store.close()
+
+
+def test_想起旧事的来源接上了一起做过的事(monkeypatch, tmp_path):
+    """FondSource 要拿到 World Model（共活动的事实）—— 漏接的话第三路永远是空的，而且不报错（10-06）。"""
+    monkeypatch.setenv("NOX_ATTENTION", "1")
+    svc = _build_attention(WorkingCore(tmp_path / "nox.db"), None, None)
+    assert svc is not None and svc.fond.world is not None, "fond 没拿到 world：一起听 / 看 / 读过的永远想不起来"
+    svc.store.close()
