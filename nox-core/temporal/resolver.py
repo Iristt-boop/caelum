@@ -24,7 +24,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from typing import Any
 
-from temporal import SLOTS, to_local
+from temporal import MODIFIER_SLOTS, SLOTS, to_local
 from temporal.intent import Intent
 
 #: `precision` 的封闭集合。
@@ -138,7 +138,7 @@ def _slot_range(day: date, slot: str, tz) -> tuple[datetime, datetime]:
 
     深夜跨午夜（23:00 → 次日 05:00），所以不能写成简单的同日区间。
     """
-    table = {en: (lo, hi) for lo, hi, en, _ in SLOTS}
+    table = {en: (lo, hi) for lo, hi, en, _ in [*SLOTS, *MODIFIER_SLOTS]}
     if slot in table:
         lo, hi = table[slot]
         return (datetime.combine(day, time(lo), tz), datetime.combine(day, time(hi), tz))

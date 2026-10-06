@@ -54,6 +54,7 @@ from attention.events import ExperienceEvent
 from attention.dejection import looks_like_giving_up
 from attention import appraisal_llm
 from attention import dream as dream_loop
+from attention import todo_defer
 from attention.appraisal import ANCHOR_PREFIX, RuleAppraiser
 from attention.appraisal_llm import LLMAppraiser
 from tools import luckin as luckin_tools
@@ -105,6 +106,7 @@ from topic_pool.pool import DEFAULT_SCOUT_INTERVAL_S
 from moments import loop as moments_loop
 from attention.store import AttentionStore
 from temporal import now as temporal_now
+from temporal import to_local as temporal_local
 from temporal import extract as temporal_extract
 from temporal.extract import TemporalExtractor
 from temporal.resolver import resolve as temporal_resolve
@@ -1574,19 +1576,34 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
             ref = temporal_now()
             logger.warning("没拿到 message_time，时间理解退回用现在当锚点")
 
+        def _ask(prompt: str) -> str:
+            # 认「她说的是哪条待办」那一问（P4）。只在她说了以后哪天要做的事、手上又有待办时才问
+            t = utility.complete([Message(role="user", text=prompt)], [], depth="low", max_tokens=400)
+            return t.text or ""
+
         def _run() -> None:
             try:
                 # 一句话一组事件（2026-09-28）。空列表 = 她没说时间，常态，不记
                 events = TemporalExtractor(lambda: utility).extract(text)
+                #: 🔴 on 才接待办（2026-10-06 她：不 shadow 了，修掉「中午」后上线接 P4）
+                live = temporal_extract.mode() == "on" and core.bridge is not None
                 for i, ev in enumerate(events, 1):
+                    res = temporal_resolve(ev.intent, ref)
+                    if live:
+                        a = todo_defer.apply(
+                            act=ev.act, expression=ev.expression, event=ev.event, text=text,
+                            resolution=res, today=temporal_local(ref).date(),
+                            bridge=core.bridge, ask=_ask)
+                        outcome = dict(applied=a.applied, applied_to=a.applied_to,
+                                       why_not_applied=a.why_not,
+                                       todo_match_status=a.todo_match_status, todo_id=a.todo_id)
+                    else:
+                        outcome = dict(applied=False,
+                                       why_not_applied=f"shadow 模式（NOX_TEMPORAL={temporal_extract.mode()}）",
+                                       todo_match_status="not_attempted")
                     TemporalResult(
-                        text=text, event=ev,
-                        resolution=temporal_resolve(ev.intent, ref),
-                        reference_time=ref,
-                        applied=False,
-                        why_not_applied=f"shadow 模式（NOX_TEMPORAL={temporal_extract.mode()}）",
-                        todo_match_status="not_attempted",
-                        index=i, of=len(events),
+                        text=text, event=ev, resolution=res, reference_time=ref,
+                        index=i, of=len(events), **outcome,
                     ).log()
             except Exception:  # noqa: BLE001
                 # 不许静默（docs/LOGGING.md）。这一层挂了的表现是

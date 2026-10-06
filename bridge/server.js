@@ -422,6 +422,9 @@ dbTry(`ALTER TABLE todos ADD COLUMN at TEXT DEFAULT ''`)
 dbTry(`ALTER TABLE todos ADD COLUMN weekdays TEXT DEFAULT ''`)
 dbTry(`ALTER TABLE todos ADD COLUMN due TEXT DEFAULT ''`)
 dbTry(`ALTER TABLE todos ADD COLUMN fired_on TEXT DEFAULT ''`)
+// 2026-10-06 Temporal P4：她说「周五再练」「明天再背」→ 这天之前不追（"YYYY-MM-DD"）。
+// **只推迟介入，不动完成状态** —— 「没做」≠「继续现在这个提醒策略」（她 09-14 的原话）
+dbTry(`ALTER TABLE todos ADD COLUMN deferred_until TEXT DEFAULT ''`)
 dbTry(`ALTER TABLE todos ADD COLUMN times INTEGER DEFAULT 0`)
 dbTry(`ALTER TABLE todos ADD COLUMN done_log TEXT DEFAULT ''`)
 // 2026-08-18：最后一次划掉的**完整时刻**。
@@ -2946,6 +2949,8 @@ app.get("/api/todo/list", (req, res) => {
       // 2026-08-27 双端重构：备注 / 分类标签 / 他今天追过没（OS「他的喋喋」模块）
       note: t.note || "", tag: t.tag || "",
       chasedToday: (t.fired_on || "") === now.date,
+      //: 她说过「哪天再做」—— 那天之前他不追（Temporal P4）。过了那天就是空串
+      deferredUntil: (t.deferred_until || "") > now.date ? t.deferred_until : "",
       createdAt: t.created_at || "",
     });
   }
@@ -2962,6 +2967,7 @@ app.get("/api/todo/due", (req, res) => {
   const rows = dbAll("SELECT * FROM todos WHERE done = 0");
   const due = rows.filter(t =>
     t.at && hitsToday(t, now) && t.at <= now.hm && (t.fired_on || "") !== now.date
+    && (t.deferred_until || "") <= now.date
   );
   res.json({ ok: true, date: now.date, now: now.hm, items: due });
 });
@@ -3307,6 +3313,21 @@ function readTicket(sid) {
 }
 
 // 追过了，标记一下（今天不再重复追）。Core 追完调它。
+// Temporal P4（2026-10-06）：她说了「哪天再做」，这天之前不追。nox-core 认出是哪条待办之后调。
+// 🔴 只能往后推（明天及以后），不能标完成 —— 这个接口压根不碰 done
+app.post("/api/todo/defer", (req, res) => {
+  const { id, until } = req.body || {};
+  if (!id) return res.status(400).json({ error: "id required" });
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(until || "")) return res.status(400).json({ error: "until 要是 YYYY-MM-DD" });
+  if (until <= cnNow().date) return res.status(400).json({ error: "只能推到明天或以后" });
+  const row = dbAll("SELECT id, done FROM todos WHERE id = ?", [id])[0];
+  if (!row) return res.status(404).json({ error: "没有这条待办" });
+  if (row.done) return res.status(409).json({ error: "这条已经完成了，不用推" });
+  dbRun("UPDATE todos SET deferred_until = ? WHERE id = ?", [until, id]);
+  console.log(`[Todo] ${id} 推到 ${until} 再追`);
+  res.json({ ok: true, id, until });
+});
+
 app.post("/api/todo/fired", (req, res) => {
   const { id } = req.body || {};
   if (!id) return res.status(400).json({ error: "id required" });

@@ -30,10 +30,14 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import date, timedelta
+from typing import Any
 
 from temporal.resolver import Resolution
+
+logger = logging.getLogger(__name__)
 
 #: 现有机制够用：`/api/todo/fired` 标一下今天追过了，跨天自动失效
 MECH_FIRED = "mark_fired"
@@ -99,3 +103,89 @@ def decide(resolution: Resolution, *, todo_id: str | None, today: date) -> Defer
 
     return DeferDecision(should_defer=True, todo_id=todo_id,
                          until=until, mechanism=mech)
+
+
+# ================================================================ 接线（P4，2026-10-06 她：上线接 P4）
+#
+# 上面是纯函数；下面两步有 IO：问小模型「指的是哪条待办」、调 bridge 推迟。
+# 两种 mechanism 现在都走同一个口子 —— bridge 加了 `deferred_until`（`/api/todo/defer`），
+# 「推到明天」和「推到周五」都写它；`/api/todo/due` 跳过还没到日子的。
+# 🔴 全程**碰不到完成**：bridge 那个接口不动 done，这里也没有任何「标完成」的路。
+
+#: 只有「她打算做 / 让他做」的事才可能是在说待办；「已经发生的」（report）不推
+DEFER_ACTS = frozenset({"plan", "request"})
+
+_MATCH_PROMPT = """她说：「{text}」
+其中「{expression}」那件事是：{event}
+
+下面是她还没完成的待办（id：内容）：
+{todos}
+
+这件事是不是在说其中某一条？**只有明显是同一件事时才选**
+（「练腿」就是「臀腿训练」，「背单词」就是「背英语单词」，「鱼油明天吃」就是「补充鱼油和维D」）。
+只输出那条的 id。对不上、或者拿不准，就输出 none。不要输出任何别的字。"""
+
+
+def match_todo(ask: Any, text: str, expression: str, event: str,
+               todos: list[dict]) -> tuple[str | None, str]:
+    """她这件事指的是哪条待办。返回 (todo_id, todo_match_status)。
+
+    `ask(prompt) -> str` 是小模型。回答必须**恰好是列表里的一个 id 或 none** ——
+    别的一律当拿不准（ambiguous），不猜。没有待办就不问（no_candidate），省一次调用。
+    """
+    if not todos:
+        return None, "no_candidate"
+    ids = {str(t["id"]) for t in todos if t.get("id")}
+    listing = "\n".join(f"- {t['id']}：{t.get('text', '')}" for t in todos if t.get("id"))
+    try:
+        raw = (ask(_MATCH_PROMPT.format(text=text[:200], expression=expression,
+                                        event=event, todos=listing)) or "").strip().strip("`'\"「」 ")
+    except Exception:  # noqa: BLE001
+        logger.warning("认待办的那次调用挂了，这次不推", exc_info=True)
+        return None, "ambiguous"
+    if raw.lower() == "none":
+        return None, "no_candidate"
+    if raw in ids:
+        return raw, "matched"
+    logger.warning("认待办回了表外的东西 %r，当拿不准处理", raw[:60])
+    return None, "ambiguous"
+
+
+@dataclass(frozen=True)
+class Applied:
+    """一个事件接 Todo 的结局，原样填进 TemporalResult。"""
+
+    applied: bool
+    todo_match_status: str
+    todo_id: str | None = None
+    applied_to: str | None = None
+    why_not: str | None = None
+
+
+def apply(*, act: str, expression: str, event: str, text: str, resolution: Resolution,
+          today: date, bridge: Any, ask: Any) -> Applied:
+    """她这件事该不该推迟某条待办 —— 该的话真的推。每一步没走下去都说清为什么。"""
+    if act not in DEFER_ACTS:
+        return Applied(False, "not_attempted", why_not=f"act={act}，不是她要做的事")
+    if not resolution.ok or resolution.date is None or resolution.date <= today:
+        #: 和 decide() 里那几条同一个判据，先挡掉 —— 不往后推的话没必要去问模型
+        d = decide(resolution, todo_id="(未匹配)", today=today)
+        if not d.should_defer:
+            return Applied(False, "not_attempted", why_not=d.why_not)
+    r = bridge.get("/api/todo/list")
+    if not getattr(r, "ok", False):
+        return Applied(False, "not_attempted", why_not=f"读不到待办清单：{getattr(r, 'error', '?')}")
+    todos = [t for t in ((getattr(r, "data", None) or {}).get("items") or []) if t.get("id")]
+    todo_id, status = match_todo(ask, text, expression, event, todos)
+    if not todo_id:
+        return Applied(False, status, why_not="没有对得上的待办" if status == "no_candidate" else "对不上唯一一条待办")
+    d = decide(resolution, todo_id=todo_id, today=today)
+    if not d.should_defer:
+        return Applied(False, "matched", todo_id=todo_id, why_not=d.why_not)
+    until = d.until.isoformat()
+    w = bridge.post("/api/todo/defer", {"id": todo_id, "until": until})
+    if not getattr(w, "ok", False):
+        return Applied(False, "matched", todo_id=todo_id,
+                       why_not=f"bridge 没推成：{getattr(w, 'error', '?')}")
+    title = next((t.get("text", "") for t in todos if str(t["id"]) == todo_id), todo_id)
+    return Applied(True, "matched", todo_id=todo_id, applied_to=f"待办「{title}」推到 {until} 再追")

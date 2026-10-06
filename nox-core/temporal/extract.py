@@ -106,7 +106,7 @@ _PROMPT = """你要从一句中文里找出**带时间的事件**：她说的每
   vague        —— 「一会」「待会」「回头」「晚点」「改天」「有空」。没有字段
 
 可选修饰符 slot（一天里的哪一段），只能配 day_offset / weekday_next / weekday_bare / month_end：
-morning（上午）/ afternoon（下午）/ evening（晚上、今晚）/ late_night（深夜、凌晨）
+morning（上午、早上）/ noon（中午）/ afternoon（下午）/ evening（晚上、今晚）/ late_night（深夜、凌晨）
 
 例子：
 「明天去练腿」 → {"events": [{"expression": "明天", "event": "去练腿", "act": "plan",
@@ -118,6 +118,8 @@ morning（上午）/ afternoon（下午）/ evening（晚上、今晚）/ late_n
      "temporal": {"kind": "day_offset", "n": 1}}]}
 「这3个小时我都连不上你」 → {"events": [{"expression": "这3个小时", "event": "连不上你", "act": "report",
                   "temporal": {"kind": "duration", "hours": 3, "direction": "past", "span": true}}]}
+「中午去参加婚礼」 → {"events": [{"expression": "中午", "event": "参加婚礼", "act": "plan",
+                  "temporal": {"kind": "day_offset", "n": 0, "slot": "noon"}}]}
 「昨晚老醒」 → {"events": [{"expression": "昨晚", "event": "老醒", "act": "report",
                   "temporal": {"kind": "last_night"}}]}
 「我一会再煎个鸡蛋」 → {"events": [{"expression": "一会", "event": "煎鸡蛋", "act": "plan",

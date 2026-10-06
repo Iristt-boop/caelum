@@ -39,7 +39,7 @@ KINDS = frozenset({
 })
 
 #: 时段修饰符。边界在 `temporal.SLOTS`（第一层），这里只认名字。
-SLOT_NAMES = frozenset({"morning", "afternoon", "evening", "late_night"})
+SLOT_NAMES = frozenset({"morning", "noon", "afternoon", "evening", "late_night"})
 
 #: 🔴 duration 的方向（糖糖 2026-09-28）。
 #:

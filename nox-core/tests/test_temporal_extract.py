@@ -688,3 +688,62 @@ def test_锚点用的是message_time不是现在(tmp_path, monkeypatch, caplog):
 
     assert "2026-09-15" in caplog.text, "锚点不对：她说的「明天」应该是 09-15"
     assert "2026-09-16" not in caplog.text, "用了「现在」（09-15 00:02）当锚点，偏了一天"
+
+
+def test_提示词认得中午():
+    from temporal.extract import _PROMPT as SYSTEM_PROMPT
+    assert "noon（中午）" in SYSTEM_PROMPT
+    from temporal.intent import Intent
+    Intent(kind="day_offset", n=0, slot="noon")   # 不许被校验拒掉
+
+
+def test_on模式_她说明天练腿_真的去推迟那条待办(tmp_path, monkeypatch, caplog):
+    """🔴 P4 接线（2026-10-06）：挡「写好了 apply 但 _temporal_async 没调」。
+    判据是 bridge 真的收到了推迟请求、日志写着「已接」—— 不是函数存在。"""
+    from types import SimpleNamespace
+
+    class Bridge:
+        def __init__(self):
+            self.posts = []
+
+        def get(self, path):
+            return SimpleNamespace(ok=True, data={"items": [{"id": "t-leg", "text": "臀腿训练"}]})
+
+        def post(self, path, body):
+            self.posts.append((path, body))
+            return SimpleNamespace(ok=True)
+
+    class Utility(_UtilityAdapter):
+        def complete(self, messages, tools, system=None, **kw):
+            self.calls += 1
+            text = self.payload if self.calls == 1 else "t-leg"      # 第二问：哪条待办
+            return type("T", (), {"text": text, "stop_reason": "end_turn", "error": None})()
+
+    bridge = Bridge()
+    orig = _ChatCore.__init__
+
+    def init(self, *a, **k):
+        orig(self, *a, **k)
+        self.bridge = bridge
+    monkeypatch.setattr(_ChatCore, "__init__", init)
+    utility = Utility()
+    c = _client(tmp_path, monkeypatch, utility, now=REF)
+    monkeypatch.setenv("NOX_TEMPORAL", "on")
+    with caplog.at_level(logging.INFO):
+        c.post("/chat", json={"text": "明天去练腿", "session_id": "s-1"})
+    assert ("/api/todo/defer", {"id": "t-leg", "until": "2026-09-15"}) in bridge.posts
+    assert "已接" in caplog.text and "臀腿训练" in caplog.text
+
+
+def test_shadow模式_不碰待办(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    touched = []
+    orig = _ChatCore.__init__
+
+    def init(self, *a, **k):
+        orig(self, *a, **k)
+        self.bridge = SimpleNamespace(get=lambda p: touched.append(p), post=lambda p, b: touched.append(p))
+    monkeypatch.setattr(_ChatCore, "__init__", init)
+    c = _client(tmp_path, monkeypatch, _UtilityAdapter(), now=REF)
+    c.post("/chat", json={"text": "明天去练腿", "session_id": "s-1"})
+    assert not any("todo" in str(p) for p in touched)

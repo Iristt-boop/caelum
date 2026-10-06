@@ -527,3 +527,18 @@ def test_一会不许被消费():
 def test_vague不许带slot():
     with pytest.raises(ValueError, match="不能带 slot"):
         Intent(kind="vague", slot="evening")
+
+
+def test_slot_中午是11点到14点():
+    """2026-10-06 她：修掉「中午」再上线。shadow 里「中午去吃俄式厨房」被认成 morning、
+    「中午去参加婚礼」没有时段 —— 原来时段表里根本没有中午。"""
+    r = resolve(Intent(kind="day_offset", n=0, slot="noon"), ref())
+    assert r.precision == "slot"
+    assert r.range == (datetime(2026, 9, 14, 11, tzinfo=CST), datetime(2026, 9, 14, 14, tzinfo=CST))
+
+
+def test_中午只是修饰_不改钟点分段():
+    """slot_of(12) 还得是下午 —— 别处靠它说「现在是下午」。"""
+    from temporal import slot_of
+    assert slot_of(12) == ("afternoon", "下午")
+    assert slot_of(11) == ("morning", "上午")
