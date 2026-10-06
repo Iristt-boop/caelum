@@ -19,6 +19,7 @@ from context.providers.location import LocationProvider
 from context.providers.memory import MemoryProvider
 from context.providers.mood import MoodProvider
 from context.providers.music import MusicProvider
+from context.providers.own_day import OwnDayProvider
 from context.providers.relation import RelationProvider
 from context.providers.resonance import ResonanceProvider
 from context.providers.time import TimeProvider
@@ -27,5 +28,5 @@ from context.providers.understanding import UnderstandingProvider
 from context.providers.weather import WeatherProvider
 
 __all__ = ["HealthProvider", "HomeProvider", "LocationProvider", "MemoryProvider",
-           "MoodProvider", "MusicProvider", "RelationProvider", "ResonanceProvider", "TimeProvider",
+           "MoodProvider", "MusicProvider", "OwnDayProvider", "RelationProvider", "ResonanceProvider", "TimeProvider",
            "TodoProvider", "UnderstandingProvider", "WeatherProvider"]

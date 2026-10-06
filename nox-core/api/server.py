@@ -25,7 +25,7 @@ import urllib.request
 import uuid
 from collections import OrderedDict
 from contextlib import asynccontextmanager
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, WebSocket
@@ -58,6 +58,9 @@ from attention import dream as dream_loop
 from attention import todo_defer
 from attention.fond import FondSource
 from attention.relation_book import RelationBook
+from attention import own_time
+from attention.care import her_state
+from attention.resonance import DRIVE_FAMILY
 from attention.appraisal import ANCHOR_PREFIX, RuleAppraiser
 from attention.appraisal_llm import LLMAppraiser
 from tools import luckin as luckin_tools
@@ -108,6 +111,7 @@ from topic_pool.pool import DEFAULT_SCOUT_INTERVAL_S
 #: `mode()` 要**每轮现读**，这样 shadow 转 on 只改环境变量 + 重启就生效
 from moments import loop as moments_loop
 from attention.store import AttentionStore
+from temporal import CST
 from temporal import now as temporal_now
 from temporal import to_local as temporal_local
 from temporal import extract as temporal_extract
@@ -119,7 +123,7 @@ from context.compactor import maybe_compact
 from context.token_budget import estimate_tokens, tail_within_budget
 from data.origin import her_words
 from data.store import Store
-from nox import Nox
+from nox import INNER_VOICE_RULE, Nox
 from personality.mood import now_cst
 from planner.push import finalize_push_text, prepare_morning
 
@@ -757,6 +761,8 @@ def _build_attention(core: Nox, sessions: "Sessions", db: Store) -> AttentionSer
         # 评估器现读（别问 → 权重 0，上心 → 1.0）；RelationProvider 经 core.attention 读给他
         svc.relation_book = RelationBook(svc.store)
         svc.engine.evaluator.relationship.book = svc.relation_book
+        # 他自己的时间（V5，10-06）的活动日志。循环在 lifespan 里起（见 _own_time_loop）
+        svc.activity_log = own_time.ActivityLog(svc.store)
 
         # 体重 / 生理期：HealthKit 那条同步坏了（体重 14 天一条没有，
         # 经期表被快捷指令写坏），改成他在对话里主动记进 World Model
@@ -1114,6 +1120,60 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
     #: 重复进页直接吃缓存 —— 每个 app 实例一份，测试互不串
     _integration_cache: dict = {"at": 0.0, "items": []}
 
+    def _her_last_at() -> datetime | None:
+        """她最后一次开口（最近那条她的会话）。读不到当没在聊 —— 宁可他去做自己的事。"""
+        try:
+            recent = db.recent(limit=1, clean_only=True)
+            return db.last_user_at(recent[0].id) if recent else None
+        except Exception:  # noqa: BLE001
+            logger.warning("读她最后开口的时间失败，按没在聊算", exc_info=True)
+            return None
+
+    def _own_time_tick(now: datetime | None = None) -> Any:
+        """他自己的时间（V5，她 10-06）：今天有没有、到点没、她在不在聊 → 跑一次、落日志。
+
+        **先标 done 再跑**：跑到一半进程挂了，今天就算了（设计稿：失败当天不重试），
+        而不是重启后再跑一遍、在花园里把同一个帖子发两次。
+        """
+        svc = attention
+        log = getattr(svc, "activity_log", None) if svc is not None else None
+        if log is None or os.getenv("NOX_OWN_TIME", "on").strip().lower() == "off":
+            return None
+        now = now or temporal_now()
+        st = own_time.plan_today(svc.store, now)
+        if not own_time.is_due(st, now, _her_last_at()):
+            return None
+        own_time.mark_done(svc.store, st)
+        # 这会儿带着的心情：从「亲近」和「他自己」两族里抽 —— 他自己的时间不是拿来担心的
+        try:
+            drives = {k: v for k, v in (svc.drives(now) or {}).items()
+                      if DRIVE_FAMILY.get(k) in ("bond", "self")}
+            m = her_state.pick_mood(drives, [])
+        except Exception:  # noqa: BLE001
+            logger.warning("他自己的时间：抽心情失败，不带心情去", exc_info=True)
+            m = None
+        sid = f"{own_time.SESSION_PREFIX}{now:%Y%m%d}"
+        dynamic = core._dynamic(own_time.PROMPT, False, None, session_id=sid)
+        dynamic = "\n\n".join(x for x in (
+            dynamic, f"这会儿你带着的心情：{m.word}。" if m else "", INNER_VOICE_RULE) if x)
+        a = own_time.run_once(loop=own_time.build_loop(core.loop, core.loop.adapter),
+                              system=core._system, dynamic=dynamic, now=now,
+                              mood=m.word if m else "")
+        log.append(a)
+        return a
+
+    async def _own_time_loop() -> None:
+        while True:
+            try:
+                await asyncio.sleep(own_time.TICK_S)
+                await asyncio.to_thread(_own_time_tick)
+                # 心跳打在「看过一眼」上，不打在「做了一件事」上 —— 一半的日子本来就什么都不做
+                heartbeat.beat(own_time.HEARTBEAT_JOB)
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001
+                logger.exception("他自己的时间这轮出错，下轮再看")
+
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         """Attention 的后台心跳。**这是全 Core 唯一允许 async 的那层。**
@@ -1187,6 +1247,15 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
                 logger.info("Dream shadow 循环启动")
         except Exception:  # noqa: BLE001
             logger.exception("Dream 接线失败，这条线不跑")
+        # 他自己的时间（V5，10-06）：一天 0~1 次。attention 没开（没有活动日志）就不起
+        try:
+            if getattr(attention, "activity_log", None) is not None:
+                # 🔴 先 declare 再起循环（审计 1.4）。一天最多跑一次，台账按「一天多一点」算
+                heartbeat.declare(own_time.HEARTBEAT_JOB, every_s=own_time.DECLARE_EVERY_S)
+                tasks.append(asyncio.create_task(_own_time_loop()))
+                logger.info("他自己的时间 循环启动")
+        except Exception:  # noqa: BLE001
+            logger.exception("他自己的时间 接线失败，这条线不跑")
         # 长任务 runner（2026-09-22）。默认开 —— 它是惰性的：没有她确认过的
         # 任务就只是在队上等，不花一分钱。NOX_TASKS_DISABLED 留给排查日
         try:
@@ -1815,6 +1884,8 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
             logger.warning("压缩启动失败: %s", exc)
 
     app = FastAPI(title="Nox Core", version="0.1.0", lifespan=lifespan)
+    #: 他自己的时间那一眼（测试和排查时手动敲一下用；平时由 lifespan 里的循环每 5 分钟调）
+    app.state.own_time_tick = _own_time_tick
 
     # ---------------------------------------------------------------- 本地执行端
     #
@@ -2162,6 +2233,8 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
             # 待办和共听的数据在 bridge，世界事实在 Core 自己手里
             bridge=core.bridge,
             world=attention.world if attention is not None else None,
+            # 他自己的时间（V5，10-06）
+            activities=getattr(attention, "activity_log", None),
         )
 
     @app.post("/api/nox/record/period")
@@ -2635,6 +2708,28 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
         if it is None:
             raise HTTPException(status_code=409, detail="这一条现在不能这么改（已经处理过了？）")
         return {"ok": True, "item": it.to_dict()}
+
+    # ---- 他自己的时间（V5，10-06）：His Day 页 / OS NoxDay 读这里 ----
+
+    @app.get("/api/nox/activities")
+    def own_activities(date: str = "", days: int = 1) -> dict:
+        """某天起往前 days 天里他自己做过的事（新的在前）。date 缺省 = 今天（CST）。
+        活动日志没起来就 503 —— 「读不到」不能渲染成「他今天什么都没做」。"""
+        log = getattr(attention, "activity_log", None)
+        if log is None:
+            raise HTTPException(status_code=503, detail="活动日志没起来（attention 没开？），看日志")
+        try:
+            day = datetime.fromisoformat(date).replace(tzinfo=CST) if date else temporal_now().astimezone(CST)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="date 要 YYYY-MM-DD") from exc
+        start = day.replace(hour=0, minute=0, second=0, microsecond=0)
+        days = max(1, min(int(days or 1), 31))
+        items = log.between(start - timedelta(days=days - 1), start + timedelta(days=1))
+        plan = (attention.store.get_source_state(own_time.PLAN_KEY) or {}) if not date else {}
+        return {"ok": True, "items": [a.to_dict() for a in items],
+                #: 今天还有没有一次没做（给页面一句「今天晚些时候他还会去做一件事」，不说几点）
+                "pending_today": bool(plan.get("at") and not plan.get("done")
+                                      and plan.get("date") == start.date().isoformat())}
 
     def _config_store():
         """配置层的库（P0 起启动时建）。没起来就 503 —— 「读不到」不能被渲染成「没有」。"""

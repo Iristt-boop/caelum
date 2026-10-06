@@ -30,7 +30,8 @@
 from __future__ import annotations
 
 #: 整段都是程序拼的会话（不是她在聊天窗口里打的字）
-PROGRAM_SESSION_PREFIXES: tuple[str, ...] = ("diary-", "reading-")
+#: own-time-（10-06）：他自己的时间（V5）—— 那一轮的 text 是我们拼的提示词，不是她说的
+PROGRAM_SESSION_PREFIXES: tuple[str, ...] = ("diary-", "reading-", "own-time-")
 
 #: 程序拼的提示词的开头。
 #:

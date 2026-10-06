@@ -62,6 +62,8 @@ SOURCES = {
     # 2026-08-18 给 Ombre Brain 加了 `/recent`（结构化 JSON）才接上的。
     # MCP 那几个工具回的是给模型读的文本，解析它等于猜，而且格式一改就静默失效
     "memory": {"wired": True, "note": "OB 的 /recent，只回元数据+预览，全文走 trace"},
+    # 2026-10-06 V5「他自己的时间」：一天 0~1 次，他自己去做的事（attention.db activity_log）
+    "own_time": {"wired": True, "note": "他自己的时间，一天 0~1 次"},
 }
 
 #: 待办的动作 → 给她看的话
@@ -320,6 +322,28 @@ def _from_music(songs: list[dict], date_str: str) -> list[dict]:
     return out
 
 
+def _from_own_time(acts: list[Any]) -> list[dict]:
+    """他自己的时间（V5，10-06）。一次活动一条：做了什么 + 心里话 + 工具轨迹（详情面板用）。
+
+    没做成的也进 —— 状态标 failed，她看得到「他去了但没做完」，而不是这一天凭空少一件。
+    """
+    out = []
+    for a in acts or []:
+        out.append({
+            "id": f"own_{a.id}",
+            "timestamp": datetime.fromisoformat(a.started_at).astimezone(LOCAL_TZ).isoformat(),
+            "type": "own_time",
+            "source": "own_time",
+            "title": "他自己的时间",
+            "summary": a.what,
+            "status": "completed" if a.ok else "failed",
+            "metadata": {"inner": a.inner, "share": a.share, "mood": a.mood,
+                         "trace": a.trace, "ended_at": a.ended_at, "error": a.error},
+            "related": {"activityId": a.id},
+        })
+    return out
+
+
 def _from_memory(items: list[dict], date_str: str) -> list[dict]:
     """今天记住的事。数据在 Ombre Brain（`GET /recent`，经 bridge 转一手）。
 
@@ -394,6 +418,7 @@ def build_day(
     wakeups: Any = None,
     bridge: Any = None,
     world: Any = None,
+    activities: Any = None,
     now: datetime | None = None,
 ) -> dict[str, Any]:
     """拉多源 → 归一 → 过滤排序 → `DayEvent[]`。
@@ -455,6 +480,13 @@ def build_day(
                 events += _from_world(world.query(t, days=2), date_str)
         except Exception:  # noqa: BLE001
             logger.exception("聚合世界事实失败，跳过这个源")
+
+    if activities is not None:
+        try:
+            start, end = _day_bounds(date_str)
+            events += _from_own_time(activities.between(start, end))
+        except Exception:  # noqa: BLE001
+            logger.exception("聚合他自己的时间失败，跳过这个源")
 
     events.sort(key=lambda e: e["timestamp"])
 

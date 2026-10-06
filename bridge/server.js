@@ -3852,6 +3852,21 @@ app.get("/api/nox/day", async (req, res) => {
   }
 });
 
+// 他自己的时间（V5，10-06）—— His Day 页读这里。状态码原样转：
+// 503（活动日志没起来）不能变成「他今天什么都没做」
+app.get("/api/nox/activities", async (req, res) => {
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(req.query.date || "") ? req.query.date : "";
+  const days = Math.min(Math.max(parseInt(req.query.days) || 1, 1), 31);
+  try {
+    const q = new URLSearchParams({ days: String(days), ...(date ? { date } : {}) });
+    const r = await fetch(`${NOX_CORE_URL}/api/nox/activities?${q}`, { signal: AbortSignal.timeout(8000) });
+    res.status(r.status).json(await r.json());
+  } catch (e) {
+    console.error("[nox-activities] 读他自己的时间失败:", e.message);
+    res.status(502).json({ ok: false, error: e.message });
+  }
+});
+
 // 这里原来有 todoSync() —— 把待办的增/删/改转给 Core 去写 GitHub 的 todo.md。
 // 2026-08-18 GitHub 退役（Todo-Daily-Planner-设计.md），三个调用点全部改成
 // 直接读写本地表，这个函数就没人用了，删。
