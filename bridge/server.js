@@ -24,6 +24,13 @@ import { fileURLToPath } from "node:url";
 import { WebSocketServer, WebSocket } from "ws";
 import { pickChain } from "./lib/tts-chain.js";
 import { doubaoTtsReady, doubaoTtsPickSpeaker, doubaoTtsRequest, parseDoubaoStream } from "./lib/tts-doubao.js";
+import { doubaoAsrReady, configFrame, audioFrame, endUtteranceFrame, parseResponse } from "./lib/asr-doubao.js";
+
+// 豆包流式识别（与 TTS 同一对凭证/同一应用）
+const DOUBAO_ASR_URL = process.env.DOUBAO_ASR_URL || "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel";
+const DOUBAO_ASR_RESOURCE_ID = process.env.DOUBAO_ASR_RESOURCE_ID || "volc.bigasr.sauc.duration";
+const DOUBAO_TTS_APP_ID = process.env.DOUBAO_TTS_APP_ID || "";
+const DOUBAO_TTS_ACCESS_TOKEN = process.env.DOUBAO_TTS_ACCESS_TOKEN || "";
 import Database from "better-sqlite3";
 import multer from "multer";
 import { lookupMovie, longEnough } from "./lib/movie-meta.js";
@@ -900,7 +907,117 @@ server.on("upgrade", (req, socket, head) => {
     return;
   }
 
+  // 豆包大模型流式识别（2026-10-06）：OS 语音 live 的正选耳朵。
+  // 客户端消息形状与 /ws/stt 完全一致（append/commit），换管道不用改协议。
+  if (pathname === "/ws/stt/doubao") {
+    if (AUTH_TOKEN && readAuthToken(req) !== AUTH_TOKEN) {
+      rejectUpgrade(socket);
+      return;
+    }
+    doubaoAsrWss.handleUpgrade(req, socket, head, (ws) => {
+      doubaoAsrWss.emit("connection", ws, req);
+    });
+    return;
+  }
+
   socket.destroy();
+});
+
+/* ==============================================================
+ * 豆包流式识别中继（/ws/stt/doubao）
+ *
+ * 浏览器 ↔ 桥：JSON 消息（{type:"append",audio:base64} / {type:"commit"}），
+ * 桥 ↔ 火山：二进制帧（lib/asr-doubao.js 的封解包）。
+ * 凭证与豆包 TTS 同一对（同应用），识别结果转成与 /ws/stt 相同的
+ * stt-ready / stt-delta / stt-final 消息回给前端——前端换管道零成本。
+ * ==============================================================
+ */
+const doubaoAsrWss = new WebSocketServer({ noServer: true });
+
+doubaoAsrWss.on("connection", (clientWs) => {
+  if (!doubaoAsrReady()) {
+    clientWs.send(JSON.stringify({ type: "error", error: "doubao_asr_unconfigured" }));
+    clientWs.close();
+    return;
+  }
+
+  const upstream = new WebSocket(`${DOUBAO_ASR_URL}`, {
+    headers: {
+      "X-Api-App-Key": DOUBAO_TTS_APP_ID,
+      "X-Api-Access-Key": DOUBAO_TTS_ACCESS_TOKEN,
+      "X-Api-Resource-Id": DOUBAO_ASR_RESOURCE_ID,
+    },
+  });
+
+  let seq = 0;
+  let lastFinal = "";
+
+  const sendClient = (obj) => {
+    if (clientWs.readyState === clientWs.OPEN) {
+      try { clientWs.send(JSON.stringify(obj)); } catch {}
+    }
+  };
+
+  upstream.on("open", () => {
+    try { upstream.send(configFrame()); } catch (e) {
+      console.error("[ASR-Doubao] 配置帧发送失败:", e.message);
+    }
+    sendClient({ type: "stt-ready", model: "doubao-bigmodel" });
+  });
+
+  // 二进制帧要按 Buffer 发：把 Node 的二进制数据标注清楚
+  upstream.binaryType = "arraybuffer";
+
+  upstream.on("message", (data, isBinary) => {
+    const buf = isBinary ? Buffer.from(data) : Buffer.from(String(data));
+    const parsed = parseResponse(buf);
+    if (!parsed) return;
+    if (parsed.type === "error") {
+      console.error("[ASR-Doubao] 上游错误:", parsed.message);
+      sendClient({ type: "error", error: parsed.message });
+      return;
+    }
+    if (parsed.text && parsed.text !== lastFinal) {
+      sendClient({ type: "stt-delta", text: parsed.text });
+    }
+    if (parsed.final && parsed.text) {
+      lastFinal = parsed.text;
+      sendClient({ type: "stt-final", text: parsed.text });
+    }
+  });
+
+  upstream.on("error", (e) => {
+    console.error("[ASR-Doubao] upstream error:", e.message);
+    sendClient({ type: "error", error: e.message || "asr_upstream_error" });
+  });
+
+  upstream.on("close", () => {
+    if (clientWs.readyState === clientWs.OPEN) clientWs.close();
+  });
+
+  clientWs.on("message", (buf) => {
+    let msg;
+    try { msg = JSON.parse(buf.toString()); } catch { return; }
+    if (upstream.readyState !== WebSocket.OPEN) return;
+
+    if (msg.type === "append" && msg.audio) {
+      seq += 1;
+      try {
+        upstream.send(audioFrame(seq, Buffer.from(msg.audio, "base64")));
+      } catch (e) { console.error("[ASR-Doubao] 音频帧失败:", e.message); }
+      return;
+    }
+    if (msg.type === "commit") {
+      // 负序号末包：服务端回一帧定稿文本（上面 message 处理里转成 stt-final）
+      try {
+        upstream.send(endUtteranceFrame(seq + 1));
+      } catch (e) { console.error("[ASR-Doubao] 末包失败:", e.message); }
+      return;
+    }
+  });
+
+  clientWs.on("close", () => { try { upstream.close(); } catch {} });
+  clientWs.on("error", () => { try { upstream.close(); } catch {} });
 });
 
 /** 判定「她说完了」的静音时长，**由前端按场景传进来**。
