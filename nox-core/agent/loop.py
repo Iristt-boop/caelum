@@ -176,6 +176,7 @@ class AgentLoop:
         images: list[str] | None = None,
         adapter: LLMAdapter | None = None,
         session_id: str | None = None,
+        depth: Depth | None = None,
     ) -> LoopResult:
         # 上下文当局部变量持有，不用 contextvar 包整轮 ——
         # 那样在流式路径下会炸（见 tools/context.py 开头）
@@ -186,7 +187,7 @@ class AgentLoop:
         shape = cache_shape(system, list(self.tools.values()), history)
         result = self._run_inner(
             user_text, ctx, system=system, dynamic_system=dynamic_system,
-            history=history, images=images, adapter=adapter,
+            history=history, images=images, adapter=adapter, depth=depth,
         )
         result.attachments = ctx.attachments
         result.dirty_providers = sorted(ctx.dirty)
@@ -210,7 +211,10 @@ class AgentLoop:
         history: list[Message] | None = None,
         images: list[str] | None = None,
         adapter: LLMAdapter | None = None,
+        depth: Depth | None = None,
     ) -> LoopResult:
+        #: 这一轮想多深：调用方给了就用（她的「思考」开关，见 Nox._chat_depth），没给用默认
+        depth = depth or self.depth
         # 这一轮用哪个后端。传了就用传的（糖糖在前端换了模型），
         # 没传用默认的 —— loop 本身不认识"模型"这个概念，只认 adapter
         llm = adapter or self.adapter
@@ -238,7 +242,7 @@ class AgentLoop:
                 specs,
                 system=system,
                 dynamic_system=dynamic_system,
-                depth=self.depth,
+                depth=depth,
             )
             _accumulate(total, turn.usage)
 
@@ -308,6 +312,7 @@ class AgentLoop:
         split: bool = True,
         adapter: LLMAdapter | None = None,
         session_id: str | None = None,
+        depth: Depth | None = None,
     ) -> Iterator[StreamEvent]:
         """流式版的 run。
 
@@ -329,6 +334,7 @@ class AgentLoop:
             for ev in self._stream_inner(
                 user_text, ctx, system=system, dynamic_system=dynamic_system,
                 history=history, images=images, split=split, adapter=adapter,
+                depth=depth,
             ):
                 # done 事件带上工具产生的附带产物（比如「要发的图片」），
                 # 以及「这一轮写过哪些状态」—— 后者由调用方拿去清 Provider 缓存
@@ -372,7 +378,9 @@ class AgentLoop:
         images: list[str] | None = None,
         split: bool = True,
         adapter: LLMAdapter | None = None,
+        depth: Depth | None = None,
     ) -> Iterator[StreamEvent]:
+        depth = depth or self.depth
         llm = adapter or self.adapter
         messages: list[Message] = list(history or [])
         messages.append(Message(role="user", text=user_text, images=images or []))
@@ -431,7 +439,7 @@ class AgentLoop:
             turn: Turn | None = None
             for ev in llm.stream(
                 messages, specs,
-                system=system, dynamic_system=dynamic_system, depth=self.depth,
+                system=system, dynamic_system=dynamic_system, depth=depth,
             ):
                 if ev.type == "text":
                     yield from emit(ev.text)

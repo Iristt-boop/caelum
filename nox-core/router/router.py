@@ -123,6 +123,7 @@ class Router:
         scene: str | None = None,
         adapter: LLMAdapter | None = None,
         session_id: str | None = None,
+        depth: str | None = None,
     ) -> RouteResult:
         decision = classify(text, has_images=bool(images))
         logger.info("路由：%s（%s）", decision.intent.value, decision.reason)
@@ -145,6 +146,7 @@ class Router:
                 images=images,
                 adapter=adapter,
                 session_id=session_id,
+                depth=depth,
             ),
             decision,
         )

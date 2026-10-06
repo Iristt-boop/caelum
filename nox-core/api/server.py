@@ -256,6 +256,11 @@ def _clean_segments(text: str, voice: bool) -> str:
     return (" " if voice else "\n").join(parts)
 
 
+class ThinkingRequest(BaseModel):
+    """她在设置里拨「思考」开关（10-06）。放在模块级：FastAPI 解析不到 create_app 里的局部类"""
+    on: bool
+
+
 class PeriodRequest(BaseModel):
     """她在 App 里填的生理期。
 
@@ -2512,7 +2517,21 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
                          "model": utility.model} if utility is not None else None),
             "choices": choices,
             "providers": providers,
+            #: 她的「思考」开关（10-06）。和模型不同，它是**服务器上一份**：手机、OS、他主动开口都听它的
+            "thinking": bool(getattr(core, "thinking_on", lambda: False)()),
         }
+
+    @app.get("/api/nox/thinking")
+    def nox_thinking() -> dict:
+        """思考开关现在是开是关。打电话不管开关，永远不想（见 Nox._chat_depth）。"""
+        return {"ok": True, "on": bool(core.thinking_on())}
+
+    @app.post("/api/nox/thinking")
+    def nox_set_thinking(req: ThinkingRequest) -> dict:
+        """她在设置里拨开关。存不上就 503 —— 不能回 ok 让她以为改好了。"""
+        if not core.set_thinking(req.on):
+            raise HTTPException(status_code=503, detail="思考开关没存上（状态库没起来？），看日志")
+        return {"ok": True, "on": bool(core.thinking_on())}
 
     def _config_store():
         """配置层的库（P0 起启动时建）。没起来就 503 —— 「读不到」不能被渲染成「没有」。"""

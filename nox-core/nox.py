@@ -110,6 +110,8 @@ def _rescue_fake_calls(attachments: list, calls: list[tuple[str, str]]) -> None:
 #: 情绪和这条账一起存，因为它们同生同灭：都是"这一轮之前发生了什么"，
 #: 都按同一个半衰期过期。**别再开一张表**（CAELUM-MAP 那条「平行实现」）
 STATE_KEY = "personality.state"
+#: 她的「思考」开关（同一张 source_state 表）。见 Nox.thinking_on
+THINKING_KEY = "core.thinking"
 
 
 class _CardDebt(set):
@@ -752,6 +754,42 @@ class Nox:
         """
         return getattr(self, "state_store", None)
 
+    # ------------------------------------------------------------ 思考开关（她 10-06 要的）
+
+    def thinking_on(self) -> bool:
+        """她在设置里打开了「思考」没有。**每轮现读**，改了下一句就生效、不用重启。
+
+        她 10-06：「你把思考做成个配置项，让我自己选择平常打开还是关闭」。
+        起因：10-05 试 DeepSeek 时关着思考，他 31 轮只调了 1 次工具、回复 47 token，她说「变蠢了」。
+        读不到（库没起来 / 读挂了）一律当关 —— 关着就是这之前一直的样子。
+        ⚠️ 配置层 P2（settings.db 可改）上线时迁过去，别留两份真源（Caelum-配置层-设计稿-2026-10-05.md）
+        """
+        store = self._state_store()
+        if store is None:
+            return False
+        try:
+            return bool((store.get_source_state(THINKING_KEY) or {}).get("on"))
+        except Exception:  # noqa: BLE001
+            logger.warning("读不出思考开关，这一轮按关着算", exc_info=True)
+            return False
+
+    def set_thinking(self, on: bool) -> bool:
+        """存开关。存不上返回 False（调用方要说出来，不能假装改好了）。"""
+        store = self._state_store()
+        if store is None:
+            return False
+        try:
+            store.set_source_state(THINKING_KEY, {"on": bool(on), "at": datetime.now().isoformat(timespec="seconds")})
+        except Exception:  # noqa: BLE001
+            logger.exception("思考开关没存上")
+            return False
+        logger.info("思考开关 → %s", "开" if on else "关")
+        return True
+
+    def _chat_depth(self, voice: bool) -> str:
+        """这一轮聊天想多深。**打电话永远不想** —— 她说完要立刻有回音，想几秒就是一段死寂。"""
+        return "high" if (not voice and self.thinking_on()) else "low"
+
     def _restore_state_once(self) -> None:
         """第一次用到情绪之前，把上个进程留下的状态接回来。
 
@@ -933,7 +971,7 @@ class Nox:
         result = self.router.handle(
             text, history, dynamic_system=dynamic, images=images,
             voice=voice, scene=scene, adapter=self.adapter_for(model),
-            session_id=session_id,
+            session_id=session_id, depth=self._chat_depth(voice),
         )
         # 这一轮写过什么状态 → 把对应 Provider 的缓存打掉。
         # 放在最前面：后面几步都是文本后处理，不该影响清缓存这件事。
@@ -1001,6 +1039,7 @@ class Nox:
             split=not voice,
             adapter=self.adapter_for(model),
             session_id=session_id,
+            depth=self._chat_depth(voice),
         ):
             if ev.type == "done":
                 result = getattr(ev, "result", None)

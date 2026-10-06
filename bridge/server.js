@@ -3395,6 +3395,30 @@ app.post("/api/nox/tasks/:tid/cancel", noxTaskProxy("/cancel", "POST", 8000));
 
 // 可切换的模型清单 + 当前系统默认（Models 设置页）。
 // 切换不走这里 —— 聊天请求带 model 短名，coreMode 本来就透传
+// 「思考」开关（2026-10-06 她要的）：服务器上一份，手机 / OS / 他主动开口都听它的。
+// 🔴 Core 存不上（503）要原样告诉前端 —— 翻成 200 她会以为拨好了
+app.get("/api/nox/thinking", async (req, res) => {
+  try {
+    const r = await fetch(`${NOX_CORE_URL}/api/nox/thinking`, { signal: AbortSignal.timeout(8000) });
+    res.status(r.status).json(await r.json());
+  } catch (e) {
+    console.error("[nox-thinking] 读开关失败:", e.message);
+    res.status(502).json({ ok: false, error: e.message });
+  }
+});
+app.post("/api/nox/thinking", async (req, res) => {
+  try {
+    const r = await fetch(`${NOX_CORE_URL}/api/nox/thinking`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ on: !!req.body?.on }), signal: AbortSignal.timeout(8000),
+    });
+    res.status(r.status).json(await r.json());
+  } catch (e) {
+    console.error("[nox-thinking] 拨开关失败:", e.message);
+    res.status(502).json({ ok: false, error: e.message });
+  }
+});
+
 app.get("/api/nox/models", async (req, res) => {
   try {
     const r = await fetch(`${NOX_CORE_URL}/api/nox/models`, { signal: AbortSignal.timeout(8000) });
