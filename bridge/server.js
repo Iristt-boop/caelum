@@ -25,7 +25,7 @@ import { WebSocketServer, WebSocket } from "ws";
 import { pickChain } from "./lib/tts-chain.js";
 import { doubaoTtsReady, doubaoTtsPickSpeaker, doubaoTtsRequest, parseDoubaoStream } from "./lib/tts-doubao.js";
 import {
-  doubaoAsrReady, DOUBAO_ASR_WS_URL, DOUBAO_ASR_RESOURCE_ID,
+  DOUBAO_ASR_WS_URL, DOUBAO_ASR_RESOURCE_ID,
   doubaoAsrHandshakeHeaders, configFrame, audioFrame, lastPacketFrame, parseResponse,
 } from "./lib/asr-doubao.js";
 
@@ -936,7 +936,7 @@ server.on("upgrade", (req, socket, head) => {
 const doubaoAsrWss = new WebSocketServer({ noServer: true });
 
 doubaoAsrWss.on("connection", (clientWs) => {
-  if (!doubaoAsrReady()) {
+  if (!DOUBAO_TTS_APP_ID || !DOUBAO_TTS_ACCESS_TOKEN) {
     clientWs.send(JSON.stringify({ type: "error", error: "doubao_asr_unconfigured" }));
     clientWs.close();
     return;
