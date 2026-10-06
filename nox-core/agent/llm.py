@@ -180,9 +180,10 @@ class StreamEvent:
     打字聊天时那只是"等一会儿"，**语音通话时那是一段纯粹的死寂** ——
     她没法判断他是在干活还是卡死了。这两帧是通话里唯一的进度信号。
 
-    `thinking` 是 adapter 发的第三种（2026-10-06，她：「打开 thinking 在 chat 页也显示
-    thinking 的内容」）：模型的思考增量（GLM / DeepSeek 的 `reasoning_content`）。
-    **不进正文、不进历史** —— loop 原样往外递，开不开给她看由 `Nox.chat_stream` 按「思考」开关定。
+    `thinking`（2026-10-06，她：「打开 thinking 在 chat 页也显示 thinking 的内容」）有两个来源：
+      · adapter 发的：模型的 reasoning 草稿。**loop 不往外递**（她选了只看心里话，见 INNER_OPEN）
+      · loop 发的：从正文里拆出来的 `<心里>…</心里>` —— 这才是给她看的那个
+    **不进正文、不进历史**。开不开给她看由 `Nox.chat_stream` 按「思考」开关定。
     """
 
     type: Literal["text", "split", "done", "tool_start", "tool_end", "thinking"]
@@ -319,6 +320,97 @@ def strip_stage_tags(text: str | None, *, keep_control: bool = False) -> str | N
     #: 标签独占一行的，剥完别留一个空行尾巴
     out = re.sub(r"\n{3,}", "\n\n", out)
     return out.strip() if out != text else text
+
+
+#: 他的心里话（2026-10-06）。「思考」开着时，他每次回复先写一段第一人称的内心独白包在这对标签里，
+#: 流式那边拆到 thinking 块，正文里不留。
+#:
+#: 为什么不直接用模型的 reasoning：她要的是「第一人称、自我的内心想法」，而 GLM 的 reasoning 是
+#: 解题草稿，**不听提示词**（10-06 实测：要求中文第一人称，草稿照样是英文分析笔记或空的，
+#: 他反倒把独白写进了说给她听的话里）。让他自己写、我们拆出来，3/3 守格式。
+INNER_OPEN, INNER_CLOSE = "<心里>", "</心里>"
+_INNER_BLOCK_RE = re.compile(re.escape(INNER_OPEN) + r".*?" + re.escape(INNER_CLOSE) + r"\s*", re.S)
+
+
+def strip_inner_voice(text: str | None) -> str | None:
+    """整段文本里的心里话拿掉 —— **不进历史**（她 10-06 定的：只给她看，他不记）。
+
+    没收口的 `<心里>` 只摘标签、留内容：那种时候要说的话多半也被包在里面了，删整段就是吞掉他的回复。
+    """
+    if not text or INNER_OPEN not in text:
+        return text
+    out = _INNER_BLOCK_RE.sub("", text).replace(INNER_OPEN, "").strip()
+    return out or None
+
+
+def _partial_tail(buf: str, tag: str) -> int:
+    """buf 结尾是不是半个 tag（流式切片常态），是的话返回那半截的长度。"""
+    for k in range(min(len(tag) - 1, len(buf)), 0, -1):
+        if buf.endswith(tag[:k]):
+            return k
+    return 0
+
+
+class InnerVoiceFilter:
+    """流式里把 `<心里>…</心里>` 拆出来：`feed` 回 [("thinking"|"text", 片段)]。
+
+    - 标签被切成好几片到达也认得（半截留在缓冲里等下一片）
+    - 心里话收口之后的空行吃掉，不然第一个气泡以空行开头
+    - 🔴 **没收口就结束**（他忘了写 `</心里>`）：`flush` 把心里那段再当正文补发一次 ——
+      宁可 thinking 块和正文重复，也不能让她一句回复都看不到
+    每次调模型新开一个（工具循环里每一轮回复都可能以心里话开头）。
+    """
+
+    def __init__(self) -> None:
+        self.buf = ""
+        self.inner = False
+        self.inner_text = ""
+        #: 开头 / 心里话刚收口：先吃掉空白
+        self.lstrip = True
+
+    def _emit(self, out: list[tuple[str, str]], s: str) -> None:
+        if not s:
+            return
+        if self.inner:
+            self.inner_text += s
+            out.append(("thinking", s))
+            return
+        if self.lstrip:
+            s = s.lstrip()
+            if not s:
+                return
+            self.lstrip = False
+        out.append(("text", s))
+
+    def feed(self, chunk: str) -> list[tuple[str, str]]:
+        self.buf += chunk
+        out: list[tuple[str, str]] = []
+        while self.buf:
+            tag = INNER_CLOSE if self.inner else INNER_OPEN
+            i = self.buf.find(tag)
+            if i >= 0:
+                self._emit(out, self.buf[:i])
+                self.buf = self.buf[i + len(tag):]
+                self.inner = not self.inner
+                if not self.inner:
+                    self.inner_text = ""
+                    self.lstrip = True
+                continue
+            keep = _partial_tail(self.buf, tag)
+            self._emit(out, self.buf[: len(self.buf) - keep])
+            self.buf = self.buf[len(self.buf) - keep:]
+            break
+        return out
+
+    def flush(self) -> list[tuple[str, str]]:
+        out: list[tuple[str, str]] = []
+        rest, self.buf = self.buf, ""
+        self._emit(out, rest)
+        if self.inner and self.inner_text.strip():
+            self.inner = False
+            out.append(("text", self.inner_text.strip()))
+        self.inner, self.inner_text, self.lstrip = False, "", True
+        return out
 
 
 class MoodTagFilter:

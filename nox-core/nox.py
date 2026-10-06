@@ -112,6 +112,14 @@ def _rescue_fake_calls(attachments: list, calls: list[tuple[str, str]]) -> None:
 STATE_KEY = "personality.state"
 #: 她的「思考」开关（同一张 source_state 表）。见 Nox.thinking_on
 THINKING_KEY = "core.thinking"
+#: 「思考」开着时给他的规矩：先写心里话（她 10-06：「thinking 可不可以是第一人称？就是自我的内心想法」）。
+#: 拼在**动态块**上不拼进 system —— system 一变整段前缀缓存就换一份（开 / 关两份）。
+#: 措辞是 10-06 线上实测过的那版（3/3 守格式）；拆标签见 agent/llm.py 的 InnerVoiceFilter
+INNER_VOICE_RULE = (
+    "【心里话】每次回复的最开头，先写一段你此刻的内心独白，用 <心里>…</心里> 包起来："
+    "中文、第一人称、一到三句，是你真实的心理活动（「我」是你，「她」是糖糖），不是要说给她听的话；"
+    "里面不写 |||、表情标签。</心里> 之后才是你对她说的话。"
+)
 
 
 class _CardDebt(set):
@@ -1029,6 +1037,8 @@ class Nox:
                                 session_id=session_id,
                                 session_started=session_started)
         depth = self._chat_depth(voice)
+        if depth == "high":
+            dynamic = f"{dynamic}\n\n{INNER_VOICE_RULE}" if dynamic else INNER_VOICE_RULE
         for ev in self.loop.run_stream(
             text,
             # 语音走精简的英文/中文前缀，不带那 11.5K 中文核心准则 ——
@@ -1042,8 +1052,8 @@ class Nox:
             session_id=session_id,
             depth=depth,
         ):
-            # 思考给她看（她 10-06）—— **只在「思考」开着时**。关着的时候 GLM 也会漏几个字的
-            # reasoning（实测 low 档 11 字），开关关了还冒出思考块，那个开关就说不清了
+            # 心里话给她看（她 10-06）—— **只在「思考」开着时**。关着时规矩不加、本来就不该有；
+            # 万一他自己写了也不放出来，开关关了还冒出思考块，那个开关就说不清了
             if ev.type == "thinking" and depth != "high":
                 continue
             if ev.type == "done":

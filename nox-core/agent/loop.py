@@ -43,6 +43,7 @@ from tools import context as tool_context
 from agent.llm import (
     GATED_EFFECTS,
     Depth,
+    InnerVoiceFilter,
     LLMAdapter,
     Message,
     MoodTagFilter,
@@ -52,6 +53,7 @@ from agent.llm import (
     ToolSpec,
     Turn,
     Usage,
+    strip_inner_voice,
 )
 
 logger = logging.getLogger(__name__)
@@ -245,6 +247,8 @@ class AgentLoop:
                 depth=depth,
             )
             _accumulate(total, turn.usage)
+            # 非流式一般不会有心里话（规矩只在聊天流里加），万一写了也别漏进主动消息和历史
+            turn.text = strip_inner_voice(turn.text)
 
             if turn.stop_reason == "error":
                 return LoopResult("error", None, iterations, total, messages, turn.error)
@@ -437,20 +441,34 @@ class AgentLoop:
                 return
 
             turn: Turn | None = None
+            # 心里话先拆（每次调模型一个新的）：拆出来的不过情绪过滤和分段，原样当 thinking 递出去
+            inner = InnerVoiceFilter()
+
+            def route(pairs: list[tuple[str, str]]) -> Iterator[StreamEvent]:
+                for kind, piece in pairs:
+                    if kind == "thinking":
+                        yield StreamEvent("thinking", text=piece)
+                    else:
+                        yield from emit(piece)
+
             for ev in llm.stream(
                 messages, specs,
                 system=system, dynamic_system=dynamic_system, depth=depth,
             ):
                 if ev.type == "text":
-                    yield from emit(ev.text)
+                    yield from route(inner.feed(ev.text))
                 elif ev.type == "thinking":
-                    # 不过情绪过滤和分段：草稿纸原样递出去（给不给她看是上层的事）
-                    yield ev
+                    # 模型的 reasoning 草稿：不递。她 10-06 选了「只放他的心里话」——
+                    # 草稿是英文分析笔记，不是他的内心。想连草稿一起给她看就在这里放行
+                    continue
                 else:
                     turn = ev.turn
+            yield from route(inner.flush())
 
             if turn is None:
                 turn = Turn(stop_reason="error", error="流意外结束，没有收到 done 事件")
+            # 心里话只给她看，**不进历史**（她 10-06：「不记，只给你看」）—— 下面所有 append / _done 都读 turn.text
+            turn.text = strip_inner_voice(turn.text)
             _accumulate(total, turn.usage)
 
             if turn.stop_reason in ("error", "refusal", "max_tokens"):
