@@ -70,7 +70,7 @@ from attention.dejection import DejectionState
 from attention.playfulness import PlayfulnessState
 from attention.restlessness import RestlessnessState
 from attention.regret import RegretWatch
-from attention.resonance import ResonanceState
+from attention.resonance import Drive, ResonanceState
 from attention.relationship import RelationshipState
 from attention.scheduler import STATE_KEY as SCHED_KEY
 from attention.scheduler import LOCAL_TZ, Scheduler, SchedulerDecision
@@ -117,6 +117,13 @@ JEALOUSY_KEY = "resonance.jealousy"
 SULK_KEY = "resonance.sulk"
 #: 惦记最近两句带的心情（抽心情时给刚用过的降权，见 her_state.pick_mood）
 MOODS_KEY = "care.recent_moods"
+
+#: 想起开心的旧事（attention/fond.py，她 2026-10-06 拍板：记忆 + Gallery 收藏，只换心情不加次数）。
+#: 每次想起她时有多大可能顺带想起一件；想起了，它就以这个强度进心情的抽签池
+FOND_CHANCE = 0.35
+FOND_INTENSITY = 0.4
+#: 担心到这个程度 = 她这会儿不舒服（10-06 她感冒那天担心 0.64），不翻旧事逗她
+FOND_UNWELL = 0.6
 
 #: 「想起你了」的次数闸（2026-10-04 她：「一天重复的主动开口内容很多，大部分是无效的……
 #: 开口次数太多但是内容量又不多」）。09-24→10-03 醒着时平均每天 17~25 次、睡着后一晚 8 次多。
@@ -243,6 +250,8 @@ class AttentionService:
         #: 夜里的梦（dream-shadow.jsonl）。她睡着时的自言自语可以提一句
         #: 「我刚梦到……」（2026-09-23 她要的）。装配时回填，None = 不提梦
         self.dream_log_path: Any = None
+        #: 想起开心的旧事（attention/fond.FondSource）。server 建完回填，没有就不想
+        self.fond: Any = None
         #: 惦记最近两句带的心情。V4.5 的反例是连着五帖同一种情绪 ——
         #: 刚用过的心情下一次降权（her_state.REPEAT_PENALTY）
         self.recent_moods: list[str] = list(
@@ -739,6 +748,22 @@ class AttentionService:
             b["awake"] = b.get("awake", 0) + 1
         self._think_budget_save(b)
 
+    def _maybe_fond(self, drives: dict, now: datetime):
+        """这一次要不要顺带想起一件开心的旧事。她不舒服的时候不逗她。"""
+        if self.fond is None:
+            return None
+        concern = drives.get("concern")
+        if concern is not None and concern.intensity >= FOND_UNWELL:
+            logger.info("Care：她这会儿不舒服（担心 %.2f），不翻开心的旧事逗她", concern.intensity)
+            return None
+        if random.random() >= FOND_CHANCE:
+            return None
+        try:
+            return self.fond.pick(now)
+        except Exception:  # noqa: BLE001
+            logger.warning("挑开心的旧事失败，这次不想", exc_info=True)
+            return None
+
     def _think_of_her(self, signal: CareSignal, thread: Any, now: datetime) -> bool:
         """他想起她了 / 她出门、到家、在外面很久了。返回 False = 这次不说。"""
         st = self.her_now(now)
@@ -773,11 +798,22 @@ class AttentionService:
         # 形式和情绪分开（她 09-23 拍板）：她的状态只决定怎么说，
         # 这一句的心情从他整个情绪分布里抽（V4.5：不取最强的那个）
         mood = None
+        fond = None
         try:
-            mood = her_state.pick_mood(self.drives(now), self.recent_moods)
+            drives = self.drives(now)
+            #: 想起一件开心的旧事（10-06，「想逗她」的第二个来源）：只在这一次里多一个可抽的心情，
+            #: 不加开口次数。她正在闹（促狭本来就有）就不用旧事了
+            fond = self._maybe_fond(drives, now) if "playfulness" not in drives else None
+            if fond is not None:
+                drives = {**drives, "playfulness": Drive(
+                    name="playfulness", intensity=FOND_INTENSITY, load=FOND_INTENSITY,
+                    because=[f"想起{fond.title}"], evidence=[], source_count=1, computed_at=now)}
+            mood = her_state.pick_mood(drives, self.recent_moods)
         except Exception:  # noqa: BLE001
             logger.warning("抽心情失败，这一句不带特定心情", exc_info=True)
-        why = her_state.guidance(st, trigger=move, dream=dream, note=note, mood=mood)
+        if fond is not None and (mood is None or mood.name != "playfulness"):
+            fond = None   # 旧事只在抽中「想逗她」时才说；没抽中就当没想起
+        why = her_state.guidance(st, trigger=move, dream=dream, note=note, mood=mood, fond=fond)
         #: 交给 care_tick：自言自语不等回话（不进节奏/后悔的账）
         signal.payload["posture"] = st.posture
         signal.payload["mood"] = mood.name if mood else ""
@@ -820,6 +856,8 @@ class AttentionService:
             if signal.source == "random":
                 self._think_budget_spend(st, now)
             # 真说出口了才算「用过这个心情」—— [SKIP] 掉的不算
+            if fond is not None and self.fond is not None:
+                self.fond.mark_used(fond, now)
             if mood is not None:
                 self.recent_moods = (self.recent_moods + [mood.name])[-2:]
                 try:

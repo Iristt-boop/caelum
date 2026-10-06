@@ -341,7 +341,7 @@ def pick_mood(drives: dict[str, Any], recent: list[str] | None = None,
 
 
 def guidance(st: HerState, *, trigger: str = "", dream: str = "", note: str = "",
-             mood: Mood | None = None) -> str:
+             mood: Mood | None = None, fond: Any = None) -> str:
     """给开场白用的一段话：她的状态（事实 + 怎么说）+ 这一句的心情 + 情绪边界。
 
     **形式和情绪分开**（她 2026-09-23 拍板）：这里按她的状态只交代「怎么说」，
@@ -406,6 +406,14 @@ def guidance(st: HerState, *, trigger: str = "", dream: str = "", note: str = ""
             "你心里不止这一种，但这一句就带着这一个说，自然流露，别解释你为什么有这个情绪。")
         if mood.name in TASTE:
             lines.append(f"（她喜欢的味道：{TASTE[mood.name]}。是味道，不是台词，别照抄。）")
+        if fond is not None:
+            #: 「想逗她」的第二个来源（attention/fond.py，她 10-06 拍板）：不是她在闹，是他忽然想起一件开心的旧事
+            line = (f"你忽然想起一件开心的旧事（{fond.age_days} 天前）：{fond.detail}\n"
+                    "这一句就从这件事说起 —— 像突然想到一样，逗逗她、陪她回味一下当时的开心。"
+                    "别念记忆、别总结、别说「我记得」开头的报告腔。")
+            if getattr(fond, "kind", "") == "photo" and getattr(fond, "query", ""):
+                line += f"想让她也看看那张照片，就用 send_gallery_image（query={fond.query}）。"
+            lines.append(line)
     else:
         lines.append("你心里这会儿没什么特别的情绪——想她就说想她。")
 

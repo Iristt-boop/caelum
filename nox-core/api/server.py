@@ -55,6 +55,7 @@ from attention.dejection import looks_like_giving_up
 from attention import appraisal_llm
 from attention import dream as dream_loop
 from attention import todo_defer
+from attention.fond import FondSource
 from attention.appraisal import ANCHOR_PREFIX, RuleAppraiser
 from attention.appraisal_llm import LLMAppraiser
 from tools import luckin as luckin_tools
@@ -746,6 +747,8 @@ def _build_attention(core: Nox, sessions: "Sessions", db: Store) -> AttentionSer
         # 她睡着时他自言自语可以提一句夜里的梦（2026-09-23）。只读 JSONL，
         # 梦那条线本身照旧不推送、不占 Care 额度（dream.py 的边界不动）
         svc.dream_log_path = dream_loop._log_path(os.path.dirname(str(core.cfg.db_path)))
+        # 想起开心的旧事（10-06）：记忆桶 + Gallery 收藏，「想逗她」的第二个来源
+        svc.fond = FondSource(store=svc.store, buckets_dir=dream_loop.buckets_dir(), bridge=core.bridge)
 
         # 体重 / 生理期：HealthKit 那条同步坏了（体重 14 天一条没有，
         # 经期表被快捷指令写坏），改成他在对话里主动记进 World Model
