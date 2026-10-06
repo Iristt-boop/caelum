@@ -611,6 +611,11 @@ class OpenAICompatAdapter:
                     finish = choice.finish_reason
 
                 delta = choice.delta
+                # 思考增量：多数家叫 reasoning_content，聚合网关那类叫 reasoning。
+                # 只往外递，不进 texts —— 那是草稿纸，不是他说的话
+                thought = getattr(delta, "reasoning_content", None) or getattr(delta, "reasoning", None)
+                if isinstance(thought, str) and thought:
+                    yield StreamEvent("thinking", text=thought)
                 if getattr(delta, "content", None):
                     texts.append(delta.content)
                     yield StreamEvent("text", text=delta.content)

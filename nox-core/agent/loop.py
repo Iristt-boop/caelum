@@ -443,6 +443,9 @@ class AgentLoop:
             ):
                 if ev.type == "text":
                     yield from emit(ev.text)
+                elif ev.type == "thinking":
+                    # 不过情绪过滤和分段：草稿纸原样递出去（给不给她看是上层的事）
+                    yield ev
                 else:
                     turn = ev.turn
 

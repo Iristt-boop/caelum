@@ -1119,6 +1119,9 @@ async function coreMode(req, res, requestId) {
   // tool_start 压入、tool_end 补全，done 时随消息落 metadata.toolsTrace ——
   // 她翻历史时能看到每次调用的入参和子步骤，不只是工具名清单
   let toolsTrace = [];
+  // 他这一轮的思考（2026-10-06 她：「打开 thinking 在 chat 页也显示 thinking 的内容」）。
+  // 「思考」开着 Core 才发 thinking 帧；转给前端，收尾落进这一轮第一条的 metadata.thinking
+  let thinkingText = "";
   // Core 收不到 session_id 时会自己 uuid4 生成一个，并在 done 帧里报出来。
   // 这里必须接住它回传给前端 —— 否则前端下一轮又传空，Core 又建一个新会话，
   // 表现成「每说一句话就多一个 Recents 窗口，而且他永远记不住上一句」。
@@ -1296,6 +1299,10 @@ async function coreMode(req, res, requestId) {
           fullReply += ev.text;
           curSegment += ev.text;
           res.write(`data: ${JSON.stringify({ type: "text", content: ev.text })}\n\n`);
+        } else if (ev.type === "thinking") {
+          // 草稿纸：不进 fullReply / 分段（搜索、预览、他下一轮读到的都是说出口的话）
+          thinkingText += ev.text || "";
+          res.write(`data: ${JSON.stringify({ type: "thinking", content: ev.text || "" })}\n\n`);
         } else if (ev.type === "split") {
           // 分段点。content 里仍旧用换行分隔（搜索、导出、Recents 预览都读那一列，
           // 保持纯文本），分段边界另外记进 metadata.segments。
@@ -1506,15 +1513,20 @@ async function coreMode(req, res, requestId) {
   //: 同一轮的几条共用一个 turn —— 手机端按它归成一组，整轮只在最后挂一次时间戳（同当场看到的）
   const turn = String(requestId).slice(0, 12);
   const multi = timeline.length > 1;
+  //: 思考挂在这一轮**第一条**上（不管它是字还是组件）—— 两个 Chat 页都把它画在这一轮最前面
+  const thinking = thinkingText.trim();
+  let firstEntry = true;
   for (const e of timeline) {
+    const th = firstEntry && thinking ? { thinking } : {};
+    firstEntry = false;
     if (e.att) {
-      saveMessage(coreSid, "assistant", "", multi ? { ...e.att, turn } : e.att);
+      saveMessage(coreSid, "assistant", "", { ...e.att, ...th, ...(multi ? { turn } : {}) });
       continue;
     }
     // metadata 搭积木：segments / toolsUsed 按需往里面加，不为了传一个字段
     // 把另一个空数组也塞进去 —— 前端看到空数组和「没这个 key」行为一样，
     // 白占数据库一行。工具轨迹挂在这一轮的**第一条**文字上（前端的工具块画在回复开头）
-    const meta = {};
+    const meta = { ...th };
     if (e.text.length > 1) meta.segments = e.text;
     if (firstText && toolsUsed.length) meta.toolsUsed = toolsUsed;
     if (firstText && toolsTrace.length) meta.toolsTrace = toolsTrace;

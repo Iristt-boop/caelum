@@ -1028,6 +1028,7 @@ class Nox:
         dynamic = self._dynamic(text, voice, scene, has_images=bool(images),
                                 session_id=session_id,
                                 session_started=session_started)
+        depth = self._chat_depth(voice)
         for ev in self.loop.run_stream(
             text,
             # 语音走精简的英文/中文前缀，不带那 11.5K 中文核心准则 ——
@@ -1039,8 +1040,12 @@ class Nox:
             split=not voice,
             adapter=self.adapter_for(model),
             session_id=session_id,
-            depth=self._chat_depth(voice),
+            depth=depth,
         ):
+            # 思考给她看（她 10-06）—— **只在「思考」开着时**。关着的时候 GLM 也会漏几个字的
+            # reasoning（实测 low 档 11 字），开关关了还冒出思考块，那个开关就说不清了
+            if ev.type == "thinking" and depth != "high":
+                continue
             if ev.type == "done":
                 result = getattr(ev, "result", None)
                 if result is not None:

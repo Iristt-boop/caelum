@@ -179,9 +179,13 @@ class StreamEvent:
     🔴 为什么要发（2026-09-07）：工具跑起来的十几二十秒里，这条流**一个字节都不吐**。
     打字聊天时那只是"等一会儿"，**语音通话时那是一段纯粹的死寂** ——
     她没法判断他是在干活还是卡死了。这两帧是通话里唯一的进度信号。
+
+    `thinking` 是 adapter 发的第三种（2026-10-06，她：「打开 thinking 在 chat 页也显示
+    thinking 的内容」）：模型的思考增量（GLM / DeepSeek 的 `reasoning_content`）。
+    **不进正文、不进历史** —— loop 原样往外递，开不开给她看由 `Nox.chat_stream` 按「思考」开关定。
     """
 
-    type: Literal["text", "split", "done", "tool_start", "tool_end"]
+    type: Literal["text", "split", "done", "tool_start", "tool_end", "thinking"]
     text: str = ""
     turn: Turn | None = None
     #: 工具名。只有 tool_start / tool_end 用
