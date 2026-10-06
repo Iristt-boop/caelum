@@ -302,6 +302,8 @@ def test_off_means_the_model_is_never_called(appraising, monkeypatch):
     """默认关的时候不该有任何额外开销。"""
     client, events, adapter = appraising
     monkeypatch.setenv("NOX_LLM_APPRAISAL", "off")
+    #: 关系识别（10-06）是另一件事、自己的开关，同一个 utility 模型 —— 这里只看理解层关掉的开销
+    monkeypatch.setenv("NOX_RELATION", "off")
     client.post("/chat", json={"text": "我不想干了", "session_id": "s-real"})
     assert adapter.calls == 0
 

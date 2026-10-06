@@ -108,7 +108,8 @@ def classify(text: str, *, has_images: bool = False) -> Decision:
 #:
 #: 它读的是内存里的 Registry（不打网络），没有锚点时渲染成空串，
 #: 所以轻量路径也带得起
-_ALWAYS = ("time", "mood", "resonance", "understanding")
+#: relation（10-06）：约定 / 别问 / 上心 / 气氛。没有就渲染成空串，一个字都不占
+_ALWAYS = ("time", "mood", "resonance", "understanding", "relation")
 
 # 记忆。2026-09-05 解禁（见 context/providers/memory.py 顶上那张表）。
 #

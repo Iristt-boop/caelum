@@ -28,7 +28,12 @@ M5 的 Feedback Collector 上线之后，`care_topics` 的权重和 `trust_level
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -53,8 +58,21 @@ class RelationshipState:
         "情绪": 0.9,
     })
 
-    #: 她明确说过「别问我这个」的话题。M5 才会往里加。
+    #: 她明确说过「别问我这个」的话题。写死的种子是空的，真正的来源是下面那本账。
     avoid_topics: set[str] = field(default_factory=set)
+
+    #: 关系状态的账本（attention/relation_book.py，2026-10-06）。挂上了就**每次现读**：
+    #: 她在聊天卡片上点了 Keep，下一次评估就生效，不用重启
+    book: Any = None
+
+    def _from_book(self, which: str) -> set[str]:
+        if self.book is None:
+            return set()
+        try:
+            return getattr(self.book, which)(datetime.now(timezone.utc))
+        except Exception:  # noqa: BLE001
+            logger.warning("读关系账本失败，这次按写死的种子算", exc_info=True)
+            return set()
 
     def care_weight(self, topic: str) -> float:
         """这个话题在这段关系里有多重要。
@@ -63,9 +81,11 @@ class RelationshipState:
         给 0 的话，任何没预设过的新话题都永远进不了 Attention，
         Nox 就只会关心我们替他写死的那几件事。
         """
-        if topic in self.avoid_topics:
+        if self.is_avoided(topic):
             return 0.0
+        if topic in self._from_book("care_topics"):
+            return 1.0
         return self.care_topics.get(topic, 0.5)
 
     def is_avoided(self, topic: str) -> bool:
-        return topic in self.avoid_topics
+        return topic in self.avoid_topics or topic in self._from_book("avoid_topics")

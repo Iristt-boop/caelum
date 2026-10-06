@@ -23,7 +23,7 @@ from context.timeline import humanize
 from context.providers.understanding import has_live_anchor
 from context.providers import (
     HealthProvider, HomeProvider, LocationProvider, MemoryProvider,
-    MoodProvider, MusicProvider, ResonanceProvider, TimeProvider, TodoProvider,
+    MoodProvider, MusicProvider, RelationProvider, ResonanceProvider, TimeProvider, TodoProvider,
     UnderstandingProvider, WeatherProvider,
 )
 from guide import loader as guide_loader
@@ -544,6 +544,9 @@ class Nox:
         #
         # 理解层没开时它渲染成空串，一个字都不占 —— 所以可以直接进每轮名单
         self.context.register(UnderstandingProvider(
+            attention_ref=lambda: getattr(self, "attention", None)))
+        # 你们之间的事（关系状态账本，10-06）：约定 / 别问 / 上心 / 气氛。没有就是空串
+        self.context.register(RelationProvider(
             attention_ref=lambda: getattr(self, "attention", None)))
         # 注册但**不进每轮名单**（见 _dynamic）。它一次检索约 7 秒，
         # 而且每轮塞不同记忆会让 dynamic_system 每轮都变，

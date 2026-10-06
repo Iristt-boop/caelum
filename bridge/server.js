@@ -3560,6 +3560,44 @@ app.post("/api/nox/thinking", async (req, res) => {
   }
 });
 
+/* 关系状态（10-06，《Caelum-关系状态-设计稿》）。她：「当时的确认放聊天，后续我可以自己在列表查看」。
+ *
+ * ① /api/relation/card：nox-core 认出一条「我们之间的事」后调这里，在那条会话里落一张确认卡。
+ *    🔴 **不推通知**（不走 /api/push/send）—— 这不是他找她说话，是一张等她顺手点的卡；
+ *    R1 那条「push/send 只在 attention 出口」也不碰。
+ * ② /api/nox/relation*：列表 / 现查一条 / Keep · Not quite · 删，原样转给 nox-core。
+ *    卡片的状态是活的（同订单卡）：落库的只是快照，挂上时按 id 现查 */
+app.post("/api/relation/card", (req, res) => {
+  const sid = String(req.body?.session_id || "").slice(0, 64);
+  const it = req.body?.item;
+  if (!sid || !it?.id || !it?.text) return res.status(400).json({ error: "session_id 和 item（id / text）都要" });
+  const relation = {
+    id: String(it.id).slice(0, 32), kind: String(it.kind || ""), text: String(it.text).slice(0, 200),
+    quote: String(it.quote || "").slice(0, 300),
+  };
+  const rid = saveMessage(sid, "assistant", "", { relation });
+  console.log(`[Relation] 确认卡 -> ${sid.slice(0, 12)}: ${relation.kind} · ${relation.text.slice(0, 30)}`);
+  res.json({ ok: true, id: rid });
+});
+
+async function relationProxy(res, path, method = "GET") {
+  try {
+    const r = await fetch(`${NOX_CORE_URL}/api/nox/relation${path}`, { method, signal: AbortSignal.timeout(8000) });
+    res.status(r.status).json(await r.json());
+  } catch (e) {
+    console.error("[relation] 转 nox-core 失败:", e.message);
+    res.status(502).json({ ok: false, error: e.message });
+  }
+}
+app.get("/api/nox/relation", (req, res) => relationProxy(res, ""));
+app.get("/api/nox/relation/:id", (req, res) => relationProxy(res, `/${encodeURIComponent(req.params.id)}`));
+app.post("/api/nox/relation/:id/:action", (req, res) => {
+  if (!["confirm", "reject", "remove"].includes(req.params.action)) {
+    return res.status(400).json({ ok: false, error: "只认 confirm / reject / remove" });
+  }
+  relationProxy(res, `/${encodeURIComponent(req.params.id)}/${req.params.action}`, "POST");
+});
+
 app.get("/api/nox/models", async (req, res) => {
   try {
     const r = await fetch(`${NOX_CORE_URL}/api/nox/models`, { signal: AbortSignal.timeout(8000) });

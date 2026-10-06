@@ -29,7 +29,8 @@ from router.intent import classify, classify_context  # noqa: E402
 #:   mood           她的情绪（本轮文本 + 内存状态）
 #:   resonance      他自己的情绪（2026-09-04 加，纯内存读 Registry）
 #:   understanding  他理解着她的哪几件事（2026-09-05 加，同样纯内存读 Registry）
-MINIMAL = ["time", "mood", "resonance", "understanding"]
+#:   relation       你们之间的事（2026-10-06 加，本地库读关系账本；没有就空串）
+MINIMAL = ["time", "mood", "resonance", "understanding", "relation"]
 
 #: 这几个要打外部（MCP / HTTP），**永远不许进最小集**
 EXTERNAL = {"home", "health", "weather", "todo", "location", "music", "memory"}

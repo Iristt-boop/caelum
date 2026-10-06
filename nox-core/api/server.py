@@ -53,9 +53,11 @@ from attention.care.watching import WatchingCheck
 from attention.events import ExperienceEvent
 from attention.dejection import looks_like_giving_up
 from attention import appraisal_llm
+from attention import relation_detect
 from attention import dream as dream_loop
 from attention import todo_defer
 from attention.fond import FondSource
+from attention.relation_book import RelationBook
 from attention.appraisal import ANCHOR_PREFIX, RuleAppraiser
 from attention.appraisal_llm import LLMAppraiser
 from tools import luckin as luckin_tools
@@ -751,6 +753,10 @@ def _build_attention(core: Nox, sessions: "Sessions", db: Store) -> AttentionSer
         # 共活动的事实读 World Model，细节借上面共活动记账那几个 client
         svc.fond = FondSource(store=svc.store, buckets_dir=dream_loop.buckets_dir(), bridge=core.bridge,
                               world=world, eryu=shared_source.eryu, reading=shared_source.reading)
+        # 关系状态账本（10-06，《Caelum-关系状态-设计稿》）：约定 / 别问 / 上心 / 气氛。
+        # 评估器现读（别问 → 权重 0，上心 → 1.0）；RelationProvider 经 core.attention 读给他
+        svc.relation_book = RelationBook(svc.store)
+        svc.engine.evaluator.relationship.book = svc.relation_book
 
         # 体重 / 生理期：HealthKit 那条同步坏了（体重 14 天一条没有，
         # 经期表被快捷指令写坏），改成他在对话里主动记进 World Model
@@ -1535,6 +1541,46 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
             _appraise_async(sid, text, reply, message_time)
         except Exception as exc:  # noqa: BLE001
             logger.warning("意义推断启动失败（不影响对话）: %s", exc)
+        try:
+            _relation_async(sid, text, reply)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("关系识别启动失败（不影响对话）: %s", exc)
+
+    def _relation_async(sid: str, text: str, reply: str) -> None:
+        """这一轮她有没有说出一件「我们之间的事」（关系状态，10-06）。
+
+        和意义推断同一道闸（测试会话在 `_turn_ends` 上面就回去了；注入型会话的 text 是
+        程序拼的提示词），同一个 utility 模型，后台线程。认出来 → 记成提议 →
+        约定 / 别问 / 上心在聊天里出确认卡（bridge `/api/relation/card`，**不推通知**）。
+        `NOX_RELATION=off` 关掉。
+        """
+        book = getattr(attention, "relation_book", None)
+        if book is None or not text or os.getenv("NOX_RELATION", "on").strip().lower() == "off":
+            return
+        if appraisal_llm.is_injected(sid):
+            return
+        utility = core.router.light_adapter if core.router else None
+        if utility is None:
+            return
+        utility = meter.tag(utility, "relation")
+
+        def _run() -> None:
+            try:
+                now = temporal_now()
+                known = [it.text for it in book.items(now)]
+                got = relation_detect.detect(utility, text, reply, known)
+                if got is None:
+                    return
+                it = book.propose(session_id=sid, now=now, **got)
+                if it is None or it.status != "pending" or core.bridge is None:
+                    return
+                r = core.bridge.post("/api/relation/card", {"session_id": sid, "item": it.to_dict()})
+                if not r.ok:
+                    logger.warning("关系确认卡没发出去（她在列表里还能点）：%s", r.error)
+            except Exception:  # noqa: BLE001
+                logger.exception("关系识别这轮挂了（不影响对话）")
+
+        threading.Thread(target=_run, daemon=True, name="relation").start()
 
     def _temporal_async(sid: str, text: str, message_time: Any = None) -> None:
         """后台线程里抽时间关系（第二层，2026-09-14）。
@@ -2554,6 +2600,41 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
         if not core.set_thinking(req.on):
             raise HTTPException(status_code=503, detail="思考开关没存上（状态库没起来？），看日志")
         return {"ok": True, "on": bool(core.thinking_on())}
+
+    # ---- 关系状态（10-06，《Caelum-关系状态-设计稿》）：Us 列表 + 聊天卡片上的 Keep / Not quite ----
+
+    def _relation_book():
+        book = getattr(attention, "relation_book", None)
+        if book is None:
+            #: 「读不到」不能渲染成「没有」—— 她会以为他什么都没记
+            raise HTTPException(status_code=503, detail="关系账本没起来（attention 没开？），看日志")
+        return book
+
+    @app.get("/api/nox/relation")
+    def relation_list() -> dict:
+        """列表页：待确认 + 生效中（过期的气氛不算）。新的在前。"""
+        return {"ok": True, "items": [it.to_dict() for it in _relation_book().items(temporal_now())]}
+
+    @app.get("/api/nox/relation/{item_id}")
+    def relation_get(item_id: str) -> dict:
+        """卡片挂上时现查状态（同订单卡：落库的是快照，状态是活的）。"""
+        it = _relation_book().get(item_id)
+        if it is None:
+            raise HTTPException(status_code=404, detail="没有这一条")
+        return {"ok": True, "item": it.to_dict()}
+
+    @app.post("/api/nox/relation/{item_id}/{action}")
+    def relation_decide(item_id: str, action: str) -> dict:
+        """confirm（Keep）/ reject（Not quite）/ remove（列表里删）。状态不对就 409，别装作成了。"""
+        if action not in ("confirm", "reject", "remove"):
+            raise HTTPException(status_code=400, detail="只认 confirm / reject / remove")
+        book = _relation_book()
+        if book.get(item_id) is None:
+            raise HTTPException(status_code=404, detail="没有这一条")
+        it = book.decide(item_id, action, temporal_now())
+        if it is None:
+            raise HTTPException(status_code=409, detail="这一条现在不能这么改（已经处理过了？）")
+        return {"ok": True, "item": it.to_dict()}
 
     def _config_store():
         """配置层的库（P0 起启动时建）。没起来就 503 —— 「读不到」不能被渲染成「没有」。"""
