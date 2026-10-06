@@ -511,23 +511,24 @@ def test_刚用过的心情降权():
     assert got.count("sulk") / len(got) < 0.3, "晾他一下午，他连发五条「怎么不理我」（V4.5 的反例）"
 
 
-def test_担心占太多时抬其他情绪_三句里最多一句是担心():
-    """V4.5 homeostasis。数值取自 09-28 线上：担心 0.74、被勾着 0.65、想她 0.40 那种。"""
+def test_照顾亲近自己按3比4比3_担心再强也只占照顾那份():
+    """她 10-06：「三种类别的比例按 3、4、3，亲近占 4」。数值取自线上常态：担心 0.8 压着、想她 0.4。"""
     import random
-    drives = {"concern": D(0.8), "longing": D(0.4), "curiosity": D(0.2)}
+    drives = {"concern": D(0.8), "longing": D(0.4), "curiosity": D(0.4)}
     rng = random.Random(11)
-    got = [her_state.pick_mood(drives, [], rng).name for _ in range(3000)]
+    got = [her_state.pick_mood(drives, [], rng).name for _ in range(4000)]
     share = {k: got.count(k) / len(got) for k in drives}
-    assert 0.29 < share["concern"] < 0.38, f"不抬是 0.57，抬到 1/3 才对：{share}"
-    assert 1.6 < share["longing"] / share["curiosity"] < 2.5, "其他情绪一起抬，彼此的比例不该变"
+    assert 0.26 < share["concern"] < 0.34, f"照顾 3 成：{share}"
+    assert 0.36 < share["longing"] < 0.44, f"亲近 4 成：{share}"
+    assert 0.26 < share["curiosity"] < 0.34, f"他自己 3 成：{share}"
 
 
-def test_担心不多时不动它_也不把它垫高():
+def test_担心不多时不把它垫高_份额是上限不是目标():
     import random
     drives = {"concern": D(0.2), "longing": D(0.4), "curiosity": D(0.4)}
     rng = random.Random(5)
     got = [her_state.pick_mood(drives, [], rng).name for _ in range(3000)]
-    assert 0.16 < got.count("concern") / len(got) < 0.24, "1/3 是上限不是目标"
+    assert 0.13 < got.count("concern") / len(got) < 0.22, "一点点担心（0.2）只拿半份"
 
 
 def test_只有担心时照样说担心_并且报的是它的真实强度():

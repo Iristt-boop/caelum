@@ -104,6 +104,20 @@ DRIVE_WORDS: dict[str, str] = {
     "restlessness": "憋着话",
 }
 
+#: 🔴 **每种情绪属于哪一族。** 和 DRIVE_WORDS 一样全项目只此一张，加情绪两张一起改
+#: （`tests/test_mood_families.py` 查「DRIVE_WORDS 里每种都有族」）。
+#:
+#: 她 10-06：「照顾和亲近天差地远吧。亲近是更情侣之间的东西」。V4.5 设计稿的「Care / Bond 两族」
+#: 加上他自己那一族 —— 主动开口按 照顾 3 : 亲近 4 : 自己 3 分（她定的，见 her_state.FAMILY_SHARE）
+#:   care   她有状况，他得管：担心、过意不去
+#:   bond   情侣之间的：想她、想逗她、吃醋、委屈
+#:   self   他自己的：被一件事勾着、提不起劲、憋着话
+DRIVE_FAMILY: dict[str, str] = {
+    "concern": "care", "regret": "care",
+    "longing": "bond", "playfulness": "bond", "jealousy": "bond", "sulk": "bond",
+    "curiosity": "self", "dejection": "self", "restlessness": "self",
+}
+
 #: `because` / `evidence` 各留几条。
 #: 这两个字段是给人看的（日志、自省），不是给机器算的 ——
 #: 列满二十条没人读得下去

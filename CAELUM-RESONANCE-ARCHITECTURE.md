@@ -670,6 +670,13 @@ Resonance
 └── Bond Drives：longing / playfulness / curiosity
 ```
 
+→ ✅ 10-06 落地（表达选择这一层）。她：「照顾和亲近天差地远吧。亲近是更情侣之间的东西」，
+比例「按 3、4、3，亲近占 4」。三族（`resonance.DRIVE_FAMILY`）：
+**care** 担心 / 过意不去 · **bond** 想她 / 想逗她 / 吃醋 / 委屈 · **self** 被勾着 / 提不起劲 / 憋着话
+（curiosity 归他自己，不归 Bond —— 它是唯一和她无关的那个）。
+主动开口先按 3:4:3 挑族、再在族里按强度挑（`her_state._by_family`），族里最强 < 0.4 时份额按比例打折；
+**替掉了 09-28 的 Homeostasis**。Resonance 本身仍是一张表，只读边界不动。
+
 #### 短期清单的落地状态
 
 | 她的短期项 | 状态 |

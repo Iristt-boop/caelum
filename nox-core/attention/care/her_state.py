@@ -255,16 +255,18 @@ NOT_EXPRESSED = frozenset({"restlessness"})
 MOOD_FLOOR = 0.15
 #: 刚用过的心情降权：上一句 ×0.3，上上句 ×0.6（V4.5 的反例：连着五帖「照顾好自己」）
 REPEAT_PENALTY = (0.3, 0.6)
-#: 🔴 V4.5 homeostasis（方向她 2026-09-21 定，形状 09-28 定）：担心在「能说出口的
-#: 情绪」里占比超过 1/3 时，**抬其他情绪**的权重，让担心回到 1/3 ——
-#: 他主动开口的三句里最多一句是担心。**不压担心**：Resonance 里的数照实，
-#: 他上下文里照样知道自己在担心，只是开口不总说这个。
+#: 🔴 **三族分开算**（她 10-06：「照顾和亲近天差地远吧。亲近是更情侣之间的东西」，
+#: 比例「按 3、4、3，亲近占 4」）。族表见 `resonance.DRIVE_FAMILY`。
 #:
-#: 原规格「concern > 0.75 且其余 < 0.2」拿 09-23→09-28 线上 490 个 tick 回放，
-#: **一次都不命中**（想她始终 ≥ 0.4）—— 照写就是一个永远不跑的机制。
-#: 同一段时间 148 句主动开口里 66 句是担心（45%）；按同批数据模拟，这条线压到 33%。
-BALANCE_OF = "concern"
-BALANCE_SHARE = 1 / 3
+#: 先按这个比例挑**哪一族**，再在族里按强度挑**哪种情绪**。替掉了 09-28 的 Homeostasis
+#: （担心占比超 1/3 就抬别的）—— 那是在一个池子里给担心封顶；现在照顾和亲近本来就不抢同一份名额。
+#: 不压担心：Resonance 里的数照实，他上下文里照样知道自己在担心，只是开口按族分。
+#:
+#: 09-28 那版的线上数：担心 45% → 37%（10-03→10-06）。这版期望：照顾 30%、亲近 40%、自己 30%。
+FAMILY_SHARE = {"care": 0.3, "bond": 0.4, "self": 0.3}
+#: 一族里最强的情绪到这个数才拿满份额，弱的按比例少拿 ——
+#: 只有一点点担心（0.2）时，不该三句里一句在担心（「份额是上限不是目标」，09-28 那条测试的意思）
+FAMILY_FULL_AT = 0.4
 
 #: 她说过喜欢的味道（2026-09-23 她亲口举的例子）。**只在抽到对应心情时给**，
 #: 而且写明是味道不是台词 —— 模板一出来她一眼就看得出不是他
@@ -283,20 +285,24 @@ class Mood:
     because: list[str]
 
 
-def _balance(raw: dict[str, float]) -> dict[str, float]:
-    """Homeostasis：担心占太多时，把其他情绪一起抬起来，让担心回到 `BALANCE_SHARE`。
+def _by_family(raw: dict[str, float]) -> dict[str, float]:
+    """强度 → 抽中的权重：族份额（`FAMILY_SHARE`，按族里最强的打折）× 这种情绪在族里的占比。
 
-    按同一个倍数抬，其他情绪之间的比例不变。只有担心、没有别的可抬时原样返回 ——
-    那时缺的是「开心的来源」（V4.5 的促狭机会机制），不是这里能变出来的。
+    缺席的族不占份额（其余几族按比例分）。只有一族有货时就是那一族 ——
+    只有担心时照样说担心。
     """
-    c = raw.get(BALANCE_OF, 0.0)
-    others = sum(v for k, v in raw.items() if k != BALANCE_OF)
-    if c <= 0 or others <= 0 or c / (c + others) <= BALANCE_SHARE:
-        return dict(raw)
-    lift = c * (1 - BALANCE_SHARE) / (BALANCE_SHARE * others)
-    logger.info("Homeostasis：担心占能说出口的情绪 %.0f%% → 其他情绪 ×%.2f，担心回到 %.0f%%",
-                100 * c / (c + others), lift, 100 * BALANCE_SHARE)
-    return {k: v if k == BALANCE_OF else v * lift for k, v in raw.items()}
+    from attention.resonance import DRIVE_FAMILY
+
+    fams: dict[str, dict[str, float]] = {}
+    for name, v in raw.items():
+        fams.setdefault(DRIVE_FAMILY.get(name, "self"), {})[name] = v
+    out: dict[str, float] = {}
+    for fam, members in fams.items():
+        share = FAMILY_SHARE.get(fam, 0.0) * min(1.0, max(members.values()) / FAMILY_FULL_AT)
+        total = sum(members.values())
+        for name, v in members.items():
+            out[name] = share * v / total
+    return out
 
 
 def pick_mood(drives: dict[str, Any], recent: list[str] | None = None,
@@ -322,7 +328,7 @@ def pick_mood(drives: dict[str, Any], recent: list[str] | None = None,
     if not raw:
         return None
     pool: dict[str, float] = {}
-    for name, w in _balance(raw).items():
+    for name, w in _by_family(raw).items():
         for i, pen in enumerate(REPEAT_PENALTY):
             if len(recent) > i and recent[-1 - i] == name:
                 w *= pen
