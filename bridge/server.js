@@ -24,11 +24,12 @@ import { fileURLToPath } from "node:url";
 import { WebSocketServer, WebSocket } from "ws";
 import { pickChain } from "./lib/tts-chain.js";
 import { doubaoTtsReady, doubaoTtsPickSpeaker, doubaoTtsRequest, parseDoubaoStream } from "./lib/tts-doubao.js";
-import { doubaoAsrReady, configFrame, audioFrame, endUtteranceFrame, parseResponse } from "./lib/asr-doubao.js";
+import {
+  doubaoAsrReady, DOUBAO_ASR_WS_URL, DOUBAO_ASR_RESOURCE_ID,
+  doubaoAsrHandshakeHeaders, configFrame, audioFrame, lastPacketFrame, parseResponse,
+} from "./lib/asr-doubao.js";
 
 // 豆包流式识别（与 TTS 同一对凭证/同一应用）
-const DOUBAO_ASR_URL = process.env.DOUBAO_ASR_URL || "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel";
-const DOUBAO_ASR_RESOURCE_ID = process.env.DOUBAO_ASR_RESOURCE_ID || "volc.bigasr.sauc.duration";
 const DOUBAO_TTS_APP_ID = process.env.DOUBAO_TTS_APP_ID || "";
 const DOUBAO_TTS_ACCESS_TOKEN = process.env.DOUBAO_TTS_ACCESS_TOKEN || "";
 import Database from "better-sqlite3";
@@ -941,16 +942,11 @@ doubaoAsrWss.on("connection", (clientWs) => {
     return;
   }
 
-  const upstream = new WebSocket(`${DOUBAO_ASR_URL}`, {
-    headers: {
-      "X-Api-App-Key": DOUBAO_TTS_APP_ID,
-      "X-Api-Access-Key": DOUBAO_TTS_ACCESS_TOKEN,
-      "X-Api-Resource-Id": DOUBAO_ASR_RESOURCE_ID,
-    },
+  const upstream = new WebSocket(DOUBAO_ASR_URL, {
+    headers: doubaoAsrHandshakeHeaders(DOUBAO_TTS_APP_ID, DOUBAO_TTS_ACCESS_TOKEN),
   });
 
-  let seq = 0;
-  let lastFinal = "";
+  let lastDelta = "";   // 末包回执里没有 text，定稿要用最后一条流式文本
 
   const sendClient = (obj) => {
     if (clientWs.readyState === clientWs.OPEN) {
@@ -965,24 +961,22 @@ doubaoAsrWss.on("connection", (clientWs) => {
     sendClient({ type: "stt-ready", model: "doubao-bigmodel" });
   });
 
-  // 二进制帧要按 Buffer 发：把 Node 的二进制数据标注清楚
-  upstream.binaryType = "arraybuffer";
-
   upstream.on("message", (data, isBinary) => {
     const buf = isBinary ? Buffer.from(data) : Buffer.from(String(data));
     const parsed = parseResponse(buf);
     if (!parsed) return;
     if (parsed.type === "error") {
-      console.error("[ASR-Doubao] 上游错误:", parsed.message);
-      sendClient({ type: "error", error: parsed.message });
+      // 1013 = 这段没有有效语音（静音），不是故障，不打扰前端
+      if (parsed.code !== 1013) console.error("[ASR-Doubao] 上游错误:", parsed.message);
       return;
     }
-    if (parsed.text && parsed.text !== lastFinal) {
+    if (parsed.text && parsed.text !== lastDelta) {
+      lastDelta = parsed.text;
       sendClient({ type: "stt-delta", text: parsed.text });
     }
-    if (parsed.final && parsed.text) {
-      lastFinal = parsed.text;
-      sendClient({ type: "stt-final", text: parsed.text });
+    if (parsed.final) {
+      // 末包回执不带 text，用最后一条流式文本定稿
+      sendClient({ type: "stt-final", text: lastDelta });
     }
   });
 
@@ -1001,16 +995,15 @@ doubaoAsrWss.on("connection", (clientWs) => {
     if (upstream.readyState !== WebSocket.OPEN) return;
 
     if (msg.type === "append" && msg.audio) {
-      seq += 1;
       try {
-        upstream.send(audioFrame(seq, Buffer.from(msg.audio, "base64")));
+        upstream.send(audioFrame(Buffer.from(msg.audio, "base64")));
       } catch (e) { console.error("[ASR-Doubao] 音频帧失败:", e.message); }
       return;
     }
     if (msg.type === "commit") {
-      // 负序号末包：服务端回一帧定稿文本（上面 message 处理里转成 stt-final）
+      // 末包：服务端回一帧定稿（上面 message 处理里转成 stt-final）
       try {
-        upstream.send(endUtteranceFrame(seq + 1));
+        upstream.send(lastPacketFrame());
       } catch (e) { console.error("[ASR-Doubao] 末包失败:", e.message); }
       return;
     }
