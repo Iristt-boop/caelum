@@ -23,6 +23,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer, WebSocket } from "ws";
 import { pickChain } from "./lib/tts-chain.js";
+import { doubaoTtsReady, doubaoTtsPickSpeaker, doubaoTtsRequest, parseDoubaoStream } from "./lib/tts-doubao.js";
 import Database from "better-sqlite3";
 import multer from "multer";
 import { lookupMovie, longEnough } from "./lib/movie-meta.js";
@@ -2147,6 +2148,65 @@ app.post("/api/tts", async (req, res) => {
   //: 整条链都没成。**说出来**，别回一个 200 的空 body（那是静默失败）
   console.error("[TTS] 整条降级链都失败了");
   if (!res.headersSent) res.status(502).json({ error: "tts_all_failed" });
+});
+
+/* ==============================================================
+ * 豆包流式 TTS（2026-10-06）—— **OS 语音指令专用**，不进上面的降级链。
+ *
+ * 为什么单独一个端点而不是给 /api/tts 加个 profile：那两家链的语义是
+ * 「一次请求一段完整 mp3」，豆包这条是 **HTTP chunked 流式**——
+ * 边合成边吐，指令场景要的就是首包快。硬塞进 pickChain 会把两种
+ * 响应形态搅在一起，降级逻辑也没法共用（半截流没法接半截 mp3）。
+ *
+ * 谁在用：caelum-os-ui 的指令浮层（voiceCommand.js）。通话/语音条不动。
+ * 协议细节、env 配置见 lib/tts-doubao.js 顶上的注释；
+ * 真实密钥冒烟跑 `node scripts/tts-doubao-selftest.mjs`。
+ * ==============================================================
+ */
+app.post("/api/tts/doubao", async (req, res) => {
+  const text = String(req.body?.text || "").trim();
+  if (!text) return res.status(400).json({ error: "text required" });
+
+  if (!doubaoTtsReady()) {
+    return res.status(503).json({ error: "doubao_tts_unconfigured" });
+  }
+  const pick = doubaoTtsPickSpeaker(req.body?.voice);
+  if (!pick) {
+    return res.status(503).json({ error: "doubao_tts_no_voice" });
+  }
+
+  const t0 = Date.now();
+  try {
+    const up = await doubaoTtsRequest({ text: text.slice(0, 600), ...pick });
+    res.setHeader("Content-Type", "audio/mpeg");
+    res.setHeader("X-TTS-Engine", "doubao");
+    res.setHeader("Access-Control-Expose-Headers", "X-TTS-Engine");
+    res.setHeader("Cache-Control", "no-store");
+    let firstByteAt = 0;
+    let bytes = 0;
+    await parseDoubaoStream(up, {
+      onAudio: (buf) => {
+        // 🔴 首包到达的时间点就记一次 —— 它才是指令体感的核心数字
+        if (!firstByteAt) {
+          firstByteAt = Date.now();
+          console.log(`[TTS-Doubao] 首包 ${firstByteAt - t0}ms`);
+        }
+        bytes += buf.length;
+        res.write(buf);
+      },
+      onError: (msg) => {
+        console.error("[TTS-Doubao] 上游错误:", msg);
+        if (!res.headersSent) res.status(502).json({ error: "doubao_tts_failed", detail: msg });
+        else res.end();
+      },
+      onDone: () => res.end(),
+    });
+    if (bytes) console.log(`[TTS-Doubao] 共 ${bytes}B / ${Date.now() - t0}ms`);
+  } catch (e) {
+    console.error("[TTS-Doubao] 请求失败:", e.message);
+    if (!res.headersSent) res.status(502).json({ error: "doubao_tts_failed" });
+    else res.end();
+  }
 });
 
 // ---------------- 语音条收藏（2026-09-29 她要的：Console 里第二个页签）----------------
