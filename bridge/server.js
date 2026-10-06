@@ -942,7 +942,7 @@ doubaoAsrWss.on("connection", (clientWs) => {
     return;
   }
 
-  const upstream = new WebSocket(DOUBAO_ASR_URL, {
+  const upstream = new WebSocket(DOUBAO_ASR_WS_URL, {
     headers: doubaoAsrHandshakeHeaders(DOUBAO_TTS_APP_ID, DOUBAO_TTS_ACCESS_TOKEN),
   });
 
