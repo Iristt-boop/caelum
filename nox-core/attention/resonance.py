@@ -65,6 +65,11 @@ logger = logging.getLogger(__name__)
 #: 让它们参与叠加会让 Drive 被一堆将死的陈年关心慢慢垫高。
 _MIN_CONTRIB = FLOOR
 
+#: 🔴 按情绪抬的叠加地板（V4.5，她 2026-10-06 拍板）。低于它的还留在 Registry 里
+#: （别处照样读得到），只是**不再叠进这个情绪**。担心 0.15：一周前的小事各剩 0.05~0.10，
+#: 单条早就淡了，十几条一叠却一直把担心顶在封顶线上。配套的消散速度见 registry._HALF_LIFE_BY_KIND
+_MIN_CONTRIB_BY_KIND = {"concern": 0.15}
+
 #: 🔴 V4.5 saturation（她 2026-09-22 拍板）：聚合强度按 kind 设上限。
 #: concern 是负反馈情绪 —— 源头（睡眠/吃饭/位置）天天有新事件，
 #: 1-Π(1-s) 只会单调涨，没有上限它会一路顶到 0.85+，
@@ -233,6 +238,8 @@ class ResonanceState:
         #: `list()` 已经按当前强度倒序，分组时顺序天然是对的
         by_kind: dict[str, list[Attention]] = {}
         for a in self._registry.list(min_strength=_MIN_CONTRIB, now=now):
+            if a.current_strength(now) < _MIN_CONTRIB_BY_KIND.get(a.kind, _MIN_CONTRIB):
+                continue
             by_kind.setdefault(a.kind, []).append(a)
 
         drives: dict[str, Drive] = {}

@@ -73,11 +73,20 @@ def test_event_is_frozen():
 
 
 def test_decay_halves_after_one_half_life():
-    """slow 的半衰期是 7 天。"""
+    """slow 的半衰期：担心 3 天（她 2026-10-06 拍板「快涨慢落」调快），别的情绪照旧 7 天。"""
     a = Attention(subject="糖糖的睡眠", strength=1.0, last_updated=T0, decay="slow")
     assert a.current_strength(T0) == pytest.approx(1.0)
-    assert a.current_strength(T0 + timedelta(days=7)) == pytest.approx(0.5)
-    assert a.current_strength(T0 + timedelta(days=14)) == pytest.approx(0.25)
+    assert a.current_strength(T0 + timedelta(days=3)) == pytest.approx(0.5)
+    assert a.current_strength(T0 + timedelta(days=6)) == pytest.approx(0.25)
+    r = Attention(subject="没帮上", kind="regret", strength=1.0, last_updated=T0, decay="slow")
+    assert r.current_strength(T0 + timedelta(days=7)) == pytest.approx(0.5), "只改担心，别的情绪不许跟着变"
+
+
+def test_担心的小事一天减半_好奇还是六小时():
+    c = Attention(subject="她说的：嗓子", kind="concern", strength=0.8, last_updated=T0, decay="normal")
+    assert c.current_strength(T0 + timedelta(days=1)) == pytest.approx(0.4)
+    q = Attention(subject="水为什么解渴", kind="curiosity", strength=0.8, last_updated=T0, decay="fast")
+    assert q.current_strength(T0 + timedelta(hours=6)) == pytest.approx(0.4)
 
 
 def test_decay_is_lazy_not_scheduled():

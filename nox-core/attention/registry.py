@@ -58,6 +58,25 @@ _HALF_LIFE = {
     "fast": timedelta(hours=6),
 }
 
+#: 🔴 按情绪定的消散速度（V4.5「各情绪不同时间常数」，她 2026-10-06 拍板）。
+#: 有这一行的情绪覆盖上面的档；没写的照旧。
+#:
+#: 担心是「快涨慢落」—— 涨靠 upsert 取较大值（来一件事立刻顶上去），落靠这里。
+#: 原来健康类 7 天才减半、小事 2 天：她一周前说过的「怕蛇」「国庆出游」还以 0.05~0.10 挂着，
+#: 十几条叠起来把担心一直顶在 0.80（490/490 个时刻都在，最低 0.47）。
+#: 回放 10-06 线上的 17 条：只调快 → 0.80；只抬叠加地板 → 0.80；**两样一起**（这里 + resonance 的
+#: _MIN_CONTRIB_BY_KIND）→ 0.64（那天她真感冒了，剩下的三条正是嗓子 / 感冒 / 嗓子疼）。
+#: 好奇（curiosity）保持 fast 6 小时 —— 快涨快散，她选的
+_HALF_LIFE_BY_KIND: dict[str, dict[str, timedelta]] = {
+    "concern": {"slow": timedelta(days=3), "normal": timedelta(days=1)},
+}
+
+
+def half_life_of(kind: str, decay: str) -> timedelta:
+    """这种情绪、这一档，多久减半。"""
+    by_kind = _HALF_LIFE_BY_KIND.get(kind, {})
+    return by_kind.get(decay) or _HALF_LIFE.get(decay, _HALF_LIFE["normal"])
+
 #: `upsert` 认哪些 kind。**加新的之前先问：谁处理它？**
 #: 没人处理的类型进了 Registry，就是一条永远不会被读的数据
 #: 2026-09-04 加 curiosity：第一个**和她无关**的 kind。
@@ -121,8 +140,7 @@ class Attention:
         elapsed = (now - self.last_updated).total_seconds()
         if elapsed <= 0:
             return self.strength
-        half_life = _HALF_LIFE.get(self.decay, _HALF_LIFE["normal"]).total_seconds()
-        return self.strength * math.pow(0.5, elapsed / half_life)
+        return self.strength * math.pow(0.5, elapsed / half_life_of(self.kind, self.decay).total_seconds())
 
     def is_alive(self, now: datetime | None = None) -> bool:
         return self.current_strength(now) >= FLOOR

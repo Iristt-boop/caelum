@@ -147,7 +147,7 @@ def test_drive_follows_decay_without_storing_anything():
     state = ResonanceState(reg)
 
     now_ = state.get("concern", T0).intensity
-    later = state.get("concern", T0 + timedelta(days=7)).intensity  # slow 半衰期
+    later = state.get("concern", T0 + timedelta(days=3)).intensity  # 担心的 slow 半衰期（10-06 起 3 天）
     assert later == pytest.approx(now_ / 2, abs=0.01)
 
 
@@ -196,3 +196,21 @@ def test_concern_intensity_is_capped_but_load_is_honest():
     )).get("concern", T0)
     assert d.intensity == pytest.approx(0.80)
     assert d.load > 4.0
+
+
+def test_太淡的旧担心不再叠加_但还留在登记簿里():
+    """她 2026-10-06：担心「调快 + 0.15 以下不算」。
+    回放当天线上 17 条：一周前的「怕蛇」「国庆出游」各剩 0.05~0.10，十几条一叠把担心顶在 0.80。"""
+    from attention.resonance import _MIN_CONTRIB_BY_KIND
+    assert _MIN_CONTRIB_BY_KIND["concern"] == 0.15
+    reg = _reg(("她说的：嗓子", 0.31, "a"), *[(f"一周前的小事{i}", 0.12, "x") for i in range(12)])
+    d = ResonanceState(reg).get("concern", T0)
+    assert d.source_count == 1 and d.intensity == pytest.approx(0.31, abs=0.01)
+    assert len(reg.list(now=T0)) == 13, "只是不叠加，不是删掉"
+
+
+def test_叠加地板只管担心():
+    reg = AttentionRegistry()
+    for i in range(3):
+        reg.upsert(f"有意思的事{i}", 0.12, kind="curiosity", decay="fast", now=T0)
+    assert ResonanceState(reg).get("curiosity", T0) is not None, "好奇的淡事照旧算"

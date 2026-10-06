@@ -293,13 +293,15 @@ def test_consecutive_bad_nights_keep_concern_alive(store):
     """连着睡不好的那几天，关心不该淡掉。
 
     第二晚不产生事件（见 test_repeated_short_does_not_refire），
-    但强度会按 slow 衰减 —— 一天只掉一点，仍然远高于阈值。
+    但强度会按 slow 衰减。2026-10-06 起担心 3 天减半（她拍板「调快 + 0.15 以下不算」），
+    所以判据是「还活着、还叠进担心里」：五天后仍高于担心的叠加地板 0.15。
     """
+    from attention.resonance import _MIN_CONTRIB_BY_KIND
     engine = AttentionEngine.bootstrap(store, RelationshipState())
     engine.handle(_evt("short"), now=T0)
 
-    three_days_later = T0 + timedelta(days=3)
-    assert engine.registry.get(SUBJECT).current_strength(three_days_later) > 0.5
+    assert engine.registry.get(SUBJECT).current_strength(T0 + timedelta(days=3)) > 0.3
+    assert engine.registry.get(SUBJECT).current_strength(T0 + timedelta(days=5)) > _MIN_CONTRIB_BY_KIND["concern"]
 
 
 def test_ignored_event_does_not_touch_registry(store):
