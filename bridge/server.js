@@ -941,76 +941,111 @@ doubaoAsrWss.on("connection", (clientWs) => {
     clientWs.close();
     return;
   }
+  // stt-ready = 客户端通道就绪（渲染层据此开始喂音频）；
+  // 豆包上游是懒建的——她第一条音频到达才建，晚 ~300ms 由缓冲兜住
+  sendClient({ type: "stt-ready", model: "doubao-bigmodel" });
 
-  const upstream = new WebSocket(DOUBAO_ASR_WS_URL, {
-    headers: doubaoAsrHandshakeHeaders(DOUBAO_TTS_APP_ID, DOUBAO_TTS_ACCESS_TOKEN),
-  });
+  // 🔴 上游会话**跟轮次绑定**，不是跟客户端连接绑定：豆包 ASR 会话有
+  //   空闲/时长上限，超时后服务端丢弃且关闭事件可能不达——挂在一个
+  //   长命连接上迟早变成「看着开着、说什么都没反应」（她两次实测）。
+  //   做法：她开口（第一条 append）才建上游，定稿 + 缓冲后关掉；
+  //   轮间空闲期根本没有会话可死。建会话期间到达的音频先进缓冲。
+  let upstream = null;
+  let upstreamReady = false;
+  let pendingAudio = [];
+  let lastDelta = "";
+  let upstreamTimer = null;
 
-  let lastDelta = "";   // 末包回执里没有 text，定稿要用最后一条流式文本
-
-  const sendClient = (obj) => {
-    if (clientWs.readyState === clientWs.OPEN) {
-      try { clientWs.send(JSON.stringify(obj)); } catch {}
-    }
+  const closeUpstream = () => {
+    if (upstreamTimer) { clearTimeout(upstreamTimer); upstreamTimer = null; }
+    if (upstream) { try { upstream.close(); } catch {} upstream = null; }
+    upstreamReady = false;
+    pendingAudio = [];
   };
 
-  upstream.on("open", () => {
-    try { upstream.send(configFrame()); } catch (e) {
-      console.error("[ASR-Doubao] 配置帧发送失败:", e.message);
-    }
-    sendClient({ type: "stt-ready", model: "doubao-bigmodel" });
-  });
+  const openUpstream = () => {
+    if (upstream) return;
+    upstream = new WebSocket(DOUBAO_ASR_WS_URL, {
+      headers: doubaoAsrHandshakeHeaders(DOUBAO_TTS_APP_ID, DOUBAO_TTS_ACCESS_TOKEN),
+    });
 
-  upstream.on("message", (data, isBinary) => {
-    const buf = isBinary ? Buffer.from(data) : Buffer.from(String(data));
-    const parsed = parseResponse(buf);
-    if (!parsed) return;
-    if (parsed.type === "error") {
-      // 1013 = 这段没有有效语音（静音），不是故障，不打扰前端
-      if (parsed.code !== 1013) console.error("[ASR-Doubao] 上游错误:", parsed.message);
-      return;
-    }
-    if (parsed.text && parsed.text !== lastDelta) {
-      lastDelta = parsed.text;
-      sendClient({ type: "stt-delta", text: parsed.text });
-    }
-    if (parsed.final) {
-      // 末包回执不带 text，用最后一条流式文本定稿
-      sendClient({ type: "stt-final", text: lastDelta });
-    }
-  });
+    upstream.on("open", () => {
+      try { upstream.send(configFrame()); } catch (e) {
+        console.error("[ASR-Doubao] 配置帧发送失败:", e.message);
+      }
+      upstreamReady = true;
+      // 冲掉建会话期间缓冲的音频
+      for (const pcm of pendingAudio) {
+        try { upstream.send(audioFrame(pcm)); } catch {}
+      }
+      pendingAudio = [];
+    });
 
-  upstream.on("error", (e) => {
-    console.error("[ASR-Doubao] upstream error:", e.message);
-    sendClient({ type: "error", error: e.message || "asr_upstream_error" });
-  });
+    upstream.on("message", (data, isBinary) => {
+      const buf = isBinary ? Buffer.from(data) : Buffer.from(String(data));
+      const parsed = parseResponse(buf);
+      if (!parsed) return;
+      if (parsed.type === "error") {
+        // 1013 = 这段没有有效语音（静音），不是故障，不打扰前端
+        if (parsed.code !== 1013) console.error("[ASR-Doubao] 上游错误:", parsed.message);
+        return;
+      }
+      if (parsed.text && parsed.text !== lastDelta) {
+        lastDelta = parsed.text;
+        sendClient({ type: "stt-delta", text: parsed.text });
+      }
+      if (parsed.final) {
+        // 末包回执不带 text，用最后一条流式文本定稿；稍候关上游（等这帧后续）
+        sendClient({ type: "stt-final", text: lastDelta });
+        if (upstreamTimer) clearTimeout(upstreamTimer);
+        upstreamTimer = setTimeout(closeUpstream, 3000);
+      }
+    });
 
-  upstream.on("close", () => {
-    if (clientWs.readyState === clientWs.OPEN) clientWs.close();
-  });
+    upstream.on("error", (e) => {
+      console.error("[ASR-Doubao] upstream error:", e.message);
+      closeUpstream();
+      sendClient({ type: "error", error: e.message || "asr_upstream_error" });
+    });
+
+    upstream.on("close", closeUpstream);
+  };
 
   clientWs.on("message", (buf) => {
     let msg;
     try { msg = JSON.parse(buf.toString()); } catch { return; }
-    if (upstream.readyState !== WebSocket.OPEN) return;
 
     if (msg.type === "append" && msg.audio) {
-      try {
-        upstream.send(audioFrame(Buffer.from(msg.audio, "base64")));
-      } catch (e) { console.error("[ASR-Doubao] 音频帧失败:", e.message); }
+      const pcm = Buffer.from(msg.audio, "base64");
+      if (!upstream) {
+        pendingAudio.push(pcm);       // 建会话期间先攒着，open 后冲出
+        if (pendingAudio.length > 200) pendingAudio.shift();
+        openUpstream();
+        return;
+      }
+      if (upstreamReady) {
+        try {
+          upstream.send(audioFrame(pcm));
+          seqFrames += 0;             // 序号由服务端自动分配（X-Api-Sequence: -1）
+        } catch (e) { console.error("[ASR-Doubao] 音频帧失败:", e.message); }
+      } else {
+        pendingAudio.push(pcm);
+        if (pendingAudio.length > 200) pendingAudio.shift();
+      }
       return;
     }
     if (msg.type === "commit") {
       // 末包：服务端回一帧定稿（上面 message 处理里转成 stt-final）
       try {
-        upstream.send(lastPacketFrame());
+        if (upstream && upstreamReady) upstream.send(lastPacketFrame());
+        else sendClient({ type: "stt-final", text: lastDelta });
       } catch (e) { console.error("[ASR-Doubao] 末包失败:", e.message); }
       return;
     }
   });
 
-  clientWs.on("close", () => { try { upstream.close(); } catch {} });
-  clientWs.on("error", () => { try { upstream.close(); } catch {} });
+  clientWs.on("close", () => closeUpstream());
+  clientWs.on("error", () => closeUpstream());
 });
 
 /** 判定「她说完了」的静音时长，**由前端按场景传进来**。
