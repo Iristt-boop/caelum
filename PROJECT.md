@@ -1409,6 +1409,33 @@ M5Stack CoreS3（ESP32-S3）+ SCS0009 舵机 ×2（yaw/pitch，UART1 1Mbps，GPI
 ### 链路
 Claude → gateway（Python，stdio MCP，`ws://0.0.0.0:8765` 作为**服务端**）→ ESP32 主动连上来
 
+### 接入主线 Nox（2026-09-24，她拍板「设备线统一接给 nox」落地）
+
+**大脑只有一个**：nox-core。gateway/tracker 只做感知和执行，设备线不设第二人格。
+红线：上游 FaceTracker 帧差法（舵机乱转）她明确毙过 —— 这版的追脸是真检测 +
+死区 4° + 无脸回正即静默；检测跑在 VPS（`tracker/`），**不上设备**（表情资产占大半
+内存，设备端检测装不下的结论继续有效）。
+
+```
+CoreS3 ──wss noxtang.com/stackchan/<tok>/ws──▶ gateway daemon（VPS :8765，systemd）
+CoreS3 ──JPEG 帧流 2fps──▶ /stackchan-c/<tok>/frame ──▶ gateway :8766 ──转发──▶ tracker（127.0.0.1:8768）
+tracker ──{yaw,pitch} WS──▶ gateway follow_pose_stream（平滑/限幅/20Hz，自启）──▶ 舵机
+tracker ──arrived/left/looking──▶ POST 127.0.0.1:8100/api/nox/perception/presence
+                                   → World Model（she_is_present，TTL 10min）
+                                   → FrontSource（attention/sources/front.py）
+                                   → 「她来到他面前」CareSignal（走 _think_of_her）
+Nox 工具（tools/stackchan.py，MCP 127.0.0.1:8767）：status/look/turn/face/say/led
+                                   → DEVICE_MODEL 加 stackchan（robot，quiet_hours 警告）
+```
+
+- 部署：`/root/stackchan-mcp/{gateway,tracker}` + `deploy/` 两个 systemd 单元；
+  Caddy 路由 token 在 `/etc/nox/caddy.env` 的 `CADDY_TOKEN_STACKCHAN`
+- 帧通路是固件小改（`esp_video.cc` 的 `CaptureNoPreview` + `SetFrameStreamUrl`，
+  capability `frame` 下发），刷 0x20000 保 NVS；盯 PSRAM 水位（表情占大半，
+  设备端加检测仍是禁区）
+- 识别：tracker `enroll.py` 用她的照片训 LBPH 1:1（OpenCV 钉 4.x，5.x 砍了级联路径）
+- 待办：设备刷新固件 + 配网改指 `wss://noxtang.com/stackchan/<tok>/ws`；录入她的脸
+
 ### 屏幕触摸手势（FT6336）
 `stackchan.cc` 的 `PollTouchpad()`，20ms 一轮：
 
@@ -4374,6 +4401,11 @@ html:  底边距屏幕底 0 | 高 793 | fixed
 所以 **2026-08-15 换回了 `default`**，`index.html` 里钉了注释别再改回去。
 
 `html` 的「底边距屏幕底 = 0」也对得上：它确实铺满了视口，只是视口本身短 59。
+
+> **2026-10-07 第三次验证（网上教程「外壳改 100vh」）**：重装到主屏实测，translucent 下 `100vh = 852`、
+> body / #app 也真是 852 高，**iOS 照样只画到 793**，底下 59 是 manifest 的 `background_color`；
+> 多出来的 59 反而把页面底部（Chat 输入栏）藏到屏幕外。已回滚。教程那位的外壳是 iframe，不是一回事。
+> ⚠️ 另：状态栏模式在「添加到主屏」那一刻定死，改 meta 必须删掉重加才生效。
 
 ##### 三条教训
 
@@ -7775,6 +7807,10 @@ edge 兜底保留。施工清单见决策文档第七节，时间线对齐 11.1�
 eslint Chat.jsx 零新增（35 错 4 警 = 基线）；vite build 过。
 **待部署后线上验**：真实模型端到端跑一个任务；杀 runner 看 /health 的
 task_tick 转 stale。部署照三段流程（core release 切换 → bridge → PWA dist）。
+> ✅ **同日 15:44 已上线**（root `6a7fa39` + nox-app `8f98aff`，tag
+> `2026-09-22-6a7fa39f9b64`）：启动日志、`/health` 的 `background.task_tick`
+> （注意心跳在 **background** 键下）、bridge 鉴权代理 400/404 均已验通；
+> 真实模型首跑一个任务留给她从手机发起。
 
 ## 五十五、Caelum OS 整套换新外壳：风格 × 颜色，九页逐页改完（2026-09-23 ~ 09-28）
 
@@ -7891,3 +7927,66 @@ Registry 那一半排在 09-30（锚点投票修正还欠着）。rerank 开不�
 | 09-23 | `0c13a6f` | 记忆检索通道告警：bridge 出 `memory_channels`，caelum-watch 推人话 |
 | 09-26 | `814b231` | 主动来电门槛改「晚间安静两小时」，转 on（她拍板） |
 | 09-26 | `6655170` | bridge 落通话记录（未接 / 拒接成通话条，接通时长回填 `metadata.call`）；**事故**：线上 server.js 曾被远古工作树覆盖，已从 0923 备份恢复 |
+
+## 五十七、OS 语音 Live 会话 v1：能打断的实时对话（2026-10-06 ~ 10-07，全链验收）
+
+### 57.1 产品形态（她两轮修正后定型）
+
+Caelum OS 的语音从「照搬手机通话面板」推倒重来——她原话「我要的是实时 live 通话，alt 发送岂不就是
+我一句他一句了」。终版交互：**Alt 轻点 = 开/关一个持续会话**：他一直在听，说完停 1.6 秒他接话，
+说话途中开口即打断（掐音频+合成+生成全停），再轻点或点浮层挂断，5 分钟无人说话自动挂。
+
+### 57.2 链路（三端）
+
+- **耳朵**：豆包大模型流式识别（`wss://…/api/v3/sauc/bigmodel_async`，bridge 新增 `/ws/stt/doubao`
+  中继，`lib/asr-doubao.js` 帧封解包；凭证与 TTS 同一对，服务在控制台开的免费试用）。通道优先级
+  豆包 → 通义（`/ws/stt` 通话同款）→ 本地 sherpa 兜底。她点名豆包两次：「语音识别豆包不就有吗」
+- **嘴**：豆包克隆音色流式 TTS（`/api/tts/doubao`，`lib/tts-doubao.js` HTTP chunked/SSE；
+  她验收「是这个声音」）。桥侧凭证：`/etc/nox/bridge.env` 的 DOUBAO_TTS_APP_ID（8364364486，
+  default 应用）+ ACCESS_TOKEN + VOICE_CLONE（S_ 开头）。**坑**：她最初给的 `ark-` 令牌是方舟的
+  （方舟不提供语音大模型），真凭据在旧版控制台「声音复刻大模型」服务页底部的服务接口认证信息表
+- **脑子**：core 唯一大脑不变；指令场景 `/chat` 带 `model: "v4-flash"`（deepseek-flash V4.1，
+  她点名）——GLM-5 系关不掉思考（config.py 记着智谱原话），工具往返两轮思考 8~10s 是延迟大头
+- **响应节奏**：分句流水线（SSE text 边到边 takeSentences，第一句凑出即开口，不等全文）；
+  1.2s 抢答确认做过又按她要求去掉（闲聊场景出戏）
+
+### 57.3 判停走文本域（本轮最重要的架构决定）
+
+音量判停在她机器上不成立：实测底噪 0.003~0.004 常年高于开喂阈值（说话才 0.0067~0.03），
+silenceSince 永远清零 → 「识别了但他不回话」。终版：**豆包吐字 = 在说（stt-delta 清零计时），
+吐字停止 + 1600ms = 说完**。音量只剩「何时开喂」一个职责（0.003 + 3s 放行兜底 + 1.2s 预缓冲防截头）。
+跟 tuning.js 09-07 的教训同构：静音时长这一个信号里没有「她说完没有」的信息。
+
+### 57.4 实测抓出的坑（每一轮报障都靠日志实锤，全修）
+
+1. **Electron 应用菜单吞 Alt**：窗口带原生菜单时 Alt 触发 Windows 菜单模式，后续键盘事件全被
+   菜单循环吞掉。修 `Menu.setApplicationMenu(null)`
+2. **钩子被主进程忙碌拖死**：uiohook 跑主进程时识别解码/IPC 洪峰会让 Windows 低级钩子超时，
+   事件投递静默暂停（re-armed 救不了）。终修：钩子搬进 **utilityProcess 子进程**
+   （`ptt-child.js`；⚠️ 子进程里没有 app/whenReady；fork 必须 stdio:"pipe" 否则 stdout 一行收不到），
+   主进程壳 `ptt.js` 只收 JSON 行，子进程死了自动拉起。状态机抽成 `ptt-machine.cjs`（与
+   `ptt.test.cjs` 五用例共用）：Alt keyup 在 Electron 里会丢 → 一切判定只依赖 keydown + 1100ms
+   时间窗去重（连发也刷新时间戳，否则超窗必漏）
+3. **toggle 在开麦 await 期间被吞**：快速连按时第二下落在 starting 保护里直接丢 → pendingToggle
+   记账，startLive 完成后立即执行；`setPhase("listening")` 立即表态不等识别就绪
+4. **出声阈值错域**：tuning.js 的 speechAmp 0.03 是 analyser byte 域，配到 PCM RMS 尺度=980，
+   她实测说话 RMS≈178（winmm 探针），五倍差 → 一块音频不喂。修 0.003 + 3s 放行兜底
+5. **豆包上游会话空闲半开死亡**：live 一开就建会话，静默期服务端回收、关闭事件穿不过两层代理
+   →「看着开着说什么都没反应」。终修：**会话跟音频同生共死**——桥侧她开口（首条 append）才建、
+   定稿+3s 即关；渲染侧 VAD 门控喂音频。静默期经桥验证零会话
+6. **豆包 ASR 协议细节**（对照 FlareMo 的 TS 实现逐字校过）：握手要多三个 X-Api 头（含
+   X-Api-Sequence:"−1" 声明服务端自动编号）；配置键名是 `audio` 不是 audio_config；
+   model_name 只认 "bigmodel"；**响应帧 = header + 服务端序号(4) + 长度(4) + 载荷**（载荷在偏移 12
+   不是 8）；末包回执 flags=0b0011 且不带 text（定稿用最后一条 delta）
+7. **桥中继两次部署事故**：sendClient 定义序（stt-ready 前移后 ReferenceError 炸每个连接——
+   curl health 不覆盖 upgrade 路径，**桥改动必须穿真实 WS 验**）；scp 覆盖旧 release 的 lib 造成
+   新旧错配 + systemd 连崩限流要 reset-failed
+
+### 57.5 验证与入库
+
+ptt 状态机 5 用例（轻点/组合键/连发/丢 keyup/双 Alt）、caelum-os-ui 572 测试全绿、两个完整回合
+e2e（识别「我开了。」→ 1.5~2.1s 开口 → 下一轮）、桥中继穿真实 WS 复验（流式 1s 出字、定稿零误差）。
+入库：nox-app `9656fce`（桌面端全部，已推 GitHub）、bridge `4539616…3dc65f3` 五个 commit 已在生产
+（e1086af）。**没做的**：core 指令快路径（她拍板搬家后）；二期唤醒词全双工（TEN VAD/TEN-TD/
+SmartTurn 调研在设计稿 `Caelum-OS语音-设计稿-2026-10-06.md`）；抢答确认去掉了（闲聊出戏，
+要恢复挂 tool_start 上）。
