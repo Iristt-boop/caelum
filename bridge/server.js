@@ -993,7 +993,11 @@ doubaoAsrWss.on("connection", (clientWs) => {
     upstream.on("message", (data, isBinary) => {
       const buf = isBinary ? Buffer.from(data) : Buffer.from(String(data));
       const parsed = parseResponse(buf);
-      if (!parsed) return;
+      if (!parsed) {
+        // 🔴 TEMP 诊断：上游回了但解析不出来（她 17:50 那轮一个 delta 都没有）
+        console.log("[ASR-Doubao] unparsed frame:", buf.subarray(0, 16).toString("hex"), "len=" + buf.length);
+        return;
+      }
       if (parsed.type === "error") {
         // 1013 = 这段没有有效语音（静音），不是故障，不打扰前端
         if (parsed.code !== 1013) console.error("[ASR-Doubao] 上游错误:", parsed.message);
