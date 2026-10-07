@@ -119,7 +119,8 @@ describe("第一次合成就存下来", () => {
     const t = "Good night, my love.";
     const r1 = await tts(t);
     const a1 = Buffer.from(await r1.arrayBuffer());
-    assert.equal(r1.headers.get("x-tts-engine"), "eleven-v3");
+    //: 2026-10-07 链首换成 eleven-v4（她点名），mock 上游不分模型都会回 200
+    assert.equal(r1.headers.get("x-tts-engine"), "eleven-v4");
     await new Promise((r) => setTimeout(r, 100));        // 写缓存在流结束之后
     const before = calls;
     const r2 = await tts(t);

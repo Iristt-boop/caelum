@@ -993,11 +993,7 @@ doubaoAsrWss.on("connection", (clientWs) => {
     upstream.on("message", (data, isBinary) => {
       const buf = isBinary ? Buffer.from(data) : Buffer.from(String(data));
       const parsed = parseResponse(buf);
-      if (!parsed) {
-        // 🔴 TEMP 诊断：上游回了但解析不出来（她 17:50 那轮一个 delta 都没有）
-        console.log("[ASR-Doubao] unparsed frame:", buf.subarray(0, 16).toString("hex"), "len=" + buf.length);
-        return;
-      }
+      if (!parsed) return;
       if (parsed.type === "error") {
         // 1013 = 这段没有有效语音（静音），不是故障，不打扰前端
         if (parsed.code !== 1013) console.error("[ASR-Doubao] 上游错误:", parsed.message);
@@ -2224,7 +2220,11 @@ app.post("/api/tts", async (req, res) => {
   //: 让前端读得到这个头。跨域时不显式暴露的话，浏览器**看得见也拿不到**
   res.setHeader("Access-Control-Expose-Headers", "X-TTS-Engine");
 
-  /** ElevenLabs 两档共用。v3 保留情绪标签（英语陪练的命根子），turbo 用剥净的文本。 */
+  /** ElevenLabs 各档。v4/v3 保留情绪标签（英语陪练的命根子），turbo 用剥净的文本。
+   *
+   * 🔴 v4（2026-09-28 上线，她指定要换）：情绪标签兼容 v3 写法（[whispers] 等），
+   *   voice_settings 在 v4 上的字段语义还没定论——先用 v3 同款值发（实测 200），
+   *   听感不对再调。v4 支持 10K 字符/次（v3 的两倍），通话短句无感。 */
   async function tryEleven(name, modelId, body, timeout) {
     try {
       const r = await fetch(`${ELEVEN_TTS_BASE}/v1/text-to-speech/${ELEVEN_VOICE}/stream`, {
@@ -2293,7 +2293,8 @@ app.post("/api/tts", async (req, res) => {
     if (name === "edge") { tryEdge(); return; }
 
     let ok = false;
-    if (name === "eleven-v3") ok = await tryEleven("eleven-v3", "eleven_v3", withTags, 30000);
+    if (name === "eleven-v4") ok = await tryEleven("eleven-v4", "eleven_v4", withTags, 30000);
+    else if (name === "eleven-v3") ok = await tryEleven("eleven-v3", "eleven_v3", withTags, 30000);
     else if (name === "eleven-turbo") ok = await tryEleven("eleven-turbo", "eleven_turbo_v2_5", clean, 15000);
     if (ok) return;
 

@@ -23,10 +23,12 @@ const serverSrc = readFileSync(
 describe("TTS 引擎顺序", () => {
   test("🔴 不传 profile = 手机那套，不许被新厂商顶掉", () => {
     // 语音条（Chat.jsx 的播放按钮）从来不传这个字段。
-    // 默认必须是「和今天之前一模一样」—— 她的声音不能因为我接了个新厂商就变
-    assert.equal(pickChain()[0], "eleven-v3");
-    assert.equal(pickChain(undefined, undefined)[0], "eleven-v3");
-    assert.equal(pickChain("")[0], "eleven-v3");
+    // 🔴 2026-10-07 修订：v4 上线（她指定 PWA 通话换 v4），链首从 v3 换成 v4，
+    //   v3 降为第二档 —— 这次是**她点名**的（顺序：她听 → 她点头 → 再改链）。
+    //   守的门没变：新厂商进链首，只能走「她点头」这条路。
+    assert.equal(pickChain()[0], "eleven-v4");
+    assert.equal(pickChain(undefined, undefined)[0], "eleven-v4");
+    assert.equal(pickChain("")[0], "eleven-v4");
   });
 
   test("🔴 阿里不许出现在任何一条链上", () => {
@@ -36,8 +38,10 @@ describe("TTS 引擎顺序", () => {
     for (const [name, chain] of Object.entries(CHAINS)) {
       assert.ok(!chain.includes("qwen"), `${name} 链上不该有 qwen`);
     }
-    assert.equal(pickChain("desktop")[0], "eleven-v3");
-    assert.equal(pickChain("phone")[0], "eleven-v3");
+    assert.equal(pickChain("desktop")[0], "eleven-v4");
+    assert.equal(pickChain("phone")[0], "eleven-v4");
+    // v3 还在第二档：v4 出问题自动落回她听了两个月的那个声音
+    assert.equal(pickChain("phone")[1], "eleven-v3");
   });
 
   test("🔴 server.js 里也不许留着阿里 TTS 的代码", () => {
@@ -60,12 +64,13 @@ describe("TTS 引擎顺序", () => {
   test("上一句降过级，就从那一档接着往下 —— 一段话里不来回换声音", () => {
     assert.deepEqual(pickChain("desktop", "eleven-turbo"), ["eleven-turbo", "edge"]);
     assert.deepEqual(pickChain("phone", "edge"), ["edge"]);
+    assert.deepEqual(pickChain("phone", "eleven-v3"), ["eleven-v3", "eleven-turbo", "edge"]);
   });
 
   test("上一句用的就是这一端的首选，那还是走整条", () => {
     //: 不能因为「它在第 0 位」就把链子砍成只剩它自己 —— 它失败了还得有得降
-    assert.deepEqual(pickChain("desktop", "eleven-v3"), CHAINS.desktop);
-    assert.deepEqual(pickChain("phone", "eleven-v3"), CHAINS.phone);
+    assert.deepEqual(pickChain("desktop", "eleven-v4"), CHAINS.desktop);
+    assert.deepEqual(pickChain("phone", "eleven-v4"), CHAINS.phone);
   });
 
   test("认不出的 engine 当没传", () => {

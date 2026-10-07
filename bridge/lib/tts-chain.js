@@ -27,8 +27,10 @@ export const CHAINS = {
    *
    * ⚠️ 以后要再接任何一家：**先让她听 → 她点头 → 再动这里**。
    * 「跑通了」和「该当默认」是两件事，这一节已经栽过两次。 */
-  desktop: ["eleven-v3", "eleven-turbo", "edge"],
-  phone: ["eleven-v3", "eleven-turbo", "edge"],
+  /* 2026-10-07：v4 上线（09-28），她指定 PWA 通话换 v4——链首插 eleven-v4，
+     v3 降为第二档（v4 失败自动落回熟悉的声音）。 */
+  desktop: ["eleven-v4", "eleven-v3", "eleven-turbo", "edge"],
+  phone: ["eleven-v4", "eleven-v3", "eleven-turbo", "edge"],
 };
 
 /** 不认识的端（以及**根本没传**的老调用方）一律按手机算。 */
