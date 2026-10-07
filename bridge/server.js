@@ -936,8 +936,16 @@ server.on("upgrade", (req, socket, head) => {
 const doubaoAsrWss = new WebSocketServer({ noServer: true });
 
 doubaoAsrWss.on("connection", (clientWs) => {
+  // 🔴 先定义再使用：sendClient 在下面（connection 早段就要发 stt-ready，
+  // 而它的声明原来在更下面——顺序反了直接 ReferenceError 炸连接）
+  const sendClient = (obj) => {
+    if (clientWs.readyState === clientWs.OPEN) {
+      try { clientWs.send(JSON.stringify(obj)); } catch {}
+    }
+  };
+
   if (!DOUBAO_TTS_APP_ID || !DOUBAO_TTS_ACCESS_TOKEN) {
-    clientWs.send(JSON.stringify({ type: "error", error: "doubao_asr_unconfigured" }));
+    sendClient({ type: "error", error: "doubao_asr_unconfigured" });
     clientWs.close();
     return;
   }
