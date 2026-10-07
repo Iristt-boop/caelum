@@ -7990,3 +7990,14 @@ e2e（识别「我开了。」→ 1.5~2.1s 开口 → 下一轮）、桥中继�
 （e1086af）。**没做的**：core 指令快路径（她拍板搬家后）；二期唤醒词全双工（TEN VAD/TEN-TD/
 SmartTurn 调研在设计稿 `Caelum-OS语音-设计稿-2026-10-06.md`）；抢答确认去掉了（闲聊出戏，
 要恢复挂 tool_start 上）。
+
+### 57.6 PWA 通话 TTS 换 Eleven v4（2026-10-07 晚，她指定）
+
+v4（09-28 上线）链首插入：`/api/tts` = **v4 → v3 → turbo → edge**（lib/tts-chain.js，
+链测试守门断言同步修订——「链首只能是 v3」改成 v4，v3 降第二档兜底；voice-favorites 的
+引擎断言跟着换）。**v4 无订阅硬门槛**：她现有的 key 直调实测 HTTP 200 出声（Creator+ 档
+有 v4 用量 2x 不计费的促销，用不用得到随她）。v4 的情绪标签兼容 v3 写法（[whispers] 等，
+英语陪练的命根子保住）；voice_settings 暂沿 v3 值（stability 0.34 / style 0.84，v4 上语义
+未定论，听感不对再调）；单次 10K 字符（v3 两倍）。**OS live 的豆包不动**（她明说）。
+实测：穿桥带 [whispers] 的文本，X-TTS-Engine: eleven-v4 出正经 mp3。入库 commit（bridge，
+已部署 5c2ac44c3b50）。
