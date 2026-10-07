@@ -974,6 +974,7 @@ doubaoAsrWss.on("connection", (clientWs) => {
         console.error("[ASR-Doubao] 配置帧发送失败:", e.message);
       }
       upstreamReady = true;
+      console.log("[ASR-Doubao] upstream opened（她开口了）");
       // 冲掉建会话期间缓冲的音频
       for (const pcm of pendingAudio) {
         try { upstream.send(audioFrame(pcm)); } catch {}
