@@ -1034,8 +1034,7 @@ doubaoAsrWss.on("connection", (clientWs) => {
       }
       if (upstreamReady) {
         try {
-          upstream.send(audioFrame(pcm));
-          seqFrames += 0;             // 序号由服务端自动分配（X-Api-Sequence: -1）
+          upstream.send(audioFrame(pcm));   // 序号由服务端自动分配（X-Api-Sequence: -1）
         } catch (e) { console.error("[ASR-Doubao] 音频帧失败:", e.message); }
       } else {
         pendingAudio.push(pcm);
