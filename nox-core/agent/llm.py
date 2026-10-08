@@ -428,11 +428,14 @@ class MoodTagFilter:
     代价是正文里的方括号、行首 m 开头的英文行会延迟几个字符显示。
     """
 
-    _PREFIX = "[mood:"
+    _PREFIXES = ("[mood:", "[心情:", "[心情：")
     _MOOD_LINE_RE = re.compile(
-        r"\s*mood\s*[:：]\s*(" + "|".join(HER_EMOTIONS) + r")\s*[。\.]*\n?\s*",
+        r"\s*(?:mood|心情)\s*[:：]\s*(" + "|".join(HER_EMOTIONS) + r")\s*[。\.]*\n?\s*",
         re.IGNORECASE,
     )
+    #: '[' 缓冲里判「是不是情绪标记」用的键。中文键（心情:）是 glm
+    #: 2026-10-08 新变体 —— `[心情: 撒娇]` 两个独立气泡出街，她截图实锤。
+    _MOOD_KEYS = ("mood:", "心情:", "心情：")
     # 比最长的表情 tag + 括号还宽的缓冲直接放行 —— 不可能是 tag。
     # ⚠️ 原来写死 14：「where my kiss」加括号是 15，一写进正文就漏（09-29 补查到的）；
     # 呆猫八条里还有 10 个字的。跟着名单算，别再写死
@@ -499,12 +502,12 @@ class MoodTagFilter:
                 # 🔴 判定前剥掉 '[' 后的空白 —— `[ mood:心疼 ]` 这种带空格
                 #    变体曾整个漏到她眼前（2026-09-22 截图实锤）
                 body = lowered[1:].lstrip()
-                if body.startswith("mood:"):
+                if any(body.startswith(k) for k in self._MOOD_KEYS):
                     # 确认是情绪标记，吃掉直到闭合
                     if ch == "]":
                         self._buf = ""
                     continue
-                if "mood:".startswith(body):
+                if any(k.startswith(body) for k in self._MOOD_KEYS):
                     continue          # 还可能是，继续缓冲（含 '[' 后的空白）
                 if ch == "]":
                     tag = self._buf[1:-1].strip()
@@ -530,9 +533,10 @@ class MoodTagFilter:
                 self._line_start = False
                 continue
 
-            # ── 普通字符：行首 m/M 进 mood 行缓冲（"me too" 这类整行
-            #    缓冲到换行再放行，无损只是慢一拍）
-            if self._line_start and ch in "mM":
+            # ── 普通字符：行首 m/M/心 进 mood 行缓冲（"me too" 这类整行
+            #    缓冲到换行再放行，无损只是慢一拍；「心」管中文键
+            #    「心情: 撒娇」，正常「心里…」开头的句子缓冲后原样放行）
+            if self._line_start and (ch in "mM" or ch == "心"):
                 self._line = ch
                 self._line_start = False
                 continue
@@ -556,7 +560,7 @@ class MoodTagFilter:
                 parts.append(resolved)
             self._line = None
         if self._buf:
-            if not self._buf.lower().startswith(self._PREFIX):
+            if not any(self._buf.lower().startswith(p) for p in self._PREFIXES):
                 parts.append(self._buf)
             self._buf = ""
         return "".join(parts)

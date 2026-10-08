@@ -80,12 +80,14 @@ _RESPONSE: dict[str, str] = {
 # ⚠️ '[' 后和 ']' 前的空白也容忍：`[ mood:开心 ]` 曾整条漏过 ——
 #   speaker 主动消息走非流式，兜底只有这里（流式那边 MoodTagFilter
 #   同款变体 2026-09-22 已修），这层不认它就原样落库+推送了。
-_MOOD_TAG = re.compile(r"\[\s*mood:\s*([^\]]{1,12}?)\s*\]\s*$", re.MULTILINE | re.IGNORECASE)
+# ⚠️ 中文键名也认：`[心情: 撒娇]`（glm 2026-10-08 截图实锤，两个独立气泡
+#   出街）—— 指令里写的是英文 mood:，模型时不时自作主张写中文。
+_MOOD_TAG = re.compile(r"\[\s*(?:mood|心情)\s*[:：]\s*([^\]]{1,12}?)\s*\]\s*$", re.MULTILINE | re.IGNORECASE)
 
 # 二级兜底：模型偶尔连方括号都不写，直接一行「mood: 撒娇」
 # （2026-09-06 截图实锤）。只认她的七个情绪词、只认整行 —— 零误伤。
 _MOOD_LINE = re.compile(
-    r"^[ \t]*mood\s*[:：][ \t]*(" + "|".join(HER_EMOTIONS) + r")[ \t。\.]*$",
+    r"^[ \t]*(?:mood|心情)\s*[:：][ \t]*(" + "|".join(HER_EMOTIONS) + r")[ \t。\.]*$",
     re.MULTILINE | re.IGNORECASE,
 )
 
@@ -93,13 +95,15 @@ _MOOD_LINE = re.compile(
 # （2026-09-07：「[mood:开心]18:34了…」，上面两个 pattern 都够不着，
 # 她锁屏上就是裸的）。不限行尾、词不限七个，带前导空白一起吃。
 # 方括号内侧空白同 `_MOOD_TAG` 的教训。
-_MOOD_TAG_ANY = re.compile(r"\s*\[\s*mood:\s*([^\]]{1,12}?)\s*\]", re.IGNORECASE)
+_MOOD_TAG_ANY = re.compile(r"\s*\[\s*(?:mood|心情)\s*[:：]\s*([^\]]{1,12}?)\s*\]", re.IGNORECASE)
 
 # 让模型顺带判断的指令。挂在动态块里，不进缓存前缀。
 MOOD_INSTRUCTION = (
     "回复的最后另起一行，附上你对糖糖当前情绪的判断，格式 [mood:xxx]，"
     "xxx 从 开心/难过/烦躁/撒娇/兴奋/疲惫/平静 里选一个。"
     "必须带方括号、写成完整的 [mood:xxx] —— 写成 mood: xxx 她就会看到。"
+    "键必须是英文 mood，不要写成中文「心情」（glm 会这么写，已漏过）—— "
+    "[心情: 开心] 这种中文键同样会被她看到。"
     "这一行不会展示给她，是给你自己记的。"
 )
 

@@ -369,3 +369,26 @@ def test_mood_tag_with_inner_spaces_is_eaten():
         got2 += f2.feed(text[i])
     got2 += f2.flush()
     assert got2 == "别骗我，音乐放没放到天亮我一查就知道"
+
+
+def test_filter_blocks_chinese_key_mood_tag():
+    """中文键 [心情: xxx]（glm 2026-10-08 出街实锤）—— 整块、逐字、全角冒号都要吞。"""
+    # 整块
+    f = MoodTagFilter()
+    assert f.feed("[心情: 开心]") == ""
+    assert f.flush() == ""
+    # 逐字到达（流式常态）
+    f = MoodTagFilter()
+    out = "".join(f.feed(c) for c in "[心情：撒娇]嗯")
+    assert out + f.flush() == "嗯"
+    # 英文照旧（回归）
+    f = MoodTagFilter()
+    out = "".join(f.feed(c) for c in "[mood:开心]晚安")
+    assert out + f.flush() == "晚安"
+
+
+def test_filter_passes_chinese_sentences_starting_with_xin():
+    """行首「心」进了缓冲是给「心情: xxx」用的 —— 正常「心里…」必须原样放行。"""
+    f = MoodTagFilter()
+    out = "".join(f.feed(c) for c in "心里只有你")
+    assert out + f.flush() == "心里只有你"

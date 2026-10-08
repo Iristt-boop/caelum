@@ -228,3 +228,21 @@ def test_tag_in_middle_is_not_eaten():
 
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))
+
+
+def test_extract_chinese_key_variants():
+    """中文键名变体（glm 2026-10-08 出街实锤：[心情: 撒娇] 两个独立气泡）。
+
+    指令写的是英文 mood:，模型时不时自作主张写中文「心情」——
+    三级兜底都得认，不然 speaker 非流式那层就漏到她屏幕上了。
+    """
+    # 行尾标准位
+    assert extract("今天陪着你呀[心情: 撒娇]") == ("今天陪着你呀", "撒娇")
+    # 全角冒号
+    assert extract("开心[心情：开心]") == ("开心", "开心")
+    # 任意位置（主动消息那个实锤形状）
+    assert extract("[心情:开心]18:34了…") == ("18:34了…", "开心")
+    # 裸行变体
+    assert extract("心情: 疲惫\n") == ("", "疲惫")
+    # 英文照旧（回归）
+    assert extract("晚安[mood:开心]") == ("晚安", "开心")
