@@ -329,17 +329,34 @@ def strip_stage_tags(text: str | None, *, keep_control: bool = False) -> str | N
 #: 解题草稿，**不听提示词**（10-06 实测：要求中文第一人称，草稿照样是英文分析笔记或空的，
 #: 他反倒把独白写进了说给她听的话里）。让他自己写、我们拆出来，3/3 守格式。
 INNER_OPEN, INNER_CLOSE = "<心里>", "</心里>"
-_INNER_BLOCK_RE = re.compile(re.escape(INNER_OPEN) + r".*?" + re.escape(INNER_CLOSE) + r"\s*", re.S)
+
+#: 🔴 他有时不写 `<心里>`，换成别的名字（2026-10-09 她截图：正文里躺着一大段 `<mind>…</mind>`）。
+#: 提示词里明明只教了 `<心里>`，模型自己「翻译」或改写了标签名 —— 实测 10-08 起漏出 8 条：
+#: 昨天 2 条 `<memo>`，今天 6 条 `<mind>`；10-01~10-07 一条都没有。
+#: 原来拆标签只认 `<心里>` 这一个字面量，别的名字一律当正文原样发给她，还落进历史（历史里的
+#: 漏出又会被他当样子学）。**所以认一小组同类别名**：同一件事（内心独白）的不同写法，开了哪个就找哪个的收口。
+#: 只放真见过的和最常见的近亲；加新的别名往这里补一个词就行。
+INNER_ALIASES = ("心里", "mind", "memo", "think", "thinking", "thought", "inner")
+_INNER_OPENS = tuple(f"<{a}>" for a in INNER_ALIASES)
+_INNER_BLOCK_RE = re.compile(
+    r"<(" + "|".join(re.escape(a) for a in INNER_ALIASES) + r")>.*?</\1>\s*", re.S)
+_INNER_ANY_OPEN_RE = re.compile(r"<(?:" + "|".join(re.escape(a) for a in INNER_ALIASES) + r")>")
+
+
+def _close_of(open_tag: str) -> str:
+    """`<mind>` → `</mind>`"""
+    return "</" + open_tag[1:]
 
 
 def strip_inner_voice(text: str | None) -> str | None:
     """整段文本里的心里话拿掉 —— **不进历史**（她 10-06 定的：只给她看，他不记）。
 
-    没收口的 `<心里>` 只摘标签、留内容：那种时候要说的话多半也被包在里面了，删整段就是吞掉他的回复。
+    没收口的开标签只摘标签、留内容：那种时候要说的话多半也被包在里面了，删整段就是吞掉他的回复。
+    认 `INNER_ALIASES` 里的任何一种写法（开的是哪个，收的就得是哪个）。
     """
-    if not text or INNER_OPEN not in text:
+    if not text or not _INNER_ANY_OPEN_RE.search(text):
         return text
-    out = _INNER_BLOCK_RE.sub("", text).replace(INNER_OPEN, "").strip()
+    out = _INNER_ANY_OPEN_RE.sub("", _INNER_BLOCK_RE.sub("", text)).strip()
     return out or None
 
 
@@ -364,6 +381,8 @@ class InnerVoiceFilter:
     def __init__(self) -> None:
         self.buf = ""
         self.inner = False
+        #: 当前这段心里话是用哪个开标签开的（收口要对得上它）
+        self.close_tag = INNER_CLOSE
         self.inner_text = ""
         #: 开头 / 心里话刚收口：先吃掉空白
         self.lstrip = True
@@ -386,17 +405,26 @@ class InnerVoiceFilter:
         self.buf += chunk
         out: list[tuple[str, str]] = []
         while self.buf:
-            tag = INNER_CLOSE if self.inner else INNER_OPEN
-            i = self.buf.find(tag)
-            if i >= 0:
+            if self.inner:
+                tags = (self.close_tag,)
+            else:
+                tags = _INNER_OPENS
+            # 找最早出现的那个标签（开标签有好几种写法，取最靠前的）
+            hits = [(self.buf.find(g), g) for g in tags if self.buf.find(g) >= 0]
+            if hits:
+                i, tag = min(hits)
                 self._emit(out, self.buf[:i])
                 self.buf = self.buf[i + len(tag):]
-                self.inner = not self.inner
-                if not self.inner:
+                if self.inner:
+                    self.inner = False
                     self.inner_text = ""
                     self.lstrip = True
+                else:
+                    self.inner = True
+                    self.close_tag = _close_of(tag)
                 continue
-            keep = _partial_tail(self.buf, tag)
+            # 没找到完整标签：结尾可能是半个标签（流式切片常态），按所有候选里最长的半截留着
+            keep = max(_partial_tail(self.buf, g) for g in tags)
             self._emit(out, self.buf[: len(self.buf) - keep])
             self.buf = self.buf[len(self.buf) - keep:]
             break
