@@ -3260,8 +3260,10 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
                           scene=req.scene, model=req.model,
                           session_id=sid, session_started=started)
             # 非流式这条路不走 SSE，bridge 的 usage_log 天生看不见它 ——
-            # 记成 task=chat 和流式主链路并桶（2026-10-09 对账：一天 17 次全漏）
-            meter.record("chat", req.model or meter.routed_model(core, r), getattr(r, "usage", None))
+            # 2026-10-09 对账：一天 17 次全漏。实测这条端点只有日记批注在用
+            # （bridge triggerAiComment，session 前缀 diary-），单独立桶看得清
+            _task = "diary" if str(sid or "").startswith("diary-") else "chat"
+            meter.record(_task, req.model or meter.routed_model(core, r), getattr(r, "usage", None))
         except Exception as exc:  # noqa: BLE001
             logger.exception("对话处理异常")
             raise HTTPException(status_code=500, detail=f"内部错误: {type(exc).__name__}") from exc
