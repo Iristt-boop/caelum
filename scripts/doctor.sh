@@ -29,7 +29,7 @@ note() { say "$NOTE" "$1"; NOTES=$((NOTES+1)); }
 #:
 #: ⚠️ caddy 2026-09-11 才补进来：它是整套系统**唯一的入口**，
 #: 它挂了 = App / MCP / touch / 所有域名全挂。原来这里居然一直没查它。
-CAELUM_SERVICES="caddy bridge nox-core ombre-brain co-reading co-watching eryu netease-mcp"
+CAELUM_SERVICES="caddy bridge nox-core ombre-brain co-reading co-watching co-listening"
 
 if [ "${1:-}" = "--list-services" ]; then
   echo "$CAELUM_SERVICES"
@@ -46,6 +46,37 @@ CAELUM_TIMED="nox-daily|早报 ombre-brain-decay|记忆衰减 ombre-brain-consol
 if [ "${1:-}" = "--list-timed-services" ]; then
   for x in $CAELUM_TIMED; do echo "${x%%|*} ${x#*|}"; done
   exit 0
+fi
+
+#: 🔴 备份包里**必须**有的 SQLite 库（2026-10-05 立）。
+#:
+#: 这份清单是故意和 caelum-backup.sh 里那份**分开写**的 ——
+#: 两份对账才有意义：备份脚本漏了哪个，这里解开包一看就红。
+#: 如果这里从备份脚本里读清单，脚本漏了、体检跟着漏，就是自己查自己。
+#: orders.db / tasks.db 就是这样漏了一个多月（09-06 / 09-22 建库，备份链一直没收）。
+#: **新增 nox-core/data/*.db 要两处一起加。**
+REQUIRED_BACKUP_DBS="nox-bridge.db sessions.db attention.db world.db topics.db orders.db tasks.db embeddings.db"
+
+# 解开备份包，对账 sqlite/ 目录。缺的库名打到 stdout。
+# 退出码: 0=齐全  1=有缺  2=包打不开/解出来是空的（空集不是通过）
+# ⚠️ 判据是「解出来的清单」，不是管道的退出码（管道末端的码会吞掉解密失败）
+backup_missing_dbs() {
+  local enc="$1" pass="$2" listing db miss=""
+  listing=$(openssl enc -d -aes-256-cbc -pbkdf2 -pass file:"$pass" -in "$enc" 2>/dev/null \
+              | tar tzf - 2>/dev/null | sed -n 's#^\./sqlite/##p')
+  [ -n "$listing" ] || return 2
+  for db in $REQUIRED_BACKUP_DBS; do
+    printf '%s\n' "$listing" | grep -qx "$db" || miss="$miss $db"
+  done
+  if [ -n "$miss" ]; then echo "${miss# }"; return 1; fi
+  return 0
+}
+
+# 单独跑对账（给测试 / 手动演练用）: doctor.sh --verify-backup-dbs <包> <密码文件>
+if [ "${1:-}" = "--verify-backup-dbs" ]; then
+  MISS=$(backup_missing_dbs "${2:?缺备份包路径}" "${3:?缺密码文件路径}"); rc=$?
+  [ -n "$MISS" ] && echo "缺: $MISS"
+  exit $rc
 fi
 
 echo "════════ Caelum 体检 $(date '+%F %T') ════════"
@@ -198,7 +229,7 @@ else warn "bridge 库超过 24 小时没写入？"; fi
 # ── 4) 会过期的东西 ──────────────────────────────
 echo "-- 会过期的 --"
 age_days() { echo $(( (NOW - $(stat -c %Y "$1" 2>/dev/null || echo NOW)) / 86400 )); }
-NC_ENV=/root/netease-music-mcp/.env
+NC_ENV=/root/co-listening/.netease_cred
 if [ -f "$NC_ENV" ]; then
   d=$(age_days "$NC_ENV")
   if [ "$d" -gt 45 ]; then note "网易云凭据文件已 $d 天没更新——cookie 大概率过期，点歌会哑（重新扫码提取）"
@@ -220,6 +251,18 @@ else
   else warn "最新备份已经 $(( d / 24 )) 天了——cron 死了？"; fi
   n=$(ls -1 /root/backups/auto/caelum-*.tar.gz.enc 2>/dev/null | wc -l)
   good "本机保留 $n 份"
+  # 包里到底有没有该有的库（2026-10-05）。「有备份」≠「备份里有它」：
+  # orders.db / tasks.db 漏了一个多月，上面三行一直全绿。
+  if [ -f /root/.backup-pass ]; then
+    BMISS=$(backup_missing_dbs "$LATEST" /root/.backup-pass); brc=$?
+    case $brc in
+      0) good "最新备份里 SQLite 库齐全（$(echo $REQUIRED_BACKUP_DBS | wc -w) 个）" ;;
+      1) bad  "最新备份缺库：$BMISS —— 去 caelum-backup.sh 的热备清单补上" ;;
+      *) bad  "最新备份解不开或是空的（密码不对 / 包损坏）—— 恢复会失败" ;;
+    esac
+  else
+    warn "找不到 /root/.backup-pass，没法核对备份内容"
+  fi
   # ── 异地副本（2026-09-11 新增）─────────────────────────────
   # 盲区就在这儿：原来只报"本机保留 n 份"，**异地那一跳死没死没人管**。
   # 2026-09-06 起 scp 连续 5 天失败（引号 bug），异地副本一直停在 09-05，
