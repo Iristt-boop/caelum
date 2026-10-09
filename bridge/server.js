@@ -23,6 +23,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer, WebSocket } from "ws";
 import { pickChain } from "./lib/tts-chain.js";
+import { collectProviderInfo } from "./lib/provider-quota.js";
 import { doubaoTtsReady, doubaoTtsPickSpeaker, doubaoTtsRequest, parseDoubaoStream } from "./lib/tts-doubao.js";
 import {
   DOUBAO_ASR_WS_URL, DOUBAO_ASR_RESOURCE_ID,
@@ -3754,6 +3755,20 @@ app.post("/api/nox/relation/:id/:action", (req, res) => {
     return res.status(400).json({ ok: false, error: "只认 confirm / reject / remove" });
   }
   relationProxy(res, `/${encodeURIComponent(req.params.id)}/${req.params.action}`, "POST");
+});
+
+// 厂商额度 / 订阅（手机 Models 页，2026-10-09）：ElevenLabs 字符额度、GLM Coding Plan 窗口、豆包余额的现状。
+// 形状和每家的坑见 lib/provider-quota.js。60 秒缓存 —— 页面点 Refresh 会带 ?refresh=1 绕过，
+// 但别让多个页面同时开着把厂商接口打成轮询。每家各报各的错，整体始终 200（页面按家显示原因）。
+let providerInfoCache = { at: 0, data: null };
+app.get("/api/provider-info", async (req, res) => {
+  const fresh = req.query.refresh === "1";
+  if (!fresh && providerInfoCache.data && Date.now() - providerInfoCache.at < 60000) {
+    return res.json(providerInfoCache.data);
+  }
+  const data = await collectProviderInfo(process.env, fetch, console);
+  providerInfoCache = { at: Date.now(), data };
+  res.json(data);
 });
 
 app.get("/api/nox/models", async (req, res) => {
