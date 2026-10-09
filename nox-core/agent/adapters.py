@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 from config import LLMConfig
@@ -301,7 +302,23 @@ class OpenAICompatAdapter:
         # 对断续聊天来说 5 分钟经常等于没缓存，这是走 OpenRouter 的代价。
         self._supports_cache = "openrouter" in (cfg.base_url or "").lower()
 
-    def _system_message(self, system: str, dynamic: str | None = None) -> dict[str, Any]:
+    def _cache_marker(self) -> dict[str, Any]:
+        """OpenRouter → Anthropic 的断点。TTL 默认 1 小时档。
+
+        2026-10-09 实测（anthropic/claude-haiku-5.5 经 OpenRouter）：`{"ttl": "1h"}` 能透传，
+        写入价约为 5 分钟档的 1.6 倍（$0.20 vs $0.125 / MTok）。**这里以前的注释说「OpenRouter 只有
+        5 分钟档」，不对。** 她的节奏是断续的（聊一阵，隔二三十分钟他再主动开口），
+        5 分钟档等于每次都重写，1 小时档才命中得上。
+
+        只对 anthropic/ 的型号带 ttl：别的后端（Gemini 等）经 OpenRouter 不一定认这个字段。
+        `NOX_OR_CACHE_TTL=5m` 可以一键退回 5 分钟档。
+        """
+        marker: dict[str, Any] = {"type": "ephemeral"}
+        if (self.cfg.model or "").startswith("anthropic/") and os.getenv("NOX_OR_CACHE_TTL", "1h") != "5m":
+            marker["ttl"] = "1h"
+        return marker
+
+    def _system_message(self, system: str) -> dict[str, Any]:
         if not self._supports_cache:
             # 🔴 **动态块不能拼进来。** 见 `_tail_block()`。
             #
@@ -314,17 +331,65 @@ class OpenAICompatAdapter:
             #   放到尾部      命中 9,088  （99%）
             return {"role": "system", "content": system}
         # 数组形式才能带 cache_control；OpenRouter 会翻译成后端的原生格式。
-        # 动态块放在打了断点的静态块**之后**，这样前缀照常命中缓存。
-        blocks: list[dict[str, Any]] = [
-            {
-                "type": "text",
-                "text": system,
-                "cache_control": {"type": "ephemeral"},
-            }
-        ]
-        if dynamic:
-            blocks.append({"type": "text", "text": dynamic})
-        return {"role": "system", "content": blocks}
+        # 🔴 2026-10-09：动态块**不再**跟在这个断点后面了，它和 DeepSeek 一样挪到尾部（`_assemble`）。
+        # 原来放在 system 的第二个 block 里，每轮一变，**它后面的整段对话历史永远命不中**：
+        # 同一个请求实测第二轮命中 44%（只有 system 那一块）；挪走并给历史补一个断点之后是 86%，
+        # 第二轮花费从 $0.00256 掉到 $0.00112。
+        return {
+            "role": "system",
+            "content": [{"type": "text", "text": system, "cache_control": self._cache_marker()}],
+        }
+
+    def _assemble(self, messages: list[Message], system: str | None,
+                  dynamic: str | None) -> list[dict[str, Any]]:
+        """拼出要发的 messages 数组。`complete()` 和 `stream()` 共用这一份 ——
+        两处各抄一份迟早不一致（缓存位置错了不报任何异常，只会让账单悄悄翻倍）。
+
+        布局：system(静态) + 历史 + [动态块] + 最后一条 user (+ 工具循环里追加的 assistant/tool)。
+        有断点的后端（OpenRouter）额外在**动态块前面那条历史消息**上打一个断点，
+        让聊得越久命中的前缀越长。
+        """
+        native: list[dict[str, Any]] = []
+        if system:
+            native.append(self._system_message(system))
+        for m in messages:
+            native.extend(self._to_native(m))
+
+        # 🔴 动态块插在**最后一条 user 消息之前**（见 `_tail_block`）。
+        #
+        # ⚠️ **不能简单地插在"倒数第二"。** 第一版就是那么写的，
+        # 结果工具循环里正好插进了 `assistant(tool_calls)` 和 `tool` 结果
+        # 中间，把配对切断了 —— DeepSeek 直接 400：
+        #
+        #   An assistant message with 'tool_calls' must be followed by
+        #   tool messages responding to each 'tool_call_id'
+        #
+        # 找最后一条 user 是因为它在工具循环里**位置稳定**：
+        # 循环追加的是 assistant/tool，user 那条不动 ——
+        # 所以前缀（system + 历史 + 动态 + user）逐轮不变，缓存照常命中。
+        at = next(
+            (i for i in range(len(native) - 1, -1, -1) if native[i].get("role") == "user"),
+            len(native),
+        )
+        tail = self._tail_block(dynamic)
+        if tail is not None:
+            native.insert(at, tail)
+        if self._supports_cache:
+            self._mark_history_breakpoint(native, at)
+        return native
+
+    def _mark_history_breakpoint(self, native: list[dict[str, Any]], end: int) -> None:
+        """在 `native[:end]` 里最后一条「纯文字的 user / assistant」消息上打断点。
+
+        挑纯文字的是因为 `tool` / `assistant(tool_calls)` 的 content 不是 block 数组，
+        硬改形状可能让后端翻译出错；往前找一条就行（它后面那几条只是不缓存，不会错）。
+        第 0 条是 system（已经有自己的断点），不动。
+        """
+        for i in range(end - 1, 0, -1):
+            m = native[i]
+            if m.get("role") in ("user", "assistant") and isinstance(m.get("content"), str) and m["content"]:
+                m["content"] = [{"type": "text", "text": m["content"], "cache_control": self._cache_marker()}]
+                return
 
     def _tail_block(self, dynamic: str | None) -> dict[str, Any] | None:
         """每轮可变的那段，做成一条**放在最后面**的 system 消息。
@@ -367,38 +432,7 @@ class OpenAICompatAdapter:
         depth: Depth | None = None,
         max_tokens: int | None = None,
     ) -> Turn:
-        native: list[dict[str, Any]] = []
-        if system:
-            native.append(self._system_message(system, dynamic_system))
-        elif dynamic_system and self._supports_cache:
-            native.append({"role": "system", "content": dynamic_system})
-        for m in messages:
-            native.extend(self._to_native(m))
-
-        # 🔴 动态块插在**最后一条 user 消息之前**（见 `_tail_block`）。
-        #
-        # OpenRouter 那条路已经用 cache_control 断点处理过了，不重复插；
-        # DeepSeek 这条没有断点，位置就是一切。
-        #
-        # ⚠️ **不能简单地插在"倒数第二"。** 第一版就是那么写的，
-        # 结果工具循环里正好插进了 `assistant(tool_calls)` 和 `tool` 结果
-        # 中间，把配对切断了 —— DeepSeek 直接 400：
-        #
-        #   An assistant message with 'tool_calls' must be followed by
-        #   tool messages responding to each 'tool_call_id'
-        #
-        # 找最后一条 user 是因为它在工具循环里**位置稳定**：
-        # 循环追加的是 assistant/tool，user 那条不动 ——
-        # 所以前缀（system + 历史 + 动态 + user）逐轮不变，缓存照常命中。
-        if not self._supports_cache:
-            tail = self._tail_block(dynamic_system)
-            if tail is not None:
-                at = next(
-                    (i for i in range(len(native) - 1, -1, -1)
-                     if native[i].get("role") == "user"),
-                    len(native),
-                )
-                native.insert(at, tail)
+        native = self._assemble(messages, system, dynamic_system)
 
         kwargs: dict[str, Any] = {
             "model": self.cfg.model,
@@ -530,38 +564,7 @@ class OpenAICompatAdapter:
         depth: Depth | None = None,
         max_tokens: int | None = None,
     ) -> Iterator[StreamEvent]:
-        native: list[dict[str, Any]] = []
-        if system:
-            native.append(self._system_message(system, dynamic_system))
-        elif dynamic_system and self._supports_cache:
-            native.append({"role": "system", "content": dynamic_system})
-        for m in messages:
-            native.extend(self._to_native(m))
-
-        # 🔴 动态块插在**最后一条 user 消息之前**（见 `_tail_block`）。
-        #
-        # OpenRouter 那条路已经用 cache_control 断点处理过了，不重复插；
-        # DeepSeek 这条没有断点，位置就是一切。
-        #
-        # ⚠️ **不能简单地插在"倒数第二"。** 第一版就是那么写的，
-        # 结果工具循环里正好插进了 `assistant(tool_calls)` 和 `tool` 结果
-        # 中间，把配对切断了 —— DeepSeek 直接 400：
-        #
-        #   An assistant message with 'tool_calls' must be followed by
-        #   tool messages responding to each 'tool_call_id'
-        #
-        # 找最后一条 user 是因为它在工具循环里**位置稳定**：
-        # 循环追加的是 assistant/tool，user 那条不动 ——
-        # 所以前缀（system + 历史 + 动态 + user）逐轮不变，缓存照常命中。
-        if not self._supports_cache:
-            tail = self._tail_block(dynamic_system)
-            if tail is not None:
-                at = next(
-                    (i for i in range(len(native) - 1, -1, -1)
-                     if native[i].get("role") == "user"),
-                    len(native),
-                )
-                native.insert(at, tail)
+        native = self._assemble(messages, system, dynamic_system)
 
         kwargs: dict[str, Any] = {
             "model": self.cfg.model,

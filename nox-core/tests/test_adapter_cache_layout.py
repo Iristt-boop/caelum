@@ -39,11 +39,11 @@ SYS = "静态系统提示"
 DYN = "现在 14 点，她心情不错"
 
 
-def _adapter(base_url: str) -> OpenAICompatAdapter:
+def _adapter(base_url: str, model: str = "m") -> OpenAICompatAdapter:
     """造一个 adapter 但不真连网 —— 我们只看它拼出来的消息数组。"""
     cfg = LLMConfig(
         provider="x", api_key="k", base_url=base_url,
-        model="m", max_tokens=16, timeout=5, max_retries=0,
+        model=model, max_tokens=16, timeout=5, max_retries=0,
     )
     return OpenAICompatAdapter(cfg)
 
@@ -81,6 +81,14 @@ def _native(a: OpenAICompatAdapter, msgs, dynamic=DYN):
     spy = _Spy()
     a._client = spy          # type: ignore[assignment]
     a.complete(list(msgs), [], system=SYS, dynamic_system=dynamic)
+    return spy.kwargs["messages"]
+
+
+def _native_stream(a: OpenAICompatAdapter, msgs, dynamic=DYN):
+    """跑真的 `stream()`（主聊天走的是它），返回它拼出来的 messages 数组。"""
+    spy = _Spy()
+    a._client = spy          # type: ignore[assignment]
+    list(a.stream(list(msgs), [], system=SYS, dynamic_system=dynamic))
     return spy.kwargs["messages"]
 
 
@@ -204,16 +212,121 @@ class Test工具循环里不许插坏配对:
         assert one[: i + 2] == two[: i + 2]
 
 
-class Test有断点的后端:
-    """OpenRouter 那条：靠 cache_control，动态块跟在断点之后就行。"""
+CLAUDE = "anthropic/claude-haiku-5.5"
+OR = "https://openrouter.ai/api/v1"
 
-    def test_走断点_不重复插尾部(self):
-        a = _adapter("https://openrouter.ai/api/v1")
-        assert a._supports_cache is True
-        native = _native(a, HIST)
-        #: 动态块在 system 的第二个 block 里，不该在消息数组里再来一条
-        assert sum(1 for m in native if m.get("content") == DYN) == 0
+
+def _marked(native):
+    """所有带 cache_control 的 (消息下标, block)。"""
+    out = []
+    for i, m in enumerate(native):
+        if isinstance(m.get("content"), list):
+            for blk in m["content"]:
+                if "cache_control" in blk:
+                    out.append((i, blk))
+    return out
+
+
+class Test有断点的后端:
+    """OpenRouter → Claude：显式断点。
+
+    🔴 2026-10-09 实测（Haiku 5.5，同一个请求连发两轮、第二轮多一对历史、动态块变了）：
+
+    ```text
+    动态块在 system 第二个 block（旧）   第二轮命中 18,808 / 42,486 = 44%   $0.00256
+    动态块挪到尾部 + 历史加断点（新）    第二轮命中 36,536 / 42,488 = 86%   $0.00112
+    ```
+
+    旧布局里动态块每轮一变，它后面的整段对话历史永远命不中，只有 system 那一块在缓存。
+    """
+
+    def test_system_只有静态块_带断点(self):
+        native = _native(_adapter(OR, CLAUDE), HIST)
         blocks = native[0]["content"]
-        assert blocks[0]["text"] == SYS
+        assert [b["text"] for b in blocks] == [SYS], "动态块不许再待在 system 里"
         assert blocks[0]["cache_control"]["type"] == "ephemeral"
-        assert blocks[1]["text"] == DYN
+
+    def test_anthropic_型号用_1h_档(self):
+        native = _native(_adapter(OR, CLAUDE), HIST)
+        assert native[0]["content"][0]["cache_control"]["ttl"] == "1h"
+        assert all(blk["cache_control"].get("ttl") == "1h" for _, blk in _marked(native))
+
+    def test_环境变量能退回_5m_档(self, monkeypatch):
+        monkeypatch.setenv("NOX_OR_CACHE_TTL", "5m")
+        native = _native(_adapter(OR, CLAUDE), HIST)
+        assert all("ttl" not in blk["cache_control"] for _, blk in _marked(native))
+
+    def test_别家型号不带_ttl(self):
+        """经 OpenRouter 的非 Anthropic 后端不一定认 ttl 字段，宁可不带。"""
+        native = _native(_adapter(OR, "google/gemini-x"), HIST)
+        assert _marked(native), "断点还是要打"
+        assert all("ttl" not in blk["cache_control"] for _, blk in _marked(native))
+
+    def test_动态块在最后一条_user_之前_不在_system(self):
+        native = _native(_adapter(OR, CLAUDE), HIST)
+        assert native[-2] == {"role": "system", "content": DYN}
+        assert native[-1]["content"] == "现在这句"
+
+    def test_历史末尾有断点_而最后那句不带(self):
+        native = _native(_adapter(OR, CLAUDE), HIST)
+        marks = _marked(native)
+        #: system 一个 + 历史最后一条（assistant「第二句」）一个，共两个
+        assert [i for i, _ in marks] == [0, 2]
+        assert native[2]["role"] == "assistant"
+        assert native[2]["content"][0]["text"] == "第二句"
+        assert native[-1]["content"] == "现在这句", "当前这句每轮都变，不该是断点"
+
+    def test_动态块变了_断点之前一个字都不变(self):
+        """🔴 这条就是 44% 和 86% 的差别。"""
+        a = _adapter(OR, CLAUDE)
+        one = _native(a, HIST, dynamic="现在 14 点")
+        two = _native(a, HIST, dynamic="现在 15 点，她有点累")
+        assert one[:-2] == two[:-2]
+        assert one[-2] != two[-2]
+
+    def test_历史变长后_上一轮的断点位置仍是新前缀的一部分(self):
+        """下一轮多了一对 user/assistant，上一轮打断点的那条消息要原样留在前缀里。"""
+        a = _adapter(OR, CLAUDE)
+        one = _native(a, HIST)
+        more = HIST[:-1] + [Message(role="user", text="现在这句"), Message(role="assistant", text="好呀"),
+                            Message(role="user", text="再来一句")]
+        two = _native(a, more)
+        # 断点标记本身不算缓存内容，比的是文字（2026-10-09 实测：断点往后移一格，前缀照样命中）
+        def plain(m):
+            c = m["content"]
+            return c[0]["text"] if isinstance(c, list) else c
+        prefix = [(m["role"], plain(m)) for m in one[:3]]
+        assert prefix == [(m["role"], plain(m)) for m in two[:3]], "上一轮断点之前的内容必须逐字不变"
+
+    def test_第一轮没有历史_不报错也不乱打断点(self):
+        native = _native(_adapter(OR, CLAUDE), [Message(role="user", text="你好")])
+        assert [i for i, _ in _marked(native)] == [0]
+
+    def test_没有动态内容时不插空消息_断点照打(self):
+        native = _native(_adapter(OR, CLAUDE), HIST, dynamic=None)
+        assert len(native) == 1 + len(HIST)
+        assert [i for i, _ in _marked(native)] == [0, 2]
+
+    def test_工具循环里_配对不被切断_断点不打在_tool_上(self):
+        a = _adapter(OR, CLAUDE)
+        native = _native(a, Test工具循环里不许插坏配对._loop_msgs())
+        for i, m in enumerate(native):
+            if m.get("tool_calls"):
+                assert native[i + 1].get("role") == "tool"
+        for i, _ in _marked(native):
+            assert native[i].get("role") in ("system", "user", "assistant")
+            assert not native[i].get("tool_calls")
+
+    def test_stream_和_complete_拼出同一份(self):
+        """🔴 主聊天走的是 stream()。只改一边，账单上才看得出来，而且没有任何报错。"""
+        a = _adapter(OR, CLAUDE)
+        assert _native_stream(a, HIST) == _native(a, HIST)
+        loop = Test工具循环里不许插坏配对._loop_msgs()
+        assert _native_stream(a, loop) == _native(a, loop)
+        d = _adapter("https://api.deepseek.com")
+        assert _native_stream(d, HIST) == _native(d, HIST)
+
+    def test_deepseek_这条不受影响_没有任何断点(self):
+        native = _native(_adapter("https://api.deepseek.com"), HIST)
+        assert _marked(native) == []
+        assert all(isinstance(m["content"], str) for m in native)
