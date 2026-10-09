@@ -8006,3 +8006,67 @@ v4（09-28 上线）链首插入：`/api/tts` = **v4 → v3 → turbo → edge**
 未定论，听感不对再调）；单次 10K 字符（v3 两倍）。**OS live 的豆包不动**（她明说）。
 实测：穿桥带 [whispers] 的文本，X-TTS-Engine: eleven-v4 出正经 mp3。入库 commit（bridge，
 已部署 5c2ac44c3b50）。
+
+## 五十八、10-09：缓存模式对照 + Haiku 5.5 进清单 + Models/Usage 重做 + 合成器改第一人称
+
+### 58.1 三种缓存模式（切供应商时缓存一定作废，排列也跟着变）
+
+适配器按供应商自动选；配置层 `cache_style` 是照抄现状填的种子，**适配器还没读它**（仍靠
+`_supports_cache` 嗅探地址里有没有 openrouter；配置层 P2 做完才改读字段）。
+
+| 模式 | 谁用 | 怎么缓存 | 动态块位置 | 缓存留多久 |
+|---|---|---|---|---|
+| `auto_prefix` | DeepSeek、智谱 GLM | 不打断点，厂商匹配整条请求最长公共前缀 | 尾部（最后一条 user 前） | GLM 1~3 分钟（10-05 实测），DeepSeek 几小时 |
+| `passthrough` | OpenRouter 上的 Claude | 显式 `cache_control`，OpenRouter 翻译给 Anthropic | 尾部（**10-09 起**，原来在 system 第二个 block） | 1 小时（`NOX_OR_CACHE_TTL=5m` 退回 5 分钟） |
+| `explicit_breakpoint` | Anthropic 原生适配器（现在没人用） | 显式断点 + 1h | system 第二个 block | 1 小时 |
+
+### 58.2 OpenRouter→Claude 缓存布局修复（a6cb708）
+
+旧布局动态块每轮一变，**它后面的整段对话历史永远命不中**，只有 system 一块在缓存。
+同一脚本同一请求（真适配器，Haiku 5.5 经 OpenRouter，第 2~6 轮）：**旧 44% → 新 99%**。
+改法：动态块挪到最后一条 user 之前；在它前面那条纯文字历史消息上补一个断点；
+`complete()` 与 `stream()` 合并成共用 `_assemble`（主聊天走流式——只改一边账单上才看得出）。
+实测 OpenRouter 能透传 `ttl:"1h"`（写入价约 5 分钟档的 1.6 倍），原注释「只有 5 分钟档」不对；顶层自动
+`cache_control` 在这个布局下**不命中**，别用。断点标记本身不算缓存内容（移动断点前缀照样命中）。
+⚠️ 历史里塞乱码词会让 Haiku 5.5 自己 `native=refusal`（finish=content_filter、usage 为空），
+做缓存实验要用正常对话内容，别把它误读成布局问题。
+
+### 58.3 Haiku 5.5（a8124f0）
+
+OpenRouter 型号 `anthropic/claude-haiku-5.5`，清单 key `haiku-5-5`，**只进清单供试聊，不是默认**
+（DeepSeek 那次命中率 93% 但他「变蠢了」——命中率不能替代「他还像不像他」）。
+官方价 $0.10 / 命中 $0.01 / 输出 $0.50（缓存写 5 分钟 $0.125、1 小时 $0.20）；**提示 >10 万 token 的那一次请求
+四项全 ×5**（含缓存命中部分）；分词器比旧版多约 30%。表里记 ¥0.72 / 0.072 / 3.6，**没有缓存写入一栏，会略低估**。
+按她 GLM 5.3 Flash 的真实流量折算：命中率 ≥71% 才比 GLM（约 ¥47）便宜，99% 时约 ¥25~30。
+换模型检查单第一条仍是：**先补 bridge PRICING 再切**（`pricing.test.js` 守着，本次一并补了）。
+Claude 订阅登录态（OAuth）**不接**：官方条款只许 Claude Code / claude.ai 用，第三方产品用即违约，
+2026-01-09 起已在拦。她开 Console API key 有门槛，继续走 OpenRouter。
+
+### 58.4 手机 Models / Usage 重做 + provider-info
+
+- Settings 子菜单：Look / **Models** / **Usage** / Notifications / About。Models 按 Text / Voice / Vision / Image / Video
+  分组，供应商点开看余额、额度窗口、型号、端点、Key 状态，右上与展开里都有 Refresh；Usage 独立成页
+  （今天的钱大字 + 14 天柱状可点 + 缓存环 + 按型号占比 + 厂商余额）。Look 风格卡只留英文名 + 色点。
+- bridge `GET /api/provider-info`（`lib/provider-quota.js`，60 秒缓存，`?refresh=1` 绕过）：
+  - **ElevenLabs**：`/v1/user/subscription`，key 必须开「User: Read」权限（否则 401 missing_permissions）。
+  - **GLM**：账户余额 `/api/biz/account/query-customer-account-report`、Coding Plan 额度
+    `/api/monitor/usage/quota/limit`——**两个都不在公开文档里**（控制台自己调的），实测同一把 API key 能读，
+    字段按形状认、认不出就报「读不出来」（空窗口≠0%）。她只用 API 按量，套餐窗口跟她无关。
+  - **豆包**：余额在火山费用中心 `QueryBalanceAcct`，要**账号级 IAM 访问密钥（AK/SK）+ V4 签名**；
+    现配的语音 App ID / Access Token 调不了。**待她建只读 IAM 密钥**（写进 bridge.env 的 `VOLC_ACCESS_KEY_ID` /
+    `VOLC_SECRET_ACCESS_KEY`），之后才能接并实测。现在页面写明原因。
+- `ZHIPU_API_KEY` 已从 nox-core 环境复制到 `/etc/nox/bridge.env`（bridge 读不到 core 的 env；备份 `.bak-provinfo-*`）。
+- Chat 回前台立刻补拉（visibilitychange / focus / pageshow，2 秒节流）：点锁屏推送进来原来要等下一个
+  60 秒定时拉取。真机效果待她验。
+
+### 58.5 合成器 / 归档改第一人称
+
+夜间合成器（`Ombre-Brain/consolidator.py`）和对话归档（`nox-core/memory/archiver.py`）的 prompt 原来明写
+「称呼用糖糖和 Nox / 第三人称」，入库的是「Nox……」旁白，而他亲手 hold 的是「我……」。已改成 Nox 第一人称，
+线上空跑验证 6 段 0 次出现「Nox」；库里旧段落她说不用改。10-10 00:30 是第一次真入库用新 prompt。
+
+### 58.6 遗留 / 提醒
+
+- `nox-daily.service`（早报推送）10-08 10:00 起 `failed`（exit-code），未查原因。
+- GLM Coding Plan 周额度 10-09 实测 98%（10-11 18:54 重置）——她说用的是 API，仅备查。
+- 智谱 10 月账单已出 ¥315.67（9 天，约为 9 月全月的 3.8 倍），余额 ¥86.91，余额预警已开；含套餐扣款，未拆。
