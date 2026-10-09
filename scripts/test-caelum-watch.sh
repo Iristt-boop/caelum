@@ -64,6 +64,7 @@ EOF
 cat > "$SANDBOX/doctor.sh" <<'EOF'
 #!/usr/bin/env bash
 [ "${1:-}" = "--list-services" ] && { echo "caddy bridge nox-core"; exit 0; }
+[ "${1:-}" = "--list-timed-services" ] && { echo "nox-daily 早报"; echo "ombre-brain-decay 记忆衰减"; exit 0; }
 EOF
 
 # python3：被测脚本真的要用它拼 JSON，所以**不能假装有**。
@@ -226,6 +227,50 @@ DOCTOR_BAK="$SANDBOX/doctor.sh"; mv "$DOCTOR_BAK" "$SANDBOX/doctor.gone"
 run >/dev/null
 check "把「拿不到清单」当成问题推出去" "$(grep -c '拿不到服务清单' "$PUSHLOG")" "1"
 mv "$SANDBOX/doctor.gone" "$DOCTOR_BAK"
+unset FLAP
+
+echo
+echo "-- 🔴 定时任务上一次失败要喊出来（2026-10-09 早报连续 28 天失败，监控一声没吭）--"
+reset
+run >/dev/null; run >/dev/null
+check "定时任务都正常时不吵" "$(pushes)" "0"
+echo failed > "$SANDBOX/svc-nox-daily"
+run >/dev/null
+check "第一次只记账（防抖）" "$(pushes)" "0"
+run >/dev/null
+check "第二次推出去" "$(pushes)" "1"
+check "正文点名「早报」" "$(grep -c '早报' "$PUSHLOG")" "1"
+check "正文带上 unit 名，她能拿去查" "$(grep -c 'nox-daily' "$PUSHLOG")" "1"
+check "说清楚它不会自己好" "$(grep -c '不会自己好' "$PUSHLOG")" "1"
+run >/dev/null; run >/dev/null
+check "冷却里不重复推" "$(pushes)" "1"
+rm -f "$SANDBOX/svc-nox-daily"
+run >/dev/null
+check "修好之后报一次平安" "$(grep -c '恢复' "$PUSHLOG")" "1"
+
+echo
+echo "-- 另一个定时任务坏了也认（清单是循环，不是只盯早报）--"
+reset; FLAP=1
+echo failed > "$SANDBOX/svc-ombre-brain-decay"
+run >/dev/null
+check "点名「记忆衰减」" "$(grep -c '记忆衰减' "$PUSHLOG")" "1"
+check "没误报早报" "$(grep -c '早报' "$PUSHLOG")" "0"
+unset FLAP
+
+echo
+echo "-- 🔴 doctor 不支持定时任务清单时要明说，不许当成「没有定时任务」--"
+reset; FLAP=1
+cat > "$SANDBOX/doctor.sh" <<'EOS'
+#!/usr/bin/env bash
+[ "${1:-}" = "--list-services" ] && { echo "caddy bridge nox-core"; exit 0; }
+EOS
+run >/dev/null
+check "把「拿不到定时任务清单」当成问题推出去" "$(grep -c '拿不到定时任务清单' "$PUSHLOG")" "1"
+cat > "$SANDBOX/doctor.sh" <<'EOS'
+#!/usr/bin/env bash
+[ "${1:-}" = "--list-services" ] && { echo "caddy bridge nox-core"; exit 0; }
+[ "${1:-}" = "--list-timed-services" ] && { echo "nox-daily 早报"; echo "ombre-brain-decay 记忆衰减"; exit 0; }
+EOS
 unset FLAP
 
 echo

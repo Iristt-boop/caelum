@@ -102,6 +102,25 @@ else
   done
 fi
 
+# ── 1b) 定时任务上一次成没成 ───────────────────────────────────
+# 🔴 2026-10-09：早报连续 28 天每天 10:00 失败，这个看门狗一声没吭 ——
+#    上面那段看的是「进程在不在」，oneshot 跑完就退出，永远看不出它死过。
+#    失败的 oneshot 会一直停在 failed，直到下一次成功才复位，所以这里不会闪烁。
+#    清单同样向 doctor.sh 要，不自己抄。
+if [ -n "$SERVICES" ]; then
+  TIMED=$(bash "$DOCTOR" --list-timed-services 2>/dev/null)
+  if [ -z "$TIMED" ]; then
+    add "拿不到定时任务清单（$DOCTOR 不支持 --list-timed-services），早报这类任务失败了也看不见"
+  else
+    while read -r unit label; do
+      [ -n "$unit" ] || continue
+      if [ "$(systemctl is-failed "$unit" 2>/dev/null)" = "failed" ]; then
+        add "${label:-$unit}（$unit）上一次没跑成，它不会自己好"
+      fi
+    done <<< "$TIMED"
+  fi
+fi
+
 # ── 2) 探活 ────────────────────────────────────────────────────
 # bridge 的 /api/health 是全家桶聚合口，一次拿到所有后端的死活。
 H=$(curl -s -m 20 --noproxy '*' "$BRIDGE/api/health" 2>/dev/null)

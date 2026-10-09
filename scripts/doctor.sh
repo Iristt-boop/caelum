@@ -36,6 +36,18 @@ if [ "${1:-}" = "--list-services" ]; then
   exit 0
 fi
 
+#: 定时任务（oneshot，由 timer 拉起）：`unit|她看得懂的名字`。
+#: 🔴 2026-10-09 立：上面那张服务表看的是「进程活着没」，对 oneshot 毫无意义 ——
+#: 它跑完就退出，永远是 inactive。**早报连续 28 天每天 10:00 失败（09-12 起），
+#: 所有检查全绿**，因为只查了 timer 还在不在，没人问「上一次成功了吗」。
+#: caelum-watch.sh 也从这里取清单（`--list-timed-services`），不自己抄一份。
+CAELUM_TIMED="nox-daily|早报 ombre-brain-decay|记忆衰减 ombre-brain-consolidate|记忆合成 caelum-retention|数据清理"
+
+if [ "${1:-}" = "--list-timed-services" ]; then
+  for x in $CAELUM_TIMED; do echo "${x%%|*} ${x#*|}"; done
+  exit 0
+fi
+
 echo "════════ Caelum 体检 $(date '+%F %T') ════════"
 
 # ── 1) systemd 服务 ──────────────────────────────
@@ -49,6 +61,15 @@ if systemctl is-active nox-daily.timer >/dev/null 2>&1; then
 else
   warn "nox-daily.timer 没在跑，早报会断"
 fi
+# 闹钟在响 ≠ 活干成了：看每个定时任务**上一次**的结果
+for x in $CAELUM_TIMED; do
+  u=${x%%|*}; label=${x#*|}
+  if [ "$(systemctl is-failed "$u" 2>/dev/null)" = "failed" ]; then
+    bad "$label（$u）上一次没跑成 —— 它不会自己好，看 journalctl -u $u"
+  else
+    good "$label（$u）上一次没出错"
+  fi
+done
 
 # ── 1.5) 遗忘曲线到底跑没跑（排期 4.6，2026-09-16）──────
 #
