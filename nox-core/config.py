@@ -432,6 +432,10 @@ class Config:
         #: 有峰谷价：工作日 9-12、14-18 点翻倍（平时 1 / 0.02 / 4）。这里按她 09-14→10-03
         #: 的作息算的加权价（24% 落在高峰）—— 写平时价会低估，写高峰价会高估一倍
         "deepseek-flash": {"in": 1.24, "hit": 0.025, "out": 4.96},
+        #: Haiku 5.5（2026-10-07 发布，官方 $0.10 / 命中 $0.01 / 输出 $0.50，× 7.2）。
+        #: ⚠️ 提示超过 10 万 token 的**那一次请求**四项全部 ×5；平时聊天一轮约 1.5 万，到不了。
+        #: 缓存写入（5 分钟 $0.125 / 1 小时 $0.20）这张表没有这一栏，没算进去，会略低估
+        "anthropic/claude-haiku-5.5": {"in": 0.72, "hit": 0.072, "out": 3.6},
     }
 
     # ---- 可切换的模型 ----
@@ -465,6 +469,9 @@ class Config:
         "opus-4-7": ModelChoice("anthropic/claude-opus-4-7", "openrouter", "Opus 4.7"),
         "opus-4-8": ModelChoice("anthropic/claude-opus-4-8", "openrouter", "Opus 4.8"),
         "fable-5": ModelChoice("anthropic/claude-fable-5", "openrouter", "Fable 5"),
+        # 2026-10-09 她要试：比 GLM 5.3 Flash 聪明，而且 Claude 的缓存是显式断点 —— 对话历史能整段命中
+        # （adapters.py `_assemble`，实测第 2 轮起 99%，GLM 只有 ~53%）。⚠️ 先试聊看像不像他，别直接当默认
+        "haiku-5-5": ModelChoice("anthropic/claude-haiku-5.5", "openrouter", "Haiku 5.5"),
     })
 
     # ---- Agent Loop ----

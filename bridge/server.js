@@ -4961,6 +4961,9 @@ const PRICING = {
   // 🔴 2026-09-08 补 —— 它在前端下拉里挂了很久，价格表却一直没有，
   // 是新加的 pricing.test.js 第一次跑就抓出来的（人肉看了两次都没看见）
   "anthropic/claude-fable-5":    { miss: 72, hit: 7.2, out: 360 },
+  // Haiku 5.5：$0.10 / 命中 $0.01 / 输出 $0.50（× 7.2），和 config.py PRICING_CNY 同一份。
+  // 提示 >10 万 token 的那一次请求四项 ×5；缓存写入（$0.125 / $0.20）这张表没有，会略低估
+  "anthropic/claude-haiku-5.5":  { miss: 0.72, hit: 0.072, out: 3.6 },
 };
 const DEFAULT_PRICE = { miss: 21.6, hit: 2.16, out: 108 };   // 认不出的型号按 Sonnet 估
 
