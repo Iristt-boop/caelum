@@ -270,6 +270,11 @@ class ThinkingRequest(BaseModel):
     on: bool
 
 
+class ChatModelRequest(BaseModel):
+    """她在 Models 页选聊天模型（10-09）。key = `config.models` 的短名；空串 = 回到默认主模型"""
+    key: str = ""
+
+
 class PeriodRequest(BaseModel):
     """她在 App 里填的生理期。
 
@@ -2660,6 +2665,8 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
             "providers": providers,
             #: 她的「思考」开关（10-06）。和模型不同，它是**服务器上一份**：手机、OS、他主动开口都听它的
             "thinking": bool(getattr(core, "thinking_on", lambda: False)()),
+            #: 她选的聊天模型短名（10-09）。空 = 没选过、用 `current` 那个默认。同样是服务器上一份
+            "selected": getattr(core, "chat_model_key", lambda: None)(),
         }
 
     @app.get("/api/nox/thinking")
@@ -2673,6 +2680,21 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
         if not core.set_thinking(req.on):
             raise HTTPException(status_code=503, detail="思考开关没存上（状态库没起来？），看日志")
         return {"ok": True, "on": bool(core.thinking_on())}
+
+    @app.get("/api/nox/model")
+    def nox_chat_model() -> dict:
+        """她选的聊天模型。空 = 没选过（走默认主模型）。"""
+        return {"ok": True, "key": core.chat_model_key() or ""}
+
+    @app.post("/api/nox/model")
+    def nox_set_chat_model(req: ChatModelRequest) -> dict:
+        """她在 Models 页点了一个模型。认不得的名字 400；存不上 503 —— 不能回 ok 让她以为切好了。"""
+        key = req.key.strip()
+        if key and key not in (getattr(core.cfg, "models", None) or {}):
+            raise HTTPException(status_code=400, detail=f"清单里没有这个模型：{key}")
+        if not core.set_chat_model(key):
+            raise HTTPException(status_code=503, detail="聊天模型没存上（状态库没起来？），看日志")
+        return {"ok": True, "key": core.chat_model_key() or ""}
 
     # ---- 关系状态（10-06，《Caelum-关系状态-设计稿》）：Us 列表 + 聊天卡片上的 Keep / Not quite ----
 

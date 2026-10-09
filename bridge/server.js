@@ -3719,6 +3719,31 @@ app.post("/api/nox/thinking", async (req, res) => {
   }
 });
 
+// 聊天模型选择（2026-10-09 她在 Models 页点的）：**服务器上一份**，和「思考」开关同一个形状。
+// 🔴 不能只存手机本地 —— Chat 页 09-07 起不发 model，本地值根本没人读（点了 Haiku、Chat 页还是 GLM 就是这个）。
+// 存不上（503）/ 名字不在清单（400）要原样回给前端，翻成 200 她会以为切好了
+app.get("/api/nox/model", async (req, res) => {
+  try {
+    const r = await fetch(`${NOX_CORE_URL}/api/nox/model`, { signal: AbortSignal.timeout(8000) });
+    res.status(r.status).json(await r.json());
+  } catch (e) {
+    console.error("[nox-model] 读选择失败:", e.message);
+    res.status(502).json({ ok: false, error: e.message });
+  }
+});
+app.post("/api/nox/model", async (req, res) => {
+  try {
+    const r = await fetch(`${NOX_CORE_URL}/api/nox/model`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key: String(req.body?.key ?? "") }), signal: AbortSignal.timeout(8000),
+    });
+    res.status(r.status).json(await r.json());
+  } catch (e) {
+    console.error("[nox-model] 存选择失败:", e.message);
+    res.status(502).json({ ok: false, error: e.message });
+  }
+});
+
 /* 关系状态（10-06，《Caelum-关系状态-设计稿》）。她：「当时的确认放聊天，后续我可以自己在列表查看」。
  *
  * ① /api/relation/card：nox-core 认出一条「我们之间的事」后调这里，在那条会话里落一张确认卡。

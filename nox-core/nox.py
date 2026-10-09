@@ -112,6 +112,8 @@ def _rescue_fake_calls(attachments: list, calls: list[tuple[str, str]]) -> None:
 STATE_KEY = "personality.state"
 #: 她的「思考」开关（同一张 source_state 表）。见 Nox.thinking_on
 THINKING_KEY = "core.thinking"
+#: 她在 Models 页选的聊天模型（同一张 source_state 表）。见 Nox.chat_model_key
+CHAT_MODEL_KEY = "core.chat_model"
 #: 「思考」开着时给他的规矩：先写心里话（她 10-06：「thinking 可不可以是第一人称？就是自我的内心想法」）。
 #: 拼在**动态块**上不拼进 system —— system 一变整段前缀缓存就换一份（开 / 关两份）。
 #: 措辞是 10-06 线上实测过的那版（3/3 守格式）；拆标签见 agent/llm.py 的 InnerVoiceFilter
@@ -677,7 +679,7 @@ class Nox:
 
     def model_name(self, model: str | None) -> str:
         """这轮实际会用哪个型号。给用量记账用，让 Console 能按模型分开算。"""
-        choice = self.cfg.models.get(model or "")
+        choice = self.cfg.models.get(model or self.chat_model_key() or "")
         return choice.model if choice else self.cfg.primary.model
 
     def adapter_for(self, model: str | None) -> LLMAdapter | None:
@@ -688,6 +690,8 @@ class Nox:
         ⚠️ 换模型意味着**提示词缓存整段作废**（缓存按「模型 + 前缀字节」匹配）。
         这是给糖糖偶尔换口味用的，不是让她来回横跳的。
         """
+        # 请求没指定型号时，用她在 Models 页选的那个（没选过就是 None → 默认主模型）
+        model = model or self.chat_model_key()
         if not model:
             return None
         choice = self.cfg.models.get(model)
@@ -798,6 +802,46 @@ class Nox:
             logger.exception("思考开关没存上")
             return False
         logger.info("思考开关 → %s", "开" if on else "关")
+        return True
+
+    # ------------------------------------------------------------ 聊天模型（她 10-09 在 Models 页选）
+
+    def chat_model_key(self) -> str | None:
+        """她在 Models 页选的聊天模型短名（`config.models` 的 key）。**每轮现读**，选了下一句就生效、不用重启。
+
+        🔴 这是**服务器上一份**，不是每台设备各记各的：Chat 页 09-07 起不再发 `model`
+        （那时手机 localStorage 里的陈值盖掉了服务端、显示错和行为错是同一个原因），
+        所以 Models 页只能改这里。和「思考」开关同一个形状、同一张表。
+
+        只管她的聊天轮次（`chat` / `chat_stream` 走 `adapter_for`）；他主动开口、归档、杂活
+        各有各的 adapter，不受它影响。
+        没选过 / 库没起来 / 存的名字已经不在清单里 → None（走默认主模型，和这之前一直的样子一样）。
+        """
+        store = self._state_store()
+        if store is None:
+            return None
+        try:
+            key = ((store.get_source_state(CHAT_MODEL_KEY) or {}).get("key") or "").strip()
+        except Exception:  # noqa: BLE001
+            logger.warning("读不出聊天模型选择，这一轮用默认主模型", exc_info=True)
+            return None
+        cfg = getattr(self, "cfg", None)
+        if key and cfg is not None and key not in (getattr(cfg, "models", None) or {}):
+            logger.warning("存的聊天模型 %s 已不在清单里，这一轮用默认主模型", key)
+            return None
+        return key or None
+
+    def set_chat_model(self, key: str | None) -> bool:
+        """存她的选择；空 = 回到默认主模型。存不上返回 False（调用方要说出来，不能假装切好了）。"""
+        store = self._state_store()
+        if store is None:
+            return False
+        try:
+            store.set_source_state(CHAT_MODEL_KEY, {"key": key or "", "at": datetime.now().isoformat(timespec="seconds")})
+        except Exception:  # noqa: BLE001
+            logger.exception("聊天模型选择没存上")
+            return False
+        logger.info("聊天模型 → %s（缓存前缀作废，下一轮要重写）", key or "默认主模型")
         return True
 
     def _chat_depth(self, voice: bool) -> str:
