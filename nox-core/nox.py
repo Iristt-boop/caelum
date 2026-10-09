@@ -15,6 +15,7 @@ from typing import Any
 from agent import vision
 from agent.adapters import make_adapter, supports_vision
 from agent.llm import MEME_TAGS, LLMAdapter, Message, extract_fake_calls, strip_stage_tags
+from agent import meter
 from agent.loop import AgentLoop
 from config import Config, _build_llm, config as default_config
 from context import ContextProviderRegistry
@@ -253,6 +254,25 @@ class Nox:
             logger.info("房间工具已注册（%s）", _mask_url(self.cfg.room_url))
         else:
             logger.info("未配置 NOX_ROOM_URL，跳过房间工具")
+
+        # stackchan —— 他的「身体」（桌上的小机器人：转头/表情/说话/灯环/看一眼）。
+        # 没配 NOX_STACKCHAN_MCP_URL 就跳过：设备不在线他照样是他
+        if self.cfg.stackchan_url:
+            from tools import stackchan as stackchan_tools
+            stackchan_client = McpClient(
+                self.cfg.stackchan_url, name="stackchan",
+                timeout=self.cfg.stackchan_timeout,
+                headers=({"Authorization": f"Bearer {self.cfg.stackchan_token}"}
+                         if self.cfg.stackchan_token else None),
+            )
+            stackchan_tools.register_all(
+                self.loop, stackchan_client,
+                vision_cfg=self.cfg.vision,
+                world_ref=lambda: self.world,
+            )
+            logger.info("stackchan 工具已注册（%s）", _mask_url(self.cfg.stackchan_url))
+        else:
+            logger.info("未配置 NOX_STACKCHAN_MCP_URL，跳过身体工具")
 
         # 相册 / 待办 / 日记。数据在 bridge 的 SQLite 里，走它的 REST 接口。
         # 存成属性是给 Daily Planner 的推送用的 —— 推送通道（订阅表 + VAPID
@@ -651,7 +671,9 @@ class Nox:
         )
 
         # 归档器。摘要走 utility 模型（便宜那个），不占主线的钱和缓存。
-        self.archiver = Archiver(self.ob, light or self.loop.adapter)
+        # 归档摘要也进账本（memory-archive）：对账时它是被点名的盲区之一
+        self.archiver = Archiver(
+            self.ob, meter.tag(light or self.loop.adapter, "memory-archive"))
 
         logger.info(
             "Nox 就绪 | 主模型=%s | 轻量=%s | 静态前缀=%d 字符 | 工具=%d 个",

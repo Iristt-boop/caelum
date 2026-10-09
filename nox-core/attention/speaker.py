@@ -50,6 +50,8 @@ from attention.scheduler import LOCAL_TZ, SchedulerDecision
 from temporal import relative, slot_of
 from planner.push import finalize_push_text
 
+from agent import meter
+
 logger = logging.getLogger(__name__)
 
 #: 数「最近说过几次」的窗口。7 天足够覆盖「连着几天没睡好」这种情况，
@@ -294,6 +296,10 @@ def build_speaker(core: _Core, sessions: _Sessions, store: Any,
         if recall is None:
             recall = str(getattr(intent, "subject", "") or "")
         r = core.chat(prompt, history, session_id=sid, recall=recall)
+
+        # 主动开口也是全管线（带历史和记忆召回），一天十几次 ——
+        # 2026-10-09 对账实锤这是账本最大的一类盲区，补记。
+        meter.record("speaker", meter.routed_model(core, r), getattr(r, "usage", None))
 
         # 存进他的会话 —— 这一步就是「留在上下文里」的落点。
         # 放在推送**之前**：宁可存了没推出去（她少收一条），

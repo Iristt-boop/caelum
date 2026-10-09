@@ -28,7 +28,7 @@ from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, WebSocket
+from fastapi import FastAPI, Header, HTTPException, WebSocket
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -289,6 +289,17 @@ class PeriodRequest(BaseModel):
     event: str
     flow: str = ""
     date: str | None = None
+
+
+class PerceptionEventRequest(BaseModel):
+    """stackchan tracker 推来的一条感知事件（同模块顶层定义，理由同上）。"""
+
+    #: "arrived" | "left" | "looking"（looking 是每分钟一次的心跳）
+    event: str
+    #: 认出来是谁；None = 陌生人 / 没开识别
+    identity: str | None = None
+    #: 事件发生时刻（ISO8601）。缺了就按收到的时间算
+    observed_at: datetime | None = None
 
 
 class DailySummaryRequest(BaseModel):
@@ -656,6 +667,18 @@ def _build_attention(core: Nox, sessions: "Sessions", db: Store) -> AttentionSer
         else:
             logger.info("没配 HA（NOX_HA_API_URL/TOKEN），出门追问这条线不跑")
 
+        # ---- 面前的 Source（stackchan 人脸识别，2026-09-24）----
+        # push 型：tracker 跃迁推 arrived/left，在面前时每分钟一次
+        # looking 心跳。她坐到他面前 → 一个念头（详见 attention/sources/front.py）。
+        # 没配 NOX_PERCEPTION_TOKEN 就不建，端点会明说这条线不跑。
+        # 随 svc.front_source 带出去（card_source 同款装配法）
+        front_source = None
+        if os.getenv("NOX_PERCEPTION_TOKEN") and astore is not None:
+            from attention.sources.front import FrontSource
+            front_source = FrontSource(astore)
+        else:
+            logger.info("没配 NOX_PERCEPTION_TOKEN，「她在他面前」这条线不跑")
+
         # 池子线头（第七个 Care 源，Topic_Pool §4.1）：只产生念头，
         # 「要不要说、现在说不说」全部归 Orchestrator —— 吃闸、吃额度、进账本
         if topics_pool is not None:
@@ -810,6 +833,10 @@ def _build_attention(core: Nox, sessions: "Sessions", db: Store) -> AttentionSer
                 f"{w.hour:02d}:{w.minute:02d} {w.subject}" for w in time_source.wakes))
         if live:
             logger.warning("Attention 是 LIVE 的 —— 他会真的推消息到糖糖锁屏")
+        # push 型面前源（stackchan 人脸识别）挂在服务上带走 ——
+        # perception 端点（create_app 里）从这取。不进 fast_sources：
+        # 它不是轮询源，事件是 tracker 推过来的
+        svc.front_source = front_source
         return svc
     except Exception:  # noqa: BLE001
         # Attention 起不来不该让整个 Core 起不来
@@ -2267,6 +2294,53 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
         # 不适合直接摆到界面上。这里只回结果，人话由前端自己写
         return {"ok": "记下了" in msg, "detail": msg}
 
+    @app.post("/api/nox/perception/presence")
+    def nox_perception_presence(
+        body: PerceptionEventRequest,
+        token: str = Header(default="", alias="X-Perception-Token"),
+    ) -> dict:
+        """stackchan 的脸认出了她 —— 「她坐到他面前了」。
+
+        同 VPS 上的 tracker push 过来的（127.0.0.1 出不了公网），
+        token 是 fail-closed 的：没配 ``NOX_PERCEPTION_TOKEN`` 这条线
+        整个不跑（touch-server 2026-09-11 那课：鉴权缺失宁可拒启动）。
+
+        事件写进 World Model（``she_is_present``，分钟级短 TTL ——
+        「她在面前」不是 36 小时还能当当前值说的旧闻），
+        跃迁（arrived）产念头给 Care，心跳（looking）只刷新鲜度。
+        """
+        if attention is None or getattr(attention, "front_source", None) is None:
+            raise HTTPException(
+                status_code=503, detail="perception 线没启用（NOX_PERCEPTION_TOKEN）")
+        if os.getenv("NOX_PERCEPTION_TOKEN", "") != token or not token:
+            logger.warning("perception 推送 token 不对")
+            raise HTTPException(status_code=403, detail="token 不对")
+        if body.event not in ("arrived", "left", "looking"):
+            raise HTTPException(status_code=422,
+                                detail="event 要 arrived / left / looking")
+
+        observed_at = body.observed_at or datetime.now(timezone.utc)
+        if observed_at.tzinfo is None:
+            observed_at = observed_at.replace(tzinfo=timezone.utc)
+
+        world = _world()
+        if world is not None:
+            world.observe(
+                source="stackchan",
+                type="she_is_present",
+                observed={"present": body.event in ("arrived", "looking"),
+                          "identity": body.identity},
+                observed_at=observed_at,
+                # 同一分钟内的重复事件幂等 —— 心跳每分钟一次，正好
+                dedup_key=f"{body.event}-{observed_at.astimezone(timezone.utc):%Y%m%d%H%M}",
+            )
+
+        front = attention.front_source
+        signals = front.observe_event(body.event, body.identity, observed_at)
+        if signals:
+            attention.care.submit_all(signals)
+        return {"ok": True, "front": front.snapshot()}
+
     # ---------------------------------------------------------------- 待确认单
     #
     # 🔴 **这几个端点就是那道闸门**（`Caelum-点单确认卡-设计.md`）。
@@ -3089,6 +3163,7 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
         try:
             r = core.chat(prep.prompt, history,
                           session_id=sid, session_started=db.started_at(sid))
+            meter.record("daily-summary", meter.routed_model(core, r), getattr(r, "usage", None))
         except Exception as exc:  # noqa: BLE001
             logger.exception("早报生成异常")
             raise HTTPException(
@@ -3184,6 +3259,9 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
             r = core.chat(req.text, sent, images=req.images or None, voice=req.voice,
                           scene=req.scene, model=req.model,
                           session_id=sid, session_started=started)
+            # 非流式这条路不走 SSE，bridge 的 usage_log 天生看不见它 ——
+            # 记成 task=chat 和流式主链路并桶（2026-10-09 对账：一天 17 次全漏）
+            meter.record("chat", req.model or meter.routed_model(core, r), getattr(r, "usage", None))
         except Exception as exc:  # noqa: BLE001
             logger.exception("对话处理异常")
             raise HTTPException(status_code=500, detail=f"内部错误: {type(exc).__name__}") from exc

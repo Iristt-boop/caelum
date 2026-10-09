@@ -5007,7 +5007,9 @@ function rowCost(r) {
 }
 
 app.get("/api/usage-stats", (req, res) => {
-  const todayStr = new Date().toISOString().slice(0, 10);
+  // 2026-10-09：改北京日切。原来 UTC 切日 = "今天"从早上 8 点起算，
+  // 凌晨 0-8 点的账全记到昨天 —— 她对账时第一眼就撞上这个口径差。
+  const todayStr = new Date(Date.now() + 8 * 3600e3).toISOString().slice(0, 10);
 
   const rowsOf = (where, params = []) =>
     dbAll(`SELECT ts, tokens_in, tokens_out, cache_read, cache_write, cost, model FROM usage_log ${where}`, params);
@@ -5049,12 +5051,13 @@ app.get("/api/usage-stats", (req, res) => {
   // 图要连续，断一天看起来就像坏了
   const byDay = {};
   for (const x of allRows) {
-    const d = (x.ts || "").slice(0, 10);
+    // ts 是 UTC 的 ISO 串；按北京日归组（和上面 todayStr 同一口径）
+    const d = x.ts ? new Date(new Date(x.ts).getTime() + 8 * 3600e3).toISOString().slice(0, 10) : "";
     (byDay[d] = byDay[d] || []).push(x);
   }
   const daily = [];
   for (let i = 13; i >= 0; i--) {
-    const dt = new Date(Date.now() - i * 86400000).toISOString().slice(0, 10);
+    const dt = new Date(Date.now() + 8 * 3600e3 - i * 86400000).toISOString().slice(0, 10);
     const s = sum(byDay[dt] || []);
     daily.push({ date: dt, turns: s.turns, in: s.i, out: s.o, cache: s.r, cost: +s.cost.toFixed(4) });
   }

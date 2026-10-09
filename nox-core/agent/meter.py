@@ -108,3 +108,21 @@ class Metered:
 def tag(adapter: Any, task: str) -> Any:
     """给 adapter 贴一个任务名。adapter 为 None 时原样返回。"""
     return Metered(adapter, task) if adapter is not None else adapter
+
+
+def routed_model(core: Any, result: Any) -> str:
+    """core.chat() 调用方记账用：从 RouteResult 还原这轮实际用的模型 id。
+
+    RouteResult 本身不带 model（StreamEvent 才带，那是给展示的）。这里按
+    decision.light 选轻量 adapter、否则退回主 loop 的 adapter，读 cfg.model
+    —— 和 `Metered.complete` 同一约定，bridge 的 PRICING 才认得。
+    取不到给空串：宁可这笔记不上 model，不能记一个错的进 PRICING。
+    """
+    try:
+        if getattr(getattr(result, "decision", None), "light", False):
+            adapter = getattr(getattr(core, "router", None), "light_adapter", None)
+        else:
+            adapter = getattr(getattr(core, "loop", None), "adapter", None)
+        return getattr(getattr(adapter, "cfg", None), "model", "") or ""
+    except Exception:  # noqa: BLE001
+        return ""
