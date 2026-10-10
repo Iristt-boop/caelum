@@ -52,6 +52,10 @@ _INNER_BLOCK_RE = re.compile(
 SESSIONS_DB = Path("/root/nox-core/data/sessions.db")
 BRIDGE_DB = Path("/root/data/nox-bridge.db")
 BACKUP_ROOT = Path("/root/backups/sanitizer")
+#: 「英文 + 语气标签」整行判别（语音草稿）只用在这天及以后的记录上（10-10 定）。
+#: 更早的电话记录她那句话还没有「[audio] vol=」标记，分不出是不是电话 —— 8-05、10-07 那几条
+#: 「[softly] Just rest your voice, baby…」是真的电话里说的话，按草稿删就把那几通电话删没了
+LINE_DETECTOR_SINCE = "2026-10-10"
 #: sync 竞争造成的重复是**成批**写入的（同一个 created_at 一次几十上百条）。
 #: 只认这种批里的重复 —— 她真的连说两遍「在吗」不会落在同一个时间戳的大批里
 BATCH_MIN = 4
@@ -147,7 +151,8 @@ def plan_sessions(conn: sqlite3.Connection, table, drop_test: bool) -> dict:
             replay_over.add(batch)
         seen[sid].add(key)
         if r["role"] == "assistant":
-            new, arts = clean_text(r["text"], table, voice=is_call(last_user.get(sid, "")))
+            old = (r["created_at"] or "")[:10] < LINE_DETECTOR_SINCE
+            new, arts = clean_text(r["text"], table, voice=old or is_call(last_user.get(sid, "")))
             if arts:
                 if new:
                     edits.append({"row": dict(r), "new_text": new, "artifacts": arts})
@@ -207,7 +212,7 @@ def plan_bridge(conn, table) -> dict:
         if r["role"] == "user":
             last_user[r["id"]] = r["content"] or ""
             continue
-        call = is_call(last_user.get(r["id"], ""))
+        call = (r["timestamp"] or "")[:10] < LINE_DETECTOR_SINCE or is_call(last_user.get(r["id"], ""))
         new, arts = clean_text(r["content"], table, voice=call)
         try:
             meta = json.loads(r["metadata"]) if r["metadata"] else {}

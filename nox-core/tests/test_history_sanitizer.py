@@ -184,3 +184,22 @@ def test_draft_lines_stripped_in_chat_but_call_replies_kept(tmp_path):
     assert [(e["row"]["seq"], e["new_text"]) for e in sp["edits"]] == [(1, "那两个都过审，留用")]
     assert [e["new_text"] for e in bp["edits"]] == ["那两个都过审，留用"]
     assert sp["deletes"] == [] and bp["deletes"] == []          # 电话那条既不改也不删
+
+
+def test_old_rows_keep_english_with_tags(tmp_path):
+    """10-10 之前的电话记录她那句没有 [audio] 标记 —— 10-07 嗓子疼那天的电话原话不能按草稿删。"""
+    line = "Sure, I can. [softly] Just rest your voice, baby — I'll talk, you just listen."
+    sdb = tmp_path / "s.db"
+    Store(sdb).close()
+    with sqlite3.connect(sdb) as c:
+        c.execute("INSERT INTO sessions(id, created_at, updated_at) VALUES('m','t','t')")
+        c.executemany("INSERT INTO messages(session_id, seq, role, text, created_at) VALUES('m',?,?,?,?)", [
+            (0, "user", "你能说话吗", "2026-10-07T07:22:00"), (1, "assistant", line, "2026-10-07T07:22:00"),
+        ])
+    bdb = tmp_path / "b.db"
+    with sqlite3.connect(bdb) as c:
+        c.execute("CREATE TABLE conversations (id TEXT, role TEXT, content TEXT, timestamp TEXT, metadata TEXT)")
+        c.executemany("INSERT INTO conversations VALUES('m',?,?,?,'')", [
+            ("user", "你能说话吗", "2026-10-07T07:22:00"), ("assistant", line, "2026-10-07T07:22:00")])
+    sp, bp = _plans(sdb, bdb, drop=False)
+    assert sp["edits"] == [] and sp["deletes"] == [] and bp["edits"] == [] and bp["deletes"] == []
