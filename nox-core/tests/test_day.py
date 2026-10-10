@@ -130,16 +130,78 @@ def test_单条消息不成段():
     assert [e for e in day["events"] if e["type"] == "conversation"] == []
 
 
-def test_对话摘要用她开头那句原话():
-    """V1 不引入 AI 总结（文档 1.2 第 3 条）。"""
+def test_对话摘要是他说的话_不是她的():
+    """V1 不引入 AI 总结（文档 1.2 第 3 条）。
+    🔴 2026-10-10 她：「这一页应该显示他的内容，Talked 应该显示他说的话而不是我的」。"""
     base = datetime(2026, 8, 18, 4, 0, tzinfo=timezone.utc)
     rows = [
         msg("a" * 32, "user", "帮我看看这个代码哪里有问题呀", base),
-        msg("a" * 32, "assistant", "好的宝贝", base + timedelta(minutes=1)),
+        msg("a" * 32, "assistant", "好的宝贝，我来看", base + timedelta(minutes=1)),
     ]
     e = build_day(DAY, store=FakeStore(rows))["events"][0]
-    assert e["summary"].startswith("帮我看看这个代码")
+    assert e["summary"] == "好的宝贝，我来看"
+    assert "帮我看看" not in e["summary"]
+    assert e["metadata"]["hers"].startswith("帮我看看这个代码")   # 她的那句留在 metadata 里，不丢
     assert e["related"]["conversationId"] == "a" * 32
+
+
+def test_他的话_分段取前两段_标记和表情不上屏():
+    base = datetime(2026, 8, 18, 4, 0, tzinfo=timezone.utc)
+    rows = [
+        msg("a" * 32, "user", "早安", base),
+        msg("a" * 32, "assistant", "七点整的早安|||稀客啊|||第三段不要\n\n[表情包] 早安", base + timedelta(minutes=1)),
+    ]
+    e = build_day(DAY, store=FakeStore(rows))["events"][0]
+    assert e["summary"] == "七点整的早安 稀客啊"
+
+
+def test_他的话_第一段里夹着写成文字的表情行也要去掉():
+    base = datetime(2026, 8, 18, 4, 0, tzinfo=timezone.utc)
+    rows = [
+        msg("a" * 32, "user", "早", base),
+        msg("a" * 32, "assistant", "在呢" + chr(10) + "[表情包] 早安", base + timedelta(minutes=1)),
+    ]
+    assert build_day(DAY, store=FakeStore(rows))["events"][0]["summary"] == "在呢"
+
+
+def test_他的话_只有标记没有话就跳到下一句有话的():
+    base = datetime(2026, 8, 18, 4, 0, tzinfo=timezone.utc)
+    rows = [
+        msg("a" * 32, "user", "在吗", base),
+        msg("a" * 32, "assistant", "[SKIP]", base + timedelta(minutes=1)),
+        msg("a" * 32, "assistant", "[开心]", base + timedelta(minutes=1)),
+        msg("a" * 32, "assistant", "在呢", base + timedelta(minutes=2)),
+    ]
+    assert build_day(DAY, store=FakeStore(rows))["events"][0]["summary"] == "在呢"
+
+
+def test_他一句都没回_就说几条消息_不拿她的话顶():
+    base = datetime(2026, 8, 18, 4, 0, tzinfo=timezone.utc)
+    rows = [
+        msg("a" * 32, "user", "在吗", base),
+        msg("a" * 32, "user", "人呢", base + timedelta(minutes=1)),
+    ]
+    assert build_day(DAY, store=FakeStore(rows))["events"][0]["summary"] == "2 条消息"
+
+
+def test_他的话太长要截断():
+    from day.aggregator import HIS_WORDS_MAX
+    base = datetime(2026, 8, 18, 4, 0, tzinfo=timezone.utc)
+    rows = [msg("a" * 32, "user", "讲讲", base),
+            msg("a" * 32, "assistant", "字" * 200, base + timedelta(minutes=1))]
+    e = build_day(DAY, store=FakeStore(rows))["events"][0]
+    assert e["summary"].endswith("…") and len(e["summary"]) == HIS_WORDS_MAX + 1
+
+
+def test_他的话_取的是她开口之后的第一句_不是更早的主动开场():
+    """一段里他可能先主动说了一句、她才回；摘要要的是和她聊的那一句。"""
+    base = datetime(2026, 8, 18, 4, 0, tzinfo=timezone.utc)
+    rows = [
+        msg("a" * 32, "assistant", "早安宝贝", base),
+        msg("a" * 32, "user", "早", base + timedelta(minutes=1)),
+        msg("a" * 32, "assistant", "睡得好吗", base + timedelta(minutes=2)),
+    ]
+    assert build_day(DAY, store=FakeStore(rows))["events"][0]["summary"] == "睡得好吗"
 
 
 def test_系统提示词不是对话():
@@ -176,7 +238,7 @@ def test_系统提示词不该劈开一段真对话():
     convs = [e for e in build_day(DAY, store=FakeStore(rows))["events"]
              if e["type"] == "conversation"]
     assert len(convs) == 1, "被系统提示词劈成了两段"
-    assert convs[0]["summary"] == "在吗"
+    assert convs[0]["summary"] == "在"
 
 
 def test_按中国时区切天():
@@ -232,8 +294,9 @@ def test_汇总用账本的数字():
 
 
 class FakeBridge:
-    def __init__(self, todo=None, music=None, memory=None, ok=True):
+    def __init__(self, todo=None, music=None, memory=None, ok=True, watch=None):
         self.todo, self.music, self.memory = todo or [], music or [], memory or []
+        self.watch = watch or []
         self.ok = ok
 
     def get(self, path, params=None):
@@ -245,6 +308,8 @@ class FakeBridge:
             r.data = {"items": self.todo}
         elif "music" in path:
             r.data = {"songs": self.music}
+        elif "watch" in path:
+            r.data = {"items": self.watch}
         else:
             r.data = {"items": self.memory}
         return r
@@ -309,15 +374,73 @@ def test_今天记住的事进时间线():
     assert ev[0]["related"]["memoryId"] == "b1"
 
 
-def test_记忆不显示全文():
-    """正文是他和她之间的东西，列表里只给名字。"""
+def test_记忆不显示全文_只给名字加一小截预览():
+    """正文是他和她之间的东西，时间线上只给名字 + 预览头一截 + 前几个标签。
+    2026-10-10 她：Noted 好几个分不清记的是什么 —— 光有名字不够，但也不能把全文摊出来。"""
+    from day.aggregator import MEMORY_PREVIEW_MAX, MEMORY_TAGS_MAX
     at = datetime(2026, 8, 18, 10, 0, tzinfo=timezone.utc)
     b = FakeBridge(memory=[{
-        "id": "b1", "name": "一个名字", "created": at.isoformat(),
-        "preview": "这段正文不该出现在时间线上",
+        "id": "b1", "name": "一个名字", "created": at.isoformat(), "type": "dynamic",
+        "preview": "开头" + "很长的正文" * 30 + "尾巴不该出现",
+        "tags": ["自省", "梦境", "清单", "焦虑", "象征"],
     }])
     e = [x for x in build_day(DAY, bridge=b)["events"] if x["type"] == "memory"][0]
-    assert "不该出现" not in str(e)
+    assert "尾巴不该出现" not in str(e)
+    m = e["metadata"]
+    assert m["preview"].startswith("开头") and len(m["preview"]) == MEMORY_PREVIEW_MAX
+    assert m["tags"] == ["自省", "梦境", "清单"][:MEMORY_TAGS_MAX]
+    assert m["kind"] == "dynamic"
+
+
+def test_记忆没有预览和标签也不炸():
+    at = datetime(2026, 8, 18, 10, 0, tzinfo=timezone.utc)
+    b = FakeBridge(memory=[{"id": "b1", "name": "光秃秃", "created": at.isoformat()}])
+    m = [x for x in build_day(DAY, bridge=b)["events"] if x["type"] == "memory"][0]["metadata"]
+    assert m["preview"] == "" and m["tags"] == []
+
+
+# ---------------------------------------------------------------- 一起看片（2026-10-10）
+
+
+def _watch(id, title, start_utc, mins, episode=""):
+    end = start_utc + timedelta(minutes=mins) if mins is not None else None
+    return {"id": id, "title": title, "episode": episode, "mode": "stream",
+            "started_at": start_utc.isoformat(), "ended_at": end.isoformat() if end else None}
+
+
+def test_一起看片进时间线_带片名和时长():
+    at = datetime(2026, 8, 18, 12, 0, tzinfo=timezone.utc)
+    b = FakeBridge(watch=[_watch("w1", "摩登家庭", at, 34, "S1E1")])
+    ev = [e for e in build_day(DAY, bridge=b)["events"] if e["type"] == "movie"]
+    assert len(ev) == 1
+    assert "摩登家庭" in ev[0]["summary"] and "S1E1" in ev[0]["summary"]
+    assert ev[0]["metadata"]["minutes"] == 34
+    assert ev[0]["related"]["watchId"] == "w1"
+
+
+def test_看不够十分钟的不算一起看过():
+    at = datetime(2026, 8, 18, 12, 0, tzinfo=timezone.utc)
+    b = FakeBridge(watch=[_watch("w1", "点开就关", at, 9), _watch("w2", "刚好", at, 10)])
+    ev = [e for e in build_day(DAY, bridge=b)["events"] if e["type"] == "movie"]
+    assert [e["related"]["watchId"] for e in ev] == ["w2"]
+
+
+def test_没结束的场次不编时长_不进():
+    at = datetime(2026, 8, 18, 12, 0, tzinfo=timezone.utc)
+    b = FakeBridge(watch=[_watch("w1", "还没完", at, None)])
+    assert [e for e in build_day(DAY, bridge=b)["events"] if e["type"] == "movie"] == []
+
+
+def test_别的日子的场次不算():
+    old = datetime(2026, 8, 15, 12, 0, tzinfo=timezone.utc)
+    b = FakeBridge(watch=[_watch("w1", "旧的", old, 60)])
+    assert [e for e in build_day(DAY, bridge=b)["events"] if e["type"] == "movie"] == []
+
+
+def test_看片数进汇总():
+    at = datetime(2026, 8, 18, 12, 0, tzinfo=timezone.utc)
+    b = FakeBridge(watch=[_watch("w1", "甲", at, 30), _watch("w2", "乙", at + timedelta(hours=2), 30)])
+    assert build_day(DAY, bridge=b)["summary"]["moviesWatched"] == 2
 
 
 def test_没带时区的created按中国时间理解():

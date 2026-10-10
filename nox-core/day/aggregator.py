@@ -35,8 +35,12 @@
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Any
+
+from agent.llm import MEME_TAGS, strip_stage_tags
+from context.media_title import clean as clean_title
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +66,8 @@ SOURCES = {
     # 2026-08-18 给 Ombre Brain 加了 `/recent`（结构化 JSON）才接上的。
     # MCP 那几个工具回的是给模型读的文本，解析它等于猜，而且格式一改就静默失效
     "memory": {"wired": True, "note": "OB 的 /recent，只回元数据+预览，全文走 trace"},
+    # 2026-10-10：一起看片。bridge 的 watch_sessions，只取看够 10 分钟的（同共影那条线）
+    "watching": {"wired": True, "note": "bridge /api/watch/history，看够 10 分钟才算一场"},
     # 2026-10-06 V5「他自己的时间」：一天 0~1 次，他自己去做的事（attention.db activity_log）
     "own_time": {"wired": True, "note": "他自己的时间，一天 0~1 次"},
 }
@@ -208,19 +214,45 @@ def _from_conversations(rows: list[dict], date_str: str) -> list[dict]:
         if first_user is None:
             continue
         mins = int((b[-1]["_at"] - b[0]["_at"]).total_seconds() / 60)
+        # 🔴 摘要是**他说的话**，不是她的（她 10-10：「这一页应该显示他的内容」）。
+        # 取她开口之后他的第一句有内容的回复；他一句都没回就退回「N 条消息」，
+        # 不拿她的话顶 —— 那样这页又变回她的聊天记录
+        started = b.index(first_user)
+        his = next((w for w in (_his_words(m.get("text")) for m in b[started:]
+                                if m.get("role") == "assistant") if w), "")
         out.append({
             "id": f"conv_{date_str}_{i}",
             "timestamp": b[0]["_at"].astimezone(LOCAL_TZ).isoformat(),
             "type": "conversation",
             "source": "conversation",
             "title": "陪你聊了会儿" if mins >= 3 else "说了两句",
-            # 摘要用她开头那句原话 —— 比任何生成的总结都准，而且 V1 不引入 AI
-            "summary": (first_user.get("text") or "").strip()[:40] if first_user else f"{len(b)} 条消息",
+            # 摘要用他回的原话 —— 比任何生成的总结都准，而且 V1 不引入 AI
+            "summary": his or f"{len(b)} 条消息",
             "status": "completed",
-            "metadata": {"messages": len(b), "minutes": mins},
+            "metadata": {"messages": len(b), "minutes": mins,
+                         "hers": (first_user.get("text") or "").strip()[:40]},
             "related": {"conversationId": b[0].get("session_id")},
         })
     return out
+
+
+#: 「他说了什么」那一行的字数上限
+HIS_WORDS_MAX = 60
+
+_MEME_WORD_RE = re.compile(r"\[(" + "|".join(sorted((re.escape(t) for t in MEME_TAGS), key=len, reverse=True)) + r")\]")
+#: 他把表情写成文字的那行（`[表情包] 开心`，见 tools/intimate.py）：历史里有，不能当他说的话摊出来
+_MEME_LABEL_LINE_RE = re.compile(r"[ \t]*\[表情包[^\n]*")
+
+
+def _his_words(text: str | None) -> str:
+    """他一条回复里**说出口的话**：去掉舞台标签 / 表情标记，`|||` 分段取前两段。
+    只剩标记没有话（`[SKIP]`、纯表情）就是空串。"""
+    t = strip_stage_tags(text or "") or ""
+    t = _MEME_LABEL_LINE_RE.sub("", t)
+    t = _MEME_WORD_RE.sub("", t)
+    parts = [p.strip() for p in t.split("|||") if p.strip()]
+    out = " ".join(parts[:2])
+    return out if len(out) <= HIS_WORDS_MAX else out[:HIS_WORDS_MAX].rstrip() + "…"
 
 
 def _summary_of(first_user: dict | None, n: int) -> str:
@@ -344,6 +376,49 @@ def _from_own_time(acts: list[Any]) -> list[dict]:
     return out
 
 
+#: 记住的事：预览给多长、带几个标签
+MEMORY_PREVIEW_MAX = 60
+MEMORY_TAGS_MAX = 3
+
+#: 一起看片至少看够多久才算一场（同 attention/sources/shared_activities.py 的 MIN_WATCH_MINUTES）
+MIN_WATCH_MINUTES = 10
+
+
+def _from_watching(items: list[dict], date_str: str) -> list[dict]:
+    """一起看片。数据在 bridge（`GET /api/watch/history`，每场一行：片名 / 集 / 开始 / 结束）。
+
+    只取今天开始的、**看够 `MIN_WATCH_MINUTES`** 的 —— 点开两分钟就关的不算一起看过。
+    没有 ended_at 的（还在看 / 合上电脑走了）算不出时长，也不进：宁可晚一点出现，不编「看了多久」。
+    """
+    start, end = _day_bounds(date_str)
+    out = []
+    for i, w in enumerate(items or []):
+        try:
+            a = datetime.fromisoformat(str(w.get("started_at") or "").replace("Z", "+00:00"))
+            b = datetime.fromisoformat(str(w.get("ended_at") or "").replace("Z", "+00:00"))
+        except (ValueError, TypeError):
+            continue
+        if not (start <= a < end):
+            continue
+        mins = int((b - a).total_seconds() / 60)
+        if mins < MIN_WATCH_MINUTES:
+            continue
+        name = clean_title(str(w.get("title") or "").strip()) or "没记住片名"
+        ep = str(w.get("episode") or "").strip()
+        out.append({
+            "id": f"watch_{w.get('id') or i}",
+            "timestamp": a.astimezone(LOCAL_TZ).isoformat(),
+            "type": "movie",
+            "source": "watching",
+            "title": "一起看片",
+            "summary": f"{name} {ep}".strip(),
+            "status": "completed",
+            "metadata": {"minutes": mins, "mode": w.get("mode", "")},
+            "related": {"watchId": w.get("id")},
+        })
+    return out
+
+
 def _from_memory(items: list[dict], date_str: str) -> list[dict]:
     """今天记住的事。数据在 Ombre Brain（`GET /recent`，经 bridge 转一手）。
 
@@ -373,7 +448,13 @@ def _from_memory(items: list[dict], date_str: str) -> list[dict]:
             # 一串十六进制对她没有任何意义（2026-08-18 部署时实测发现）
             "summary": (m.get("name") or m.get("preview") or "").strip()[:40],
             "status": "completed",
-            "metadata": {"kind": m.get("type", ""), "importance": m.get("importance")},
+            "metadata": {
+                "kind": m.get("type", ""), "importance": m.get("importance"),
+                # 光有名字分不清记的是什么（她 10-10：「noted 好几个分不清」）：
+                # 带上预览头一截和前几个标签。不给全文 —— 要看全文走 trace
+                "preview": (m.get("preview") or "").strip()[:MEMORY_PREVIEW_MAX],
+                "tags": [str(t) for t in (m.get("tags") or [])][:MEMORY_TAGS_MAX],
+            },
             "related": {"memoryId": m.get("id")},
         })
     return out
@@ -467,6 +548,13 @@ def build_day(
             logger.exception("聚合共听失败，跳过这个源")
 
         try:
+            r = bridge.get("/api/watch/history", {"limit": 30})
+            if r.ok:
+                events += _from_watching((r.data or {}).get("items") or [], date_str)
+        except Exception:  # noqa: BLE001
+            logger.exception("聚合一起看片失败，跳过这个源")
+
+        try:
             r = bridge.get("/api/memory/recent", {"limit": 50})
             if r.ok:
                 events += _from_memory((r.data or {}).get("items") or [], date_str)
@@ -537,4 +625,5 @@ def _summarize(events: list[dict], ledger: Any, date_str: str) -> dict[str, Any]
             if e["type"] == "task" and e.get("metadata", {}).get("action") == "completed"
         ),
         "songsPlayed": sum(1 for e in events if e["type"] == "music"),
+        "moviesWatched": sum(1 for e in events if e["type"] == "movie"),
     }

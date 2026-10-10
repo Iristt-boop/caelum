@@ -194,3 +194,64 @@ def test_写日记失败必须抛出去():
     h, _ = _handlers(**{"/api/diary": BridgeResult(False, error="HTTP 403")})
     with pytest.raises(RuntimeError, match="写日记失败"):
         h["write_diary"]({"body": "写点什么"})
+
+
+# ---------------------------------------------------------------- 朋友圈（2026-10-10）
+#
+# 她早上七点的截图：他用 write_diary 发了一整段带日期的流水账，在 Moments 里看着像日记。
+# 两件事分开：write_moment = 瞬间的感受（kind=moment、140 字内、不带日期），
+# write_diary = 一天的事。
+
+
+def test_朋友圈_kind和署名都显式传():
+    """kind 缺省是 diary、author 缺省是糖糖 —— 少传任何一个，帖子都会长成另一种东西。"""
+    h, bridge = _handlers()
+    h["write_moment"]({"body": "窗外的光忽然很软。", "mood": "安静"})
+    _, path, sent = bridge.calls[0]
+    assert path == "/api/diary"
+    assert sent == {"content": "窗外的光忽然很软。", "author": "Nox", "kind": "moment", "mood": "安静"}
+
+
+def test_朋友圈_空内容不发请求():
+    h, bridge = _handlers()
+    h["write_moment"]({"body": "  "})
+    assert bridge.calls == []
+
+
+def test_朋友圈_超长不发也不截断_让他自己压短():
+    from tools.daily import MAX_MOMENT_CHARS
+    h, bridge = _handlers()
+    out = h["write_moment"]({"body": "字" * (MAX_MOMENT_CHARS + 1)})
+    assert bridge.calls == []
+    assert "没有发" in out and "write_diary" in out
+
+
+def test_朋友圈_刚好一百四十字能发():
+    from tools.daily import MAX_MOMENT_CHARS
+    h, bridge = _handlers()
+    h["write_moment"]({"body": "字" * MAX_MOMENT_CHARS})
+    assert len(bridge.calls) == 1
+
+
+def test_朋友圈_上限和自发那条路是同一把尺子():
+    from moments.writer import MAX_CHARS
+    from tools.daily import MAX_MOMENT_CHARS
+    assert MAX_MOMENT_CHARS == MAX_CHARS
+
+
+def test_朋友圈_失败必须抛出去():
+    h, _ = _handlers(**{"/api/diary": BridgeResult(False, error="HTTP 500")})
+    with pytest.raises(RuntimeError, match="发朋友圈失败"):
+        h["write_moment"]({"body": "一句话"})
+
+
+def test_两个工具的描述互相指路_不会再把瞬间感受写成日记():
+    from tools.daily import WRITE_DIARY_SPEC, WRITE_MOMENT_SPEC
+    assert "write_diary" in WRITE_MOMENT_SPEC.description
+    assert "write_moment" in WRITE_DIARY_SPEC.description
+    assert "140" in WRITE_MOMENT_SPEC.description
+
+
+def test_日记那条的回执指向_Moments_页():
+    h, _ = _handlers()
+    assert "Moments" in h["write_diary"]({"body": "今天"})
