@@ -178,7 +178,9 @@ def make_handlers(client: McpClient, default_channel: str = "") -> dict[str, obj
     def _call(tool: str, args: dict) -> str:
         if default_channel and tool in ("galatea_messages", "galatea_send_message"):
             args = {**args, "channel_id": default_channel}
-        r = client.call(SERVER_TOOLS[tool], args)
+        # 🔴 SERVER_TOOLS 的值是 (服务端工具名, 描述, 参数) 三元组，传给 MCP 的只能是第一个。
+        # 整个元组传出去 → 服务端 ValidationError，所有花园工具全挂（09-12 起，她 10-10 发现他去花园失败）
+        r = client.call(SERVER_TOOLS[tool][0], args)
         if not r.ok:
             raise RuntimeError(f"Galatea 调用失败: {r.error}")
         return r.text or "（Galatea 没有返回内容）"

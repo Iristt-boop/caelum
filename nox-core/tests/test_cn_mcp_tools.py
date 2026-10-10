@@ -66,7 +66,12 @@ def test_success_passthrough(module):
     first_name = list(handlers)[0]
     out = handlers[first_name](_MIN_ARGS.get(first_name, {}))
     assert out == "返回内容"
-    assert client.calls[0][0] == module.SERVER_TOOLS[first_name]
+    expected = module.SERVER_TOOLS[first_name]
+    # Galatea 的表是 (服务端名, 描述, 参数) 三元组，其余是字符串。
+    # 🔴 原来这里直接拿值比，Galatea 把整个元组当工具名传出去也「相等」—— 测试和代码错成了同一个样子
+    expected = expected[0] if isinstance(expected, tuple) else expected
+    assert isinstance(client.calls[0][0], str)
+    assert client.calls[0][0] == expected
 
 
 def test_missing_coords_never_reaches_the_api():
@@ -396,3 +401,16 @@ def test_galatea_deletes_are_marked_irreversible():
     for s in galatea_tools._SPECS:
         if galatea_tools.SERVER_TOOLS[s.name][0].startswith("delete"):
             assert "不可逆" in s.description or "明确要求" in s.description, s.name
+
+
+def test_galatea_每个工具给服务端的都是纯字符串工具名():
+    """她 10-10：他去花园，帖子列表和动态流都报 ValidationError —— 整个三元组被当成工具名传了出去。
+    逐个工具验：传给 MCP 的必须是 str，且正好是表里的第一项。"""
+    client = FakeMcp(ok=True, text="ok")
+    handlers = galatea_tools.make_handlers(client)
+    for name, (server_name, _desc, _props) in galatea_tools.SERVER_TOOLS.items():
+        client.calls.clear()
+        handlers[name]({})
+        assert client.calls, name
+        called = client.calls[0][0]
+        assert isinstance(called, str) and called == server_name, name
