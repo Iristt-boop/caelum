@@ -1810,28 +1810,53 @@ app.post("/api/chat", async (req, res) => {
 // targetLang="zh": EN→ZH（AI 英文回复的中文字幕）
 // targetLang="en": ZH→EN（默认）
 // ==============================================================
+// 🔴 2026-10-10 搬 N150 后：原来走 OpenRouter 上的 Claude，而 OpenRouter 按访问地区限模型 ——
+// 国内 IP 调 Claude / GPT 一律 403「This model is not available in your region」。
+// 上游 403 时 choices 是空的、不抛异常，原来就悄悄回 ""：电话字幕的中文从搬家起整片没了，日志一个字没有。
+// 现在默认直连 DeepSeek（国内可用）；TRANSLATE_BASE_URL / TRANSLATE_MODEL / TRANSLATE_API_KEY 可覆盖。
+// ⚠️ deepseek-flash 会思考：默认档 300 token 全被思考吃掉、正文为空（HTTP 200，看着像成功）——
+// 必须 reasoning_effort=low，max_tokens 也给宽（实测 low 档思考仍要 ~230）
+const TRANSLATE_BASE = (process.env.TRANSLATE_BASE_URL
+  || (process.env.DEEPSEEK_API_KEY ? "https://api.deepseek.com" : (process.env.OPENROUTER_BASE_URL || process.env.API_BASE || "https://openrouter.ai/api/v1"))).replace(/\/$/, "");
+const TRANSLATE_KEY = process.env.TRANSLATE_API_KEY || process.env.DEEPSEEK_API_KEY || process.env.OPENROUTER_API_KEY || process.env.API_KEY || "";
+const TRANSLATE_MODEL = process.env.TRANSLATE_MODEL
+  || (process.env.DEEPSEEK_API_KEY ? "deepseek-flash" : (process.env.OPENROUTER_MODEL || process.env.API_MODEL || "claude-sonnet-4-6"));
+
 app.post("/api/translate", async (req, res) => {
   try {
     const { text, targetLang = "en" } = req.body;
     if (!text) return res.json({ translation: "" });
-    const API_KEY = process.env.OPENROUTER_API_KEY || process.env.API_KEY || "";
-    if (!API_KEY) return res.json({ translation: "" });
+    if (!TRANSLATE_KEY) {
+      console.warn("[Translate] 没配任何翻译用的 key，字幕不会有译文");
+      return res.json({ translation: "" });
+    }
+    // 语气标签（[softly] 这些）是给 TTS 的，不翻 —— 不剥的话译文里会多出「[轻声]」
+    const plain = String(text).replace(/\[[^\]\n]{1,30}\]\s*/g, "").trim().slice(0, 600);
+    if (!plain) return res.json({ translation: "" });
     const instruction = targetLang === "zh"
-      ? `Translate the following English text to Chinese. Output only the translation, nothing else:\n${text.slice(0, 600)}`
-      : `Translate the following Chinese text to English. Output only the translation, nothing else:\n${text.slice(0, 600)}`;
-    const r = await fetch(`${process.env.OPENROUTER_BASE_URL || process.env.API_BASE || "https://openrouter.ai/api/v1"}/chat/completions`, {
+      ? `Translate the following English text to Chinese. Output only the translation, nothing else:\n${plain}`
+      : `Translate the following Chinese text to English. Output only the translation, nothing else:\n${plain}`;
+    const r = await fetch(`${TRANSLATE_BASE}/chat/completions`, {
       method: "POST",
-      headers: { "Authorization": `Bearer ${process.env.OPENROUTER_API_KEY || process.env.API_KEY || ""}`, "Content-Type": "application/json" },
+      headers: { "Authorization": `Bearer ${TRANSLATE_KEY}`, "Content-Type": "application/json" },
       body: JSON.stringify({
-        model: process.env.OPENROUTER_MODEL || process.env.API_MODEL || "claude-sonnet-4-6",
-        max_tokens: 300,
+        model: TRANSLATE_MODEL,
+        max_tokens: 1200,
+        reasoning_effort: "low",
         messages: [{ role: "user", content: instruction }],
       }),
       signal: AbortSignal.timeout(20000),
     });
-    const d = await r.json();
-    res.json({ translation: (d.choices?.[0]?.message?.content || "").trim() });
-  } catch {
+    const d = await r.json().catch(() => ({}));
+    const out = (d.choices?.[0]?.message?.content || "").trim();
+    if (!r.ok || !out) {
+      // 失败要留痕：上游拒了（地区 / 欠费 / 模型名过期）和「思考吃光了 token」都长成空译文
+      console.warn(`[Translate] 没拿到译文 http=${r.status} model=${TRANSLATE_MODEL}:`,
+        JSON.stringify(d.error || d.choices?.[0]?.finish_reason || d).slice(0, 200));
+    }
+    res.json({ translation: out });
+  } catch (e) {
+    console.warn("[Translate] 请求出错，字幕没有译文:", e.message);
     res.json({ translation: "" });
   }
 });
