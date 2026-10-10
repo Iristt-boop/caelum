@@ -97,6 +97,8 @@ for f in /root/nox-core/.env \
          /root/stackchan-mcp/gateway/.env \
          /srv/noxtang-static/doh.mobileconfig \
          /etc/xray-cdn/config.json \
+         /root/.reality-client.json \
+         /etc/xray-egress/config.json \
          /etc/x-ui/x-ui.db; do
   [ -f "$f" ] || continue
   mkdir -p "$WORK/config/paths$(dirname "$f")"

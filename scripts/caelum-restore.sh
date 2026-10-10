@@ -88,7 +88,7 @@ cp "$X/config/Caddyfile" /root/restored-config/Caddyfile.from-backup   # 原样�
 CAELUM_UNITS="app-tracker bridge caelum-retention co-listening co-reading co-watching eryu
   ha-mcp health-mcp health-sync mcp-train mcp-trends netease-mcp nox-core nox-daily
   ombre-brain ombre-brain-consolidate ombre-brain-decay stackchan-gateway stackchan-tracker
-  touch-mcp touch-server toy-mcp"
+  touch-mcp touch-server toy-mcp xray-egress"
 for u in $CAELUM_UNITS; do
   for f in "$X/config/systemd/$u.service" "$X/config/systemd/$u.timer"; do
     [ -f "$f" ] && cp "$f" /etc/systemd/system/
@@ -96,6 +96,8 @@ for u in $CAELUM_UNITS; do
   [ -d "$X/config/systemd/$u.service.d" ] && cp -a "$X/config/systemd/$u.service.d" /etc/systemd/system/
 done
 [ -d "$X/config/systemd/caddy.service.d" ] && cp -a "$X/config/systemd/caddy.service.d" /etc/systemd/system/
+# 出口代理（10-10）：配置和节点参数在包里；xray 程序和地理规则库不在（可从节点再拷），缺了就提醒
+[ -x /usr/local/bin/xray ] || echo "注意：/usr/local/bin/xray 不在 —— 出口代理起不来，海外功能（Claude / ElevenLabs / 话题池）会降级"
 find /etc/systemd/system -name '*.bak*' -delete
 systemctl daemon-reload
 
