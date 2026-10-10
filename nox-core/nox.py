@@ -330,12 +330,11 @@ class Nox:
 
         # 共读的页边笔记
         if self.cfg.reading_url:
-            reading_tools.register_all(
-                self.loop,
-                reading_tools.make_client(
-                    self.cfg.reading_url, self.cfg.reading_token, self.cfg.reading_timeout
-                ),
+            # 留一份给 His Day（day/aggregator.py 读共读的进度和他写的页边批注）
+            self.reading_client = reading_tools.make_client(
+                self.cfg.reading_url, self.cfg.reading_token, self.cfg.reading_timeout
             )
+            reading_tools.register_all(self.loop, self.reading_client)
             logger.info("共读工具已注册（%s）", self.cfg.reading_url)
         else:
             logger.info("未配置 NOX_READING_URL，跳过共读工具")

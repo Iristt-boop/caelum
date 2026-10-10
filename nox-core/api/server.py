@@ -2267,6 +2267,8 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
             world=attention.world if attention is not None else None,
             # 他自己的时间（V5，10-06）
             activities=getattr(attention, "activity_log", None),
+            # 共读：进度 + 他在页边写的话（没配 NOX_READING_URL 就是 None，如实标「没接」）
+            reading=getattr(core, "reading_client", None),
         )
 
     @app.post("/api/nox/record/period")

@@ -66,6 +66,11 @@ SOURCES = {
     # 2026-08-18 给 Ombre Brain 加了 `/recent`（结构化 JSON）才接上的。
     # MCP 那几个工具回的是给模型读的文本，解析它等于猜，而且格式一改就静默失效
     "memory": {"wired": True, "note": "OB 的 /recent，只回元数据+预览，全文走 trace"},
+    # 2026-10-10：他发的朋友圈 / 梦 / 日记（bridge 的 diary 表里 author=Nox 那批）
+    "moments": {"wired": True, "note": "bridge /api/moments?author=Nox，最近 50 条"},
+    # 2026-10-10：共读。进度只留「最后一次读」的时间，所以一本书只在它最后读的那天出现；
+    # 他写的页边批注每条有自己的时间
+    "reading": {"wired": True, "note": "co-reading /api/progress + /api/annotations?author=nox"},
     # 2026-10-10：一起看片。bridge 的 watch_sessions，只取看够 10 分钟的（同共影那条线）
     "watching": {"wired": True, "note": "bridge /api/watch/history，看够 10 分钟才算一场"},
     # 2026-10-06 V5「他自己的时间」：一天 0~1 次，他自己去做的事（attention.db activity_log）
@@ -419,6 +424,119 @@ def _from_watching(items: list[dict], date_str: str) -> list[dict]:
     return out
 
 
+#: 朋友圈正文进时间线的字数上限（朋友圈本身 ≤140，这里给足不截）
+MOMENT_TEXT_MAX = 140
+
+#: 他发帖的由头 → 给她看的话（diary 表的 drive 列）
+_MOMENT_TITLE = {"dream": "做了个梦", "curiosity": "被一件事勾住"}
+
+
+def _from_moments(items: list[dict], date_str: str) -> list[dict]:
+    """他在 Moments 里发的帖：朋友圈 / 夜里的梦 / 日记（`GET /api/moments?author=Nox`）。
+
+    🔴 以前整个没接 —— 他发了什么，她得去 Moments 页自己翻（她 10-10：「他发朋友圈是不是不在 his day 里」）。
+    只取他自己的（author=Nox），她写的日记不是「他的一天」。
+    """
+    start, end = _day_bounds(date_str)
+    out = []
+    for i, m in enumerate(items or []):
+        if m.get("author") != "Nox":
+            continue
+        try:
+            at = datetime.fromisoformat(str(m.get("created_at") or "").replace("Z", "+00:00"))
+        except (ValueError, TypeError):
+            continue
+        if at.tzinfo is None:
+            at = at.replace(tzinfo=timezone.utc)
+        if not (start <= at < end):
+            continue
+        body = (m.get("body") or "").strip()
+        if not body:
+            continue
+        is_diary = m.get("kind") == "diary"
+        drive = (m.get("drive") or "").strip()
+        out.append({
+            "id": f"moment_{m.get('id') or i}",
+            "timestamp": at.astimezone(LOCAL_TZ).isoformat(),
+            "type": "moment",
+            "source": "moments",
+            "title": "写了篇日记" if is_diary else _MOMENT_TITLE.get(drive, "发了条朋友圈"),
+            "summary": body[:MOMENT_TEXT_MAX],
+            "status": "completed",
+            "metadata": {"kind": m.get("kind") or "moment", "drive": drive,
+                         "mood": m.get("mood") or "", "comments": len(m.get("comments") or [])},
+            "related": {"momentId": m.get("id")},
+        })
+    return out
+
+
+def _from_reading(progress: Any, books: Any, notes: Any, date_str: str) -> list[dict]:
+    """共读：她今天读到哪（进度）+ 他今天在页边写了什么（批注）。
+
+    · 进度只存「最后一次读」的时间（`lastReadAt`），所以一本书只在它**最后读的那天**出现，
+      更早的天数看不到 —— 数据本身没留，不编。
+    · 批注每条带 `createdAt`；只取他写的（author=nox）。她自己划的线不算他的一天。
+    """
+    start, end = _day_bounds(date_str)
+
+    def _at(raw):
+        try:
+            a = datetime.fromisoformat(str(raw or "").replace("Z", "+00:00"))
+        except (ValueError, TypeError):
+            return None
+        return a if a.tzinfo else a.replace(tzinfo=timezone.utc)
+
+    titles = {}
+    for b in books if isinstance(books, list) else []:
+        if isinstance(b, dict) and b.get("bookId"):
+            titles[b["bookId"]] = b.get("title") or b["bookId"]
+
+    out = []
+    if isinstance(progress, dict):
+        for book_id, v in progress.items():
+            if not isinstance(v, dict):
+                continue
+            a = _at(v.get("lastReadAt"))
+            if a is None or not (start <= a < end):
+                continue
+            read = v.get("readChunkIds")
+            out.append({
+                "id": f"reading_{date_str}_{book_id}",
+                "timestamp": a.astimezone(LOCAL_TZ).isoformat(),
+                "type": "reading",
+                "source": "co-reading",
+                "title": "一起读书",
+                "summary": titles.get(book_id, book_id),
+                "status": "completed",
+                "metadata": {"action": "read", "chunk": v.get("lastChunkId") or "",
+                             "chunksRead": len(read) if isinstance(read, list) else None},
+                "related": {"bookId": book_id},
+            })
+    for i, n in enumerate(notes if isinstance(notes, list) else []):
+        if not isinstance(n, dict) or (n.get("author") or "").lower() != "nox":
+            continue
+        a = _at(n.get("createdAt"))
+        if a is None or not (start <= a < end):
+            continue
+        text = (n.get("note") or "").strip()
+        if not text:
+            continue
+        book_id = n.get("bookId") or ""
+        out.append({
+            "id": f"reading_note_{n.get('id') or i}",
+            "timestamp": a.astimezone(LOCAL_TZ).isoformat(),
+            "type": "reading",
+            "source": "co-reading",
+            "title": "在页边写了几句",
+            "summary": text[:MOMENT_TEXT_MAX],
+            "status": "completed",
+            "metadata": {"action": "note", "book": titles.get(book_id, book_id),
+                         "chunk": n.get("chunkId") or "", "quote": (n.get("quote") or "").strip()[:40]},
+            "related": {"bookId": book_id, "noteId": n.get("id")},
+        })
+    return out
+
+
 def _from_memory(items: list[dict], date_str: str) -> list[dict]:
     """今天记住的事。数据在 Ombre Brain（`GET /recent`，经 bridge 转一手）。
 
@@ -500,6 +618,7 @@ def build_day(
     bridge: Any = None,
     world: Any = None,
     activities: Any = None,
+    reading: Any = None,
     now: datetime | None = None,
 ) -> dict[str, Any]:
     """拉多源 → 归一 → 过滤排序 → `DayEvent[]`。
@@ -548,6 +667,13 @@ def build_day(
             logger.exception("聚合共听失败，跳过这个源")
 
         try:
+            r = bridge.get("/api/moments", {"author": "Nox", "limit": 50})
+            if r.ok:
+                events += _from_moments((r.data or {}).get("items") or [], date_str)
+        except Exception:  # noqa: BLE001
+            logger.exception("聚合他的朋友圈失败，跳过这个源")
+
+        try:
             r = bridge.get("/api/watch/history", {"limit": 30})
             if r.ok:
                 events += _from_watching((r.data or {}).get("items") or [], date_str)
@@ -560,6 +686,21 @@ def build_day(
                 events += _from_memory((r.data or {}).get("items") or [], date_str)
         except Exception:  # noqa: BLE001
             logger.exception("聚合记忆失败，跳过这个源")
+
+    # 共读：co-reading 是另一个进程，三次小请求；任何一个失败只丢它自己
+    if reading is not None:
+        try:
+            prog = reading.get("/api/progress")
+            books = reading.get("/api/books")
+            notes = reading.get("/api/annotations", {"author": "nox"})
+            events += _from_reading(
+                prog.data if prog.ok else None,
+                books.data if books.ok else None,
+                notes.data if notes.ok else None,
+                date_str,
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("聚合共读失败，跳过这个源")
 
     if world is not None:
         try:
@@ -626,4 +767,6 @@ def _summarize(events: list[dict], ledger: Any, date_str: str) -> dict[str, Any]
         ),
         "songsPlayed": sum(1 for e in events if e["type"] == "music"),
         "moviesWatched": sum(1 for e in events if e["type"] == "movie"),
+        "momentsPosted": sum(1 for e in events if e["type"] == "moment"),
+        "readingEvents": sum(1 for e in events if e["type"] == "reading"),
     }

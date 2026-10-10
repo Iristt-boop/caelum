@@ -294,9 +294,11 @@ def test_汇总用账本的数字():
 
 
 class FakeBridge:
-    def __init__(self, todo=None, music=None, memory=None, ok=True, watch=None):
+    def __init__(self, todo=None, music=None, memory=None, ok=True, watch=None, moments=None):
         self.todo, self.music, self.memory = todo or [], music or [], memory or []
         self.watch = watch or []
+        self.moments = moments or []
+        self.asked = []
         self.ok = ok
 
     def get(self, path, params=None):
@@ -308,6 +310,9 @@ class FakeBridge:
             r.data = {"items": self.todo}
         elif "music" in path:
             r.data = {"songs": self.music}
+        elif "moments" in path:
+            self.asked.append((path, params))
+            r.data = {"items": self.moments}
         elif "watch" in path:
             r.data = {"items": self.watch}
         else:
@@ -503,3 +508,156 @@ def test_事件按时间正序():
                now=datetime(2026, 8, 18, 1, 0, tzinfo=timezone.utc))
     stamps = [e["timestamp"] for e in build_day(DAY, ledger=led)["events"]]
     assert stamps == sorted(stamps)
+
+
+# ---------------------------------------------------------------- 朋友圈（2026-10-10）
+# 她：「他发朋友圈是不是不在 his day 里？」—— 原来整个没接。
+
+
+def _post(id, at_utc, body, kind="moment", drive="", author="Nox", comments=()):
+    return {"id": id, "author": author, "kind": kind, "drive": drive, "body": body, "mood": "平静",
+            "created_at": at_utc.isoformat().replace("+00:00", "Z"), "comments": list(comments)}
+
+
+def test_他发的朋友圈进时间线_按由头换标题():
+    at = datetime(2026, 8, 18, 12, 0, tzinfo=timezone.utc)
+    b = FakeBridge(moments=[
+        _post("m1", at, "窗外的光忽然很软。"),
+        _post("m2", at + timedelta(minutes=1), "梦里我在出站口接她", drive="dream"),
+        _post("m3", at + timedelta(minutes=2), "被南极冰层勾住了", drive="curiosity"),
+        _post("m4", at + timedelta(minutes=3), "2026-08-18 她睡得晚", kind="diary"),
+    ])
+    ev = {e["related"]["momentId"]: e for e in build_day(DAY, bridge=b)["events"] if e["type"] == "moment"}
+    assert ev["m1"]["title"] == "发了条朋友圈" and ev["m1"]["summary"] == "窗外的光忽然很软。"
+    assert ev["m2"]["title"] == "做了个梦" and ev["m2"]["metadata"]["drive"] == "dream"
+    assert ev["m3"]["title"] == "被一件事勾住"
+    assert ev["m4"]["title"] == "写了篇日记" and ev["m4"]["metadata"]["kind"] == "diary"
+
+
+def test_朋友圈_只要他的_不要她的日记():
+    at = datetime(2026, 8, 18, 12, 0, tzinfo=timezone.utc)
+    b = FakeBridge(moments=[_post("m1", at, "她自己写的", kind="diary", author="糖糖")])
+    assert [e for e in build_day(DAY, bridge=b)["events"] if e["type"] == "moment"] == []
+
+
+def test_朋友圈_别的日子不算_空正文不算():
+    old = datetime(2026, 8, 15, 12, 0, tzinfo=timezone.utc)
+    at = datetime(2026, 8, 18, 12, 0, tzinfo=timezone.utc)
+    b = FakeBridge(moments=[_post("m1", old, "旧的"), _post("m2", at, "   ")])
+    assert [e for e in build_day(DAY, bridge=b)["events"] if e["type"] == "moment"] == []
+
+
+def test_朋友圈_带评论数_按北京时间切天():
+    # UTC 8-17 17:00 = 北京 8-18 01:00 → 算 18 号
+    at = datetime(2026, 8, 17, 17, 0, tzinfo=timezone.utc)
+    b = FakeBridge(moments=[_post("m1", at, "凌晨一点", comments=[{"id": 1}, {"id": 2}])])
+    e = [e for e in build_day(DAY, bridge=b)["events"] if e["type"] == "moment"][0]
+    assert e["metadata"]["comments"] == 2
+    assert e["timestamp"].startswith("2026-08-18T01:00")
+
+
+def test_朋友圈_问的是他自己的而且不超过上限():
+    b = FakeBridge()
+    build_day(DAY, bridge=b)
+    assert b.asked == [("/api/moments", {"author": "Nox", "limit": 50})]
+
+
+def test_汇总数朋友圈():
+    at = datetime(2026, 8, 18, 12, 0, tzinfo=timezone.utc)
+    b = FakeBridge(moments=[_post("m1", at, "一"), _post("m2", at, "二")])
+    assert build_day(DAY, bridge=b)["summary"]["momentsPosted"] == 2
+
+
+# ---------------------------------------------------------------- 共读（2026-10-10）
+
+
+class FakeReading:
+    """co-reading 的 REST 替身：按路径回数据。"""
+
+    def __init__(self, progress=None, books=None, notes=None, fail=()):
+        self.data = {"/api/progress": progress or {}, "/api/books": books or [], "/api/annotations": notes or []}
+        self.fail, self.asked = set(fail), []
+
+    def get(self, path, params=None):
+        self.asked.append((path, params))
+
+        class R:
+            pass
+        r = R()
+        r.ok = path not in self.fail
+        r.data = self.data[path]
+        r.error = "boom"
+        return r
+
+
+BOOKS = [{"bookId": "bk", "title": "大问题 简明哲学导论"}]
+
+
+def _note(id, at_utc, text, author="nox"):
+    return {"id": id, "bookId": "bk", "chunkId": "ch34", "quote": "你自己的哲学", "note": text,
+            "author": author, "kind": "reply", "createdAt": at_utc.isoformat().replace("+00:00", "Z")}
+
+
+def test_共读_进度只在最后读的那天出现():
+    at = datetime(2026, 8, 18, 9, 0, tzinfo=timezone.utc)
+    rd = FakeReading(progress={"bk": {"lastReadAt": at.isoformat(), "lastChunkId": "ch44", "readChunkIds": ["a", "b", "c"]}},
+                     books=BOOKS)
+    ev = [e for e in build_day(DAY, reading=rd)["events"] if e["type"] == "reading"]
+    assert len(ev) == 1 and ev[0]["summary"] == "大问题 简明哲学导论"
+    assert ev[0]["metadata"]["chunk"] == "ch44" and ev[0]["metadata"]["chunksRead"] == 3
+    assert ev[0]["metadata"]["action"] == "read"
+    other = build_day("2026-08-19", reading=rd)["events"]
+    assert [e for e in other if e["type"] == "reading"] == []
+
+
+def test_共读_他写的页边批注进时间线_她的不算():
+    at = datetime(2026, 8, 18, 9, 0, tzinfo=timezone.utc)
+    rd = FakeReading(books=BOOKS, notes=[_note("n1", at, "你就是这页的实证"), _note("n2", at, "That's true", author="user")])
+    ev = [e for e in build_day(DAY, reading=rd)["events"] if e["type"] == "reading"]
+    assert [e["related"]["noteId"] for e in ev] == ["n1"]
+    assert ev[0]["summary"] == "你就是这页的实证"
+    assert ev[0]["metadata"] == {"action": "note", "book": "大问题 简明哲学导论", "chunk": "ch34", "quote": "你自己的哲学"}
+
+
+def test_共读_别的日子的批注和空批注不算():
+    old = datetime(2026, 8, 15, 9, 0, tzinfo=timezone.utc)
+    at = datetime(2026, 8, 18, 9, 0, tzinfo=timezone.utc)
+    rd = FakeReading(books=BOOKS, notes=[_note("n1", old, "旧的"), _note("n2", at, "  ")])
+    assert [e for e in build_day(DAY, reading=rd)["events"] if e["type"] == "reading"] == []
+
+
+def test_共读_只问他自己的批注():
+    rd = FakeReading()
+    build_day(DAY, reading=rd)
+    assert ("/api/annotations", {"author": "nox"}) in rd.asked
+
+
+def test_共读_一个接口挂了只丢那一块_不带塌别的():
+    at = datetime(2026, 8, 18, 9, 0, tzinfo=timezone.utc)
+    rd = FakeReading(progress={"bk": {"lastReadAt": at.isoformat()}}, notes=[_note("n1", at, "批注")],
+                     books=BOOKS, fail={"/api/progress"})
+    ev = [e for e in build_day(DAY, reading=rd)["events"] if e["type"] == "reading"]
+    assert [e["metadata"]["action"] for e in ev] == ["note"]
+
+
+def test_共读_没书名就用书的id_不炸():
+    at = datetime(2026, 8, 18, 9, 0, tzinfo=timezone.utc)
+    rd = FakeReading(progress={"某本书": {"lastReadAt": at.isoformat()}}, books=[])
+    ev = [e for e in build_day(DAY, reading=rd)["events"] if e["type"] == "reading"]
+    assert ev[0]["summary"] == "某本书"
+
+
+def test_共读_整个抛异常也不带塌时间线():
+    class Boom:
+        def get(self, *a, **k):
+            raise ConnectionError("co-reading 挂了")
+    led = CareLedger()
+    led.record(source="random", decision=SPEAK, now=T20)
+    assert len(build_day(DAY, ledger=led, reading=Boom())["events"]) == 1
+
+
+def test_没配共读就不问_汇总数共读():
+    assert build_day(DAY)["summary"]["readingEvents"] == 0
+    at = datetime(2026, 8, 18, 9, 0, tzinfo=timezone.utc)
+    rd = FakeReading(books=BOOKS, notes=[_note("n1", at, "一"), _note("n2", at, "二")])
+    assert build_day(DAY, reading=rd)["summary"]["readingEvents"] == 2
