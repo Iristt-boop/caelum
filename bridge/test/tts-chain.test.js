@@ -15,7 +15,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
-import { CHAINS, pickChain } from "../lib/tts-chain.js";
+import { CHAINS, ELEVEN_ENGINES, pickChain } from "../lib/tts-chain.js";
 
 const serverSrc = readFileSync(
   join(dirname(fileURLToPath(import.meta.url)), "..", "server.js"), "utf8");
@@ -62,9 +62,26 @@ describe("TTS 引擎顺序", () => {
   });
 
   test("上一句降过级，就从那一档接着往下 —— 一段话里不来回换声音", () => {
-    assert.deepEqual(pickChain("desktop", "eleven-turbo"), ["eleven-turbo", "edge"]);
+    assert.deepEqual(pickChain("desktop", "eleven-turbo"), ["eleven-turbo", "doubao", "edge"]);
     assert.deepEqual(pickChain("phone", "edge"), ["edge"]);
-    assert.deepEqual(pickChain("phone", "eleven-v3"), ["eleven-v3", "eleven-turbo", "edge"]);
+    assert.deepEqual(pickChain("phone", "eleven-v3"), ["eleven-v3", "eleven-turbo", "doubao", "edge"]);
+    assert.deepEqual(pickChain("phone", "doubao"), ["doubao", "edge"]);
+  });
+
+  test("🔴 ElevenLabs 全挂了先落豆包（复刻声音），不是直接掉 edge —— 她 10-10 点名的", () => {
+    //: 搬到 N150 后 ElevenLabs 经东京节点出口，节点一断整家都连不上。
+    //: 她点名用 OS 实时通话里一直在听的那个豆包 clone；顺序还是「她听过 → 她点头 → 改链 → 改测试」
+    for (const [name, chain] of Object.entries(CHAINS)) {
+      const d = chain.indexOf("doubao");
+      assert.ok(d > chain.lastIndexOf("eleven-turbo"), `${name}：豆包要排在所有 ElevenLabs 之后`);
+      assert.equal(chain[d + 1], "edge", `${name}：豆包后面紧跟 edge 兜底`);
+    }
+  });
+
+  test("网络层失败跳过整家 ElevenLabs 用的名单，和链上的 ElevenLabs 档位对得上", () => {
+    for (const chain of Object.values(CHAINS)) {
+      assert.deepEqual(chain.filter((e) => e.startsWith("eleven-")), ELEVEN_ENGINES);
+    }
   });
 
   test("上一句用的就是这一端的首选，那还是走整条", () => {

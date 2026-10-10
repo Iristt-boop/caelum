@@ -29,9 +29,16 @@ export const CHAINS = {
    * 「跑通了」和「该当默认」是两件事，这一节已经栽过两次。 */
   /* 2026-10-07：v4 上线（09-28），她指定 PWA 通话换 v4——链首插 eleven-v4，
      v3 降为第二档（v4 失败自动落回熟悉的声音）。 */
-  desktop: ["eleven-v4", "eleven-v3", "eleven-turbo", "edge"],
-  phone: ["eleven-v4", "eleven-v3", "eleven-turbo", "edge"],
+  /* 2026-10-10：搬到 N150 后 ElevenLabs 经东京节点出口，节点断了整档 ElevenLabs 都连不上。
+     **她点名**：降级到豆包，用 OS 实时通话里她一直在听的那个复刻声音（clone），
+     不要直接掉到 edge 那个陌生男声。edge 仍是最后一档。 */
+  desktop: ["eleven-v4", "eleven-v3", "eleven-turbo", "doubao", "edge"],
+  phone: ["eleven-v4", "eleven-v3", "eleven-turbo", "doubao", "edge"],
 };
+
+/** ElevenLabs 那几档。**网络层**失败（连不上 / 超时）时同一家的其余档位一起跳过 ——
+ *  同一个主机，换个模型名也连不上，挨个等超时一分多钟，电话就卡死了。 */
+export const ELEVEN_ENGINES = ["eleven-v4", "eleven-v3", "eleven-turbo"];
 
 /** 不认识的端（以及**根本没传**的老调用方）一律按手机算。 */
 export const DEFAULT_PROFILE = "phone";

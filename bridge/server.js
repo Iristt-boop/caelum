@@ -22,7 +22,7 @@ import { Readable } from "node:stream";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer, WebSocket } from "ws";
-import { pickChain } from "./lib/tts-chain.js";
+import { ELEVEN_ENGINES, pickChain } from "./lib/tts-chain.js";
 import { collectProviderInfo } from "./lib/provider-quota.js";
 import { doubaoTtsReady, doubaoTtsPickSpeaker, doubaoTtsRequest, parseDoubaoStream } from "./lib/tts-doubao.js";
 import {
@@ -2303,6 +2303,43 @@ app.post("/api/tts", async (req, res) => {
       console.error(`[TTS] ${name} failed:`, r.status);
     } catch (e) {
       console.error(`[TTS] ${name} error:`, e.message);
+      //: 网络层失败（连不上 / 超时）：同一个主机，后面几档 ElevenLabs 也一样，别挨个等超时
+      return "net";
+    }
+    return false;
+  }
+
+  /** 豆包，复刻的他的声音（`clone`，OS 实时通话同一个）—— 10-10 她点名的降级档。
+   *  流式：首包到了才算成功；之前出错就让给下一档（edge）。语气标签豆包不认，用剥净的文本 */
+  async function tryDoubao() {
+    if (!doubaoTtsReady()) { console.error("[TTS] doubao 没配，跳过"); return false; }
+    const pick = doubaoTtsPickSpeaker("clone");
+    if (!pick) { console.error("[TTS] doubao 没配音色，跳过"); return false; }
+    const t0 = Date.now();
+    try {
+      const up = await doubaoTtsRequest({ text: clean.slice(0, 600), ...pick });
+      let bytes = 0;
+      let failed = false;
+      await parseDoubaoStream(up, {
+        onAudio: (buf) => {
+          if (!bytes) {
+            sendEngine("doubao");
+            res.setHeader("Content-Type", "audio/mpeg");
+          }
+          bytes += buf.length;
+          res.write(buf);
+        },
+        onError: (msg) => { failed = true; console.error("[TTS] doubao 上游错误:", msg); },
+        onDone: () => {},
+      });
+      if (bytes) {
+        console.log(`[TTS] doubao 流式 ${bytes}B / ${Date.now() - t0}ms`);
+        res.end();
+        return true;
+      }
+      if (!failed) console.error("[TTS] doubao 没吐出音频");
+    } catch (e) {
+      console.error("[TTS] doubao error:", e.message);
     }
     return false;
   }
@@ -2342,13 +2379,21 @@ app.post("/api/tts", async (req, res) => {
    * 上一版是三个独立的 `if (chain.includes(...))` —— 那等于顺序写死在代码结构里，
    * chain 只能决定「跳过谁」，决定不了「谁先来」：排在最上面的那个 if 永远先跑，
    * 链里怎么排都没用。09-07 加第四家的时候就是这么把手机也一起切走的。 */
+  let elevenUnreachable = false;
   for (const name of chain) {
     if (name === "edge") { tryEdge(); return; }
+    if (elevenUnreachable && ELEVEN_ENGINES.includes(name)) continue;
 
     let ok = false;
     if (name === "eleven-v4") ok = await tryEleven("eleven-v4", "eleven_v4", withTags, 30000);
     else if (name === "eleven-v3") ok = await tryEleven("eleven-v3", "eleven_v3", withTags, 30000);
     else if (name === "eleven-turbo") ok = await tryEleven("eleven-turbo", "eleven_turbo_v2_5", clean, 15000);
+    else if (name === "doubao") ok = await tryDoubao();
+    if (ok === "net") {
+      elevenUnreachable = true;
+      console.error("[TTS] ElevenLabs 连不上（节点 / 代理断了？），跳过它的其余档位");
+      ok = false;
+    }
     if (ok) return;
 
     // 一旦开始写响应就不能再降级了 —— 前面已经吐了半截音频出去，
