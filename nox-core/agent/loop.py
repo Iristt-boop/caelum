@@ -46,6 +46,7 @@ from agent.llm import (
     GATED_EFFECTS,
     Depth,
     InnerVoiceFilter,
+    LineDraftFilter,
     LLMAdapter,
     Message,
     MoodTagFilter,
@@ -181,6 +182,7 @@ class AgentLoop:
         adapter: LLMAdapter | None = None,
         session_id: str | None = None,
         depth: Depth | None = None,
+        voice: bool = False,
     ) -> LoopResult:
         # 上下文当局部变量持有，不用 contextvar 包整轮 ——
         # 那样在流式路径下会炸（见 tools/context.py 开头）
@@ -193,7 +195,7 @@ class AgentLoop:
             user_text, ctx, system=system, dynamic_system=dynamic_system,
             history=history, images=images, adapter=adapter, depth=depth,
         )
-        self._apply_contracts(result, ctx, base)
+        self._apply_contracts(result, ctx, base, voice=voice)
         result.attachments = ctx.attachments
         result.dirty_providers = sorted(ctx.dirty)
         log_turn(
@@ -350,7 +352,7 @@ class AgentLoop:
                 if ev.type == "done":
                     result = getattr(ev, "result", None)
                     if result is not None:
-                        self._apply_contracts(result, ctx, base)
+                        self._apply_contracts(result, ctx, base, voice=not split)
                         result.attachments = ctx.attachments
                         result.dirty_providers = sorted(ctx.dirty)
                         finished = True
@@ -412,7 +414,26 @@ class AgentLoop:
         # 语音模式关掉分段：||| 会被 TTS 当成正文念出来
         splitter = SegmentSplitter() if split else None
 
+        #: 契约的整行判别器（语音草稿）—— 只在文字聊天里用，见 contracts.OutputContract.line_detector
+        dets = (contracts_mod.line_detectors(self._contracts())
+                if split and _contracts_on() else [])
+        draft_filter = LineDraftFilter([d for _, d in dets]) if dets else None
+
         def emit(raw: str) -> Iterator[StreamEvent]:
+            if draft_filter is not None:
+                raw = draft_filter.feed(raw)
+                if not raw:
+                    return
+            safe = mood_filter.feed(raw)
+            if not safe:
+                return
+            if splitter is None:
+                yield StreamEvent("text", text=safe)
+                return
+            for kind, content in splitter.feed(safe):
+                yield StreamEvent(kind, text=content)  # type: ignore[arg-type]
+
+        def emit_raw(raw: str) -> Iterator[StreamEvent]:
             safe = mood_filter.feed(raw)
             if not safe:
                 return
@@ -423,6 +444,11 @@ class AgentLoop:
                 yield StreamEvent(kind, text=content)  # type: ignore[arg-type]
 
         def drain() -> Iterator[StreamEvent]:
+            if draft_filter is not None:
+                held = draft_filter.flush()
+                if held:
+                    for ev in emit_raw(held):
+                        yield ev
             tail = mood_filter.flush()
             if tail:
                 if splitter is None:
@@ -501,6 +527,12 @@ class AgentLoop:
 
             messages.append(_assistant_message(turn))
             spoke = spoke or bool((turn.text or "").strip())
+            # 一次模型调用结束 = 一行结束：下一次调用的文字不能接在这一行后面一起被判成草稿
+            # （10-10 测出来的：第二次调用的英文草稿没换行，第三次的「去躺好…」被一起吞了）
+            if draft_filter is not None:
+                held = draft_filter.flush()
+                if held:
+                    yield from emit_raw(held + "\n")
             # 🔴 一件一件跑，每件前后各发一帧 —— **不要写回列表推导**。
             # 推导式会把这一批工具整个跑完才回到调用方，中间没有任何输出：
             # 语音通话那边就是十几秒的死寂，她分不清他在干活还是卡死了。
@@ -611,21 +643,43 @@ class AgentLoop:
 
     def _apply_contracts(
         self, result: LoopResult, ctx: tool_context.ToolContext, history_len: int,
+        voice: bool = False,
     ) -> None:
         """交互契约的统一出口（agent/contracts.py）：认出写成文字的工具调用，剥掉；该补的经 `_execute` 补调。
 
         放在 loop 而不是 nox.py：只有这里同时知道「这一轮允许哪些工具」「真调了哪些」，
         也只有这里有执行工具的唯一入口 —— 补调和正常调用过同一道闸门、同一个上限。
         """
-        if not _contracts_on() or not result.text:
+        if not _contracts_on():
             return
         table = self._contracts()
         if not table:
             return
         called = {n.rstrip("✗") for n in _tools_used(result.messages, history_len)}
-        cleaned, artifacts = contracts_mod.apply(
-            result.text, contracts=table, allowed=set(self.tools), called=called,
-        )
+        # 🔴 这一轮里**每一条** assistant 消息都要过（10-10）：result.text 只是最后一次模型调用的文字，
+        # 前面几次调用写的草稿原样进了他的历史（库里 11636 / 11637）。补过一次的工具算「已调」，不重复补
+        artifacts: list[contracts_mod.Artifact] = []
+        cleaned_of: dict[str, str | None] = {}
+        for m in result.messages[history_len:]:
+            if m.role != "assistant" or not m.text:
+                continue
+            new, arts = contracts_mod.apply(
+                m.text, contracts=table, allowed=set(self.tools), called=called, voice=voice,
+            )
+            for a in arts:
+                if a.action == "rescue":
+                    called.add(a.tool)
+            artifacts += arts
+            if new != m.text:
+                cleaned_of[m.text] = new
+                m.text = new
+        if result.text and result.text not in cleaned_of:
+            # 非流式 / 轻量路径的 result.text 可能不在 messages 里（或已经被别处改过）：单独过一遍，不再补调
+            new, arts = contracts_mod.apply(
+                result.text, contracts=table, allowed=set(self.tools), called=called | set(table), voice=voice,
+            )
+            if new != result.text:
+                cleaned_of[result.text] = new
         tracker = guard.FailureTracker(limit=self.failure_limit)
         for i, art in enumerate(artifacts):
             preview = art.text.replace("\n", " ⏎ ")[:80]
@@ -647,12 +701,8 @@ class AgentLoop:
             else:
                 logger.info("契约：正文像 %s 的伪输出，但这一轮没有这个工具 —— 原样留着：%s",
                             art.tool, preview)
-        if cleaned != result.text:
-            result.text = cleaned
-            for m in reversed(result.messages):
-                if m.role == "assistant" and m.text:
-                    m.text = cleaned
-                    break
+        if result.text in cleaned_of:
+            result.text = cleaned_of[result.text]
 
 
 def _contracts_on() -> bool:

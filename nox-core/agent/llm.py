@@ -618,6 +618,49 @@ class MoodTagFilter:
         return "".join(parts)
 
 
+class LineDraftFilter:
+    """流式里按**整行**拦交互契约的伪输出（只在文字聊天里用，见 contracts.OutputContract.line_detector）。
+
+    10-10 晚：他在正文里先写一段带 [softly] 的英文「语音草稿」再调 send_voice_message ——
+    这种行没有 marker，看到行尾才知道是不是。所以**英文或方括号开头的行**先攒到换行再判：
+    是草稿就整行吞掉，不是就原样放出去。中文开头的行照常一个字一个字地流，不受影响。
+    """
+
+    def __init__(self, detectors: list) -> None:
+        self._dets = list(detectors)
+        self._buf = ""
+        self._holding = False
+        self._line_start = True
+
+    def _is_draft(self, line: str) -> bool:
+        return any(d(line) for d in self._dets)
+
+    def feed(self, chunk: str) -> str:
+        out: list[str] = []
+        for ch in chunk:
+            if self._holding:
+                self._buf += ch
+                if ch == "\n":
+                    if not self._is_draft(self._buf[:-1]):
+                        out.append(self._buf)
+                    self._buf, self._holding, self._line_start = "", False, True
+                continue
+            if self._line_start and ch.isascii() and (ch.isalpha() or ch == "["):
+                self._holding, self._buf, self._line_start = True, ch, False
+                continue
+            out.append(ch)
+            if ch == "\n":
+                self._line_start = True
+            elif not ch.isspace():
+                self._line_start = False
+        return "".join(out)
+
+    def flush(self) -> str:
+        held = self._buf if self._holding and not self._is_draft(self._buf) else ""
+        self._buf, self._holding, self._line_start = "", False, True
+        return held
+
+
 class SegmentSplitter:
     """把回复切成多个气泡。
 

@@ -147,6 +147,8 @@ class Router:
                 adapter=adapter,
                 session_id=session_id,
                 depth=depth,
+                # 契约的整行判别器（语音草稿）打电话时不用 —— 那边带语气标签的英文就是正文
+                voice=voice,
             ),
             decision,
         )

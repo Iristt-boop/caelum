@@ -72,6 +72,26 @@ _VOICE_ZH_RE = re.compile(r"^\[中文对照[^\]\n]*\]\s*(.*)$")
 _ASCII_WORD_RE = re.compile(r"[A-Za-z][A-Za-z\- ]*[A-Za-z]")
 
 
+#: ElevenLabs 语气标签的样子（[softly] [breath] [laughing] [whining]）—— 文字聊天里本不该出现
+_STAGE_IN_LINE_RE = re.compile(r"\[[a-z][a-z \-]{1,24}\]")
+
+
+def looks_like_voice_draft(line: str) -> bool:
+    """契约的整行判别：**文字聊天里**一整行以英文为主、还带着语气标签 = 他写的语音草稿。
+
+    10-10 21:26：他先在正文里写「You passed the audition, both of you — [softly] now it's my girl's turn…」，
+    再去调 send_voice_message（念的是换了说法的同一个意思），正文里就多出一段英文。
+    语气标签是给 TTS 的，文字聊天里本来就不该有 —— 带着它的英文行就是语音草稿，不是对她说的话。
+    只在文字聊天里用（loop 打电话时不启用：那边的英文带标签才是正文）。
+    """
+    s = line.strip()
+    if not _STAGE_IN_LINE_RE.search(s):
+        return False
+    latin = sum(c.isascii() and c.isalpha() for c in s)
+    cjk = sum("一" <= c <= "鿿" for c in s)
+    return latin >= 15 and latin >= 3 * cjk
+
+
 def parse_voice_artifact(block: str) -> dict | None:
     """契约解析：他把 send_voice_message 的参数写成了正文（10-10 17:29 第一条）——
 
@@ -99,6 +119,8 @@ def parse_voice_artifact(block: str) -> dict | None:
             tags = _ASCII_WORD_RE.findall(inner)
             body = h.group(1).strip()
             en_parts.append((f"[{tags[0].strip()}] " if tags else "") + body)
+        elif looks_like_voice_draft(s):
+            en_parts.append(s)          # 没有 marker 的语音草稿：整行就是要念的话（标签原样留给 TTS）
     en = " ".join(p for p in en_parts if p).strip()
     latin = sum(c.isascii() and c.isalpha() for c in en)
     cjk = sum("一" <= c <= "鿿" for c in en)
@@ -187,6 +209,7 @@ VOICE_SPEC = ToolSpec(
         markers=("[语音", "[中文对照"),
         parse=parse_voice_artifact,
         rescue=True,
+        line_detector=looks_like_voice_draft,
     ),
 )
 
@@ -361,6 +384,10 @@ def make_handlers(bridge: BridgeClient,
 
         ctx = context.current()
         if ctx:
+            #: 🔴 一轮一条（10-10 21:26）：调完语音他又接着写、又调了一次，她一句「都挺正常的」换回两条语音。
+            #: 和表情包一轮上限同一个道理 —— 护栏放在这里，换哪个模型都兜住
+            if any(a.get("type") == "voice" for a in ctx.attachments):
+                return "这一轮已经发过一条语音了，没再发。她已经听到了 —— 别重复，接着把话说完或者就此结束。"
             ctx.attach_voice(en, str(args.get("zh", "")).strip())
         else:
             logger.warning("send_voice_message 不在轮次上下文里，语音不会被发出")

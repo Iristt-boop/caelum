@@ -41,6 +41,10 @@ class OutputContract:
     parse: Parser | None = None
     #: 能还原时要不要替他补调。补调走 loop 唯一的 `_execute`（闸门 / 上限 / 校验全复用）
     rescue: bool = False
+    #: 没有 marker、但**一整行**长得就是伪输出（10-10 晚：他先在正文里写一段带 [softly] 的英文
+    #: 「语音草稿」，再去调 send_voice_message）。**只在文字聊天里用** —— 打电话时他说的英文
+    #: 带语气标签是正常输出，绝不能剥（loop 传 voice=True 时跳过）
+    line_detector: Callable[[str], bool] | None = None
 
 
 @dataclass
@@ -68,12 +72,21 @@ def all_markers(contracts: dict[str, OutputContract]) -> tuple[str, ...]:
     return tuple(m for m, _ in _index(contracts))
 
 
-def _match(line: str, index: list[tuple[str, str]]) -> str | None:
+def _match(line: str, index: list[tuple[str, str]],
+           detectors: list[tuple[str, Callable[[str], bool]]] = ()) -> str | None:
     s = line.lstrip()
     for marker, tool in index:
         if s.startswith(marker):
             return tool
+    for tool, det in detectors:
+        if s and det(s):
+            return tool
     return None
+
+
+def line_detectors(contracts: dict[str, OutputContract]) -> list[tuple[str, Callable[[str], bool]]]:
+    """(工具名, 整行判别器)。给流式过滤器和 apply 共用。"""
+    return [(name, c.line_detector) for name, c in contracts.items() if c.line_detector is not None]
 
 
 def apply(
@@ -82,27 +95,30 @@ def apply(
     contracts: dict[str, OutputContract],
     allowed: set[str],
     called: set[str],
+    voice: bool = False,
 ) -> tuple[str | None, list[Artifact]]:
     """扫一遍他的完整回复，返回 (剥干净的正文, 认出的伪输出)。
 
     一块伪输出 = 同一个工具的 marker 行，加上它们之间的空行
     （语音条那种「英文一行、空一行、中文对照一行」算一块）。
+    `voice=True`（打电话）时不用整行判别器 —— 那边带语气标签的英文就是正文。
     """
     if not text or not contracts:
         return text, []
     index = _index(contracts)
+    dets = [] if voice else line_detectors(contracts)
     lines = text.split("\n")
     keep: list[str] = []
     artifacts: list[Artifact] = []
     i = 0
     while i < len(lines):
-        tool = _match(lines[i], index)
+        tool = _match(lines[i], index, dets)
         if tool is None:
             keep.append(lines[i])
             i += 1
             continue
         j = i + 1
-        while j < len(lines) and (not lines[j].strip() or _match(lines[j], index) == tool):
+        while j < len(lines) and (not lines[j].strip() or _match(lines[j], index, dets) == tool):
             j += 1
         # 块尾的空行不算块里的（留给正文当段落间隔）
         while j - 1 > i and not lines[j - 1].strip():

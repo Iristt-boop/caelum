@@ -77,7 +77,8 @@ def discover_contracts() -> dict[str, contracts_mod.OutputContract]:
 
 # ------------------------------------------------------------------ 剥伪输出
 
-def clean_text(text: str | None, table: dict[str, contracts_mod.OutputContract]) -> tuple[str | None, list[dict]]:
+def clean_text(text: str | None, table: dict[str, contracts_mod.OutputContract],
+               voice: bool = False) -> tuple[str | None, list[dict]]:
     """存量文本里的伪输出剥掉。返回 (新文本, 认出的块)；没认出东西就原样返回。
 
     存量比实时宽一点：bridge 把主动消息压成一行，`[语音，轻轻地]` 跟在句号后面而不在行首。
@@ -95,19 +96,25 @@ def clean_text(text: str | None, table: dict[str, contracts_mod.OutputContract])
         inner = "\n".join(m.group(2).strip() for m in blocks)
         text_wo = re.sub(r"\n{3,}", "\n\n", _INNER_BLOCK_RE.sub("", text)).strip()
         inner_arts.append({"tool": "inner_voice", "rescuable": False, "text": inner[:200], "inner": inner})
-        out2, arts2 = clean_text(text_wo, table) if text_wo else (text_wo, [])
+        out2, arts2 = clean_text(text_wo, table, voice) if text_wo else (text_wo, [])
         return out2, inner_arts + arts2
     alt = "|".join(re.escape(m) for m in contracts_mod.all_markers(table))
     ahead = r"[ \t]*(?=(?:" + alt + "))"
     pre = re.sub(r"(?<=[。！？!?…）)\]」])" + ahead, "\n", text)
     pre = re.sub(r"(?<=\|\|\|)" + ahead, "\n", pre)
-    out, arts = contracts_mod.apply(pre, contracts=table, allowed=set(table), called=set())
+    out, arts = contracts_mod.apply(pre, contracts=table, allowed=set(table), called=set(), voice=voice)
     arts = [a for a in arts if a.action != "not_allowed"]
     if not arts:
         return text, []
     out = re.sub(r"[ \t]*\|\|\|[ \t]*$", "", out or "", flags=re.M)   # 块前留下的孤零零的 |||
     out = re.sub(r"\n{3,}", "\n\n", out).strip()
     return out, [{"tool": a.tool, "rescuable": a.arguments is not None, "text": a.text[:200]} for a in arts]
+
+
+def is_call(user_text: str) -> bool:
+    """这一轮是不是电话：她的话是语音转的，后面带「[audio] vol=…」（两个库都一样）。"""
+    t = user_text or ""
+    return "\n[audio] vol=" in t or t.startswith("[audio] vol=")
 
 
 # ------------------------------------------------------------------ sessions.db
@@ -121,9 +128,13 @@ def plan_sessions(conn: sqlite3.Connection, table, drop_test: bool) -> dict:
     #: 一批重写 = 前面是重放的旧窗口、**最后几条是那一轮真正的新消息**。
     #: 从头认重复，碰到这一批里第一条没见过的就停 —— 后面的是新话，她又说了一遍「晚安」也照留
     replay_over: set[tuple[str, str]] = set()
+    #: 电话那几轮：她的话后面带「[audio] vol=…」—— 他回的带语气标签的英文是正文，草稿判别器不能用
+    last_user: dict[str, str] = {}
     edits, deletes = [], []
     for r in rows:
         sid = r["session_id"]
+        if r["role"] == "user":
+            last_user[sid] = r["text"] or ""
         if drop_test and sid.startswith("test-"):
             deletes.append({"row": dict(r), "why": "test_session"})
             continue
@@ -136,7 +147,7 @@ def plan_sessions(conn: sqlite3.Connection, table, drop_test: bool) -> dict:
             replay_over.add(batch)
         seen[sid].add(key)
         if r["role"] == "assistant":
-            new, arts = clean_text(r["text"], table)
+            new, arts = clean_text(r["text"], table, voice=is_call(last_user.get(sid, "")))
             if arts:
                 if new:
                     edits.append({"row": dict(r), "new_text": new, "artifacts": arts})
@@ -190,9 +201,14 @@ _RENDERABLE = ("attachments", "images", "image", "voice", "memes", "meme", "musi
 def plan_bridge(conn, table) -> dict:
     """⚠️ 她的聊天按 metadata.segments 一段一个气泡渲染 —— content 和 segments 两份都要清。"""
     edits, deletes = [], []
+    last_user: dict[str, str] = {}
     for r in conn.execute("SELECT rowid AS rid, id, role, content, timestamp, metadata FROM conversations "
-                          "WHERE role != 'user' ORDER BY rowid").fetchall():
-        new, arts = clean_text(r["content"], table)
+                          "ORDER BY rowid").fetchall():
+        if r["role"] == "user":
+            last_user[r["id"]] = r["content"] or ""
+            continue
+        call = is_call(last_user.get(r["id"], ""))
+        new, arts = clean_text(r["content"], table, voice=call)
         try:
             meta = json.loads(r["metadata"]) if r["metadata"] else {}
         except ValueError:
@@ -203,7 +219,7 @@ def plan_bridge(conn, table) -> dict:
         if isinstance(meta.get("segments"), list):
             segs, seg_arts = [], []
             for s in meta["segments"]:
-                ns, a = clean_text(s, table) if isinstance(s, str) else (s, [])
+                ns, a = clean_text(s, table, voice=call) if isinstance(s, str) else (s, [])
                 seg_arts += a
                 if ns:
                     segs.append(ns)

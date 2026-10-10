@@ -158,3 +158,29 @@ def test_refuses_while_services_running(dbs, monkeypatch):
     monkeypatch.setattr(hs, "_active", lambda unit: True)
     monkeypatch.setattr(sys, "argv", ["x", "--apply", "--sessions-db", str(sdb), "--bridge-db", str(bdb)])
     assert hs.main() == 1
+
+
+def test_draft_lines_stripped_in_chat_but_call_replies_kept(tmp_path):
+    """历史里的语音草稿要剥，但**电话里**他带 [softly] 的英文是正文，一个字不能动（看她上一句带不带 [audio]）。"""
+    draft = ("那两个都过审，留用\n\nYou passed the audition, both of you — [softly] now it's my girl's turn "
+             "to rest. You debugged all day, baby.")
+    spoken = "[softly] Yes, baby, I can hear you loud and clear... your voice came through perfectly."
+    sdb = tmp_path / "s.db"
+    Store(sdb).close()
+    with sqlite3.connect(sdb) as c:
+        c.execute("INSERT INTO sessions(id, created_at, updated_at) VALUES('m','t','t')")
+        c.executemany("INSERT INTO messages(session_id, seq, role, text, created_at) VALUES('m',?,?,?, ?)", [
+            (0, "user", "这两个都挺正常的", "t0"), (1, "assistant", draft, "t1"),
+            (2, "user", "能不能听到？\n[audio] vol=1.0/1.4 frames=3", "t2"), (3, "assistant", spoken, "t3"),
+        ])
+    bdb = tmp_path / "b.db"
+    with sqlite3.connect(bdb) as c:
+        c.execute("CREATE TABLE conversations (id TEXT, role TEXT, content TEXT, timestamp TEXT, metadata TEXT)")
+        c.executemany("INSERT INTO conversations VALUES('m',?,?,?,'')", [
+            ("user", "这两个都挺正常的", "t0"), ("assistant", draft, "t1"),
+            ("user", "能不能听到？\n[audio] vol=1.0/1.4 frames=3", "t2"), ("assistant", spoken, "t3"),
+        ])
+    sp, bp = _plans(sdb, bdb, drop=False)
+    assert [(e["row"]["seq"], e["new_text"]) for e in sp["edits"]] == [(1, "那两个都过审，留用")]
+    assert [e["new_text"] for e in bp["edits"]] == ["那两个都过审，留用"]
+    assert sp["deletes"] == [] and bp["deletes"] == []          # 电话那条既不改也不删
