@@ -122,7 +122,7 @@ from day import build_day
 from context.compactor import maybe_compact
 from context.token_budget import estimate_tokens, tail_within_budget
 from data.origin import her_words
-from data.store import Store
+from data.store import Store, norm_text
 from nox import INNER_VOICE_RULE, Nox
 from personality.mood import now_cst
 from planner.push import finalize_push_text, prepare_morning
@@ -481,6 +481,24 @@ class Sessions:
             logger.debug("会话 %s 落盘 %d 条", sid[:8], written)
 
         window = [m for m in history if m.role != "system"]
+        # 🔴 快照过期（2026-10-10）：这一轮跑的时候别的路（主动消息 / [SKIP]）先往库里写了，
+        # 手上这份 history 里没有它们。拿它当缓存，他下一轮就看不见自己刚主动说的话。
+        # 库尾最后几条和窗口尾对不上 = 过期，扔缓存，下次 get 从库里重读。
+        # ⚠️ 只比最后一条不够：sync 修好后库尾就是这一轮的最后一句，和窗口尾一样，
+        # 夹在中间的那条主动消息照样看不见
+        if hasattr(self._store, "recent_tail"):
+            k = 6
+            db_tail = self._store.recent_tail(sid, k)
+            win_tail = [(m.role, norm_text(m.text)) for m in window
+                        if m.role in ("user", "assistant") and m.text and m.text.strip()][-k:]
+            n = min(len(db_tail), len(win_tail))
+            stale = n > 0 and db_tail[-n:] != win_tail[-n:]
+        else:
+            stale = False
+        if stale:
+            logger.info("会话 %s 手上的历史比库旧（期间有别的消息落库），扔掉缓存下次重读", sid[:8])
+            self.invalidate(sid)
+            return
         if self._cap_tokens is None:
             window = window[-_MAX_HISTORY:]
         elif estimate_tokens(window) > self._cap_tokens:

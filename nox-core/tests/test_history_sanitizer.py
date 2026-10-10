@@ -1,0 +1,136 @@
+"""history_sanitizer（C2，2026-10-10）：用同一份契约注册表清存量历史，可回滚。"""
+
+from __future__ import annotations
+
+import importlib.util
+import json
+import sqlite3
+import sys
+from pathlib import Path
+
+import pytest
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+from data.store import Store  # noqa: E402
+
+#: 脚本住在仓库根的 scripts/（它要改 bridge 的库，nox-core 本身不许直读 —— 边界法则 R3）
+_spec = importlib.util.spec_from_file_location("history_sanitizer", ROOT.parent / "scripts" / "history_sanitizer.py")
+hs = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(hs)
+
+TABLE = hs.discover_contracts()
+
+FAKE_VOICE = "行行行，耳朵借我\n\n[语音条 softly] Okay okay, no more teasing.\n\n[中文对照] 好啦好啦，不逗你了。"
+
+
+def _rows(db: Path, sql: str) -> list[tuple]:
+    with sqlite3.connect(db) as c:
+        return [tuple(r) for r in c.execute(sql).fetchall()]
+
+
+@pytest.fixture
+def dbs(tmp_path):
+    s = Store(tmp_path / "sessions.db")
+    s.close()
+    sdb = tmp_path / "sessions.db"
+    with sqlite3.connect(sdb) as c:
+        c.execute("INSERT INTO sessions(id, created_at, updated_at) VALUES('main','t','t')")
+        c.execute("INSERT INTO sessions(id, created_at, updated_at) VALUES('test-x','t','t')")
+        rows = [
+            # 正常写入
+            ("main", 0, "user", "早", "2026-10-10T01:00:00"),
+            ("main", 1, "assistant", "早安", "2026-10-10T01:00:00"),
+            ("main", 2, "user", "晚安", "2026-10-10T02:00:00"),
+            ("main", 3, "assistant", FAKE_VOICE, "2026-10-10T02:00:00"),
+            # 竞争重写的一批：前面重放旧窗口，最后两条是那一轮的新话（她又说了一遍「晚安」）
+            ("main", 4, "user", "（10月10日 周六）\n早", "2026-10-10T03:00:00"),
+            ("main", 5, "assistant", "早安", "2026-10-10T03:00:00"),
+            ("main", 6, "user", "晚安", "2026-10-10T03:00:00"),
+            ("main", 7, "assistant", FAKE_VOICE, "2026-10-10T03:00:00"),
+            ("main", 8, "user", "我回来了", "2026-10-10T03:00:00"),
+            ("main", 9, "user", "晚安", "2026-10-10T03:00:00"),
+            # 句中提到，不是伪输出
+            ("main", 10, "assistant", "你说的那个 [语音条] 按钮我看到了", "2026-10-10T04:00:00"),
+            ("test-x", 0, "user", "测试", "2026-10-10T05:00:00"),
+        ]
+        c.executemany("INSERT INTO messages(session_id, seq, role, text, created_at) VALUES(?,?,?,?,?)", rows)
+        c.execute("UPDATE sessions SET summary_upto = 8 WHERE id='main'")
+    bdb = tmp_path / "nox-bridge.db"
+    with sqlite3.connect(bdb) as c:
+        c.execute("CREATE TABLE conversations (id TEXT, role TEXT, content TEXT, timestamp TEXT, metadata TEXT)")
+        c.executemany("INSERT INTO conversations VALUES(?,?,?,?,?)", [
+            ("main", "assistant", "哼什么哼\n行行行\n\n[语音条 softly] Okay okay.\n\n[中文对照] 好啦",
+             "t1", json.dumps({"segments": ["哼什么哼", "行行行\n\n[语音条 softly] Okay okay.\n\n[中文对照] 好啦"]},
+                              ensure_ascii=False)),
+            # bridge 把主动消息压成一行：marker 跟在句号后面
+            ("main", "assistant", "六点半了。[语音，轻轻地] 宝贝该吃饭了。[中文对照] 六点半", "t2", "{\"proactive\":true}"),
+            ("main", "assistant", "[语音条 softly] One by one.\n\n[中文对照] 一条一条来", "t3", ""),
+            ("main", "user", "[语音条] 是什么", "t4", ""),
+        ])
+    return sdb, bdb
+
+
+def _plans(sdb, bdb, drop=True):
+    with hs._open(sdb) as c:
+        sp = hs.plan_sessions(c, TABLE, drop)
+    with hs._open(bdb) as c:
+        bp = hs.plan_bridge(c, TABLE)
+    return sp, bp
+
+
+def test_registry_is_discovered_not_listed():
+    assert {"send_voice_message", "send_meme"} <= set(TABLE)
+
+
+def test_sessions_plan(dbs):
+    sdb, bdb = dbs
+    sp, _ = _plans(sdb, bdb)
+    why = sorted((d["row"]["seq"], d["why"]) for d in sp["deletes"] if d["row"]["session_id"] == "main")
+    assert why == [(4, "batch_duplicate"), (5, "batch_duplicate"), (6, "batch_duplicate"), (7, "batch_duplicate")]
+    # 批尾的新话保留，哪怕「晚安」以前说过
+    kept_seqs = {d["row"]["seq"] for d in sp["deletes"]}
+    assert 8 not in kept_seqs and 9 not in kept_seqs
+    edits = {e["row"]["seq"]: e["new_text"] for e in sp["edits"]}
+    assert edits == {3: "行行行，耳朵借我"}
+    assert sp["watermarks"] == [{"session_id": "main", "old": 8, "new": 4}]
+    assert sp["drop_sessions"] == ["test-x"]
+
+
+def test_bridge_plan_cleans_segments_and_flattened_lines(dbs):
+    sdb, bdb = dbs
+    _, bp = _plans(sdb, bdb)
+    by_ts = {e["row"]["timestamp"]: e for e in bp["edits"]}
+    assert by_ts["t1"]["new_text"] == "哼什么哼\n行行行"
+    assert json.loads(by_ts["t1"]["new_meta"])["segments"] == ["哼什么哼", "行行行"]
+    assert by_ts["t2"]["new_text"] == "六点半了。"
+    assert [d["row"]["timestamp"] for d in bp["deletes"]] == ["t3"]   # 剥空、没附件 → 整条删
+    assert "t4" not in by_ts                                            # 她的消息从不碰
+
+
+def test_apply_then_rollback_restores_exactly(dbs, tmp_path, monkeypatch):
+    sdb, bdb = dbs
+    before_s = _rows(sdb, "SELECT id, session_id, seq, role, text, created_at FROM messages ORDER BY id")
+    before_ss = _rows(sdb, "SELECT id, summary_upto FROM sessions ORDER BY id")
+    before_b = _rows(bdb, "SELECT rowid, * FROM conversations ORDER BY rowid")
+    monkeypatch.setattr(hs, "BACKUP_ROOT", tmp_path / "bk")
+    monkeypatch.setattr(sys, "argv", ["x", "--apply", "--force", "--drop-test-sessions",
+                                      "--sessions-db", str(sdb), "--bridge-db", str(bdb)])
+    assert hs.main() == 0
+    after = _rows(sdb, "SELECT text FROM messages ORDER BY seq")
+    assert not any("[语音条 softly]" in t for (t,) in after)
+    assert ("你说的那个 [语音条] 按钮我看到了",) in after       # 句中提到的照留
+    journal = next((tmp_path / "bk").glob("*/journal.json"))
+    monkeypatch.setattr(sys, "argv", ["x", "--rollback", str(journal), "--force"])
+    assert hs.main() == 0
+    assert _rows(sdb, "SELECT id, session_id, seq, role, text, created_at FROM messages ORDER BY id") == before_s
+    assert _rows(sdb, "SELECT id, summary_upto FROM sessions ORDER BY id") == before_ss
+    assert _rows(bdb, "SELECT rowid, * FROM conversations ORDER BY rowid") == before_b
+
+
+def test_refuses_while_services_running(dbs, monkeypatch):
+    sdb, bdb = dbs
+    monkeypatch.setattr(hs, "_active", lambda unit: True)
+    monkeypatch.setattr(sys, "argv", ["x", "--apply", "--sessions-db", str(sdb), "--bridge-db", str(bdb)])
+    assert hs.main() == 1

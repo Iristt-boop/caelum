@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import sqlite3
 import threading
 from dataclasses import dataclass
@@ -35,6 +36,15 @@ from context.timeline import with_dates
 from context.token_budget import tail_within_budget
 
 logger = logging.getLogger(__name__)
+
+#: 读出来的历史在每天第一条正文前贴着「（10月10日 周六）」加换行（context/timeline.py）。
+#: 拿历史和库里原文比对时要先去掉，否则那几条永远对不上（2026-10-10，sync 锚点 / 缓存过期判断）
+_DAY_STAMP_RE = re.compile(r"^（\d{1,2}月\d{1,2}日 [^）\n]*）\n")
+
+
+def norm_text(text: str | None) -> str:
+    """比对用的正文：去日期戳、去首尾空白。"""
+    return _DAY_STAMP_RE.sub("", text or "").strip()
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS sessions (
@@ -188,20 +198,57 @@ class Store:
             return n
 
         last_role, last_text = last
-        # 从尾部往前找锚点。history 里最后一条消息往往就是库里最后一条
-        # （除非这轮有新增），找到它之后的部分就是新增。
+        # 🔴 2026-10-10：**这一轮的内容永远不当锚点。**
+        # 原来从尾部往前找，他连着两轮回一模一样的话（最常见是主动消息的 [SKIP]），
+        # 锚点会先撞上这一轮新回的那句 → 判成「没有新增」→ 这一轮整轮不落库。
+        # 这一轮 = 最后一条 user 起往后。只在它之前找；这一轮原样已在库尾（同一份历史
+        # 重复 sync）才算什么都不用写。
+        last_user = max((i for i, m in enumerate(pending) if m.role == "user"), default=len(pending))
+        pairs = [(m.role, norm_text(m.text)) for m in pending]
+        # 这一轮已经有多长的开头在库尾（同一份历史重复 sync / 一轮分两次落库）：只补没写的。
+        # 比对时**多带一条这一轮之前的消息**当上下文 —— 否则她真的又问一遍「在吗」、
+        # 他又回「在呢」，会和「同一份历史又 sync 一次」长得一模一样
+        ctx_from = last_user - 1 if last_user > 0 else last_user
+        for k in range(len(pending) - last_user, 0, -1):
+            want = pairs[ctx_from:last_user + k]
+            if self.recent_tail(session_id, len(want)) == want:
+                fresh = pending[last_user + k:]
+                if not fresh:
+                    return 0
+                n = self.append(session_id, fresh)
+                if n > 0:
+                    self._ensure_title(session_id)
+                return n
+        # 从这一轮之前往前找锚点：库里最后一条往往就是上一轮的最后一句。
         # ⚠️ 不能只比 text：不同轮可能说出相同的话（她连续两次问「在吗」），
-        # 必须**从尾部往前找第一个匹配**，且 role 也要对上。
+        # 必须**从后往前找第一个匹配**，且 role 也要对上。
         idx = -1
-        for i in range(len(pending) - 1, -1, -1):
+        for i in range(last_user - 1, -1, -1):
             m = pending[i]
-            if m.role == last_role and (m.text or "").strip() == last_text.strip():
+            if m.role == last_role and norm_text(m.text) == norm_text(last_text):
                 idx = i
                 break
         if idx < 0:
-            # 理论上不该发生（history 来自 load，最后一条必然在里面）。
-            # 真发生了就全量追加 —— 宁可重复写也不要丢消息。
-            # 重复的代价是历史里多一条一样的，丢的代价是他忘记一切。
+            # 🔴 2026-10-10：这「理论上不该发生」其实天天发生，而且是成批重写的源头。
+            # 一轮对话拿着开头的快照跑十几秒，期间主动消息 / [SKIP] 从另一条路先落了库，
+            # 库里最后一条就不在这份旧快照里。原来直接全量追加 —— 主会话 10617 行里
+            # 3487 行是这么来的（10-07 起一批 180 多条，一天五批），坏样板在他眼里出现 7 次。
+            #
+            # 现在退一步找：快照里**最新的、库里最近一段已经有的**那条当锚点，只补它后面的。
+            # 库里最近一段一条都对不上，才是真不认识的历史 —— 那时仍旧全量追加，宁可多写不丢。
+            recent = self._recent_pairs(session_id, max(len(pending) * 2, 400))
+            # 同样只在这一轮之前找：她这轮又问「在吗」、他又回「在呢」，
+            # 和库里最近的一模一样也是新话，不能被当成「已经存过」吞掉
+            for i in range(last_user - 1, -1, -1):
+                m = pending[i]
+                if (m.role, norm_text(m.text)) in recent:
+                    idx = i
+                    break
+            if idx >= 0:
+                logger.info(
+                    "sync: 会话 %s 快照比库旧（库尾是「%s」），从快照里最新的已存消息往后补写",
+                    session_id[:8], last_text[:20])
+        if idx < 0:
             logger.warning(
                 "sync: 会话 %s 找不到锚点（%s），按全量追加处理", session_id[:8], last_text[:20])
             n = self.append(session_id, pending)
@@ -216,6 +263,27 @@ class Store:
         if n > 0:
             self._ensure_title(session_id)
         return n
+
+    def recent_tail(self, session_id: str, n: int) -> list[tuple[str, str]]:
+        """库里该会话最后 n 条 (role, 去空白的 text)，按时间正序。Sessions 判断缓存是否过期用。"""
+        with self._lock:
+            cur = self._conn.execute(
+                "SELECT role, text FROM messages WHERE session_id = ? "
+                "AND role IN ('user', 'assistant') ORDER BY seq DESC LIMIT ?",
+                (session_id, n),
+            )
+            rows = [(r["role"], norm_text(r["text"])) for r in cur.fetchall()]
+        return rows[::-1]
+
+    def _recent_pairs(self, session_id: str, n: int) -> set[tuple[str, str]]:
+        """库里该会话最近 n 条的 (role, 去空白的 text)。给 sync 找退一步的锚点用。"""
+        with self._lock:
+            cur = self._conn.execute(
+                "SELECT role, text FROM messages WHERE session_id = ? "
+                "AND role IN ('user', 'assistant') ORDER BY seq DESC LIMIT ?",
+                (session_id, n),
+            )
+            return {(r["role"], norm_text(r["text"])) for r in cur.fetchall()}
 
     def _last_text(self, session_id: str) -> tuple[str, str] | None:
         """库里该会话最后一条已存消息的 (role, text)。没有返回 None。"""
