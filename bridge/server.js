@@ -1879,6 +1879,41 @@ function cleanupSoon(filePath) {
   }, 60_000);
 }
 
+/**
+ * 把录音传到 DashScope 自己的临时 OSS（48 小时自动删），返回 `oss://...`。
+ * 提交任务时要带 `X-DashScope-OssResourceResolve: enable`，它才认这种地址。
+ *
+ * 🔴 2026-10-10 改：原来是把录音写进 `/uploads`、给阿里一个签名公网链接让它来取。
+ * 搬到 N150 后 noxtang.com 走 Cloudflare 橙云，阿里的下载器在 CF 那一层就被挡
+ * （任务回 FILE_403_FORBIDDEN，请求一次都没到 N150），电话一直停在 listening。
+ * 现在录音从不落到公网上，也不依赖 CF 放不放行。
+ */
+async function uploadSttToDashscope(buffer, ext) {
+  const policyRes = await fetch(
+    `https://dashscope.aliyuncs.com/api/v1/uploads?action=getPolicy&model=${encodeURIComponent(DASHSCOPE_FILETRANS_MODEL)}`,
+    { headers: { Authorization: `Bearer ${DASHSCOPE_API_KEY}` }, signal: AbortSignal.timeout(15_000) },
+  );
+  const policy = (await policyRes.json().catch(() => ({})))?.data;
+  if (!policyRes.ok || !policy?.upload_host) {
+    throw new Error(`dashscope getPolicy failed: ${policyRes.status}`);
+  }
+  const key = `${policy.upload_dir}/stt-${Date.now()}-${randomUUID()}${ext}`;
+  const form = new FormData();
+  form.append("OSSAccessKeyId", policy.oss_access_key_id);
+  form.append("Signature", policy.signature);
+  form.append("policy", policy.policy);
+  form.append("x-oss-object-acl", policy.x_oss_object_acl);
+  form.append("x-oss-forbid-overwrite", policy.x_oss_forbid_overwrite);
+  form.append("key", key);
+  form.append("success_action_status", "200");
+  form.append("file", new Blob([buffer]), key.split("/").pop());
+  const upRes = await fetch(policy.upload_host, { method: "POST", body: form, signal: AbortSignal.timeout(20_000) });
+  if (!upRes.ok) {
+    throw new Error(`dashscope oss upload failed: ${upRes.status} ${(await upRes.text().catch(() => "")).slice(0, 200)}`);
+  }
+  return `oss://${key}`;
+}
+
 function extractTranscriptionText(payload) {
   if (!payload) return "";
   if (typeof payload.text === "string") return payload.text.trim();
@@ -1900,10 +1935,6 @@ app.post("/api/stt", sttUpload.single("audio"), async (req, res) => {
   try {
     const mimeType = req.file.mimetype || "audio/webm";
     const startedAt = Date.now();
-    const publicBaseUrl = inferPublicBaseUrl(req);
-    if (!publicBaseUrl) {
-      return res.status(500).json({ error: "stt_error", message: "public_origin_unavailable" });
-    }
 
     const ext = mimeType.includes("wav")
       ? ".wav"
@@ -1914,17 +1945,9 @@ app.post("/api/stt", sttUpload.single("audio"), async (req, res) => {
           : mimeType.includes("mp4") || mimeType.includes("m4a")
             ? ".m4a"
             : ".webm";
-    const tempName = `stt-${Date.now()}-${randomUUID()}${ext}`;
-    const tempPath = path.join(uploadDir, tempName);
-    fs.writeFileSync(tempPath, req.file.buffer);
-    // 🔴 这是**她的整段录音**，要交给阿里云去取。0.8 之前这个链接是
-    // 匿名公开的 —— 随机文件名是唯一的遮蔽，而它同时被交给了第三方。
-    // 现在带签名，而且只给 15 分钟：转写窗口用不了那么久，
-    // 文件本身也会在 60 秒后被 `cleanupSoon()` 删掉。
-    const publicAudioUrl = signUpload(
-      `${publicBaseUrl}/uploads/${encodeURIComponent(tempName)}`,
-      15 * 60 * 1000,
-    );
+    // 🔴 这是**她的整段录音**。2026-10-10 起直接传进 DashScope 的临时 OSS，
+    // 不再落 `/uploads`、不再给第三方一个公网链接（见 uploadSttToDashscope）
+    const ossUrl = await uploadSttToDashscope(req.file.buffer, ext);
 
     const submitResponse = await fetch(DASHSCOPE_FILETRANS_URL, {
       method: "POST",
@@ -1932,11 +1955,12 @@ app.post("/api/stt", sttUpload.single("audio"), async (req, res) => {
         "Authorization": `Bearer ${DASHSCOPE_API_KEY}`,
         "Content-Type": "application/json",
         "X-DashScope-Async": "enable",
+        "X-DashScope-OssResourceResolve": "enable",
       },
       body: JSON.stringify({
         model: DASHSCOPE_FILETRANS_MODEL,
         input: {
-          file_url: publicAudioUrl,
+          file_url: ossUrl,
         },
         parameters: {
           channel_id: [0],
@@ -1950,14 +1974,12 @@ app.post("/api/stt", sttUpload.single("audio"), async (req, res) => {
 
     const submitPayload = await submitResponse.json().catch(() => ({}));
     if (!submitResponse.ok) {
-      cleanupSoon(tempPath);
       console.error("[STT] DashScope submit failed:", submitResponse.status, JSON.stringify(submitPayload).slice(0, 400));
       return res.status(502).json({ error: "stt_failed", detail: submitPayload });
     }
 
     const taskId = submitPayload?.output?.task_id;
     if (!taskId) {
-      cleanupSoon(tempPath);
       console.error("[STT] DashScope submit missing task_id:", JSON.stringify(submitPayload).slice(0, 400));
       return res.status(502).json({ error: "stt_failed", detail: submitPayload });
     }
@@ -1975,7 +1997,6 @@ app.post("/api/stt", sttUpload.single("audio"), async (req, res) => {
       });
       taskPayload = await taskResponse.json().catch(() => ({}));
       if (!taskResponse.ok) {
-        cleanupSoon(tempPath);
         console.error("[STT] DashScope task query failed:", taskResponse.status, JSON.stringify(taskPayload).slice(0, 400));
         return res.status(502).json({ error: "stt_failed", detail: taskPayload });
       }
@@ -1988,7 +2009,6 @@ app.post("/api/stt", sttUpload.single("audio"), async (req, res) => {
     const taskStatus = String(taskPayload?.output?.task_status || "").toUpperCase();
     const taskCode = String(taskPayload?.output?.code || "").toUpperCase();
     if (taskCode === "SUCCESS_WITH_NO_VALID_FRAGMENT") {
-      cleanupSoon(tempPath);
       return res.json({
         text: "",
         noSpeech: true,
@@ -1997,14 +2017,12 @@ app.post("/api/stt", sttUpload.single("audio"), async (req, res) => {
       });
     }
     if (taskStatus !== "SUCCEEDED") {
-      cleanupSoon(tempPath);
       console.error("[STT] DashScope task not successful:", JSON.stringify(taskPayload).slice(0, 400));
       return res.status(502).json({ error: "stt_failed", detail: taskPayload || { task_id: taskId, task_status: taskStatus || "TIMEOUT" } });
     }
 
     const transcriptionUrl = taskPayload?.output?.result?.transcription_url;
     if (!transcriptionUrl) {
-      cleanupSoon(tempPath);
       console.error("[STT] DashScope missing transcription_url:", JSON.stringify(taskPayload).slice(0, 400));
       return res.status(502).json({ error: "stt_failed", detail: taskPayload });
     }
@@ -2013,7 +2031,6 @@ app.post("/api/stt", sttUpload.single("audio"), async (req, res) => {
       signal: AbortSignal.timeout(20_000),
     });
     const resultPayload = await resultResponse.json().catch(() => ({}));
-    cleanupSoon(tempPath);
     if (!resultResponse.ok) {
       console.error("[STT] DashScope transcription fetch failed:", resultResponse.status, JSON.stringify(resultPayload).slice(0, 400));
       return res.status(502).json({ error: "stt_failed", detail: resultPayload });
