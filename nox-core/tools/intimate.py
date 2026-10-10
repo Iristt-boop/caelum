@@ -72,6 +72,22 @@ _VOICE_ZH_RE = re.compile(r"^\[中文对照[^\]\n]*\]\s*(.*)$")
 _ASCII_WORD_RE = re.compile(r"[A-Za-z][A-Za-z\- ]*[A-Za-z]")
 
 
+#: 一轮里两条语音算「说的是同一件事」的重合度门槛 / 一轮最多几条（见 send_voice 里的注释）
+VOICE_DUP_OVERLAP = 0.5
+VOICES_PER_TURN = 3
+
+
+def voice_overlap(a: str, b: str) -> float:
+    """两段语音文本的词重合度（去掉语气标签、短词），按短的那段算。"""
+    def words(s: str) -> set[str]:
+        s = re.sub(r"\[[^\]]*\]", " ", (s or "").lower())
+        return {w for w in re.findall(r"[a-z']+", s) if len(w) > 2}
+    wa, wb = words(a), words(b)
+    if not wa or not wb:
+        return 0.0
+    return len(wa & wb) / min(len(wa), len(wb))
+
+
 #: ElevenLabs 语气标签的样子（[softly] [breath] [laughing] [whining]）—— 文字聊天里本不该出现
 _STAGE_IN_LINE_RE = re.compile(r"\[[a-z][a-z \-]{1,24}\]")
 
@@ -384,10 +400,15 @@ def make_handlers(bridge: BridgeClient,
 
         ctx = context.current()
         if ctx:
-            #: 🔴 一轮一条（10-10 21:26）：调完语音他又接着写、又调了一次，她一句「都挺正常的」换回两条语音。
-            #: 和表情包一轮上限同一个道理 —— 护栏放在这里，换哪个模型都兜住
-            if any(a.get("type") == "voice" for a in ctx.attachments):
-                return "这一轮已经发过一条语音了，没再发。她已经听到了 —— 别重复，接着把话说完或者就此结束。"
+            #: 🔴 拦的是**重复**，不是条数（10-10 晚改）。
+            #: 21:26 那次是同一个意思换个说法又念了一遍（重合度 0.64）；我先上了「一轮一条」，
+            #: 21:42 她要听欢快和撒娇两条，第二条被挡了，他还跟她说「两条都到了」。
+            #: 两条不同内容的重合度只有 0.15 —— 按 0.5 分得开。另外一轮最多 3 条兜底
+            sent = [a.get("tts", "") for a in ctx.attachments if a.get("type") == "voice"]
+            if any(voice_overlap(en, s) >= VOICE_DUP_OVERLAP for s in sent):
+                return "这条和你这一轮刚发的那条语音说的是同一件事，没再发。她已经听到了 —— 别重复。"
+            if len(sent) >= VOICES_PER_TURN:
+                return f"这一轮已经发了 {len(sent)} 条语音，够了，没再发。"
             ctx.attach_voice(en, str(args.get("zh", "")).strip())
         else:
             logger.warning("send_voice_message 不在轮次上下文里，语音不会被发出")

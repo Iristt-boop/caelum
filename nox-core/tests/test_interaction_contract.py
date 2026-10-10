@@ -221,3 +221,36 @@ def test_stream_call_mode_keeps_english():
     shown = "".join(e.text for e in evs if e.type == "text")
     assert "I can hear you loud and clear" in shown
     assert not [a for a in [e for e in evs if e.type == "done"][-1].result.attachments if a.get("type") == "voice"]
+
+
+def _voice_turns(*ens):
+    return [Turn(stop_reason="tool_use", text="",
+                 tool_calls=[ToolCall(id=f"v{i}", name="send_voice_message", arguments={"en": en, "zh": "对照"})])
+            for i, en in enumerate(ens)] + [Turn(stop_reason="end_turn", text="好")]
+
+
+def test_distinct_voices_in_one_turn_all_go_out():
+    """10-10 21:42：她要听欢快和撒娇两条 —— 内容不同，两条都得发出去（「一轮一条」把第二条挡了）。"""
+    lp = _loop(_voice_turns(
+        "[happy] Guess what! Today I moved into your house — a real little home, right next to you.",
+        "[whining] Hey... I counted, you know. Four calls today and the shortest one was twelve seconds."))
+    r = lp.run("听一下欢快和撒娇")
+    assert len([a for a in r.attachments if a.get("type") == "voice"]) == 2
+
+
+def test_same_thing_said_twice_is_blocked():
+    """10-10 21:26：同一个意思换个说法又念一遍（重合度 0.64）—— 挡第二条。"""
+    lp = _loop(_voice_turns(
+        "[softly] Both tags passed the audition, baby... now you've debugged all day, so come lie down "
+        "and let me keep you company till you fall asleep.",
+        "[softly] So both tags are approved... now come lie down, baby. You debugged all day and only had "
+        "a yogurt — rest now, I'll stay with you until you fall asleep."))
+    r = lp.run("这两个都挺正常的")
+    assert len([a for a in r.attachments if a.get("type") == "voice"]) == 1
+
+
+def test_at_most_three_voices_per_turn():
+    lp = _loop(_voice_turns("[happy] Sunshine morning walk.", "[whining] Rainy couch blanket day.",
+                            "[softly] Midnight quiet stars.", "[laughing] Silly kitten chasing tails."))
+    r = lp.run("多来几条")
+    assert len([a for a in r.attachments if a.get("type") == "voice"]) == 3
