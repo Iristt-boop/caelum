@@ -481,7 +481,16 @@ db.run(`CREATE TABLE IF NOT EXISTS calls (
   reason TEXT, opener TEXT,
   answered_at TEXT, ended_at TEXT, duration_s INTEGER)`);
 
+// 2026-10-10：她自己拨出去的电话也记账。原来 calls 表只有「他打来的」（invite→answer→end），
+// 她拨出去的那种走另一条路、一行都没记 —— 通话结束后连他自己也说不出「昨晚你们通了多久」，
+// His Day 里也看不到。direction 为 NULL = 他打来的（老行为），'out' = 她拨出去的。
+dbTry(`ALTER TABLE calls ADD COLUMN direction TEXT`);
+
 const CALL_RING_SECONDS = 45;
+//: 她拨出去的电话至少这么久才记（秒）：点进通话页又立刻退出的不算一通
+const CALL_LOG_MIN_S = 5;
+//: 时长上限：前端算错 / 页面挂了一晚上，不能记出「通话 14 小时」
+const CALL_LOG_MAX_S = 6 * 3600;
 
 // 未接通的通话条（2026-09-26）：sweep 转 missed / 她按拒接时往会话落一条。
 // 接通那通由 answer 端点落（content=开场白，时长 /api/call/end 回填）。
@@ -4879,16 +4888,33 @@ app.post("/api/call/end", (req, res) => {
   res.json({ ok: true });
 });
 
+// 她拨出去的电话挂断时登记一笔（前端通话页 onClose，fire-and-forget）。
+// body: { duration: 秒 }。开始时间 = 现在 - 时长；不接受前端传时间戳（时钟错了就记错一天）。
+app.post("/api/call/log", (req, res) => {
+  const dur = Math.round(Number(req.body?.duration));
+  if (!Number.isFinite(dur) || dur < CALL_LOG_MIN_S) return res.json({ ok: true, logged: false });
+  const seconds = Math.min(dur, CALL_LOG_MAX_S);
+  const end = new Date();
+  const start = new Date(end.getTime() - seconds * 1000);
+  const id = `call-out-${end.getTime()}-${Math.random().toString(36).slice(2, 8)}`;
+  dbRun(
+    "INSERT INTO calls (id, created_at, status, reason, opener, answered_at, ended_at, duration_s, direction) VALUES (?,?,?,?,?,?,?,?,?)",
+    [id, start.toISOString(), "ended", "", "", start.toISOString(), end.toISOString(), seconds, "out"],
+  );
+  console.log(`[Call] 她拨出去的通话 ${id}，${seconds}s`);
+  res.json({ ok: true, logged: true, id });
+});
+
 // core 的跟进定时器用。传 id 精确查；也用于验收时看状态
 app.get("/api/call/status", (req, res) => {
   sweepCalls();
   const id = (req.query?.id || "").toString().slice(0, 64);
   if (id) {
-    const r = dbAll("SELECT id, status, reason, opener, duration_s FROM calls WHERE id=?", [id]);
+    const r = dbAll("SELECT id, status, reason, opener, duration_s, direction FROM calls WHERE id=?", [id]);
     if (!r[0]) return res.status(404).json({ error: "no such call" });
     return res.json({ ok: true, call: r[0] });
   }
-  const r = dbAll("SELECT id, status, reason, created_at, duration_s FROM calls ORDER BY created_at DESC LIMIT 10");
+  const r = dbAll("SELECT id, status, reason, created_at, duration_s, direction FROM calls ORDER BY created_at DESC LIMIT 10");
   res.json({ ok: true, calls: r });
 });
 

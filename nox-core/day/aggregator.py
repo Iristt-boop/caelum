@@ -74,7 +74,7 @@ SOURCES = {
     # 2026-10-10：他在花园（Galatea 论坛）发的帖 / 回的帖。MCP 的 list_activity，scope=mine
     "garden": {"wired": True, "note": "galatea list_activity（mine），一分钟内复用上一次的结果"},
     # 2026-10-10：他打给她的电话（bridge calls 表）。**她自己拨的电话没有任何记录，所以不在这里**
-    "calls": {"wired": True, "note": "bridge /api/call/status，只有他打来的；她拨出去的没记"},
+    "calls": {"wired": True, "note": "bridge /api/call/status：他打来的 + 她拨出去的（2026-10-10 起登记，之前拨的没有记录）"},
     # 2026-10-10：一起看片。bridge 的 watch_sessions，只取看够 10 分钟的（同共影那条线）
     "watching": {"wired": True, "note": "bridge /api/watch/history，看够 10 分钟才算一场"},
     # 2026-10-06 V5「他自己的时间」：一天 0~1 次，他自己去做的事（attention.db activity_log）
@@ -483,9 +483,11 @@ _CALL_TITLE = {"ended": "打了通电话给你", "answered": "打了通电话给
 
 
 def _from_calls(items: list[dict], date_str: str) -> list[dict]:
-    """他打给她的电话（bridge 的 `calls` 表）。接了的有时长，没接的也留一条 —— 他打过就是打过。
+    """电话（bridge 的 `calls` 表）。
 
-    🔴 只有**他打来的**：她自己拨出去的那种通话 bridge 一行都没记，所以这里看不到，不编。
+    · 他打给她的：接了的有时长，没接的也留一条 —— 他打过就是打过。
+    · 她拨给他的（`direction='out'`，2026-10-10 起通话页挂断时登记）：只有接通过的，一定有时长。
+      在这之前拨的没有任何记录，看不到，不编。
     """
     start, end = _day_bounds(date_str)
     out = []
@@ -501,15 +503,17 @@ def _from_calls(items: list[dict], date_str: str) -> list[dict]:
             at = at.replace(tzinfo=timezone.utc)
         if not (start <= at < end):
             continue
+        outgoing = c.get("direction") == "out"
         out.append({
             "id": f"call_{c.get('id') or i}",
             "timestamp": at.astimezone(LOCAL_TZ).isoformat(),
             "type": "call",
             "source": "calls",
-            "title": _CALL_TITLE[status],
+            "title": "你打了通电话给他" if outgoing else _CALL_TITLE[status],
             "summary": (c.get("reason") or "").strip()[:60],
             "status": "completed" if status in ("ended", "answered") else "skipped",
-            "metadata": {"call_status": status, "duration_s": c.get("duration_s") or 0},
+            "metadata": {"call_status": status, "duration_s": c.get("duration_s") or 0,
+                         "direction": "out" if outgoing else "in"},
             "related": {"callId": c.get("id")},
         })
     return out

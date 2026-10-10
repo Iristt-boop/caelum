@@ -682,7 +682,8 @@ def test_他打来的电话进时间线_接了的有时长_没接的也留一条
         _call("c3", at + timedelta(hours=2), "declined"),
     ])
     ev = {e["related"]["callId"]: e for e in build_day(DAY, bridge=b)["events"] if e["type"] == "call"}
-    assert ev["c1"]["title"] == "打了通电话给你" and ev["c1"]["metadata"] == {"call_status": "ended", "duration_s": 103}
+    assert ev["c1"]["title"] == "打了通电话给你"
+    assert ev["c1"]["metadata"] == {"call_status": "ended", "duration_s": 103, "direction": "in"}
     assert ev["c1"]["status"] == "completed" and ev["c1"]["summary"] == "想听听你的声音"
     assert ev["c2"]["title"] == "打了电话，你没接到" and ev["c2"]["status"] == "skipped"
     assert ev["c3"]["title"] == "打了电话，你没接" and ev["c3"]["status"] == "skipped"
@@ -798,3 +799,23 @@ def test_花园_汇总数帖子():
     at = datetime(2026, 8, 18, 10, 0, tzinfo=timezone.utc)
     g = FakeGarden([_act("r1", at), _act("r2", at)])
     assert build_day(DAY, garden=g)["summary"]["gardenPosts"] == 2
+
+
+def test_她拨给他的电话也进时间线_方向分得清():
+    at = datetime(2026, 8, 18, 10, 0, tzinfo=timezone.utc)
+    mine = {**_call("c9", at, "ended", reason="", dur=725), "direction": "out"}
+    b = FakeBridge(calls=[mine, _call("c1", at + timedelta(hours=1), "ended", dur=30)])
+    ev = {e["related"]["callId"]: e for e in build_day(DAY, bridge=b)["events"] if e["type"] == "call"}
+    assert ev["c9"]["title"] == "你打了通电话给他"
+    assert ev["c9"]["metadata"] == {"call_status": "ended", "duration_s": 725, "direction": "out"}
+    assert ev["c9"]["status"] == "completed"
+    assert ev["c1"]["metadata"]["direction"] == "in" and ev["c1"]["title"] == "打了通电话给你"
+
+
+def test_她拨的电话开始时间按北京时间切天():
+    # 北京 8-18 00:10 开始 = UTC 8-17 16:10
+    at = datetime(2026, 8, 17, 16, 10, tzinfo=timezone.utc)
+    b = FakeBridge(calls=[{**_call("c9", at, "ended", reason="", dur=60), "direction": "out"}])
+    ev = [e for e in build_day(DAY, bridge=b)["events"] if e["type"] == "call"]
+    assert len(ev) == 1 and ev[0]["timestamp"].startswith("2026-08-18T00:10")
+    assert [e for e in build_day("2026-08-17", bridge=b)["events"] if e["type"] == "call"] == []
