@@ -1814,8 +1814,9 @@ app.post("/api/chat", async (req, res) => {
 // 国内 IP 调 Claude / GPT 一律 403「This model is not available in your region」。
 // 上游 403 时 choices 是空的、不抛异常，原来就悄悄回 ""：电话字幕的中文从搬家起整片没了，日志一个字没有。
 // 现在默认直连 DeepSeek（国内可用）；TRANSLATE_BASE_URL / TRANSLATE_MODEL / TRANSLATE_API_KEY 可覆盖。
-// ⚠️ deepseek-flash 会思考：默认档 300 token 全被思考吃掉、正文为空（HTTP 200，看着像成功）——
-// 必须 reasoning_effort=low，max_tokens 也给宽（实测 low 档思考仍要 ~230）
+// ⚠️ deepseek-flash 会思考，思考和正文抢 max_tokens：给 300 时 6 次里 2 次正文为空（HTTP 200，看着像成功），
+// 不管档位高低；给 1200 + low 档 6 次 0 空（10-10 实测）。**起作用的是 token 给够**，low 档只是省时间省钱。
+// 这个失败是概率性的，单次变异测试证明不了 —— 改这两个数之前先按上面的法子批量量一下
 const TRANSLATE_BASE = (process.env.TRANSLATE_BASE_URL
   || (process.env.DEEPSEEK_API_KEY ? "https://api.deepseek.com" : (process.env.OPENROUTER_BASE_URL || process.env.API_BASE || "https://openrouter.ai/api/v1"))).replace(/\/$/, "");
 const TRANSLATE_KEY = process.env.TRANSLATE_API_KEY || process.env.DEEPSEEK_API_KEY || process.env.OPENROUTER_API_KEY || process.env.API_KEY || "";
