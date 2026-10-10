@@ -23,7 +23,7 @@ from context.base import Turn
 from context.timeline import humanize
 from context.providers.understanding import has_live_anchor
 from context.providers import (
-    HealthProvider, HomeProvider, LocationProvider, MemoryProvider,
+    CallsProvider, HealthProvider, HomeProvider, LocationProvider, MemoryProvider,
     MoodProvider, MusicProvider, OwnDayProvider, RelationProvider, ResonanceProvider, TimeProvider, TodoProvider,
     UnderstandingProvider, WeatherProvider,
 )
@@ -572,6 +572,11 @@ class Nox:
         # 他今天自己做过什么（V5「他自己的时间」，10-06）。没有就是空串
         self.context.register(OwnDayProvider(
             attention_ref=lambda: getattr(self, "attention", None)))
+        # 你们最近通过的电话（2026-10-10，她：「放在上下文就行了」）。没有 bridge 就没有这一栏。
+        # 专用 2 秒超时的 client：它进每轮名单，bridge 卡住不能拖慢轻量路径
+        if self.cfg.bridge_url:
+            self.context.register(CallsProvider(BridgeClient(
+                self.cfg.bridge_url, self.cfg.bridge_token, 2.0)))
         # 注册但**不进每轮名单**（见 _dynamic）。它一次检索约 7 秒，
         # 而且每轮塞不同记忆会让 dynamic_system 每轮都变，
         # 缓存命中率从 98.9% 掉到 62.5%、每轮成本 ×12。

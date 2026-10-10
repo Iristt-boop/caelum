@@ -109,7 +109,9 @@ def classify(text: str, *, has_images: bool = False) -> Decision:
 #: 它读的是内存里的 Registry（不打网络），没有锚点时渲染成空串，
 #: 所以轻量路径也带得起
 #: relation（10-06）：约定 / 别问 / 上心 / 气氛。own_day（10-06）：他今天自己做过的事。没有就渲染成空串，一个字都不占
-_ALWAYS = ("time", "mood", "resonance", "understanding", "relation", "own_day")
+#: calls（10-10）：最近 3 天通过的电话。**唯一一个会打 HTTP 的常驻项**，所以破例要说清：打的是本机 bridge
+#: （回环、专用 2 秒超时、2 分钟缓存），没有最近通话就是空串；她昨晚打过电话不是关键词能触发的事（见 providers/calls.py）
+_ALWAYS = ("time", "mood", "resonance", "understanding", "relation", "own_day", "calls")
 
 # 记忆。2026-09-05 解禁（见 context/providers/memory.py 顶上那张表）。
 #

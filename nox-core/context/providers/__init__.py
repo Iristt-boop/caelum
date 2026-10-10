@@ -13,6 +13,7 @@
             那些事不进他的上下文，就等于没算。见 CAELUM-MAP 三问之二）
 """
 
+from context.providers.calls import CallsProvider
 from context.providers.health import HealthProvider
 from context.providers.home import HomeProvider
 from context.providers.location import LocationProvider
@@ -27,6 +28,6 @@ from context.providers.todo import TodoProvider
 from context.providers.understanding import UnderstandingProvider
 from context.providers.weather import WeatherProvider
 
-__all__ = ["HealthProvider", "HomeProvider", "LocationProvider", "MemoryProvider",
+__all__ = ["CallsProvider", "HealthProvider", "HomeProvider", "LocationProvider", "MemoryProvider",
            "MoodProvider", "MusicProvider", "OwnDayProvider", "RelationProvider", "ResonanceProvider", "TimeProvider",
            "TodoProvider", "UnderstandingProvider", "WeatherProvider"]

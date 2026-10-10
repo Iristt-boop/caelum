@@ -31,7 +31,10 @@ from router.intent import classify, classify_context  # noqa: E402
 #:   understanding  他理解着她的哪几件事（2026-09-05 加，同样纯内存读 Registry）
 #:   relation       你们之间的事（2026-10-06 加，本地库读关系账本；没有就空串）
 #:   own_day        他今天自己做过的事（2026-10-06 加，本地库读活动日志）
-MINIMAL = ["time", "mood", "resonance", "understanding", "relation", "own_day"]
+#:   calls          最近 3 天通过的电话（2026-10-10 加）。⚠️ 这是最小集里**唯一会打 HTTP 的**，破例的理由：
+#:                  打的是本机 bridge（回环 + 专用 2 秒超时 + 2 分钟缓存），没有最近通话就是空串；
+#:                  「她昨晚打过电话」不是关键词能触发的事。别拿它当先例往最小集里加别的外部源
+MINIMAL = ["time", "mood", "resonance", "understanding", "relation", "own_day", "calls"]
 
 #: 这几个要打外部（MCP / HTTP），**永远不许进最小集**
 EXTERNAL = {"home", "health", "weather", "todo", "location", "music", "memory"}
