@@ -149,7 +149,8 @@ mkdir -p "$WORK/code"
 for d in /root/co-watching /root/co-reading-mcp /root/ha-mcp /root/toy-mcp \
          /root/touch-mcp /root/touch-server /root/health-mcp /root/app-tracker \
          /root/ombre-brain /root/eryu /root/netease-music-mcp \
-         /root/co-listening /root/stackchan-mcp /opt/xiaozhi-server; do
+         /root/co-listening /root/stackchan-mcp /opt/xiaozhi-server \
+         /root/DEPLOY_INFO; do
   [ -d "$d" ] || continue
   n=$(basename "$d")
   mkdir -p "$WORK/code/$n"

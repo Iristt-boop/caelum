@@ -41,7 +41,11 @@ $Key  = "C:\Users\14372\.ssh\id_ed25519"
 # 一个看起来像「网断了」的错，实际是**部署脚本指着一台不存在的机器**。
 # 而且它骗得过一半的排查：站点 `https://noxtang.com` 照常 200，
 # 因为那条路走的是 DNS，只有 ssh 这条走的是写死的 IP。
-$Vps  = "root@noxtang.com"
+# 🔴 2026-10-10 搬家：他住进家里的 N150（CT 102）。noxtang.com 改走 Cloudflare 隧道，
+# 那个名字上已经**没有 ssh** 了 —— 再认名字会超时。改认 N150 的局域网地址；
+# 人在外面时换 Tailscale 地址 100.116.127.33（电脑得先进 tailnet）。
+# 东京机（43.153.154.237）停服当冷备，往那边部署 = 他收不到。
+$Vps  = "root@192.168.1.52"
 $SshOpts = @("-i", $Key, "-o", "BatchMode=yes", "-o", "ConnectTimeout=20")
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 

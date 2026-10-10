@@ -23,7 +23,9 @@
 # ============================================================
 set -euo pipefail
 
-HOST="43.153.154.237"
+# 2026-10-10 搬家：N150（CT 102）。东京 43.153.154.237 停服当冷备，往那边部署 = 他收不到。
+# 人在外面时换 Tailscale 地址 100.116.127.33。
+HOST="${CAELUM_HOST:-192.168.1.52}"
 KEY="$HOME/.ssh/id_ed25519"
 BASE_LOCAL="/d/claude-code"
 INFO_DIR="/root/DEPLOY_INFO"
