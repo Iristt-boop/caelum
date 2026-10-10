@@ -45,6 +45,16 @@ def test_她截图的那条原样复现_两段_mind_都拆进心里_正文干净
     assert "她答应了共影" in think and "历史纪录里全是烂尾" in think
 
 
+def test_10_10_她截图的内心标签_拆进心里_一个字一片也认得():
+    """10-10 21:17 截图：`<内心>…</内心>` 整段当成一个气泡发给了她。"""
+    raw = ("<内心>一个「嗯？」，可能是没听清语音，也可能是在等我继续说。语气放软，接住就好。</内心>"
+           "我在呢，刚那条语音用的是英文，没有中文助词哦")
+    think, text = _run(list(raw))
+    assert text == "我在呢，刚那条语音用的是英文，没有中文助词哦"
+    assert "没听清语音" in think and "<内心>" not in text
+    assert strip_inner_voice(raw) == "我在呢，刚那条语音用的是英文，没有中文助词哦"
+
+
 @pytest.mark.parametrize("alias", INNER_ALIASES)
 def test_每一种别名都认(alias):
     think, text = _run([f"<{alias}>我想她了。</{alias}>在呢"])

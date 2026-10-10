@@ -43,7 +43,11 @@ sys.path.insert(0, str(ROOT))
 
 from agent import contracts as contracts_mod  # noqa: E402
 from agent.llm import ToolSpec  # noqa: E402
+from agent.llm import INNER_ALIASES  # noqa: E402
 from data.store import norm_text  # noqa: E402
+
+_INNER_BLOCK_RE = re.compile(
+    r"<(" + "|".join(re.escape(a) for a in INNER_ALIASES) + r")>(.*?)</\1>\s*", re.S)
 
 SESSIONS_DB = Path("/root/nox-core/data/sessions.db")
 BRIDGE_DB = Path("/root/data/nox-bridge.db")
@@ -82,6 +86,17 @@ def clean_text(text: str | None, table: dict[str, contracts_mod.OutputContract])
     """
     if not text:
         return text, []
+    # 漏进正文的心里话（10-10：`<内心>…</内心>` 整段当成一个气泡发给了她）——
+    # 别名表和实时拆标签用的是同一张（agent.llm.INNER_ALIASES）。他的历史里不该有（10-06 她定的），
+    # 她的聊天里挪进 metadata.thinking（见 plan_bridge），不删
+    inner_arts: list[dict] = []
+    blocks = list(_INNER_BLOCK_RE.finditer(text))
+    if blocks:
+        inner = "\n".join(m.group(2).strip() for m in blocks)
+        text_wo = re.sub(r"\n{3,}", "\n\n", _INNER_BLOCK_RE.sub("", text)).strip()
+        inner_arts.append({"tool": "inner_voice", "rescuable": False, "text": inner[:200], "inner": inner})
+        out2, arts2 = clean_text(text_wo, table) if text_wo else (text_wo, [])
+        return out2, inner_arts + arts2
     alt = "|".join(re.escape(m) for m in contracts_mod.all_markers(table))
     ahead = r"[ \t]*(?=(?:" + alt + "))"
     pre = re.sub(r"(?<=[。！？!?…）)\]」])" + ahead, "\n", text)
@@ -182,8 +197,10 @@ def plan_bridge(conn, table) -> dict:
             meta = json.loads(r["metadata"]) if r["metadata"] else {}
         except ValueError:
             meta = {}
-        new_meta = None
-        if isinstance(meta, dict) and isinstance(meta.get("segments"), list):
+        if not isinstance(meta, dict):
+            meta = {}
+        changed = dict(meta)
+        if isinstance(meta.get("segments"), list):
             segs, seg_arts = [], []
             for s in meta["segments"]:
                 ns, a = clean_text(s, table) if isinstance(s, str) else (s, [])
@@ -192,10 +209,15 @@ def plan_bridge(conn, table) -> dict:
                     segs.append(ns)
             if seg_arts:
                 arts = arts or seg_arts
-                new_meta = json.dumps({**meta, "segments": segs}, ensure_ascii=False)
+                changed["segments"] = segs
+        # 漏进正文的心里话挪到思考区（界面按 metadata.thinking 显示成可展开的思考块），不删
+        inner = "\n".join(a["inner"] for a in arts if a.get("tool") == "inner_voice")
+        if inner and not meta.get("thinking"):
+            changed["thinking"] = inner
+        new_meta = json.dumps(changed, ensure_ascii=False) if changed != meta else None
         if not arts:
             continue
-        renderable = isinstance(meta, dict) and any(meta.get(k) for k in _RENDERABLE)
+        renderable = bool(changed.get("thinking")) or any(meta.get(k) for k in _RENDERABLE)
         if new or renderable:
             edits.append({"row": dict(r), "new_text": new or "", "new_meta": new_meta, "artifacts": arts})
         else:

@@ -342,7 +342,8 @@ INNER_OPEN, INNER_CLOSE = "<心里>", "</心里>"
 #: 原来拆标签只认 `<心里>` 这一个字面量，别的名字一律当正文原样发给她，还落进历史（历史里的
 #: 漏出又会被他当样子学）。**所以认一小组同类别名**：同一件事（内心独白）的不同写法，开了哪个就找哪个的收口。
 #: 只放真见过的和最常见的近亲；加新的别名往这里补一个词就行。
-INNER_ALIASES = ("心里", "mind", "memo", "think", "thinking", "thought", "inner")
+#: 10-10：又见 `<内心>…</内心>`（她截图，库里 3 条：17:15 / 20:06 / 20:13），一并补上近亲「心里话」
+INNER_ALIASES = ("心里", "内心", "心里话", "mind", "memo", "think", "thinking", "thought", "inner")
 _INNER_OPENS = tuple(f"<{a}>" for a in INNER_ALIASES)
 _INNER_BLOCK_RE = re.compile(
     r"<(" + "|".join(re.escape(a) for a in INNER_ALIASES) + r")>.*?</\1>\s*", re.S)

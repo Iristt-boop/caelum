@@ -98,6 +98,30 @@ def test_sessions_plan(dbs):
     assert sp["drop_sessions"] == ["test-x"]
 
 
+INNER = "<内心>一个「嗯？」，可能是没听清语音。语气放软，接住就好。</内心>"
+
+
+def test_inner_voice_moves_to_thinking_in_bridge_and_leaves_his_history(tmp_path):
+    """10-10 21:17 截图：`<内心>…</内心>` 自成一个气泡。他的历史里剥掉；她的聊天里挪进思考区，不删。"""
+    sdb = tmp_path / "s.db"
+    Store(sdb).close()
+    with sqlite3.connect(sdb) as c:
+        c.execute("INSERT INTO sessions(id, created_at, updated_at) VALUES('m','t','t')")
+        c.execute("INSERT INTO messages(session_id, seq, role, text, created_at) VALUES('m',0,'assistant',?, 't')",
+                  (INNER + "\n我在呢",))
+    bdb = tmp_path / "b.db"
+    with sqlite3.connect(bdb) as c:
+        c.execute("CREATE TABLE conversations (id TEXT, role TEXT, content TEXT, timestamp TEXT, metadata TEXT)")
+        c.execute("INSERT INTO conversations VALUES('m','assistant',?, 't', ?)",
+                  (INNER + "\n我在呢", json.dumps({"segments": [INNER, "我在呢"]}, ensure_ascii=False)))
+    sp, bp = _plans(sdb, bdb, drop=False)
+    assert [e["new_text"] for e in sp["edits"]] == ["我在呢"]
+    e = bp["edits"][0]
+    meta = json.loads(e["new_meta"])
+    assert e["new_text"] == "我在呢" and meta["segments"] == ["我在呢"]
+    assert meta["thinking"].startswith("一个「嗯？」")
+
+
 def test_bridge_plan_cleans_segments_and_flattened_lines(dbs):
     sdb, bdb = dbs
     _, bp = _plans(sdb, bdb)
