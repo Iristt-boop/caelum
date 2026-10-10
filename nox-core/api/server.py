@@ -2311,7 +2311,9 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
 
         事件写进 World Model（``she_is_present``，分钟级短 TTL ——
         「她在面前」不是 36 小时还能当当前值说的旧闻），
-        跃迁（arrived）产念头给 Care，心跳（looking）只刷新鲜度。
+        跃迁（arrived）产念头给 Care，心跳（looking）只刷新鲜度，
+        identity 跃迁（在场时认出的脸变了）也只刷新 —— 见
+        FrontSource.observe_event 的论证。
         """
         if attention is None or getattr(attention, "front_source", None) is None:
             raise HTTPException(
@@ -2319,9 +2321,9 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
         if os.getenv("NOX_PERCEPTION_TOKEN", "") != token or not token:
             logger.warning("perception 推送 token 不对")
             raise HTTPException(status_code=403, detail="token 不对")
-        if body.event not in ("arrived", "left", "looking"):
+        if body.event not in ("arrived", "left", "looking", "identity"):
             raise HTTPException(status_code=422,
-                                detail="event 要 arrived / left / looking")
+                                detail="event 要 arrived / left / looking / identity")
 
         observed_at = body.observed_at or datetime.now(timezone.utc)
         if observed_at.tzinfo is None:
@@ -2332,7 +2334,7 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
             world.observe(
                 source="stackchan",
                 type="she_is_present",
-                observed={"present": body.event in ("arrived", "looking"),
+                observed={"present": body.event in ("arrived", "looking", "identity"),
                           "identity": body.identity},
                 observed_at=observed_at,
                 # 同一分钟内的重复事件幂等 —— 心跳每分钟一次，正好
