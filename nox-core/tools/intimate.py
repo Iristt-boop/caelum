@@ -29,14 +29,35 @@ _MEME_TEXT_RE = re.compile(r"\[(" + "|".join(MEME_TAGS) + r")\]")
 MEMES_PER_TURN = 2
 
 
+#: 他把表情写成 `[表情包] 举爪开心`（2026-10-10 她截图；库里 4 条，最早 10-09 夜里 —— 那条进了历史，
+#: 之后他照着写）。不是 `[开心]` 那种，原来的抽取认不得，整行当文字上屏、落库。
+#: 写法：`[表情包] 名字` / `[表情包]名字` / `[表情包: 名字]` / `[表情包] [名字]`。
+#: 名字按长度倒着排：「举爪开心」里含「开心」，短的在前会先咬走后半截
+_MEME_LABEL_TAGS = "|".join(sorted((re.escape(t) for t in MEME_TAGS), key=len, reverse=True))
+_MEME_LABELED_RE = re.compile(
+    r"[ \t]*\[表情包(?:\s*[:：]\s*|\]\s*)\[?(" + _MEME_LABEL_TAGS + r")\]?"
+)
+#: 标记后面跟的不是名单里的名字：整行当成假的发表情，剥掉但不发（留着会教他下次接着写）
+_MEME_LABEL_ANY_RE = re.compile(r"[ \t]*\[表情包[^\n]*")
+
+
 def extract_text_tags(text: str | None) -> tuple[str | None, list[str]]:
     """从回复正文里抽出 [tag]，返回 (剥掉后的正文, tags 按出现顺序)。"""
     if not text:
         return text, []
-    tags = _MEME_TEXT_RE.findall(text)
-    if not tags:
+    found: list[tuple[int, str]] = []
+    # 先抽 `[表情包] 名字`，再剥名单外的 `[表情包]…` 行，最后才是 `[名字]` ——
+    # 顺序反了的话 `[表情包] [开心]` 里的 `[开心]` 会被先咬走，留下一个光秃秃的标记
+    for m in _MEME_LABELED_RE.finditer(text):
+        found.append((m.start(), m.group(1)))
+    out = _MEME_LABELED_RE.sub("", text)
+    out = _MEME_LABEL_ANY_RE.sub("", out)
+    for m in _MEME_TEXT_RE.finditer(out):
+        found.append((len(text) + m.start(), m.group(1)))   # 在后面的排后面，足够按出现顺序
+    out = _MEME_TEXT_RE.sub("", out)
+    if out == text:
         return text, []
-    return _MEME_TEXT_RE.sub("", text).strip(), tags
+    return out.strip(), [t for _, t in sorted(found)]
 
 
 # ------------------------------------------------------------------ 表情包

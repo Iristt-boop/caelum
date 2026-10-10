@@ -470,6 +470,8 @@ class MoodTagFilter:
     _MAX_TAG_BUF = max(len(t) for t in MEME_TAGS) + 3
     # 英文字母开头的方括号要多攒一点：`[intimacy 0.75/0.8 调侃中带真心]` 这种旁注能到 30 多字
     _MAX_STAGE_BUF = STAGE_TAG_MAX + 3
+    #: 写成文字的表情标记前缀（见 feed 里那段）
+    _MEME_LABEL = "[表情包"
 
     def __init__(self, strip_stage: bool = False) -> None:
         self._buf = ""        # '[' 开头的缓冲
@@ -526,6 +528,12 @@ class MoodTagFilter:
                         self._buf = ""
                         self._eat_line = ch != "\n"
                         continue
+                # `[表情包] 举爪开心`：他把表情写成了文字（2026-10-10 她截图）。认出标记就整行吞；
+                # 收尾时 nox.py 的 extract_text_tags 会从完整正文里抽出名字转成真表情
+                if self._buf.startswith(self._MEME_LABEL):
+                    self._buf = ""
+                    self._eat_line = ch != "\n"
+                    continue
                 lowered = self._buf.lower()
                 # 🔴 判定前剥掉 '[' 后的空白 —— `[ mood:心疼 ]` 这种带空格
                 #    变体曾整个漏到她眼前（2026-09-22 截图实锤）

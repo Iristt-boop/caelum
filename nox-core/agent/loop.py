@@ -228,6 +228,7 @@ class AgentLoop:
         total = Usage()
         iterations = 0
         deadline = self._deadline()
+        spoke = False   # 前面的调用已经对她说过话（见 SPOKEN_NOTE）
 
         for iterations in range(1, self.max_iterations + 1):
             # ⚠️ 检查点在**开下一轮之前**，不是在调用中间 ——
@@ -243,7 +244,7 @@ class AgentLoop:
                 messages,
                 specs,
                 system=system,
-                dynamic_system=dynamic_system,
+                dynamic_system=_with_spoken_note(dynamic_system, spoke),
                 depth=depth,
             )
             _accumulate(total, turn.usage)
@@ -276,6 +277,7 @@ class AgentLoop:
 
             # --- 要调工具 ---
             messages.append(_assistant_message(turn))
+            spoke = spoke or bool((turn.text or "").strip())
 
             outcomes = [self._execute(call, tracker, ctx) for call in turn.tool_calls]
             # 一轮里的全部结果放进同一条消息（见文件开头第 3 条）
@@ -427,6 +429,7 @@ class AgentLoop:
                     yield StreamEvent("text", text=rest)
 
         deadline = self._deadline()
+        spoke = False   # 前面的调用已经对她说过话（见 SPOKEN_NOTE）
 
         for iterations in range(1, self.max_iterations + 1):
             # 同非流式那条：只拦"开下一轮"，拦不住正在进行的那一次调用。
@@ -453,7 +456,9 @@ class AgentLoop:
 
             for ev in llm.stream(
                 messages, specs,
-                system=system, dynamic_system=dynamic_system, depth=depth,
+                system=system,
+                dynamic_system=_with_spoken_note(dynamic_system, spoke),
+                depth=depth,
             ):
                 if ev.type == "text":
                     yield from route(inner.feed(ev.text))
@@ -488,6 +493,7 @@ class AgentLoop:
                 return
 
             messages.append(_assistant_message(turn))
+            spoke = spoke or bool((turn.text or "").strip())
             # 🔴 一件一件跑，每件前后各发一帧 —— **不要写回列表推导**。
             # 推导式会把这一批工具整个跑完才回到调用方，中间没有任何输出：
             # 语音通话那边就是十几秒的死寂，她分不清他在干活还是卡死了。
@@ -736,6 +742,25 @@ def log_turn(
         args += (result.detail,)
 
     logger.log(logging.INFO if result.ok else logging.WARNING, line, *args)
+
+
+
+#: 🔴 调工具前已经说过话，工具回来后他常把同一件事换个说法再说一遍（2026-10-10 她截图：
+#: 「验收通过…」说完调 write_diary，回来又来一遍；10-09 起 67 对相邻回复里 9 对是这个形状，
+#: 有的一字不差）。重复发生在**生成时**，流里已经递出去的收不回来，所以只能在这一轮的提示里
+#: 点明。拼在动态块上（每轮都变、在缓存断点之后），不碰静态前缀
+SPOKEN_NOTE = (
+    "【这一轮你已经对她说过话了】上面你调工具之前说的话，她已经看到了。"
+    "工具办完后只补真正新的内容，没有新话就用一句很短的话收尾；"
+    "前面说过的事不要再说一遍，换个说法也不行。"
+)
+
+
+def _with_spoken_note(dynamic_system: str | None, spoke: bool) -> str | None:
+    """这一轮里前面的模型调用已经对她说过话 → 动态块末尾加一条「别重说」。"""
+    if not spoke:
+        return dynamic_system
+    return "\n\n".join([dynamic_system, SPOKEN_NOTE]) if dynamic_system else SPOKEN_NOTE
 
 
 def _assistant_message(turn: Turn) -> Message:
