@@ -20,7 +20,10 @@ rem Host by NAME, not IP (2026-09-16). 43.133.211.140 is a dead address since
 rem the 09-15 rebind; commit 286160c missed this file (and deploy.ps1, fixed in
 rem dcf1da2). It would still fail loudly -- empty NAME exits 1 -- but the error
 rem reads "no backup found on VPS", which points at the wrong cause.
-set VPS=root@noxtang.com
+rem 2026-10-10: Nox moved to the N150 at home (CT 102, 192.168.1.52).
+rem noxtang.com is now a Cloudflare proxy with no ssh behind it. NOTE this
+rem copy is no longer OFF-SITE (same house) -- a real offsite hop is TODO.
+set VPS=root@192.168.1.52
 if not exist "%DST%" mkdir "%DST%"
 
 for /f "usebackq delims=" %%i in (`ssh -o "BatchMode=yes" -o "ConnectTimeout=30" %VPS% "readlink /root/backups/auto/latest.tar.gz.enc"`) do set NAME=%%i

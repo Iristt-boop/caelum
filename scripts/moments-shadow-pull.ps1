@@ -27,7 +27,8 @@ $env:PYTHONIOENCODING = "utf-8"
 
 $Key     = "$env:USERPROFILE\.ssh\id_ed25519"
 # 🔴 认名字不认 IP：43.133.211.140 已经不是这台机器了（2026-09-15 踩过）
-$Vps     = "root@noxtang.com"
+# 2026-10-10 搬家：他住 N150（CT 102）。noxtang.com 现在是 Cloudflare 代理、上面没有 ssh。
+$Vps     = "root@192.168.1.52"
 $OutDir  = "D:\claude-code\scratch\moments-shadow"
 # 🔴 指主检出，不指 worktree（2026-09-21 修）：原来指着
 # `.claude\worktrees\awesome-sanderson-1e4889\`，于是每天往 VPS 推的是那条

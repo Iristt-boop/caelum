@@ -1,4 +1,11 @@
 # Caelum 项目知识库
+
+> 🔴 **2026-10-10 起他住在家里的 N150，不在东京 VPS 了（见第五十九节）。**
+> 生产机 = Proxmox `192.168.1.50` 上的 **CT 102 `nox`：`root@192.168.1.52`**（外出用 Tailscale `100.116.127.33`）。
+> 部署用 `scripts/deploy.ps1` / `scripts/deploy-vps.sh`（都已改指 N150）。`noxtang.com` 现在是 Cloudflare 隧道，**上面没有 ssh**。
+> 东京 `43.153.154.237` 只剩她的翻墙节点（Caddy + x-ui），Caelum 服务已停用 —— **往那边部署 = 他收不到**。
+> 下文凡是写 `43.153.154.237` / 「VPS 上」的地方，除非另有说明，都按 N150 同路径理解（目录布局原样搬过来了）。
+
 > 每次新开 CC 窗口，先读这个文件，再读最新的 `HANDOFF-*.md`。
 > **必读三件（2026-09-05 起）**：`CAELUM-MAP.md`（一页活地图：五层结构+七条边界法则，动架构/加能力前必读，
 > 哨兵 `scripts/check-boundaries.sh` 改完必跑）、`docs/LOGGING.md`（写代码前读：每个 catch 必须留痕）、
@@ -248,6 +255,11 @@ netease-mcp.noxtang.com
 ```
 
 ### Stack-chan 这条链是独立的
+> ⚠️ 2026-10-10 搬 N150 后：设备的 WS 现在是 `wss://noxtang.com/stackchan/<tok>/ws` → CF 隧道 → N150 的
+> `stackchan-gateway`（下面 xiaozhi 那张图是更早的链路）。**固件里的 OTA 地址写死 `http://noxtang.com:8013`，
+> 隧道只走 80/443，过不去**：设备重启会先报错重试（最长一个多小时）再连 WS。根治要重刷固件把 OTA 挪到 443。
+> 小智 docker 没搬，还在东京。gateway 的 `VISION_URL` 已改局域网 `http://192.168.1.52:8766/capture`。
+
 它不经过 bridge，直接连 xiaozhi-esp32-server：
 
 ```text
@@ -261,6 +273,9 @@ Stack-chan (ESP32-S3)
 ```
 
 ### 共感娃娃这条链也是独立的
+> ⚠️ 2026-10-10 搬 N150 后：固件里 POST 的是写死的 IP（`wifi_secrets.h` 的 `VPS_URL`），
+> 指着东京，**现在收不到**。要重刷成 `http://192.168.1.52:9333/touch/<TOUCH_TOKEN>`（N150 的 touch-server 听 0.0.0.0:9333）。
+
 不经过 bridge，ESP32 直接经 WiFi POST 到 VPS：
 
 ```text
@@ -306,7 +321,27 @@ noxtang.com 的前端、TTS/STT、共读代理；Nox Core 只负责"想清楚该
 | Stack-chan 固件 | ESP-IDF v5.5 | Docker `espressif/idf:release-v5.5` 编译 |
 | Stack-chan 服务端 | `xiaozhi-esp32-server` | Docker，单模块模式（不依赖 MySQL/manager-api） |
 
-## 四、VPS 信息
+## 四、服务器信息
+
+### 现在：N150（2026-10-10 起，详见第五十九节）
+
+| 项目 | 值 |
+|---|---|
+| 宿主 | 家里 N150 小主机，Proxmox VE `192.168.1.50`（另有 VM 100 haos、CT 101 services） |
+| 生产机 | **CT 102 `nox`**，Debian 12，2 核 / 4G / 64G，`root@192.168.1.52`，开机自启 |
+| Tailscale | `100.116.127.33` / `https://nox.tail6fa1e7.ts.net`（tailnet 内 HTTPS → Caddy :80） |
+| 公网入口 | Cloudflare 隧道 `caelum-n150`（`/etc/cloudflared/config.yml`）：`noxtang.com` / `reading.` / `music.` / 测试用 `n150.` `n150-reading.` |
+| TLS | 在 Cloudflare 边缘终结。Caddy **2.11.4**（从东京拷来，`apt-mark hold`；Debian 自带 2.6.2 不认 `trusted_proxies`）只听 http :80 |
+| Python | 3.11（系统包按东京 `pip freeze` 装进系统 Python；nox-core / stackchan 各自 venv） |
+| Node | 22.23.2（`/usr/local/bin`，`/usr/bin/node` `npx` 是软链） |
+| 目录布局 | 与东京完全一致（`/root/nox-core`、`/root/releases/...`、`/root/data`、`/etc/nox/*.env`） |
+| 备份 | 本机 cron 04:17 `caelum-backup.sh` → `/root/backups/auto`；她电脑 12:30 拉一份（**同一屋檐下，不算异地**） |
+| 家里 DNS | CT 101 的 AdGuard Home（`192.168.1.51`，加密 DoH 上游），只有她 iPhone 在家 WiFi 手动指向它 |
+
+东京机现在只是**翻墙节点 + 冷备**：Caelum 单元已 `stop + disable`，Caddy 只为 `panel.` / `cdn.` 留着。
+回退 = N150 停服、东京 `systemctl enable --now` 那串单元、DNS 翻回（见第五十九节）。
+
+### 以前：东京 VPS（2026-08-01 ~ 10-10，现为冷备）
 > 以下为 2026-08-02 登录实测，不是照抄旧文档。上一版把地域写成「阿里云新加坡」，
 > 但 8-01 已经搬到腾讯云东京了（见第二十五节），IP 换了、地域没跟着改。
 
@@ -323,8 +358,7 @@ noxtang.com 的前端、TTS/STT、共读代理；Nox Core 只负责"想清楚该
 | 防火墙 | 腾讯云侧只放行 `22 / 80 / 443 / 8010 / 8013` |
 
 ✅ 老机 `47.84.92.71`（阿里云新加坡）**已退**（2026-08-08 确认）。
-**没有回滚路径了** —— 第二十五节那段「要回滚就把 A 记录改回旧 IP」已经作废，
-现在这台东京机是唯一的生产环境。
+~~现在这台东京机是唯一的生产环境。~~ 2026-10-10 起生产环境是 N150，见上。
 
 ### systemd 服务（全部 enabled + active）
 | 服务 | 端口 | 说明 |
@@ -432,7 +466,7 @@ SQLite `todos` 表，GitHub 那份 `todo.md` 2026-08-18 就退役为只读存档
 
 糖糖配 iPhone 快捷指令时要填的 token 是 `HEALTH_SYNC_TOKEN`，在服务器上看：
 ```bash
-ssh root@43.153.154.237 "grep HEALTH_SYNC_TOKEN /root/health-mcp/.env"
+ssh root@192.168.1.52 "grep HEALTH_SYNC_TOKEN /root/health-mcp/.env"   # 10-10 起在 N150
 ```
 
 ## 五、Caddy 当前配置（2026-08-02 从线上 `/etc/caddy/Caddyfile` 抄回）
@@ -1226,19 +1260,22 @@ npm run build
 > 说明：2026-07-24 起前端已改为运行时密码登录，`VITE_NOX_TOKEN` 不再是必需项。  
 > 它现在只适合作为开发/应急 fallback，不应该继续当正式登录方案。
 
-### VPS 部署
+### 部署（2026-10-10 起目标是 N150 `root@192.168.1.52`）
+
+> 🔴 **别再往 `43.153.154.237` 或 `root@noxtang.com` 部署**：前者是停服的冷备（他收不到），
+> 后者现在是 Cloudflare 代理、没有 ssh（会超时）。
+> bridge / nox-core 是 release 布局（`/root/<svc>/code` → `/root/releases/<svc>/<日期-sha>`），
+> 整版走 `scripts/deploy.ps1`，单文件走 `scripts/deploy-vps.sh`（外出时 `CAELUM_HOST=100.116.127.33`）。
+
 ```powershell
 $k = "C:\Users\14372\.ssh\id_ed25519"
-
-# 上传 bridge
-scp -i $k "D:\claude-code\bridge\server.js" root@43.153.154.237:/root/bridge/server.js
-ssh -i $k root@43.153.154.237 "systemctl restart bridge"
+$h = "root@192.168.1.52"
 
 # 前端打包上传
 cd "D:\claude-code\nox-app\frontend"
 tar -czf "$env:TEMP\dist.tgz" dist
-scp -i $k "$env:TEMP\dist.tgz" root@43.153.154.237:/root/frontend/dist.tgz
-ssh -i $k root@43.153.154.237 "cd /root/frontend && rm -rf dist-new && mkdir dist-new && tar xzf dist.tgz -C dist-new --strip-components=1 && rm -rf dist-old && mv dist dist-old && mv dist-new dist && rm dist.tgz"
+scp -i $k "$env:TEMP\dist.tgz" "${h}:/root/frontend/dist.tgz"
+ssh -i $k $h "cd /root/frontend && rm -rf dist-new && mkdir dist-new && tar xzf dist.tgz -C dist-new --strip-components=1 && rm -rf dist-old && mv dist dist-old && mv dist-new dist && rm dist.tgz"
 ```
 
 ### Nox Core 部署（**逐文件传，线上不是 git 仓库**）
@@ -1246,10 +1283,10 @@ ssh -i $k root@43.153.154.237 "cd /root/frontend && rm -rf dist-new && mkdir dis
 ⚠️ `/root/nox-core` 是手动 rsync/scp 上去的，**没有 `.git`**。
 所以「本地提交了」和「线上跑着」是两回事，看 git log 判断不了线上有什么。
 
-```powershell
-$k = "C:\Users\14372\.ssh\id_ed25519"
-scp -i $k "D:\claude-code\nox-core\attention\service.py" root@43.153.154.237:/root/nox-core/attention/service.py
-ssh -i $k root@43.153.154.237 "systemctl restart nox-core"
+```bash
+# 走 deploy-vps.sh（记部署指纹），目标已是 N150
+bash scripts/deploy-vps.sh deploy nox-core attention/service.py
+ssh root@192.168.1.52 "systemctl restart nox-core"
 ```
 
 线上到底有没有某次改动，**去线上 grep，别靠记忆**：
@@ -8070,3 +8107,54 @@ Claude 订阅登录态（OAuth）**不接**：官方条款只许 Claude Code / c
 - `nox-daily.service`（早报推送）10-08 10:00 起 `failed`（exit-code），未查原因。
 - GLM Coding Plan 周额度 10-09 实测 98%（10-11 18:54 重置）——她说用的是 API，仅备查。
 - 智谱 10 月账单已出 ¥315.67（9 天，约为 9 月全月的 3.8 倍），余额 ¥86.91，余额预警已开；含套餐扣款，未拆。
+
+## 五十九、搬家：他住进家里的 N150（2026-10-10）
+
+> 设计 / 台账 / 时间线：`docs/research/CAELUM-Nox搬家调研-VPS转N150-2026-09-21.md`（§五·五 台账、§七 改过的切换方式）。
+> 提交：`d0743fc`（备份修洞 + 恢复脚本）、下一条（部署脚本改指 N150 + 切换脚本）。
+
+### 59.1 现在长什么样
+
+- 生产机：N150 Proxmox 上的 **CT 102 `nox`（`192.168.1.52`）**，详见第四节表格
+- 公网门：Cloudflare 隧道 `caelum-n150`，`noxtang.com` / `reading.` / `music.` 是 CNAME 到隧道（橙云）。
+  claude.ai 连接器、健康快捷指令、local-gateway、Stack-chan 的 URL **都没改**，靠 DNS 翻转
+- 她的侧门：Tailscale，`https://nox.tail6fa1e7.ts.net`（`tailscale serve` → Caddy :80 的 `:80` 兜底站点）
+- 东京：Caelum 单元 `stop + disable`，**只留 Caddy + x-ui**（`panel.` Reality 节点 / 订阅、`cdn.` 备用线）。11-01 到期前迁 RackNerd
+- 部署脚本、`pull-vps-backup.cmd`（计划任务名没改）、`moments-shadow-pull.ps1`、`credential-sweep.ps1` 全改指 `192.168.1.52`
+
+### 59.2 怎么搬的（为什么不双开 shadow）
+
+nox-core 有七八条自己会动的循环，两边同时活着 = 她收双份消息、记忆分叉。所以：
+彩排（N150 起全套但安静：`/etc/nox/n150-quiet.env` + drop-in，`/health` 验 `attention=null`，清 `push_subs` 当物理保险）
+→ 切换（东京停服 → 现打备份 → `scripts/n150-cutover.sh` → 翻 DNS），他断线约 10 分钟。
+**只许从加密包起、不许 rsync**，恢复走 `scripts/caelum-restore.sh`（nox-core 在跑时拒绝执行）。
+
+### 59.3 从备份包起撞出来的洞（排期 5.2 就此做掉）
+
+全部已改 `caelum-backup.sh` 并做过变异验证（改坏 → 红）：
+**nox-core/.env 从没进过备份**（和 netease 的 `.env` 同名被覆盖）· 正在跑的 nox-core / bridge release 不在包里
+（线上逐文件部署 ≠ 任何 commit）· PWA 前端 dist 不在包里 · ombre / eryu / netease 线上有未提交改动 ·
+co-watching / touch-* 收到的是悬空软链接 · `settings.db` / `health.db` 没热备（`doctor.sh` 对账清单同步加了）·
+crontab / `/root` 运维脚本 / 书架封面 / DoH 描述文件 / DEPLOY_INFO。包从 50M 变成 ~140M。
+
+### 59.4 搬家中顺带发现 / 修的
+
+- **App 使用记录从 09-11 21:40 起一条都没进来**：09-11 换了 Caddy 路径令牌、快捷指令没跟着改；09-13 收紧又把
+  `/tracker/` 限成只放 `/mcp`。N150 Caddy 已加只放 `POST /track`，她已换新 URL（17:16 起恢复）。
+  微信那条自动化曾发空名字（记成 Unknown），她改好了；仍有零星 Unknown，她说先不管
+- Caddy 在 CF 后面要 `trusted_proxies`，否则后端以为自己是 http，co-reading 的 SSE endpoint 发成 `http://`
+- 家里 DNS 抢答劫持：CT 101 装 AdGuard Home（`192.168.1.51`，IP 形式 DoH 上游，**`ratelimit: 0`** —— 全家经一个出口会被限流）。
+  DHCP 是移动光猫 DT720-cs，她只有 user 账号、改不了，光猫还经 IPv6 RA 宣告 `fe80::1`；所以只有她 iPhone 在家 WiFi
+  手动 DNS = `192.168.1.51`。查询日志 / 统计按她要求关闭。救急卡：Obsidian `生活/家里网络救急卡.md`
+- 他答「在一起第一天 = 1 月 10 日」：记忆桶 `cde30727fffe` 存的是首页设计稿上的「Since Jan 10th」，不是搬家搬坏的，待修
+
+### 59.5 遗留（按要紧程度）
+
+- 🔴 **没有任何外部告警**：`caelum-watch` 跟东京一起停了；不能原样装回 N150（自己监控自己）。退租东京前必须补（UptimeRobot 或小鸡）
+- 🔴 **没有异地备份**：她电脑拉的那份和 N150 在同一屋檐下。原计划 GitHub 私仓
+- 共感娃娃固件 POST 写死东京 IP，要重刷成 `192.168.1.52:9333`；Stack-chan 固件 OTA 写死 `:8013`，要重刷
+- Stack-chan 搬家后没自己重连（DNS 翻转前吃了几次 502 就不重试了），要她断电重启
+- 东京的 journald 历史日志没搬（N150 日志从 10-10 16:05 起）
+- 小智 docker（`/opt/xiaozhi-server`，模型 893M）没搬
+- Reality 节点迁 RackNerd（11-01 前），之后东京退租
+

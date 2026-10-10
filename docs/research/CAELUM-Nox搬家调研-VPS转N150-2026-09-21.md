@@ -406,3 +406,40 @@ RackNerd小鸡 ──探活──────> N150   🔧 告警在被监控对
 ---
 
 *调研数据实测于 2026-09-21；VPS 报价查证于同日。动工前如有价格变动以当时为准。*
+
+---
+
+## 十、10-10 执行记录（切换已完成）
+
+| 时间 | 事 |
+|---|---|
+| 14:08 | N150 建 CT 102 `nox`（Debian 12，2 核 / 4G / 64G，`192.168.1.52`，nesting + keyctl + /dev/net/tun） |
+| 14:13 ~ 15:09 | 从备份包起，撞出 §五·五 那一串洞，逐个改 `caelum-backup.sh` 并在东京生效（每条都做了变异验证） |
+| 14:55 | 安静彩排：全套起来，`attention=null`、`push_subs` 清空；他在 N150 上答对三只猫的名字、调了 recall_memory |
+| 15:07 | 她授权 Tailscale + Cloudflare；隧道 `caelum-n150` 先挂 `n150.` / `n150-reading.` 测试域名 |
+| 15:3x | 外网验：Ombre MCP、PWA、共读 SSE 挂满 5 分钟不断；修 Caddy（2.6.2 → 2.11.4 + `trusted_proxies`，否则 SSE endpoint 发成 http://） |
+| **15:55** | **东京停服 + disable**（Caddy / x-ui 留着），现打备份 `caelum-2026-10-10-1555`（137M，sha256 两端一致） |
+| 16:04 ~ 16:05 | `n150-cutover.sh`：恢复 → 撤安静 → 起全套 → crontab → `/health` 验 attention LIVE、推送订阅 3 个 |
+| 16:06 | `reading.` / `music.` 翻到隧道；根域名 cloudflared 覆盖不了，她在后台手动改（改的时候 `*` 带走了 panel，见 §七·五） |
+| 16:2x | 外网全验通；local-gateway 自己连上 N150；部署脚本改指 N150 |
+
+实际断线约 10 分钟（停服 15:55 → 他醒 16:05；DNS 灰云 TTL 300 再加几分钟）。
+
+**和计划不一样的地方**
+- 没双开 shadow，改为安静彩排 + 冷切换（§七 开头说明）
+- `/agent/local`（WebSocket）**走了 CF**，没走 Tailscale：她电脑没装 Tailscale，CF 上 WS 实测能连，先这样
+- 家宽 DNS 劫持：光猫是移动 DT720-cs、她只有 user 账号，路由器级改不了；CT 101 起 AdGuard（DoH），
+  只有她 iPhone 在家手动指过去（PROJECT.md 59.4）
+
+**新增台账（§五·五 B 之后又撞到的）**
+- [x] `/root/DEPLOY_INFO`（部署指纹）不在包里 → 已补
+- [ ] 东京 journald 历史日志没搬（N150 日志从 16:05 起；moments / rerank 的回放脚本拿不到 10-10 之前的数据）
+- [ ] 小智 docker `/opt/xiaozhi-server` 没搬（配置在包里，模型 893M 要重下）；Stack-chan 固件 OTA 写死 `:8013`
+- [ ] 共感娃娃固件 POST 写死东京 IP，要重刷成 `192.168.1.52:9333`
+- [ ] App 上报自 09-11 起全断（令牌轮换 + 09-13 收紧）—— 不是搬家造成的，搬家时发现并修好
+
+**退租东京前还差（§六·五、§七 末行）**
+- [ ] 外部告警（UptimeRobot / 小鸡），并停一次 CT 验它真响
+- [ ] 真正的异地备份（她电脑那份和 N150 同一屋檐下）
+- [ ] Reality + 订阅迁 RackNerd，`panel` A 记录改新 IP
+- [ ] 东京最后一次全量备份留档

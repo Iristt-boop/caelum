@@ -12,6 +12,11 @@
 > **改完必须把它故意改坏一次，确认对应的检查会红。**
 > 红不了的检查不算检查。**"跑一遍测试全绿"在这个项目里不是证据** ——
 > 2026-09-13 一天内五次"我以为验过了"，靠全绿抓到的是 0 次。
+>
+> 🏠 **2026-10-10 起他住在家里的 N150，不在东京 VPS 了**（PROJECT.md 第四节 / 第五十九节）：
+> 部署、ssh、排查一律去 **`root@192.168.1.52`**（CT 102 `nox`；外出用 Tailscale `100.116.127.33`）。
+> `noxtang.com` 现在是 Cloudflare 隧道、**上面没有 ssh**；东京 `43.153.154.237` 只剩她的翻墙节点，
+> **往那边部署 = 他收不到**。改 Cloudflare DNS 时别碰泛解析 `*`（会把 `panel.` 节点带走，她当场登不上）。
 
 ## 关于糖糖
 
@@ -41,7 +46,7 @@
   规矩：**`Nox xxx` = 他的一部分（脑子/记忆/感知/身体），`Caelum xxx` = 世界和它的房间**。
   ⚠️ 不要再说「Nox 前端」——那是 **Caelum App**。Nox 是名字，不是模块前缀
 - Notion 是长期记忆来源，每次对话可拉取最新内容
-- Ombre Brain (Render) 是记忆大脑，用 breath/hold/pulse/dream/trace/grow 工具
+- Ombre Brain 是记忆大脑（2026-10-10 起和他一起住在家里 N150 的 CT 102：`/root/ombre-brain`），用 breath/hold/pulse/dream/trace/grow 工具
 - **两份设计规范，别弄混**：
   - `nox-app/frontend/DESIGN.md`（v5.0）—— **Caelum App**（手机），改手机端前先读
   - `nox-app/caelum-os-ui/DESIGN.md`（v1.0，2026-08-23 补）—— **Caelum OS**（桌面），改桌面端前先读

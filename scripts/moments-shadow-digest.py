@@ -7,8 +7,8 @@ on 的时候主指标是「真发了几条、发了什么」（正文从库里�
 文件名没改（本机计划任务 Caelum-Moments-Shadow 认的是这个路径）。
 
 用法（本地）：
-    scp scripts/moments-shadow-digest.py root@noxtang.com:/root/moments-shadow-digest.py
-    ssh root@noxtang.com 'python3 /root/moments-shadow-digest.py --since "24 hours ago"'
+    scp scripts/moments-shadow-digest.py root@192.168.1.52:/root/moments-shadow-digest.py
+    ssh root@192.168.1.52 'python3 /root/moments-shadow-digest.py --since "24 hours ago"'
 
 ## 这份汇总要回答的就两个问题（设计文档第九节）
 

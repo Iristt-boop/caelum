@@ -31,7 +31,8 @@ $ErrorActionPreference = "Continue"
 # ⚠️ 这个脚本**有**防空集的检查（下面 `$creds.Count -eq 0` 那行会红 + exit 1），
 # 所以地址错了不会静默通过。但它会红在**错误的方向**上 ——
 # 提示让你去查 ssh 和 /etc/nox/*.env，而真因是机器换了地址。
-$Vps = "root@noxtang.com"
+# 2026-10-10 搬家：他住 N150（CT 102）。noxtang.com 现在是 Cloudflare 代理、上面没有 ssh。
+$Vps = "root@192.168.1.52"
 
 Write-Host "═══ 1/4  从 VPS 取凭据清单（按形状找，不按名字找）═══" -ForegroundColor Cyan
 # ⚠️ 2026-09-12 修掉五个**结构性**盲区。上一版是"漏一个补一个"，
