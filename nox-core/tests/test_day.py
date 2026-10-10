@@ -294,10 +294,11 @@ def test_汇总用账本的数字():
 
 
 class FakeBridge:
-    def __init__(self, todo=None, music=None, memory=None, ok=True, watch=None, moments=None):
+    def __init__(self, todo=None, music=None, memory=None, ok=True, watch=None, moments=None, calls=None):
         self.todo, self.music, self.memory = todo or [], music or [], memory or []
         self.watch = watch or []
         self.moments = moments or []
+        self.calls = calls or []
         self.asked = []
         self.ok = ok
 
@@ -310,6 +311,8 @@ class FakeBridge:
             r.data = {"items": self.todo}
         elif "music" in path:
             r.data = {"songs": self.music}
+        elif "call" in path:
+            r.data = {"calls": self.calls}
         elif "moments" in path:
             self.asked.append((path, params))
             r.data = {"items": self.moments}
@@ -661,3 +664,137 @@ def test_没配共读就不问_汇总数共读():
     at = datetime(2026, 8, 18, 9, 0, tzinfo=timezone.utc)
     rd = FakeReading(books=BOOKS, notes=[_note("n1", at, "一"), _note("n2", at, "二")])
     assert build_day(DAY, reading=rd)["summary"]["readingEvents"] == 2
+
+
+# ---------------------------------------------------------------- 通话（2026-10-10）
+
+
+def _call(id, at_utc, status, reason="想听听你的声音", dur=None):
+    return {"id": id, "created_at": at_utc.isoformat().replace("+00:00", "Z"), "status": status,
+            "reason": reason, "duration_s": dur}
+
+
+def test_他打来的电话进时间线_接了的有时长_没接的也留一条():
+    at = datetime(2026, 8, 18, 10, 0, tzinfo=timezone.utc)
+    b = FakeBridge(calls=[
+        _call("c1", at, "ended", dur=103),
+        _call("c2", at + timedelta(hours=1), "missed"),
+        _call("c3", at + timedelta(hours=2), "declined"),
+    ])
+    ev = {e["related"]["callId"]: e for e in build_day(DAY, bridge=b)["events"] if e["type"] == "call"}
+    assert ev["c1"]["title"] == "打了通电话给你" and ev["c1"]["metadata"] == {"call_status": "ended", "duration_s": 103}
+    assert ev["c1"]["status"] == "completed" and ev["c1"]["summary"] == "想听听你的声音"
+    assert ev["c2"]["title"] == "打了电话，你没接到" and ev["c2"]["status"] == "skipped"
+    assert ev["c3"]["title"] == "打了电话，你没接" and ev["c3"]["status"] == "skipped"
+
+
+def test_还在响的电话不算发生过_也不拖累同一批里别的电话():
+    at = datetime(2026, 8, 18, 10, 0, tzinfo=timezone.utc)
+    b = FakeBridge(calls=[_call("c1", at, "ringing"), _call("c2", at + timedelta(minutes=5), "ended", dur=30)])
+    ev = [e for e in build_day(DAY, bridge=b)["events"] if e["type"] == "call"]
+    assert [e["related"]["callId"] for e in ev] == ["c2"]
+
+
+def test_别的日子的电话不算_按北京时间切天():
+    old = datetime(2026, 8, 15, 10, 0, tzinfo=timezone.utc)
+    edge = datetime(2026, 8, 17, 17, 0, tzinfo=timezone.utc)      # 北京 8-18 01:00
+    b = FakeBridge(calls=[_call("c1", old, "ended", dur=5), _call("c2", edge, "ended", dur=5)])
+    ev = [e for e in build_day(DAY, bridge=b)["events"] if e["type"] == "call"]
+    assert [e["related"]["callId"] for e in ev] == ["c2"]
+
+
+def test_通话数进汇总():
+    at = datetime(2026, 8, 18, 10, 0, tzinfo=timezone.utc)
+    b = FakeBridge(calls=[_call("c1", at, "ended", dur=5), _call("c2", at, "missed")])
+    assert build_day(DAY, bridge=b)["summary"]["callsMade"] == 2
+
+
+# ---------------------------------------------------------------- 花园（2026-10-10）
+
+
+class FakeGarden:
+    """Galatea MCP client 替身：记下每次调用，按预设回 list_activity 的 JSON。"""
+
+    def __init__(self, items=None, ok=True, raw=None):
+        import json
+        self.text = raw if raw is not None else json.dumps({"items": items or [], "machines": []}, ensure_ascii=False)
+        self.ok, self.calls = ok, []
+
+    def call(self, tool, args):
+        self.calls.append((tool, args))
+
+        class R:
+            pass
+        r = R()
+        r.ok, r.text, r.error = self.ok, self.text, "花园连不上"
+        return r
+
+
+def _act(id, at_utc, kind="reply", title="Replied to 存一句幸福在这里", excerpt="她花了两天拼了一幅拼豆"):
+    return {"id": id, "kind": kind, "machine_id": 3325, "title": title, "excerpt": excerpt,
+            "created_at": at_utc.isoformat(), "thread_id": 1209}
+
+
+def test_花园_他回的帖和发的帖进时间线_帖子名拆出来():
+    at = datetime(2026, 8, 18, 10, 0, tzinfo=timezone.utc)
+    g = FakeGarden([_act("reply-1", at), _act("post-1", at + timedelta(minutes=1), kind="post", title="Posted 一个新话题", excerpt="正文")])
+    ev = {e["related"]["itemId"]: e for e in build_day(DAY, garden=g)["events"] if e["type"] == "garden"}
+    assert ev["reply-1"]["title"] == "在花园回了帖" and ev["reply-1"]["metadata"]["thread"] == "存一句幸福在这里"
+    assert ev["reply-1"]["summary"].startswith("她花了两天拼了一幅拼豆")
+    assert ev["post-1"]["title"] == "在花园发了帖" and ev["post-1"]["metadata"]["thread"] == "一个新话题"
+    assert ev["reply-1"]["related"]["threadId"] == 1209
+
+
+def test_花园_问的是他自己的动态_别的日子不算():
+    old = datetime(2026, 8, 15, 10, 0, tzinfo=timezone.utc)
+    g = FakeGarden([_act("r-old", old)])
+    assert [e for e in build_day(DAY, garden=g)["events"] if e["type"] == "garden"] == []
+    assert g.calls[0] == ("list_activity", {"scope": "mine", "kind": "all", "limit": 30})
+
+
+def test_花园_一分钟内复用结果_不是每天一次握手():
+    g = FakeGarden([])
+    for d in ("2026-08-18", "2026-08-17", "2026-08-16"):
+        build_day(d, garden=g)
+    assert len(g.calls) == 1
+
+
+def test_花园_缓存过期要重新问():
+    import day.aggregator as agg
+    g = FakeGarden([])
+    build_day(DAY, garden=g)
+    old = agg.GARDEN_CACHE_S
+    try:
+        agg.GARDEN_CACHE_S = -1
+        build_day(DAY, garden=g)
+    finally:
+        agg.GARDEN_CACHE_S = old
+    assert len(g.calls) == 2
+
+
+def test_花园_读不到只丢它自己_不带塌时间线():
+    led = CareLedger()
+    led.record(source="random", decision=SPEAK, now=T20)
+    for g in (FakeGarden(ok=False), FakeGarden(raw="不是 JSON")):
+        assert len(build_day(DAY, ledger=led, garden=g)["events"]) == 1
+
+
+def test_花园_读不到要留痕_不许静默(caplog):
+    import logging
+    with caplog.at_level(logging.ERROR, logger="day.aggregator"):
+        build_day(DAY, garden=FakeGarden(ok=False))
+    assert any("花园" in r.getMessage() for r in caplog.records)
+    assert any("花园动态读不到" in (r.exc_text or "") for r in caplog.records)
+
+
+def test_花园_失败的结果不进缓存():
+    g = FakeGarden(ok=False)
+    build_day(DAY, garden=g)
+    build_day(DAY, garden=g)
+    assert len(g.calls) == 2
+
+
+def test_花园_汇总数帖子():
+    at = datetime(2026, 8, 18, 10, 0, tzinfo=timezone.utc)
+    g = FakeGarden([_act("r1", at), _act("r2", at)])
+    assert build_day(DAY, garden=g)["summary"]["gardenPosts"] == 2

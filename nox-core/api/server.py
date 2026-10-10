@@ -2269,6 +2269,8 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
             activities=getattr(attention, "activity_log", None),
             # 共读：进度 + 他在页边写的话（没配 NOX_READING_URL 就是 None，如实标「没接」）
             reading=getattr(core, "reading_client", None),
+            # 花园：他发 / 回的帖（没配就是 None）
+            garden=getattr(core, "galatea_client", None),
         )
 
     @app.post("/api/nox/record/period")

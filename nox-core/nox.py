@@ -434,11 +434,11 @@ class Nox:
 
         # Galatea 花园：他的第一个社交世界（B 档全量参与，公开动作见 tools/galatea.py）
         if self.cfg.galatea_url and self.cfg.galatea_token:
-            galatea_tools.register_all(
-                self.loop,
-                McpClient(self.cfg.galatea_url, name="galatea", timeout=self.cfg.galatea_timeout,
-                          headers={"Authorization": f"Bearer {self.cfg.galatea_token}"}),
-            )
+            # 留一份给 His Day（day/aggregator.py 读他在花园发 / 回的帖）
+            self.galatea_client = McpClient(
+                self.cfg.galatea_url, name="galatea", timeout=self.cfg.galatea_timeout,
+                headers={"Authorization": f"Bearer {self.cfg.galatea_token}"})
+            galatea_tools.register_all(self.loop, self.galatea_client)
             logger.info("galatea 花园工具已注册")
         else:
             logger.info("未配置 NOX_GALATEA_MCP_URL/NOX_GALATEA_TOKEN，跳过 galatea 花园工具")

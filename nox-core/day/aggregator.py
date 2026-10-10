@@ -71,6 +71,10 @@ SOURCES = {
     # 2026-10-10：共读。进度只留「最后一次读」的时间，所以一本书只在它最后读的那天出现；
     # 他写的页边批注每条有自己的时间
     "reading": {"wired": True, "note": "co-reading /api/progress + /api/annotations?author=nox"},
+    # 2026-10-10：他在花园（Galatea 论坛）发的帖 / 回的帖。MCP 的 list_activity，scope=mine
+    "garden": {"wired": True, "note": "galatea list_activity（mine），一分钟内复用上一次的结果"},
+    # 2026-10-10：他打给她的电话（bridge calls 表）。**她自己拨的电话没有任何记录，所以不在这里**
+    "calls": {"wired": True, "note": "bridge /api/call/status，只有他打来的；她拨出去的没记"},
     # 2026-10-10：一起看片。bridge 的 watch_sessions，只取看够 10 分钟的（同共影那条线）
     "watching": {"wired": True, "note": "bridge /api/watch/history，看够 10 分钟才算一场"},
     # 2026-10-06 V5「他自己的时间」：一天 0~1 次，他自己去做的事（attention.db activity_log）
@@ -470,6 +474,94 @@ def _from_moments(items: list[dict], date_str: str) -> list[dict]:
     return out
 
 
+#: 花园活动结果的复用时间（秒）：His Day 一次并发拉 14 天，每天一次 MCP 握手太贵，也没必要
+GARDEN_CACHE_S = 60
+
+#: 他打来的电话：状态 → 给她看的话。ringing（还在响）不进，那还不是一件发生过的事
+_CALL_TITLE = {"ended": "打了通电话给你", "answered": "打了通电话给你",
+               "missed": "打了电话，你没接到", "declined": "打了电话，你没接"}
+
+
+def _from_calls(items: list[dict], date_str: str) -> list[dict]:
+    """他打给她的电话（bridge 的 `calls` 表）。接了的有时长，没接的也留一条 —— 他打过就是打过。
+
+    🔴 只有**他打来的**：她自己拨出去的那种通话 bridge 一行都没记，所以这里看不到，不编。
+    """
+    start, end = _day_bounds(date_str)
+    out = []
+    for i, c in enumerate(items or []):
+        status = c.get("status") or ""
+        if status not in _CALL_TITLE:
+            continue
+        try:
+            at = datetime.fromisoformat(str(c.get("created_at") or "").replace("Z", "+00:00"))
+        except (ValueError, TypeError):
+            continue
+        if at.tzinfo is None:
+            at = at.replace(tzinfo=timezone.utc)
+        if not (start <= at < end):
+            continue
+        out.append({
+            "id": f"call_{c.get('id') or i}",
+            "timestamp": at.astimezone(LOCAL_TZ).isoformat(),
+            "type": "call",
+            "source": "calls",
+            "title": _CALL_TITLE[status],
+            "summary": (c.get("reason") or "").strip()[:60],
+            "status": "completed" if status in ("ended", "answered") else "skipped",
+            "metadata": {"call_status": status, "duration_s": c.get("duration_s") or 0},
+            "related": {"callId": c.get("id")},
+        })
+    return out
+
+
+def _fetch_garden(garden: Any) -> list[dict]:
+    """花园里他自己的动态（`list_activity`，scope=mine）。结果挂在 client 对象上复用 `GARDEN_CACHE_S` 秒。
+
+    失败（ok=False / 不是 JSON）抛出去，由 build_day 记一笔并只丢这个源。"""
+    import json
+    import time
+
+    hit = getattr(garden, "_day_garden_cache", None)
+    if hit and time.monotonic() - hit[0] < GARDEN_CACHE_S:
+        return hit[1]
+    r = garden.call("list_activity", {"scope": "mine", "kind": "all", "limit": 30})
+    if not r.ok:
+        raise RuntimeError(f"花园动态读不到: {r.error}")
+    items = json.loads(r.text or "{}").get("items") or []
+    garden._day_garden_cache = (time.monotonic(), items)
+    return items
+
+
+def _from_garden(items: list[dict], date_str: str) -> list[dict]:
+    """他在花园发的帖 / 回的帖。标题是服务端给的英文（`Replied to 帖子名`），把帖子名拆出来。"""
+    start, end = _day_bounds(date_str)
+    out = []
+    for i, it in enumerate(items or []):
+        try:
+            at = datetime.fromisoformat(str(it.get("created_at") or "").replace("Z", "+00:00"))
+        except (ValueError, TypeError):
+            continue
+        if at.tzinfo is None:
+            at = at.replace(tzinfo=timezone.utc)
+        if not (start <= at < end):
+            continue
+        kind = it.get("kind") or ""
+        thread = re.sub(r"^(Replied to|Posted)\s+", "", str(it.get("title") or "")).strip()
+        out.append({
+            "id": f"garden_{it.get('id') or i}",
+            "timestamp": at.astimezone(LOCAL_TZ).isoformat(),
+            "type": "garden",
+            "source": "galatea",
+            "title": "在花园回了帖" if kind == "reply" else "在花园发了帖",
+            "summary": (it.get("excerpt") or "").strip()[:MOMENT_TEXT_MAX],
+            "status": "completed",
+            "metadata": {"kind": kind, "thread": thread},
+            "related": {"threadId": it.get("thread_id"), "itemId": it.get("id")},
+        })
+    return out
+
+
 def _from_reading(progress: Any, books: Any, notes: Any, date_str: str) -> list[dict]:
     """共读：她今天读到哪（进度）+ 他今天在页边写了什么（批注）。
 
@@ -619,6 +711,7 @@ def build_day(
     world: Any = None,
     activities: Any = None,
     reading: Any = None,
+    garden: Any = None,
     now: datetime | None = None,
 ) -> dict[str, Any]:
     """拉多源 → 归一 → 过滤排序 → `DayEvent[]`。
@@ -674,6 +767,13 @@ def build_day(
             logger.exception("聚合他的朋友圈失败，跳过这个源")
 
         try:
+            r = bridge.get("/api/call/status")
+            if r.ok:
+                events += _from_calls((r.data or {}).get("calls") or [], date_str)
+        except Exception:  # noqa: BLE001
+            logger.exception("聚合通话失败，跳过这个源")
+
+        try:
             r = bridge.get("/api/watch/history", {"limit": 30})
             if r.ok:
                 events += _from_watching((r.data or {}).get("items") or [], date_str)
@@ -701,6 +801,12 @@ def build_day(
             )
         except Exception:  # noqa: BLE001
             logger.exception("聚合共读失败，跳过这个源")
+
+    if garden is not None:
+        try:
+            events += _from_garden(_fetch_garden(garden), date_str)
+        except Exception:  # noqa: BLE001
+            logger.exception("聚合花园动态失败，跳过这个源")
 
     if world is not None:
         try:
@@ -769,4 +875,6 @@ def _summarize(events: list[dict], ledger: Any, date_str: str) -> dict[str, Any]
         "moviesWatched": sum(1 for e in events if e["type"] == "movie"),
         "momentsPosted": sum(1 for e in events if e["type"] == "moment"),
         "readingEvents": sum(1 for e in events if e["type"] == "reading"),
+        "gardenPosts": sum(1 for e in events if e["type"] == "garden"),
+        "callsMade": sum(1 for e in events if e["type"] == "call"),
     }
