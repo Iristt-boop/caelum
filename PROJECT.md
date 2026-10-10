@@ -1270,12 +1270,14 @@ npm run build
 ```powershell
 $k = "C:\Users\14372\.ssh\id_ed25519"
 $h = "root@192.168.1.52"
+# ⚠️ N150 是非特权容器，Windows 打的 tar 带 uid 197609，解包必须 --no-same-owner，
+# 否则 tar 退出码非 0、&& 链在半路停下（10-10 实测：dist-new 解好了但没换上去）
 
 # 前端打包上传
 cd "D:\claude-code\nox-app\frontend"
 tar -czf "$env:TEMP\dist.tgz" dist
 scp -i $k "$env:TEMP\dist.tgz" "${h}:/root/frontend/dist.tgz"
-ssh -i $k $h "cd /root/frontend && rm -rf dist-new && mkdir dist-new && tar xzf dist.tgz -C dist-new --strip-components=1 && rm -rf dist-old && mv dist dist-old && mv dist-new dist && rm dist.tgz"
+ssh -i $k $h "cd /root/frontend && rm -rf dist-new && mkdir dist-new && tar xzf dist.tgz --no-same-owner -C dist-new --strip-components=1 && rm -rf dist-old && mv dist dist-old && mv dist-new dist && rm dist.tgz"
 ```
 
 ### Nox Core 部署（**逐文件传，线上不是 git 仓库**）
