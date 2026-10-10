@@ -15,6 +15,8 @@ from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol
 
+from agent.contracts import OutputContract
+
 # loop 能看到的停止原因。各家的原始值由 adapter 映射到这几个。
 StopReason = Literal[
     "end_turn",    # 正常答完
@@ -135,6 +137,10 @@ class ToolSpec:
     #: 才设 True（现在是瑞幸那条，麦当劳等 3.3 照抄）。
     #: 不是"默认拦、除非证明安全"，而是"默认放行、除非有更好的路可走"。
     gated: bool = False
+
+    #: 交互契约（2026-10-10，见 agent/contracts.py）：这个工具被**写成文字**时长什么样、
+    #: 能不能还原成真调用。纯代码侧的数据，不发给模型、不改工具签名
+    output_contract: OutputContract | None = None
 
     @property
     def needs_gate(self) -> bool:
@@ -473,8 +479,13 @@ class MoodTagFilter:
     #: 写成文字的表情标记前缀（见 feed 里那段）
     _MEME_LABEL = "[表情包"
 
-    def __init__(self, strip_stage: bool = False) -> None:
+    def __init__(self, strip_stage: bool = False, contract_markers: tuple[str, ...] = ()) -> None:
         self._buf = ""        # '[' 开头的缓冲
+        #: 交互契约的 marker（agent/contracts.py，由 loop 从注册表取）：**行首**出现就整行吞 ——
+        #: 和收尾的 contracts.apply 同一个判据，屏幕上看见的和落库的才对得上。
+        #: `[表情包` 是 10-10 早上那条的写死前缀，契约注册前的老路，留着兜底
+        self._contract_markers = tuple(contract_markers)
+        self._buf_at_line_start = False
         self._line = None     # 行首 mood: 疑似行（None = 不在行缓冲）
         self._line_start = True
         self._meme_tags = frozenset(MEME_TAGS)
@@ -530,7 +541,10 @@ class MoodTagFilter:
                         continue
                 # `[表情包] 举爪开心`：他把表情写成了文字（2026-10-10 她截图）。认出标记就整行吞；
                 # 收尾时 nox.py 的 extract_text_tags 会从完整正文里抽出名字转成真表情
-                if self._buf.startswith(self._MEME_LABEL):
+                if self._buf.startswith(self._MEME_LABEL) or (
+                    self._buf_at_line_start
+                    and any(self._buf.startswith(m) for m in self._contract_markers)
+                ):
                     self._buf = ""
                     self._eat_line = ch != "\n"
                     continue
@@ -566,6 +580,7 @@ class MoodTagFilter:
 
             if ch == "[":
                 self._buf = ch
+                self._buf_at_line_start = self._line_start
                 self._line_start = False
                 continue
 

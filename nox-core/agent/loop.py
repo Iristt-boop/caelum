@@ -33,11 +33,13 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from typing import Any
 
+from agent import contracts as contracts_mod
 from agent import guard
 from tools import context as tool_context
 from agent.llm import (
@@ -191,6 +193,7 @@ class AgentLoop:
             user_text, ctx, system=system, dynamic_system=dynamic_system,
             history=history, images=images, adapter=adapter, depth=depth,
         )
+        self._apply_contracts(result, ctx, base)
         result.attachments = ctx.attachments
         result.dirty_providers = sorted(ctx.dirty)
         log_turn(
@@ -347,6 +350,7 @@ class AgentLoop:
                 if ev.type == "done":
                     result = getattr(ev, "result", None)
                     if result is not None:
+                        self._apply_contracts(result, ctx, base)
                         result.attachments = ctx.attachments
                         result.dirty_providers = sorted(ctx.dirty)
                         finished = True
@@ -401,7 +405,10 @@ class AgentLoop:
         # （[whining] [softly] 等）必须原样保留送到 TTS，不能被误伤。
         #: 舞台标签（[softly] [SKIP] [intimacy …]）只在文字聊天里吞 —— `split` 关着就是
         #: 语音模式，那边的语气标签是给 TTS 的（2026-09-29）
-        mood_filter = MoodTagFilter(strip_stage=split)
+        mood_filter = MoodTagFilter(
+            strip_stage=split,
+            contract_markers=contracts_mod.all_markers(self._contracts()) if _contracts_on() else (),
+        )
         # 语音模式关掉分段：||| 会被 TTS 当成正文念出来
         splitter = SegmentSplitter() if split else None
 
@@ -593,6 +600,64 @@ class AgentLoop:
 
         tracker.record(outcome, call.name)
         return outcome
+
+    def _contracts(self) -> dict[str, contracts_mod.OutputContract]:
+        """这一轮注册的工具里，声明了交互契约的那些（工具名 → 契约）。"""
+        return {
+            name: t.spec.output_contract
+            for name, t in self.tools.items()
+            if t.spec.output_contract is not None
+        }
+
+    def _apply_contracts(
+        self, result: LoopResult, ctx: tool_context.ToolContext, history_len: int,
+    ) -> None:
+        """交互契约的统一出口（agent/contracts.py）：认出写成文字的工具调用，剥掉；该补的经 `_execute` 补调。
+
+        放在 loop 而不是 nox.py：只有这里同时知道「这一轮允许哪些工具」「真调了哪些」，
+        也只有这里有执行工具的唯一入口 —— 补调和正常调用过同一道闸门、同一个上限。
+        """
+        if not _contracts_on() or not result.text:
+            return
+        table = self._contracts()
+        if not table:
+            return
+        called = {n.rstrip("✗") for n in _tools_used(result.messages, history_len)}
+        cleaned, artifacts = contracts_mod.apply(
+            result.text, contracts=table, allowed=set(self.tools), called=called,
+        )
+        tracker = guard.FailureTracker(limit=self.failure_limit)
+        for i, art in enumerate(artifacts):
+            preview = art.text.replace("\n", " ⏎ ")[:80]
+            if art.action == "rescue":
+                outcome = self._execute(
+                    ToolCall(id=f"contract-{i}", name=art.tool, arguments=art.arguments or {}),
+                    tracker, ctx,
+                )
+                if outcome.failed or outcome.result.is_error:
+                    logger.warning("契约：他把 %s 写成了文字，补调失败（%s）—— 正文已剥：%s",
+                                   art.tool, str(outcome.result.content)[:120], preview)
+                else:
+                    logger.info("契约：他把 %s 写成了文字、没真调，已替他补调：%s", art.tool, preview)
+            elif art.action == "already_called":
+                logger.info("契约：%s 已真调过，正文里那段重复描述剥掉：%s", art.tool, preview)
+            elif art.action == "unparsed":
+                logger.warning("契约：他把 %s 写成了文字、没真调，还原不出参数 —— 只剥不补：%s",
+                               art.tool, preview)
+            else:
+                logger.info("契约：正文像 %s 的伪输出，但这一轮没有这个工具 —— 原样留着：%s",
+                            art.tool, preview)
+        if cleaned != result.text:
+            result.text = cleaned
+            for m in reversed(result.messages):
+                if m.role == "assistant" and m.text:
+                    m.text = cleaned
+                    break
+
+
+def _contracts_on() -> bool:
+    """`NOX_CONTRACTS=off` 退回契约之前的老路（每次现读，改环境变量重启即生效）。"""
+    return os.getenv("NOX_CONTRACTS", "on").strip().lower() not in ("off", "0", "false")
 
 
 def _arg_preview(arguments: dict, limit: int = 300) -> dict:

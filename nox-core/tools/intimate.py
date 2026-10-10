@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 import re
 
+from agent.contracts import OutputContract
 from agent.llm import MEME_TAGS, ToolSpec
 from tools import context
 from tools.bridge_client import BridgeClient
@@ -60,6 +61,56 @@ def extract_text_tags(text: str | None) -> tuple[str | None, list[str]]:
     return out.strip(), [t for _, t in sorted(found)]
 
 
+def parse_meme_artifact(block: str) -> dict | None:
+    """契约解析：`[表情包] 举爪开心` → {"tag": "举爪开心"}；名单外的名字还原不了。"""
+    m = _MEME_LABELED_RE.search(block)
+    return {"tag": m.group(1)} if m else None
+
+
+_VOICE_HEAD_RE = re.compile(r"^\[语音[^\]\n]*\]\s*(.*)$")
+_VOICE_ZH_RE = re.compile(r"^\[中文对照[^\]\n]*\]\s*(.*)$")
+_ASCII_WORD_RE = re.compile(r"[A-Za-z][A-Za-z\- ]*[A-Za-z]")
+
+
+def parse_voice_artifact(block: str) -> dict | None:
+    """契约解析：他把 send_voice_message 的参数写成了正文（10-10 17:29 第一条）——
+
+        [语音条 softly] Okay okay, no more teasing…
+        [中文对照] 好啦好啦，不逗你了…
+
+    → {"en": "[softly] Okay okay…", "zh": "好啦好啦…"}。
+    方括号里的英文词当语气标签放回 en 前面（TTS 认它）；中文的「轻轻地」丢掉。
+    **英文那段不够格就还原不了**：语音只许英 / 西 / 日（工具描述的规矩），
+    `[语音，轻轻地] 中文` 这种只剥不补 —— 替他发一条中文语音是在替他违规。
+    """
+    en_parts: list[str] = []
+    zh_parts: list[str] = []
+    for line in block.split("\n"):
+        s = line.strip()
+        if not s:
+            continue
+        z = _VOICE_ZH_RE.match(s)
+        if z:
+            zh_parts.append(z.group(1).strip())
+            continue
+        h = _VOICE_HEAD_RE.match(s)
+        if h:
+            inner = s[1:s.index("]")]
+            tags = _ASCII_WORD_RE.findall(inner)
+            body = h.group(1).strip()
+            en_parts.append((f"[{tags[0].strip()}] " if tags else "") + body)
+    en = " ".join(p for p in en_parts if p).strip()
+    latin = sum(c.isascii() and c.isalpha() for c in en)
+    cjk = sum("一" <= c <= "鿿" for c in en)
+    if latin < 8 or cjk > latin // 4:
+        return None
+    args: dict = {"en": en}
+    zh = " ".join(p for p in zh_parts if p).strip()
+    if zh:
+        args["zh"] = zh
+    return args
+
+
 # ------------------------------------------------------------------ 表情包
 
 MEME_SPEC = ToolSpec(
@@ -101,6 +152,11 @@ MEME_SPEC = ToolSpec(
         },
         "required": ["tag"],
     },
+    output_contract=OutputContract(
+        markers=("[表情包",),
+        parse=parse_meme_artifact,
+        rescue=True,
+    ),
 )
 
 
@@ -126,6 +182,12 @@ VOICE_SPEC = ToolSpec(
         },
         "required": ["en"],
     },
+    #: 10-10：`[语音条 softly] …` / `[中文对照] …` / 电话里学出来的 `[语音，轻轻地] …`
+    output_contract=OutputContract(
+        markers=("[语音", "[中文对照"),
+        parse=parse_voice_artifact,
+        rescue=True,
+    ),
 )
 
 

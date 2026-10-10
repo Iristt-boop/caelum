@@ -1,0 +1,128 @@
+"""Interaction Contract（交互契约）—— 工具伪输出的统一出口（2026-10-10，配置层 P0.5）。
+
+他偶尔不调工具，而是把工具的参数直接写进正文：
+
+    [语音条 softly] Okay okay, no more teasing…
+    [中文对照] 好啦好啦，不逗你了…
+
+这一条进了会话历史，下一轮他就照着写 —— 10-10 一条传成 9 条，还传进了电话。
+同一类事故此前补过三次（`[开心]` / `[!send_meme]` / `[表情包]`），每次一块补丁。
+
+这里把「伪输出长什么样」做成**工具自己声明的数据**（`ToolSpec.output_contract`），
+出口只有一个：loop 收尾时 `apply()`。新增工具只要注册契约，这里一行不改。
+
+🔴 触发要三条同时成立（糖糖 10-10 定的，防误伤）：
+  1. 正文里有**行首**的契约 marker —— 是结构，不是任意位置的关键词
+  2. 这一轮的 loop 允许这个工具（注册了它）
+  3. 这一轮模型**没有**真调它
+只扫他的输出，从不扫她的消息：她打 `[笑哭]` 永远只是她的话。
+
+契约**不发给模型**（adapter 只序列化 name / description / parameters），
+所以加契约不改工具签名、不冷缓存。
+"""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass
+from typing import Any, Callable
+
+#: 解析失败返回 None —— 那就只剥不补
+Parser = Callable[[str], "dict[str, Any] | None"]
+
+
+@dataclass(frozen=True)
+class OutputContract:
+    """一个工具的「表现协议」：它被写成文字时长什么样、能不能还原成真调用。"""
+
+    #: 伪输出的行首标记。只认方括号开头的结构，不认裸词（「语音消息」这种会误伤正常句子）
+    markers: tuple[str, ...]
+    #: 一整块伪输出 → 工具参数。None = 认得出但还原不了，只剥
+    parse: Parser | None = None
+    #: 能还原时要不要替他补调。补调走 loop 唯一的 `_execute`（闸门 / 上限 / 校验全复用）
+    rescue: bool = False
+
+
+@dataclass
+class Artifact:
+    """正文里认出的一块伪输出，以及怎么处理它。"""
+
+    tool: str
+    text: str
+    arguments: dict[str, Any] | None
+    #: rescue          三条成立且解析得出 → 补调
+    #: already_called  这一轮已经真调过 → 正文里那段是重复描述，只剥
+    #: unparsed        认得出但解析不出 / 契约不许补 → 只剥
+    #: not_allowed     这一轮没有这个工具 → 不算伪输出，原样留着
+    action: str
+
+
+def _index(contracts: dict[str, OutputContract]) -> list[tuple[str, str]]:
+    """(marker, 工具名)，长的在前 —— 短 marker 是长 marker 前缀时别被先咬走。"""
+    pairs = [(m, name) for name, c in contracts.items() for m in c.markers]
+    return sorted(pairs, key=lambda p: len(p[0]), reverse=True)
+
+
+def all_markers(contracts: dict[str, OutputContract]) -> tuple[str, ...]:
+    """给流式过滤器用：所有 marker，长的在前。"""
+    return tuple(m for m, _ in _index(contracts))
+
+
+def _match(line: str, index: list[tuple[str, str]]) -> str | None:
+    s = line.lstrip()
+    for marker, tool in index:
+        if s.startswith(marker):
+            return tool
+    return None
+
+
+def apply(
+    text: str | None,
+    *,
+    contracts: dict[str, OutputContract],
+    allowed: set[str],
+    called: set[str],
+) -> tuple[str | None, list[Artifact]]:
+    """扫一遍他的完整回复，返回 (剥干净的正文, 认出的伪输出)。
+
+    一块伪输出 = 同一个工具的 marker 行，加上它们之间的空行
+    （语音条那种「英文一行、空一行、中文对照一行」算一块）。
+    """
+    if not text or not contracts:
+        return text, []
+    index = _index(contracts)
+    lines = text.split("\n")
+    keep: list[str] = []
+    artifacts: list[Artifact] = []
+    i = 0
+    while i < len(lines):
+        tool = _match(lines[i], index)
+        if tool is None:
+            keep.append(lines[i])
+            i += 1
+            continue
+        j = i + 1
+        while j < len(lines) and (not lines[j].strip() or _match(lines[j], index) == tool):
+            j += 1
+        # 块尾的空行不算块里的（留给正文当段落间隔）
+        while j - 1 > i and not lines[j - 1].strip():
+            j -= 1
+        block = "\n".join(lines[i:j])
+        contract = contracts[tool]
+        if tool not in allowed:
+            artifacts.append(Artifact(tool, block, None, "not_allowed"))
+            keep.extend(lines[i:j])
+        else:
+            args = contract.parse(block) if contract.parse else None
+            if tool in called:
+                action = "already_called"
+            elif args is not None and contract.rescue:
+                action = "rescue"
+            else:
+                action = "unparsed"
+            artifacts.append(Artifact(tool, block, args, action))
+        i = j
+    if not any(a.action != "not_allowed" for a in artifacts):
+        return text, artifacts
+    out = re.sub(r"\n{3,}", "\n\n", "\n".join(keep)).strip()
+    return out, artifacts
