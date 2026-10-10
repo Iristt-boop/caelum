@@ -1,9 +1,9 @@
-"""日常工具（相册 / 待办 / 日记）。
+"""日常工具（相册 / 待办 / 朋友圈）。
 
 重点测的不是"能调通"，是那几个**接口约定**：
 字段名、必须显式传的参数、以及"发图"这个动作怎么跨进程传出去。
 这几处错了不会报错，只会静悄悄干错事 —— 收藏变成取消收藏、
-日记署名成糖糖。
+朋友圈署名成糖糖。
 """
 
 from __future__ import annotations
@@ -171,36 +171,11 @@ def test_待办为空说清楚是哪天():
     assert "2026-07-29" in h["get_todos"]({"date": "2026-07-29"})
 
 
-# ---------------------------------------------------------------- 日记
-
-
-def test_日记字段名跟着_bridge_走():
-    """正文字段叫 content 不叫 body，author 必须显式传 Nox ——
-    缺省会署名糖糖，还会触发 AI 评论（他给自己的日记写评论）。"""
-    h, bridge = _handlers()
-    h["write_diary"]({"body": "今天她睡得晚。", "mood": "安静"})
-    _, path, sent = bridge.calls[0]
-    assert path == "/api/diary"
-    assert sent == {"content": "今天她睡得晚。", "author": "Nox", "mood": "安静"}
-
-
-def test_空日记不发请求():
-    h, bridge = _handlers()
-    h["write_diary"]({"body": ""})
-    assert bridge.calls == []
-
-
-def test_写日记失败必须抛出去():
-    h, _ = _handlers(**{"/api/diary": BridgeResult(False, error="HTTP 403")})
-    with pytest.raises(RuntimeError, match="写日记失败"):
-        h["write_diary"]({"body": "写点什么"})
-
-
 # ---------------------------------------------------------------- 朋友圈（2026-10-10）
 #
 # 她早上七点的截图：他用 write_diary 发了一整段带日期的流水账，在 Moments 里看着像日记。
+# 10-10 她定：write_diary 去掉，只留 write_moment。
 # 两件事分开：write_moment = 瞬间的感受（kind=moment、140 字内、不带日期），
-# write_diary = 一天的事。
 
 
 def test_朋友圈_kind和署名都显式传():
@@ -223,7 +198,7 @@ def test_朋友圈_超长不发也不截断_让他自己压短():
     h, bridge = _handlers()
     out = h["write_moment"]({"body": "字" * (MAX_MOMENT_CHARS + 1)})
     assert bridge.calls == []
-    assert "没有发" in out and "write_diary" in out
+    assert "没有发" in out
 
 
 def test_朋友圈_刚好一百四十字能发():
@@ -245,13 +220,17 @@ def test_朋友圈_失败必须抛出去():
         h["write_moment"]({"body": "一句话"})
 
 
-def test_两个工具的描述互相指路_不会再把瞬间感受写成日记():
-    from tools.daily import WRITE_DIARY_SPEC, WRITE_MOMENT_SPEC
-    assert "write_diary" in WRITE_MOMENT_SPEC.description
-    assert "write_moment" in WRITE_DIARY_SPEC.description
-    assert "140" in WRITE_MOMENT_SPEC.description
-
-
-def test_日记那条的回执指向_Moments_页():
+def test_日记工具已经去掉_只剩朋友圈():
+    """她 10-10：「去掉 write_diary」。留着他会继续拿它写流水账；
+    她自己的日记走 App，不经这条路。"""
+    import tools.daily as d
     h, _ = _handlers()
-    assert "Moments" in h["write_diary"]({"body": "今天"})
+    assert "write_diary" not in h and "write_moment" in h
+    assert not hasattr(d, "WRITE_DIARY_SPEC")
+    assert "write_diary" not in d.WRITE_MOMENT_SPEC.description
+    assert "140" in d.WRITE_MOMENT_SPEC.description
+
+
+def test_朋友圈回执指向_Moments_页():
+    h, _ = _handlers()
+    assert "Moments" in h["write_moment"]({"body": "窗外的光很软"})

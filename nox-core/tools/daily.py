@@ -1,11 +1,11 @@
-"""日常工具：相册、待办、日记。
+"""日常工具：相册、待办、朋友圈。
 
 数据都在 bridge 的 SQLite 里，所以全部走 bridge 的 REST 接口 ——
 Core 是独立进程，直接读那个 db 文件会和 bridge 抢锁。
 
 失败一律 raise，让 loop 按「工具失败」原样回传（见 guard.py）。
 在这里 try/except 转成一句"失败了"，正是会让他编造的那个错误 ——
-他会说"日记写好了"，而实际什么都没写。
+他会说"发好了"，而实际什么都没发。
 """
 
 from __future__ import annotations
@@ -160,31 +160,7 @@ GET_TODOS_SPEC = ToolSpec(
 )
 
 
-# ------------------------------------------------------------------ 日记
-
-WRITE_DIARY_SPEC = ToolSpec(
-    side_effect="write",
-    name="write_diary",
-    description=(
-        "写**你自己**的日记 —— 把**这一天发生的事**记下来：做了什么、聊了什么、"
-        "她怎么样、你怎么想。用第一人称，不是替她写、不要用她的口吻。"
-        "她在 App 的 Moments 页能读到（带「日记」样式）。\n"
-        "**只在她明说让你写日记、或一天快结束要总结时用。**"
-        "一时的想法 / 心情 / 看到听到什么的感受，是 write_moment 的事，不是日记。\n"
-        "注意：这跟 archive_memory 不是一回事 —— 那个是往长期记忆里归档，"
-        "给你自己用的；日记是**写给她看的**。"
-        "内容里带上日期（先用 get_current_time）。"
-    ),
-    parameters={
-        "type": "object",
-        "properties": {
-            "body": {"type": "string", "description": "日记正文，第一人称"},
-            "mood": {"type": "string", "description": "当时的心情，一两个词"},
-        },
-        "required": ["body"],
-    },
-)
-
+# ------------------------------------------------------------------ 朋友圈
 
 #: 朋友圈的字数上限，跟 `moments/writer.py` 的 MAX_CHARS 是同一把尺子（tests/test_daily.py 守着两边相等）。
 #: 超了不截断（截断是静默篡改内容）：退回去让他自己压短重发
@@ -197,7 +173,7 @@ WRITE_MOMENT_SPEC = ToolSpec(
         "发一条朋友圈（Moments）—— **一个瞬间的想法或感受**：此刻心里冒出来的一句话、"
         "看到听到什么的反应、一种说不清的情绪。一两句话，**不超过 140 字**。\n"
         "它是碎片，不是总结：不写日期、不按「今天先…后来…」排流水账、不复述聊过的事。"
-        "那种「记录这一天」的东西是 write_diary 的事。\n"
+        "不是记录这一天的流水账。\n"
         "是你自己房间里写下的一块碎片，不是对着她讲话 —— 不写成问候、叮嘱、提问。"
         "她在 App 的 Moments 页能看到，也可以在下面评论。\n"
         "想发才发；不是每次聊完都要发一条，也别连着发。"
@@ -391,30 +367,13 @@ def make_handlers(bridge: BridgeClient) -> dict[str, object]:
         undone = sum(1 for row in rows if not row.get("done"))
         return "\n".join(lines) + f"\n\n共 {len(rows)} 条，{undone} 条没做。"
 
-    def write_diary(args: dict) -> str:
-        body = str(args.get("body", "")).strip()
-        if not body:
-            return "日记内容是空的，没有写。"
-
-        # 字段名跟着 bridge 走：正文叫 content（落库时进 body 列）。
-        # author 必须显式传 Nox —— 缺省是糖糖，而且缺省那条路会触发
-        # AI 评论，等于让他给自己的日记写评论
-        payload = {"content": body, "author": "Nox"}
-        if args.get("mood"):
-            payload["mood"] = str(args["mood"])
-
-        r = bridge.post("/api/diary", payload)
-        if not r.ok:
-            raise RuntimeError(f"写日记失败: {r.error}")
-        return "日记写好了，她在 Moments 页能看到。"
-
     def write_moment(args: dict) -> str:
         body = str(args.get("body", "")).strip()
         if not body:
             return "内容是空的，没有发。"
         if len(body) > MAX_MOMENT_CHARS:
             return (f"这条 {len(body)} 个字，朋友圈上限 {MAX_MOMENT_CHARS}，没有发。"
-                    "压成一两句只留当下那个感受，再发一次；要记一整天的事用 write_diary。")
+                    "压成一两句只留当下那个感受，再发一次。")
 
         # kind=moment 是他自发帖的那一类（bridge 白名单只认小写 moment）；
         # author 必须显式传 Nox —— 缺省是糖糖，那条路会替他配 AI 评论，自问自答
@@ -434,13 +393,12 @@ def make_handlers(bridge: BridgeClient) -> dict[str, object]:
         "complete_todo": complete_todo,
         "delete_todo": delete_todo,
         "get_todos": get_todos,
-        "write_diary": write_diary,
         "write_moment": write_moment,
     }
 
 
 def register_all(loop, bridge: BridgeClient) -> None:
-    """注册七个日常工具。顺序固定 —— 工具定义是缓存前缀的一部分。
+    """注册这几个日常工具。顺序固定 —— 工具定义是缓存前缀的一部分。
 
     `complete_todo` 2026-08-18 从 `tools/todo.py`（写 GitHub 的那套）
     搬到这里，改成走 bridge —— GitHub todo.md 那天退役为只读存档。
@@ -448,6 +406,5 @@ def register_all(loop, bridge: BridgeClient) -> None:
     """
     handlers = make_handlers(bridge)
     for spec in (SEND_IMAGE_SPEC, FAVORITE_SPEC, ADD_TODO_SPEC,
-                 COMPLETE_TODO_SPEC, DELETE_TODO_SPEC, GET_TODOS_SPEC, WRITE_DIARY_SPEC,
-                 WRITE_MOMENT_SPEC):
+                 COMPLETE_TODO_SPEC, DELETE_TODO_SPEC, GET_TODOS_SPEC, WRITE_MOMENT_SPEC):
         loop.register(spec, handlers[spec.name])  # type: ignore[arg-type]
