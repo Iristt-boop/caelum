@@ -124,7 +124,8 @@ def compare(store: SettingsStore, cfg: Any, env: Mapping[str, str] | None = None
     check("providers.多出的种子行", [], extra)
 
     # ---- models ----
-    by_short = {m["short_name"]: m for m in store.models() if m["short_name"]}
+    # 只对种子行：她加的型号（P2d 起，`u-` 短名）本来就不在代码清单里，不是不一致
+    by_short = {m["short_name"]: m for m in store.models() if m["short_name"] and m["origin"] == "seed"}
     live_models = getattr(cfg, "models", None) or {}
     price_table = getattr(cfg, "PRICING_CNY", None) or {}
     for short, c in live_models.items():

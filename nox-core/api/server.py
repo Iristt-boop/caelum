@@ -376,6 +376,47 @@ class ConfigTestRequest(BaseModel):
     vision: bool | None = None
 
 
+class ProviderCreateRequest(BaseModel):
+    """配置层 P2d：加一家。key 只收不回；models 至少一个（保存前拿它真测）"""
+    id: str
+    label: str = ""
+    protocol: str = "openai_compat"
+    base_url: str
+    cache_style: str = "auto_prefix"
+    key: str
+    models: list[str]
+    note: str = ""
+
+
+class ProviderPatchRequest(BaseModel):
+    label: str | None = None
+    note: str | None = None
+    base_url: str | None = None
+    cache_style: str | None = None
+    key: str | None = None
+
+
+class FetchModelsRequest(BaseModel):
+    """拉型号（不保存）：已有的厂商给 provider_id；新厂商给协议 + 地址 + key"""
+    provider_id: str | None = None
+    protocol: str = "openai_compat"
+    base_url: str = ""
+    key: str = ""
+
+
+class ModelsAddRequest(BaseModel):
+    models: list[str]
+
+
+class ModelPatchRequest(BaseModel):
+    label: str | None = None
+    capabilities: list[str] | None = None
+    cache_style: str | None = None
+    cache_ttl: str | None = None
+    enabled: bool | None = None
+    price: dict | None = None
+
+
 class ConfigImportRequest(BaseModel):
     """导入迁移包：文件内容 base64 + 口令。预览和真导入共用"""
     file_b64: str
@@ -2816,6 +2857,27 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
              **({"price": pricing_cny[c.model]} if c.model in pricing_cny else {})}
             for k, c in (getattr(cfg, "models", {}) or {}).items()
         ]
+        # 她在 OS 里加的型号（配置层 P2d，`u-` 短名）也进清单 —— 加了就能在这页选到
+        user_providers: dict[str, dict] = {}
+        store = getattr(core, "profiles", None)
+        if store is not None:
+            try:
+                keys = getattr(core, "config_keys", None)
+                front = keys.configured() if keys is not None else set()
+                provs = {pp["id"]: pp for pp in store.providers()}
+                for m in store.models():
+                    if m["origin"] == "seed" or not m["enabled"] or not (m["short_name"] or "").startswith("u-"):
+                        continue
+                    pp = provs.get(m["provider_id"]) or {}
+                    choices.append({"key": m["short_name"], "model": m["model_name"], "backend": m["provider_id"],
+                                    "label": m["label"] or m["model_name"], "user": True,
+                                    **({"price": m["price"]} if m.get("price") else {})})
+                    if m["provider_id"] not in BACKENDS:
+                        user_providers[m["provider_id"]] = {
+                            "label": pp.get("label") or m["provider_id"],
+                            "configured": m["provider_id"] in front}
+            except Exception:  # noqa: BLE001 —— 读不到她加的也别让整页挂掉，但要留痕
+                logger.warning("Models 清单读不出她加的型号", exc_info=True)
         # 服务商 = 清单里用到的每一家 + 现在主线 / 杂活用的那家（09-29 糖糖：「每加入一个模型就
         # 自动更新」—— 原来写死 deepseek / openrouter 两家，切到 GLM 之后 zhipu 根本不在这张表里，
         # 前端也就不知道它配没配 key）。加模型、加一家都不用再改这里
@@ -2823,6 +2885,9 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
         used += [_backend_of(x) for x in (primary, getattr(cfg, "utility", None)) if x is not None]
         providers = {}
         for name in dict.fromkeys(b for b in used if b):
+            if name in user_providers:
+                providers[name] = user_providers[name]
+                continue
             b = BACKENDS.get(name)
             providers[name] = {"label": PROVIDER_LABELS.get(name, name),
                                "configured": bool(b and b.api_key)}
@@ -2865,7 +2930,8 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
     def nox_set_chat_model(req: ChatModelRequest) -> dict:
         """她在 Models 页点了一个模型。认不得的名字 400；存不上 503 —— 不能回 ok 让她以为切好了。"""
         key = req.key.strip()
-        if key and key not in (getattr(core.cfg, "models", None) or {}):
+        if (key and key not in (getattr(core.cfg, "models", None) or {})
+                and getattr(core, "user_model", lambda k: None)(key) is None):
             raise HTTPException(status_code=400, detail=f"清单里没有这个模型：{key}")
         if not core.set_chat_model(key):
             raise HTTPException(status_code=503, detail="聊天模型没存上（状态库没起来？），看日志")
@@ -3000,6 +3066,79 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail=str(exc)) from None
         logger.info("配置审计：她真测了 %s %s", req.provider_id, req.model_name or "（整家）")
         return {"ok": True, "results": [r.as_dict() for r in results]}
+
+    # ---- 配置层 P2d：加一家 / 改一家 / 拉型号 / 加型号 / 改型号 —— 会影响请求的改动先真测通过才保存 ----
+
+    def _editor():
+        from settings_store.edit import Editor
+        return Editor(_config_store(), _config_keys())
+
+    def _edit(fn):
+        """统一把 EditError 翻成 HTTP（带上没通过的真测结论，给她看为什么）；改完让已经建好的线路重套档案。"""
+        from settings_store import profile
+        from settings_store.edit import EditError
+        try:
+            out = fn()
+        except EditError as exc:
+            raise HTTPException(status_code=exc.status, detail={
+                "error": str(exc), "results": [r.as_dict() for r in exc.results]}) from None
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from None
+        profile.refresh(core)
+        return {"ok": True, **out}
+
+    @app.get("/api/nox/config/presets")
+    def nox_config_presets() -> dict:
+        """添加厂商的预设（智谱 /v4 这类坑写在预设里）；`exists` = 这个地址已经有一家了。"""
+        from settings_store.edit import CACHE_STYLES, CAPABILITIES, presets
+        return {"ok": True, "presets": presets(_config_store()),
+                "cache_styles": list(CACHE_STYLES), "capabilities": list(CAPABILITIES)}
+
+    @app.post("/api/nox/config/fetch-models")
+    def nox_config_fetch_models(req: FetchModelsRequest) -> dict:
+        """拉型号列表给她挑（**不保存**）。"""
+        _config_limit("test", 20)
+        return _edit(lambda: {"models": _editor().fetch_models(
+            provider_id=req.provider_id, protocol=req.protocol, base_url=req.base_url, key=req.key)})
+
+    @app.post("/api/nox/config/providers")
+    def nox_config_add_provider(req: ProviderCreateRequest) -> dict:
+        """加一家：挑的每个型号真测通过才保存（厂商 + 型号 + key 一起）。"""
+        _config_limit("test", 20)
+        return _edit(lambda: _editor().add_provider(
+            id=req.id, label=req.label, protocol=req.protocol, base_url=req.base_url,
+            cache_style=req.cache_style, key=req.key, models=req.models, note=req.note))
+
+    @app.patch("/api/nox/config/providers/{pid}")
+    def nox_config_patch_provider(pid: str, req: ProviderPatchRequest) -> dict:
+        """改她加的那一家。改地址必须重填 key；改地址 / key / 缓存打法要先真测通过。代码自带的 409。"""
+        _config_limit("test", 20)
+        return _edit(lambda: _editor().patch_provider(
+            pid, label=req.label, note=req.note, base_url=req.base_url, cache_style=req.cache_style, key=req.key))
+
+    @app.delete("/api/nox/config/providers/{pid}")
+    def nox_config_delete_provider(pid: str) -> dict:
+        _config_limit("key", 30)
+        return _edit(lambda: _editor().delete_provider(pid))
+
+    @app.post("/api/nox/config/providers/{pid}/models")
+    def nox_config_add_models(pid: str, req: ModelsAddRequest) -> dict:
+        """在一家名下加型号（代码自带的厂商也行），每个都真测通过才保存。"""
+        _config_limit("test", 20)
+        return _edit(lambda: _editor().add_models(pid, req.models))
+
+    @app.patch("/api/nox/config/models/{model_id}")
+    def nox_config_patch_model(model_id: int, req: ModelPatchRequest) -> dict:
+        """改她加的型号：名字 / 能力 / 缓存 / 开关 / 价格。标能看图要先看图测试通过。"""
+        _config_limit("key", 30)
+        return _edit(lambda: _editor().patch_model(
+            model_id, label=req.label, capabilities=req.capabilities, cache_style=req.cache_style,
+            cache_ttl=req.cache_ttl, enabled=req.enabled, price=req.price))
+
+    @app.delete("/api/nox/config/models/{model_id}")
+    def nox_config_delete_model(model_id: int) -> dict:
+        _config_limit("key", 30)
+        return _edit(lambda: _editor().delete_model(model_id))
 
     @app.put("/api/nox/config/providers/{pid}/key")
     def nox_config_set_key(pid: str, req: ProviderKeyRequest) -> dict:

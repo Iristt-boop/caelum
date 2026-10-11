@@ -721,8 +721,24 @@ class Nox:
 
     def model_name(self, model: str | None) -> str:
         """这轮实际会用哪个型号。给用量记账用，让 Console 能按模型分开算。"""
-        choice = self.cfg.models.get(model or self.chat_model_key() or "")
-        return choice.model if choice else self.cfg.primary.model
+        key = model or self.chat_model_key() or ""
+        choice = self.cfg.models.get(key)
+        if choice:
+            return choice.model
+        mine = self.user_model(key)
+        return mine["model_name"] if mine else self.cfg.primary.model
+
+    def user_model(self, key: str | None) -> dict | None:
+        """她在 OS 里加的型号（配置层 P2d，短名 `u-` 开头）。档案没装（`NOX_CONFIG_STORE=off` / 对账不过）就当没有。"""
+        store = getattr(self, "profiles", None)
+        if store is None or not key or not key.startswith("u-"):
+            return None
+        try:
+            return next((m for m in store.models()
+                         if m["short_name"] == key and m["enabled"] and m["origin"] != "seed"), None)
+        except Exception:  # noqa: BLE001
+            logger.warning("读不出她加的型号 %s，这轮用默认", key, exc_info=True)
+            return None
 
     def adapter_for(self, model: str | None) -> LLMAdapter | None:
         """按前端传的短名取 adapter。返回 None 表示「用默认那个」。
@@ -738,6 +754,9 @@ class Nox:
             return None
         choice = self.cfg.models.get(model)
         if not choice:
+            mine = self.user_model(model)
+            if mine is not None:
+                return self._user_adapter(model, mine)
             # 认不出来就用默认的 —— 不能因为前端传了个没见过的名字就答不上话
             logger.warning("没见过的模型名 %s，这轮用默认模型", model)
             return None
@@ -767,6 +786,29 @@ class Nox:
         self._adapters[model] = adapter
         logger.info("切到 %s（%s / %s）—— 缓存前缀作废，这轮要重写",
                     choice.label or choice.model, choice.model, choice.backend)
+        return adapter
+
+    def _user_adapter(self, key: str, m: dict) -> LLMAdapter | None:
+        """她加的型号：地址 / 协议 / key 全按**它那一家**的档案建（不按地址猜厂商）。"""
+        cached = self._adapters.get(key)
+        if cached is not None:
+            return cached
+        from settings_store.probe import llm_for
+
+        try:
+            llm = dataclasses.replace(
+                llm_for(self.profiles, getattr(self, "config_keys", None), m["provider_id"], m["model_name"]),
+                max_tokens=self.cfg.primary.max_tokens, timeout=self.cfg.primary.timeout,
+                max_retries=self.cfg.primary.max_retries)
+            if not llm.usable:
+                logger.warning("她加的模型 %s 那一家没配 key，这轮用默认", key)
+                return None
+            adapter = make_adapter(llm)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("她加的模型 %s 建不出 adapter，这轮用默认: %s", key, exc)
+            return None
+        self._adapters[key] = adapter
+        logger.info("切到她加的 %s（%s / %s）—— 缓存前缀作废，这轮要重写", key, m["model_name"], m["provider_id"])
         return adapter
 
     def _see(
@@ -869,7 +911,8 @@ class Nox:
             logger.warning("读不出聊天模型选择，这一轮用默认主模型", exc_info=True)
             return None
         cfg = getattr(self, "cfg", None)
-        if key and cfg is not None and key not in (getattr(cfg, "models", None) or {}):
+        if (key and cfg is not None and key not in (getattr(cfg, "models", None) or {})
+                and self.user_model(key) is None):
             logger.warning("存的聊天模型 %s 已不在清单里，这一轮用默认主模型", key)
             return None
         return key or None

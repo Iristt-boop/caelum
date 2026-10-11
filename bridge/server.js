@@ -4022,8 +4022,13 @@ const noxConfigWrite = (method, corePathOf, tag, timeoutMs = 20000) => async (re
     const body = await r.json().catch(() => null);
     if (!r.ok || !body || body.ok === false) {
       console.warn(`[${tag}] ${method} ${path} → Core ${r.status}`);
+      // P2d 起 detail 可能是 {error, results}：真测没通过时把结论一起带给前端（她要看到为什么没保存）
+      const d = body && body.detail;
+      const structured = d && typeof d === "object" ? d : null;
       return res.status(r.ok ? 502 : r.status).json({
-        ok: false, error: (body && (body.detail || body.error)) || `Core 回了 ${r.status}`,
+        ok: false,
+        error: (structured ? structured.error : (d || (body && body.error))) || `Core 回了 ${r.status}`,
+        ...(structured && structured.results ? { results: structured.results } : {}),
       });
     }
     res.json(body);
@@ -4042,6 +4047,18 @@ app.post("/api/nox/config/import", noxConfigWrite("POST", () => "/api/nox/config
 // P2c：真测 —— 思考模型 + 两次请求（看缓存）+ 看图，最慢的一家要几十秒，超时给到 150 秒
 app.post("/api/nox/config/test", noxConfigWrite("POST", () => "/api/nox/config/test", "nox-config-test", 150000));
 app.get("/api/nox/config/models", noxConfigProxy("/api/nox/config/models", "nox-config-models"));
+// P2d：加一家 / 改一家 / 拉型号 / 加型号 / 改型号。会发真测的给 150 秒
+const LONG = 150000;
+const idPath = (prefix, suffix = "") => (req) => `${prefix}/${encodeURIComponent(req.params.id)}${suffix}`;
+app.get("/api/nox/config/presets", noxConfigProxy("/api/nox/config/presets", "nox-config-presets"));
+app.post("/api/nox/config/fetch-models", noxConfigWrite("POST", () => "/api/nox/config/fetch-models", "nox-config-edit", LONG));
+app.post("/api/nox/config/providers", noxConfigWrite("POST", () => "/api/nox/config/providers", "nox-config-edit", LONG));
+app.patch("/api/nox/config/providers/:id", noxConfigWrite("PATCH", idPath("/api/nox/config/providers"), "nox-config-edit", LONG));
+app.delete("/api/nox/config/providers/:id", noxConfigWrite("DELETE", idPath("/api/nox/config/providers"), "nox-config-edit"));
+app.post("/api/nox/config/providers/:id/models",
+  noxConfigWrite("POST", idPath("/api/nox/config/providers", "/models"), "nox-config-edit", LONG));
+app.patch("/api/nox/config/models/:id", noxConfigWrite("PATCH", idPath("/api/nox/config/models"), "nox-config-edit", LONG));
+app.delete("/api/nox/config/models/:id", noxConfigWrite("DELETE", idPath("/api/nox/config/models"), "nox-config-edit"));
 
 // World 页（户型图）：天 / 家里的设备 / 她在不在家 / 她在忙什么，一次取齐。
 // ⚠️ 超时给到 12 秒 —— 这条要串 ha-mcp 拿清单 + 并发查 HA 状态，

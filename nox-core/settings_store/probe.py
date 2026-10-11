@@ -93,8 +93,13 @@ def llm_for(store: SettingsStore, keys: Any, provider_id: str, model_name: str) 
     if p is None:
         raise LookupError(f"没有 {provider_id} 这一家")
     key = (keys.get(provider_id) if keys is not None else "") or resolve_key(list(p["key_envs"]), _env())
+    m = next((x for x in store.models() if x["provider_id"] == provider_id and x["model_name"] == model_name), None)
+    # 档案字段直接按**这一家**填好（cache_style 非空 → 工厂不再按地址去认厂商，不会认成别家、拿错 key）
     return LLMConfig(provider=p["protocol"], model=model_name, api_key=key, base_url=p["base_url"],
-                     max_tokens=MAX_TOKENS, timeout=35.0, max_retries=0)   # 最坏 4 次 × 35s + 2s < bridge 的 150s
+                     max_tokens=MAX_TOKENS, timeout=35.0, max_retries=0,   # 最坏 4 次 × 35s + 2s < bridge 的 150s
+                     cache_style=(m or {}).get("cache_style") or p["cache_style"],
+                     cache_ttl=((m or {}).get("cache_ttl") or "") if m else None,
+                     vision=("vision" in (m.get("capabilities") or [])) if m else None)
 
 
 def _env():
@@ -157,7 +162,7 @@ class Prober:
 
     # ------------------------------------------------------------ 各项
 
-    def _chat_and_cache(self, target: str, llm: Any) -> list[Result]:
+    def _chat_and_cache(self, target: str, llm: Any, *, with_cache: bool = True) -> list[Result]:
         from agent.llm import Message
 
         adapter = self._make(llm)
@@ -175,6 +180,8 @@ class Prober:
             return [Result("chat", False, ms,
                            f"HTTP 成功但正文是空的（输出 {turn.usage.output_tokens} token，多半被思考吃光了）")]
         chat = Result("chat", True, ms, f"回了 {len(text)} 字，输入 {turn.usage.input_tokens} token")
+        if not with_cache:
+            return [chat]
 
         self._sleep(self.cache_wait_s)
         t1 = time.monotonic()

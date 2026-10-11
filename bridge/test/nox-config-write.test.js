@@ -37,6 +37,14 @@ before(async () => {
         return setTimeout(() => json(200, { ok: true, results: [{ kind: "chat", ok: true }] }), 21000);
       }
       if (req.url === "/api/nox/config/models") return json(200, { ok: true, models: [{ model_name: "glm-5.3-flash", status: "正常" }] });
+      if (req.url === "/api/nox/config/providers" && req.method === "POST") {
+        return json(400, { detail: { error: "真测没通过，没有保存 —— 正文是空的", results: [{ kind: "chat", ok: false }] } });
+      }
+      if (req.url === "/api/nox/config/providers/gemini" && req.method === "PATCH") return json(200, { ok: true, tested: false });
+      if (req.url === "/api/nox/config/models/3" && req.method === "DELETE") return json(200, { ok: true, model_id: 3 });
+      if (req.url === "/api/nox/config/providers/gemini/models" && req.method === "POST") return json(200, { ok: true, models: ["x"] });
+      if (req.url === "/api/nox/config/fetch-models") return json(200, { ok: true, models: ["a", "b"] });
+      if (req.url === "/api/nox/config/presets") return json(200, { ok: true, presets: [{ preset: "zhipu" }] });
       json(404, { detail: "nope" });
     });
   });
@@ -99,4 +107,18 @@ test("真测：慢也等得到（超时比别的写接口长）；型号清单�
   assert.deepEqual(seen.find((x) => x.url === "/api/nox/config/test").body, { provider_id: "zhipu" });
   const m = await api(bridge.base, "/api/nox/config/models");
   assert.equal(m.data.models[0].status, "正常");
+});
+
+test("P2d：真测没过的原因带回前端；改 / 删 / 加型号 / 拉型号 / 预设都通", async () => {
+  const bad = await api(bridge.base, "/api/nox/config/providers", { method: "POST", body: { id: "gemini", key: KEY } });
+  assert.equal(bad.status, 400);
+  assert.equal(bad.data.ok, false);
+  assert.match(bad.data.error, /没有保存/, "error 要是一句话，不是 [object Object]");
+  assert.deepEqual(bad.data.results, [{ kind: "chat", ok: false }]);
+  assert.equal((await api(bridge.base, "/api/nox/config/providers/gemini", { method: "PATCH", body: { label: "x" } })).data.tested, false);
+  assert.equal((await api(bridge.base, "/api/nox/config/models/3", { method: "DELETE" })).data.model_id, 3);
+  assert.deepEqual((await api(bridge.base, "/api/nox/config/providers/gemini/models", { method: "POST", body: { models: ["x"] } })).data.models, ["x"]);
+  assert.deepEqual((await api(bridge.base, "/api/nox/config/fetch-models", { method: "POST", body: { provider_id: "zhipu" } })).data.models, ["a", "b"]);
+  assert.equal((await api(bridge.base, "/api/nox/config/presets")).data.presets[0].preset, "zhipu");
+  assert.ok(!bridge.logs.join("").includes(KEY));
 });
