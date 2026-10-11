@@ -124,6 +124,7 @@ class Router:
         adapter: LLMAdapter | None = None,
         session_id: str | None = None,
         depth: str | None = None,
+        offer: set[str] | None = None,
     ) -> RouteResult:
         decision = classify(text, has_images=bool(images))
         logger.info("路由：%s（%s）", decision.intent.value, decision.reason)
@@ -149,6 +150,8 @@ class Router:
                 depth=depth,
                 # 契约的整行判别器（语音草稿）打电话时不用 —— 那边带语气标签的英文就是正文
                 voice=voice,
+                # 这一轮给他看哪些工具（R2 按需工具包，Nox 选好传进来）。None = 全量
+                offer=offer,
             ),
             decision,
         )

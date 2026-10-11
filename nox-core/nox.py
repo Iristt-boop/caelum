@@ -22,6 +22,7 @@ from context import ContextProviderRegistry
 from context.base import Turn
 from context.timeline import humanize
 from context import runtime as runtime_ctx
+from agent import toolpacks
 from context.providers.understanding import has_live_anchor
 from context.providers import (
     CallsProvider, HealthProvider, HomeProvider, LocationProvider, MemoryProvider,
@@ -979,6 +980,27 @@ class Nox:
             )
         return "\n\n".join(parts)
 
+    def _offer(self, text: str, history: list[Message] | None,
+               session_id: str | None, runtime: dict | None) -> set[str] | None:
+        """这一轮给他哪些工具（R2 按需工具包，见 agent/toolpacks.py）。None = 全量。
+
+        触发词看她这一句 + 历史里最近两句 user；「用过就留着」看 loop 记的；入口看工牌。
+        """
+        loop = getattr(self, "loop", None)
+        tools = getattr(loop, "tools", None)
+        if not tools:
+            return None   # 没有 loop / 没登记工具（测试里手搓的 Nox）→ 全量，不替它挑
+        used = getattr(loop, "used_packs", None)
+        recent = [m.text or "" for m in (history or []) if m.role == "user"][-(toolpacks.RECENT_USER_MSGS - 1):]
+        surface = runtime_ctx.RuntimeInfo.parse(runtime).surface if runtime else None
+        offer, mounted = toolpacks.select(
+            tools.keys(), texts=[*recent, text],
+            used=used.recent(session_id) if used is not None else set(), surface=surface)
+        if offer is not None:
+            logger.info("工具包：挂上 %s，给 %d / %d 个工具",
+                        ",".join(sorted(mounted)) or "-", len(offer), len(tools))
+        return offer
+
     def _session_span(self, started: datetime | None) -> str:
         """「这段对话是 X 天前开始的」。
 
@@ -1068,6 +1090,7 @@ class Nox:
             text, history, dynamic_system=dynamic, images=images,
             voice=voice, scene=scene, adapter=self.adapter_for(model),
             session_id=session_id, depth=self._chat_depth(voice),
+            offer=self._offer(text, history, session_id, runtime),
         )
         # 这一轮写过什么状态 → 把对应 Provider 的缓存打掉。
         # 放在最前面：后面几步都是文本后处理，不该影响清缓存这件事。
@@ -1141,6 +1164,7 @@ class Nox:
             adapter=self.adapter_for(model),
             session_id=session_id,
             depth=depth,
+            offer=self._offer(text, history, session_id, runtime),
         ):
             # 心里话给她看（她 10-06）—— **只在「思考」开着时**。关着时规矩不加、本来就不该有；
             # 万一他自己写了也不放出来，开关关了还冒出思考块，那个开关就说不清了

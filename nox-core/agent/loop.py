@@ -41,6 +41,7 @@ from typing import Any
 
 from agent import contracts as contracts_mod
 from agent import guard
+from agent import toolpacks
 from tools import context as tool_context
 from agent.llm import (
     GATED_EFFECTS,
@@ -128,6 +129,17 @@ class AgentLoop:
     #: 一整轮的墙钟预算（秒）。None / ≤0 = 不限（默认，保持老调用方的行为不变）。
     #: 由 `nox.py` 从 `config.chat_deadline_s` 传进来。
     deadline_s: float | None = None
+    #: 会话里他最近真调过哪些工具包（R2「用过就留着」）。每轮收尾记一笔，`Nox` 选工具时读
+    used_packs: toolpacks.UsedPacks = field(default_factory=toolpacks.UsedPacks)
+
+    def _offered(self, offer: set[str] | None) -> list[Tool]:
+        """这一轮给模型看的工具。None = 全量。**保持登记顺序**：顺序一变前缀就变，缓存跟着冷。
+
+        只影响**给模型看哪些**；执行还是按 self.tools 查 —— 他从历史里照着调了个
+        这轮没挂的工具，照样能跑（漏挂时的兜底，不报错）。"""
+        if offer is None:
+            return list(self.tools.values())
+        return [t for name, t in self.tools.items() if name in offer]
 
     def _deadline(self) -> float | None:
         """算出这一轮的截止时刻。用 monotonic —— 系统时钟被改也不受影响。"""
@@ -183,6 +195,7 @@ class AgentLoop:
         session_id: str | None = None,
         depth: Depth | None = None,
         voice: bool = False,
+        offer: set[str] | None = None,
     ) -> LoopResult:
         # 上下文当局部变量持有，不用 contextvar 包整轮 ——
         # 那样在流式路径下会炸（见 tools/context.py 开头）
@@ -190,12 +203,14 @@ class AgentLoop:
         # 日志用的两个基准，必须在进 _run_inner 之前取（见 _tools_used）
         started = time.monotonic()
         base = len(history or [])
-        shape = cache_shape(system, list(self.tools.values()), history)
+        shape = cache_shape(system, self._offered(offer), history)
         result = self._run_inner(
             user_text, ctx, system=system, dynamic_system=dynamic_system,
             history=history, images=images, adapter=adapter, depth=depth,
+            offer=offer,
         )
         self._apply_contracts(result, ctx, base, voice=voice)
+        self.used_packs.note(session_id, _tools_used(result.messages, base))
         result.attachments = ctx.attachments
         result.dirty_providers = sorted(ctx.dirty)
         log_turn(
@@ -219,6 +234,7 @@ class AgentLoop:
         images: list[str] | None = None,
         adapter: LLMAdapter | None = None,
         depth: Depth | None = None,
+        offer: set[str] | None = None,
     ) -> LoopResult:
         #: 这一轮想多深：调用方给了就用（她的「思考」开关，见 Nox._chat_depth），没给用默认
         depth = depth or self.depth
@@ -228,7 +244,7 @@ class AgentLoop:
         messages: list[Message] = list(history or [])
         messages.append(Message(role="user", text=user_text, images=images or []))
 
-        specs = [t.spec for t in self.tools.values()]
+        specs = [t.spec for t in self._offered(offer)]
         tracker = guard.FailureTracker(limit=self.failure_limit)
         total = Usage()
         iterations = 0
@@ -324,6 +340,7 @@ class AgentLoop:
         adapter: LLMAdapter | None = None,
         session_id: str | None = None,
         depth: Depth | None = None,
+        offer: set[str] | None = None,
     ) -> Iterator[StreamEvent]:
         """流式版的 run。
 
@@ -339,13 +356,13 @@ class AgentLoop:
         started = time.monotonic()
         base = len(history or [])
         model = adapter_name(adapter or self.adapter)
-        shape = cache_shape(system, list(self.tools.values()), history)
+        shape = cache_shape(system, self._offered(offer), history)
         finished = False
         try:
             for ev in self._stream_inner(
                 user_text, ctx, system=system, dynamic_system=dynamic_system,
                 history=history, images=images, split=split, adapter=adapter,
-                depth=depth,
+                depth=depth, offer=offer,
             ):
                 # done 事件带上工具产生的附带产物（比如「要发的图片」），
                 # 以及「这一轮写过哪些状态」—— 后者由调用方拿去清 Provider 缓存
@@ -353,6 +370,7 @@ class AgentLoop:
                     result = getattr(ev, "result", None)
                     if result is not None:
                         self._apply_contracts(result, ctx, base, voice=not split)
+                        self.used_packs.note(session_id, _tools_used(result.messages, base))
                         result.attachments = ctx.attachments
                         result.dirty_providers = sorted(ctx.dirty)
                         finished = True
@@ -391,13 +409,14 @@ class AgentLoop:
         split: bool = True,
         adapter: LLMAdapter | None = None,
         depth: Depth | None = None,
+        offer: set[str] | None = None,
     ) -> Iterator[StreamEvent]:
         depth = depth or self.depth
         llm = adapter or self.adapter
         messages: list[Message] = list(history or [])
         messages.append(Message(role="user", text=user_text, images=images or []))
 
-        specs = [t.spec for t in self.tools.values()]
+        specs = [t.spec for t in self._offered(offer)]
         tracker = guard.FailureTracker(limit=self.failure_limit)
         total = Usage()
         # 两级过滤，顺序不能反：先剥 [mood:] 标记，再切 ||| 分段。

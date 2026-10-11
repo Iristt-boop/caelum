@@ -281,6 +281,20 @@ v1 → v2 的两条规则：
 `delete_todo`、`review_memory`、`merge_memory`… —— 按规则会被**直接砍掉**。不能悄悄砍：默认放进核心（省 ≈ 54%），
 要砍的逐个拿出来问她。
 
+### 5.3⅞ R2 上线（10-11）
+
+糖糖拍板：**不跑一周影子** —— 历史回放已经回答了影子要回答的问题。另外两条：
+`start_long_task` / `task_status` / `task_cancel` 是电脑上才用的 → 进电脑包；
+`send_gallery_image`「几乎一次没用过」→ 不砍，进相册包（提到相册 / 照片才挂）。
+
+实现：`agent/toolpacks.py`（包是数据，前缀 + 点名 + 触发词 + 入口）；`AgentLoop.run/run_stream(offer=...)`
+只改**给模型看哪些**，执行表不变（漏挂时他照着历史调了也能跑）；登记顺序不变；`AgentLoop.used_packs`
+每轮收尾记「他真调过的包」，30 分钟内续挂。`NOX_TOOL_PACKS=off` 退回全量。
+他自己的时间（own_time）走自己的白名单 loop，不受影响。
+
+按 N150 上真实的 164 个工具算：平常聊天给 **52 个 ≈ 9,900 token（全量 ≈ 23,100，省 57%）**；
+挂瑞幸 59 个、挂电脑 73 个、挂共听 71 个。
+
 ### 5.4 Planner 暂不做
 
 她提的 Router → Planner → Tool Selector 是对的终局。但第一版的「Planner」就是 5.2 这张
@@ -338,7 +352,7 @@ R1 的验收**不拿**工具调用率当指标，免得把它的效果算错。
 | **R1** ✅ 10-11 | `runtime` 字段 + `context/runtime.py` + bridge `/api/chat` 填 chat / watch（共影看 `watch_sessions` 现场那一行） | — |
 | **R1b** ✅ 10-11 | 日记 / 共读 / 主动开口改填字段；guide `00-where-am-i` 指向工牌 | R1 |
 | **R0** ✅ 10-11 | 量工具 schema token 与缓存账 → 见 5.3½，R2 改成「核心集 + 按需工具包」 | — |
-| R2-shadow | 工具集声明 + 影子日志 | R0 不亏 |
+| **R2** ✅ 10-11 | 核心集 + 按需工具包（`agent/toolpacks.py`），直接上线不跑影子（她 10-11：回放已经替代了观察周） | 回放 |
 | R3 | precondition（家居写类先行） | — |
 
 R1 只动 nox-core 一个 provider + 请求模型 + bridge 两处，不动静态前缀、不动工具表，可以单独上线、单独回滚

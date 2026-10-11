@@ -16,6 +16,9 @@ import re
 
 import pytest
 
+from types import SimpleNamespace
+
+from agent import toolpacks
 from context import ContextProviderRegistry
 from context import runtime as rt
 from nox import Nox
@@ -83,6 +86,7 @@ def _nox() -> Nox:
     n._restore_state_once = lambda: None
     n.context = ContextProviderRegistry()
     n.card_debt = {}
+    n.loop = SimpleNamespace(tools={}, used_packs=toolpacks.UsedPacks())
     return n
 
 
@@ -149,7 +153,8 @@ def test_红线_chat_stream把runtime一路送到loop的dynamic_system():
         raise _Stop
         yield  # noqa: unreachable — 让它是个生成器
 
-    n.loop = type("L", (), {"run_stream": staticmethod(run_stream)})()
+    n.loop = type("L", (), {"run_stream": staticmethod(run_stream), "tools": {},
+                            "used_packs": toolpacks.UsedPacks()})()
     with pytest.raises(_Stop):
         list(n.chat_stream("在吗", [], runtime={"surface": "chat", "client": "os"}))
     assert "桌面 Caelum OS" in got["d"]
