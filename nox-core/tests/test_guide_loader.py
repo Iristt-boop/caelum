@@ -37,6 +37,8 @@ EXPECTED_TOPICS = [
     "together",
     "tool-or-not",
     "how-i-sense-her",
+    # 10-11 Creations 上线后补
+    "making-things",
 ]
 
 #: 手册只写「怎么运作」，不写「现在怎样」：这几个词一出现，多半是在写状态。
@@ -57,7 +59,7 @@ def _write(d: Path, name: str, *, topic: str, title: str = "标题", ask: str = 
 # ---------------------------------------------------------------- 真实手册
 
 
-def test_篇目恰好是预期的十一篇():
+def test_篇目恰好是预期的十二篇():
     assert [t.id for t in load_topics()] == EXPECTED_TOPICS
 
 
