@@ -79,11 +79,15 @@ class SharedActivitiesSource:
     """
 
     def __init__(self, reading: Any = None, eryu: Any = None,
-                 bridge: Any = None, world: Any = None) -> None:
+                 bridge: Any = None, world: Any = None,
+                 on_watched: Any = None) -> None:
         self.reading = reading      # co-reading 的 RestClient（:3100，Bearer）
         self.eryu = eryu            # eryu 的 RestClient
         self.bridge = bridge        # bridge 的 RestClient（core.bridge）
         self.world = world          # WorldModel；None = 整条 source 不动笔
+        #: 一场共影**第一次**被记下时回调（剧情记忆，2026-10-11，memory/watched.py）。
+        #: 参数：{title, started, ended, watch_id, finished}。调用方自己开线程 —— 这里不许被它拖慢
+        self.on_watched = on_watched
 
     def poll(self, now: datetime | None = None) -> None:
         """跑一遍三块。每块各自兜底 —— 一块坏了不许带塌另外两块。"""
@@ -170,7 +174,7 @@ class SharedActivitiesSource:
                     and isinstance(position_ms, (int, float))
                     and position_ms >= duration_s * 900)
             )
-            self.world.observe(
+            obs = self.world.observe(
                 source="bridge",
                 type="watching_session",
                 observed={
@@ -183,6 +187,14 @@ class SharedActivitiesSource:
                 observed_at=ended,
                 dedup_key=f"watching/{row.get('id')}",
             )
+            # observe 只在**第一次**返回非 None（dedup_key 挡重复）—— 正好是「这场刚看完」
+            if obs is not None and self.on_watched is not None and started is not None:
+                try:
+                    self.on_watched({"title": row.get("title") or "", "started": started,
+                                     "ended": ended, "watch_id": str(row.get("id") or ""),
+                                     "finished": bool(finished)})
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("共影剧情回调失败（不影响观影记录）：%s", exc)
 
     # ------------------------------------------------------------ 共听
 

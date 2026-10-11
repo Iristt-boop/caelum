@@ -545,6 +545,32 @@ class Sessions:
             return len(self._cache)
 
 
+def _cowatch_summarizer(core: Nox, db: Store, world: Any):
+    """共影剧情记忆的那一步（memory/watched.py）：给一场看完的共影整理「这集讲了什么」。
+
+    返回 run(info) —— **同步**跑完（回填端点要等结果）；观影回调那边自己包线程。
+    `NOX_COWATCH_MEMORY=off` 关掉。
+    """
+    from memory import watched
+
+    def run(info: dict) -> dict | None:
+        if os.getenv("NOX_COWATCH_MEMORY", "on").strip().lower() in ("off", "0", "false"):
+            return None
+        utility = core.router.light_adapter if getattr(core, "router", None) else None
+        if utility is None:
+            logger.warning("共影剧情：没有便宜模型，不整理")
+            return None
+        ws = getattr(core, "loop", None) and core.loop.tools.get("web_search")
+        return watched.summarize_episode(
+            title=info["title"], started=info["started"], ended=info["ended"],
+            watch_id=info["watch_id"], store=db, world=world,
+            adapter=meter.tag(utility, "cowatch"),
+            web_search=ws.handler if ws else None,
+            ob=getattr(core, "ob", None),
+        )
+    return run
+
+
 def _build_attention(core: Nox, sessions: "Sessions", db: Store) -> AttentionService | None:
     """按需装配 Attention。**默认不启用。**
 
@@ -733,7 +759,11 @@ def _build_attention(core: Nox, sessions: "Sessions", db: Store) -> AttentionSer
                 if _eryu_url else None),
             bridge=core.bridge,
             world=world,
+            # 一场看完 → 后台整理这集讲了什么（2026-10-11）。慢（网搜 + 一次模型），不许堵心跳
+            on_watched=lambda info, _run=_cowatch_summarizer(core, db, world): threading.Thread(
+                target=_run, args=(info,), daemon=True, name="cowatch-memory").start(),
         )
+        core.cowatch_summarize = _cowatch_summarizer(core, db, world)
 
         # 好奇（2026-09-04）：池子里的料变成**他自己的感受**。
         # 和上面那个 TopicSource 用同一批料，但是两层 ——
@@ -2995,6 +3025,26 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
     #: 不缓存等于每次进页面打两次外部 API。
     #: ⚠️ **只缓存天空**：设备状态慢一拍就是谎，那个每次现取。
     _sky_cache: dict = {"at": 0.0, "data": None}
+
+    class CowatchSummarizeRequest(BaseModel):
+        title: str
+        started_at: str
+        ended_at: str
+        watch_id: str
+
+    @app.post("/api/nox/cowatch/summarize")
+    def cowatch_summarize(req: CowatchSummarizeRequest) -> dict:
+        """手动给一场共影整理剧情记忆（回填用：功能上线前看过的那几集）。同步，要等网搜 + 一次模型。"""
+        run = getattr(core, "cowatch_summarize", None)
+        if run is None:
+            raise HTTPException(status_code=503, detail="attention 没开，没有 World Model")
+        try:
+            started = datetime.fromisoformat(req.started_at.replace("Z", "+00:00"))
+            ended = datetime.fromisoformat(req.ended_at.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=f"时间格式不对：{exc}") from exc
+        got = run({"title": req.title, "started": started, "ended": ended, "watch_id": req.watch_id})
+        return {"ok": got is not None, "episode": got}
 
     @app.get("/api/nox/world")
     def nox_world() -> dict:

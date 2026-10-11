@@ -23,6 +23,7 @@ from context.base import Turn
 from context.timeline import humanize
 from context import runtime as runtime_ctx
 from agent import toolpacks
+from memory import watched as watched_mod
 from context.providers.understanding import has_live_anchor
 from context.providers import (
     CallsProvider, HealthProvider, HomeProvider, LocationProvider, MemoryProvider,
@@ -198,6 +199,19 @@ class _CardDebt(set):
         if kept:
             logger.info("欠卡账接回来 %d 笔（还没过期）", kept)
         return kept
+
+
+def _previously(world, runtime: dict | None) -> str:
+    """共影时的【前情】（memory/watched.py）。不在看剧 / 认不出集数 / 没看过前面的 → 空串。"""
+    if not runtime or str(runtime.get("surface") or "") != "watch":
+        return ""
+    obj = runtime.get("object") or {}
+    if not isinstance(obj, dict):
+        return ""
+    ep = watched_mod.parse_title(f"{obj.get('title') or ''}{obj.get('episode') or ''}")
+    if ep is None:
+        return ""
+    return watched_mod.render_previously(ep, watched_mod.previously(world, ep))
 
 
 class Nox:
@@ -956,6 +970,11 @@ class Nox:
                 info = runtime_ctx.RuntimeInfo(surface="call", client=info.client)
             english = voice and scenes.get(scene).key != "zh"
             parts.insert(0, runtime_ctx.render(info, english=english))
+        # 前情（共影剧情记忆，10-11）：在看同一部剧的下一集 → 前面几集讲了什么。
+        # 一集之内不变，跟在工牌后面不冷缓存。片名取原始 runtime（工牌那份截过长度）
+        prev = _previously(getattr(self, "world", None), runtime)
+        if prev:
+            parts.insert(1 if runtime_ctx.enabled() else 0, prev)
         if voice:
             parts.append(scenes.get(scene).render())
         # 共听模式：检测到音乐相关请求时注入 MUSIC_SCENE
