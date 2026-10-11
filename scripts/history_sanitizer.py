@@ -43,11 +43,9 @@ sys.path.insert(0, str(ROOT))
 
 from agent import contracts as contracts_mod  # noqa: E402
 from agent.llm import ToolSpec  # noqa: E402
-from agent.llm import INNER_ALIASES  # noqa: E402
+from agent.llm import INNER_ALIASES, split_inner_blocks  # noqa: E402
 from data.store import norm_text  # noqa: E402
 
-_INNER_BLOCK_RE = re.compile(
-    r"<(" + "|".join(re.escape(a) for a in INNER_ALIASES) + r")>(.*?)</\1>\s*", re.S)
 
 SESSIONS_DB = Path("/root/nox-core/data/sessions.db")
 BRIDGE_DB = Path("/root/data/nox-bridge.db")
@@ -95,10 +93,12 @@ def clean_text(text: str | None, table: dict[str, contracts_mod.OutputContract],
     # 别名表和实时拆标签用的是同一张（agent.llm.INNER_ALIASES）。他的历史里不该有（10-06 她定的），
     # 她的聊天里挪进 metadata.thinking（见 plan_bridge），不删
     inner_arts: list[dict] = []
-    blocks = list(_INNER_BLOCK_RE.finditer(text))
-    if blocks:
-        inner = "\n".join(m.group(2).strip() for m in blocks)
-        text_wo = re.sub(r"\n{3,}", "\n\n", _INNER_BLOCK_RE.sub("", text)).strip()
+    # 和实时那边同一个拆法（agent.llm.split_inner_blocks）：收口在行尾的优先 —— 10-11 的 11754 心里话里
+    # 他自己写了「我写成了</memory>」，最短匹配会在这句中间收口
+    rest, pieces = split_inner_blocks(text)
+    if pieces:
+        inner = "\n".join(pieces)
+        text_wo = re.sub(r"\n{3,}", "\n\n", rest).strip()
         inner_arts.append({"tool": "inner_voice", "rescuable": False, "text": inner[:200], "inner": inner})
         out2, arts2 = clean_text(text_wo, table, voice) if text_wo else (text_wo, [])
         return out2, inner_arts + arts2

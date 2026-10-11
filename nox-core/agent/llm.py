@@ -349,8 +349,28 @@ INNER_OPEN, INNER_CLOSE = "<心里>", "</心里>"
 #: 10-11：又见 `<memory>…</memory>`（glm，17:25 三条），补上
 INNER_ALIASES = ("心里", "内心", "心里话", "mind", "memo", "memory", "think", "thinking", "thought", "inner")
 _INNER_OPENS = tuple(f"<{a}>" for a in INNER_ALIASES)
-_INNER_BLOCK_RE = re.compile(
-    r"<(" + "|".join(re.escape(a) for a in INNER_ALIASES) + r")>.*?</\1>\s*", re.S)
+_INNER_ALT = "|".join(re.escape(a) for a in INNER_ALIASES)
+_INNER_BLOCK_RE = re.compile(r"<(" + _INNER_ALT + r")>(.*?)</\1>\s*", re.S)
+#: 收口**在行尾**的那种优先（10-11 库里 11754：心里话里他自己写了一句「我写成了</memory>，应该用</mind>」——
+#: 最短匹配在这句话中间就收口了，后半段心里话漏成正文）。真收口几乎都单独一行或在行尾
+#: 块里不许再出现同名开标签 —— 否则「<mind>a</mind> 正文 ⏎ <mind>b</mind>」会被并成一块，把中间的正文吞了
+_INNER_BLOCK_EOL_RE = re.compile(
+    r"<(" + _INNER_ALT + r")>((?:(?!<\1>).)*?)</\1>(?=[ \t]*(?:\n|$))\s*", re.S)
+
+
+def split_inner_blocks(text: str) -> tuple[str, list[str]]:
+    """把心里话块拿出来：(剩下的正文, [每块的内容])。先认行尾收口的，剩下的再按最短匹配。
+
+    收尾（strip_inner_voice）和清历史（scripts/history_sanitizer.py）都走这一个。"""
+    inner: list[str] = []
+
+    def take(m: "re.Match[str]") -> str:
+        inner.append(m.group(2).strip())
+        return ""
+
+    rest = _INNER_BLOCK_EOL_RE.sub(take, text)
+    rest = _INNER_BLOCK_RE.sub(take, rest)
+    return rest, inner
 _INNER_ANY_OPEN_RE = re.compile(r"<(?:" + "|".join(re.escape(a) for a in INNER_ALIASES) + r")>")
 
 
@@ -400,7 +420,8 @@ def strip_inner_voice(text: str | None) -> str | None:
         _warn_unknown_blocks(text)
     if not text or not _INNER_ANY_OPEN_RE.search(text):
         return text
-    out = _INNER_ANY_OPEN_RE.sub("", _INNER_BLOCK_RE.sub("", text)).strip()
+    rest, _ = split_inner_blocks(text)
+    out = _INNER_ANY_OPEN_RE.sub("", rest).strip()
     return out or None
 
 

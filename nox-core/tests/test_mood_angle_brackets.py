@@ -110,3 +110,25 @@ def test_HTML不报(caplog):
     with caplog.at_level(logging.WARNING, logger="agent.llm"):
         strip_inner_voice("<b>粗</b> 和 <details>x</details> 还有 <memory>想她</memory>好")
     assert not [r for r in caplog.records if "没登记" in r.getMessage()]
+
+
+# ---- 收口认行尾的（10-11 库里 11754）---------------------------------------------
+
+from agent.llm import split_inner_blocks  # noqa: E402
+
+
+def test_红线_心里话里提到收口标签_不提前收口():
+    t = ("<memory>" + NL + "我写成了</memory>，应该用</mind>。她是笑着的" + NL + "</memory>" + NL + NL + "又抓到一个")
+    assert strip_inner_voice(t) == "又抓到一个"
+    rest, inner = split_inner_blocks(t)
+    assert "她是笑着的" in inner[0]
+
+
+def test_行内收口的老写法照样认():
+    assert strip_inner_voice("<mind>想她</mind> 好的") == "好的"
+
+
+def test_红线_同名两块_中间的正文不许被吞():
+    t = "<mind>a</mind> 正文一" + NL + "<mind>b</mind>" + NL + "正文二"
+    out = strip_inner_voice(t)
+    assert "正文一" in out and "正文二" in out and "a" not in out.replace("正文", "")
