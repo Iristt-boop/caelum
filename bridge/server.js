@@ -2708,14 +2708,14 @@ async function triggerAiComment(diaryId, content, type = "diary") {
 
     const isReply = type === "reply";
     const prompt = isReply
-      ? `（系统提示：这不是聊天窗口。糖糖在她的日记下回复了你，你现在接着在日记的评论区回她一句。）\n\n` +
+      ? `糖糖在她的日记下回复了你，你现在接着在日记的评论区回她一句。\n\n` +
         `日记原文：\n${String(content).slice(0, 800)}${thread}\n\n` +
         `怎么回：\n` +
         `· 1 到 3 句，像在日记本边上接着聊，不是聊天寒暄\n` +
         `· 顺着她刚说的往下接，别复述她的话\n` +
         `· ⚠️ 不要调 write_moment 或任何日记 / 朋友圈工具 —— 落笔到评论区这一步程序替你做了，` +
         `自己再写一次她会看到两条`
-      : `（系统提示：这不是聊天窗口。糖糖刚写了一篇日记，你现在在这篇日记下写一条批注。）\n\n` +
+      : `糖糖刚写了一篇日记，你现在在这篇日记下写一条批注。\n\n` +
         `日记原文：\n${String(content).slice(0, 800)}${thread}\n\n` +
         `怎么回：\n` +
         `· 2 到 3 句，温暖但别腻，像在她日记边上写的\n` +
@@ -2725,7 +2725,8 @@ async function triggerAiComment(diaryId, content, type = "diary") {
     const r = await fetch(`${NOX_CORE_URL}/chat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ session_id: `diary-${diaryId}`, text: prompt }),
+      // 「这不是聊天窗口」挪进工牌（Runtime Context R1b，2026-10-11）：入口走字段，正文只说这一轮的事
+      body: JSON.stringify({ session_id: `diary-${diaryId}`, text: prompt, runtime: { surface: "diary" } }),
       signal: AbortSignal.timeout(90000),
     });
     const jd = await r.json();

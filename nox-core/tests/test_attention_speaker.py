@@ -91,6 +91,7 @@ class FakeCore:
 
     def chat(self, text: str, history: list, **kw):
         self.prompts.append(text)
+        self.kwargs = kw
         return self.reply
 
 
@@ -155,6 +156,15 @@ def test_speak_pushes_and_saves_session(astore):
     assert payload["session_id"] == "a" * 32
     # 也进了他自己的会话 —— 她回「嗯」的时候他得知道自己说过什么
     assert sessions.saved["a" * 32]
+
+
+def test_工牌_主动开口报surface_proactive(astore):
+    """Runtime Context R1b（10-11）：他主动开口时工牌写「你主动开口」，不是「她从聊天找你」。"""
+    core = FakeCore()
+    speak = build_speaker(core, FakeSessions(), FakeStore(), astore)
+    intent = _intent()
+    speak(intent, _decision(intent))
+    assert core.kwargs.get("runtime") == {"surface": "proactive"}
 
 
 def test_uses_her_latest_session(astore):

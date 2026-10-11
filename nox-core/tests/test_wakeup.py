@@ -210,6 +210,7 @@ class FakeCore:
 
     def chat(self, text: str, history: list, **kw):
         self.prompts.append(text)
+        self.kwargs = kw
         return FakeReply(self._reply)
 
 
@@ -256,6 +257,13 @@ def test_dry_run_does_not_push():
 
     assert run(book, cn(9, 12, 40)) == 1     # 它「想」说
     assert core.bridge.calls == []           # 但一个字都没发出去
+
+
+def test_工牌_唤醒报surface_proactive():
+    core = FakeCore("吃完饭了吗宝贝\n[NEXT 60]")
+    run = build_waker(core, FakeSessions(), FakeStore(), dry_run=True)
+    run(_book(cn(9, 12)), cn(9, 12, 40))
+    assert core.kwargs.get("runtime") == {"surface": "proactive"}
 
 
 def test_live_pushes():

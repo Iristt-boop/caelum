@@ -163,6 +163,19 @@ Caelum（环境）                         Nox（意识）
 `data/origin.py` 的前缀表**保留** —— 历史里旧格式还在，新格式只是不再产生新的。
 `history_sanitizer` 不处理这批（它们没有错，只是旧）。
 
+**R1b 实际做法（10-11）**：
+
+| 入口 | runtime | 正文 |
+|---|---|---|
+| 日记批注（bridge `triggerAiComment`） | `diary` | 删掉「（系统提示：这不是聊天窗口。…）」包装，只留「糖糖刚写了一篇日记…」 |
+| 共读回批注 / 后台记忆（co-reading） | `reading` + 书名 | 同上 |
+| speaker / waker / 早报 | `proactive` | 🔴 **开头「（系统提示：这不是糖糖在跟你说话…」不动** |
+| 他自己的时间 | `own_time` | 不动 |
+
+🔴 主动开口那几条的前缀**不能删**：它们落在她的**主会话**里，`data/origin.py` / `store.py`
+认「这条 user 不是她说的」靠的就是这个文本前缀（日记 / 共读是 `diary-` / `reading-` 独立会话，靠会话前缀认，所以能删）。
+删了，理解层会把他自己的开场白当成她的话。要拿掉它，得先让 user 消息带结构化的来源字段落库 —— 那是另一件事。
+
 ---
 
 ## 四、Guide / Map 退回第三层
@@ -260,7 +273,7 @@ R1 的验收**不拿**工具调用率当指标，免得把它的效果算错。
 | 步 | 内容 | 依赖 |
 |---|---|---|
 | **R1** ✅ 10-11 | `runtime` 字段 + `context/runtime.py` + bridge `/api/chat` 填 chat / watch（共影看 `watch_sessions` 现场那一行） | — |
-| R1b | 日记 / 共读 / 主动开口改填字段；guide `00-where-am-i` 瘦身 | R1 |
+| **R1b** ✅ 10-11 | 日记 / 共读 / 主动开口改填字段；guide `00-where-am-i` 指向工牌 | R1 |
 | R0 | 量工具 schema token 与缓存账 | — |
 | R2-shadow | 工具集声明 + 影子日志 | R0 不亏 |
 | R3 | precondition（家居写类先行） | — |

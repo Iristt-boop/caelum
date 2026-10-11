@@ -66,6 +66,18 @@ describe("工牌：bridge 转给 Core 时带 runtime", () => {
     assert.equal(sent.runtime, undefined);
   });
 
+  test("日记批注（R1b）：surface=diary，正文不再写「这不是聊天窗口」", async () => {
+    await api(bridge.base, "/api/diary", { method: "POST", body: { content: "test-今天有点累" } });
+    let sent;
+    for (let i = 0; i < 40 && !sent; i++) {
+      await new Promise((r) => setTimeout(r, 50));
+      sent = seen.find((b) => String(b.session_id || "").startsWith("diary-"));
+    }
+    assert.ok(sent, "日记批注没转给 Core");
+    assert.deepEqual(sent.runtime, { surface: "diary" });
+    assert.ok(!sent.text.includes("这不是聊天窗口"));
+  });
+
   test("🔴 共影现场：surface=watch，带片名和集数，不带进度", async () => {
     await api(bridge.base, "/api/watch/state", {
       method: "POST",

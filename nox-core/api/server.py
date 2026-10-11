@@ -1208,7 +1208,8 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
             logger.warning("他自己的时间：抽心情失败，不带心情去", exc_info=True)
             m = None
         sid = f"{own_time.SESSION_PREFIX}{now:%Y%m%d}"
-        dynamic = core._dynamic(own_time.PROMPT, False, None, session_id=sid)
+        dynamic = core._dynamic(own_time.PROMPT, False, None, session_id=sid,
+                                runtime={"surface": "own_time"})
         dynamic = "\n\n".join(x for x in (
             dynamic, f"这会儿你带着的心情：{m.word}。" if m else "", INNER_VOICE_RULE) if x)
         a = own_time.run_once(loop=own_time.build_loop(core.loop, core.loop.adapter),
@@ -3191,7 +3192,8 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
         history = sessions.get(sid)
         try:
             r = core.chat(prep.prompt, history,
-                          session_id=sid, session_started=db.started_at(sid))
+                          session_id=sid, session_started=db.started_at(sid),
+                          runtime={"surface": "proactive"})
             meter.record("daily-summary", meter.routed_model(core, r), getattr(r, "usage", None))
         except Exception as exc:  # noqa: BLE001
             logger.exception("早报生成异常")

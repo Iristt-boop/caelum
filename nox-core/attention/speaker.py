@@ -295,7 +295,9 @@ def build_speaker(core: _Core, sessions: _Sessions, store: Any,
         recall = getattr(intent, "recall", None)
         if recall is None:
             recall = str(getattr(intent, "subject", "") or "")
-        r = core.chat(prompt, history, session_id=sid, recall=recall)
+        # 工牌：surface=proactive（R1b）。开头那句「（系统提示：…」**留着** —— 主会话里认「不是她说的」靠它
+        r = core.chat(prompt, history, session_id=sid, recall=recall,
+                      runtime={"surface": "proactive"})
 
         # 主动开口也是全管线（带历史和记忆召回），一天十几次 ——
         # 2026-10-09 对账实锤这是账本最大的一类盲区，补记。

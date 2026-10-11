@@ -212,9 +212,11 @@ def live(monkeypatch, tmp_path):
     ad = _Ad()
     nox.loop = _full_loop(ad)
     nox.router = SimpleNamespace(light_adapter=None)
-    nox._dynamic = lambda *a, **k: "（动态块）"
+    nox.dynamic_kwargs = []
+    nox._dynamic = lambda *a, **k: nox.dynamic_kwargs.append(k) or "（动态块）"
     nox._system = "人设"
     app = create_app(nox, Store(tmp_path / "sessions.db"))
+    app.state.test_nox = nox
     return TestClient(app), app, ad
 
 
@@ -226,6 +228,8 @@ def test_到点就去_落日志_接口看得到(live):
                                                "at": (now - timedelta(minutes=1)).isoformat(), "done": False})
     a = app.state.own_time_tick(now)
     assert a is not None and a.ok and ad.calls == 2
+    # 工牌（Runtime Context R1b）：他自己的时间，不是「她从聊天找你」
+    assert app.state.test_nox.dynamic_kwargs[-1].get("runtime") == {"surface": "own_time"}
     assert store.get_source_state(own_time.PLAN_KEY)["done"], "先标 done：挂在半路也不会重跑、在花园里发两遍"
     assert app.state.own_time_tick(now + timedelta(minutes=5)) is None, "一天就一次"
     items = c.get("/api/nox/activities").json()["items"]

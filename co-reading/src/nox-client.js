@@ -56,8 +56,9 @@ function buildPrompt(note, chunkText, bookTitle, chunkTitle, withMemory = true) 
   }
 
   return [
-    "（系统提示：这不是聊天窗口。糖糖在读书，划了一段并在页边写了批注，",
-    "你现在要在她那条批注下面回一句。）",
+    // 「这不是聊天窗口」那句挪走了（2026-10-11 工牌 R1b）：入口走 runtime 字段，
+    // 他每轮的【你在哪】里写着「共读」—— 正文只说这一轮发生了什么、要他做什么
+    "糖糖在读书，划了一段并在页边写了批注，你现在要在她那条批注下面回一句。",
     "",
     `在读：${where}`,
     "",
@@ -100,14 +101,19 @@ function buildPrompt(note, chunkText, bookTitle, chunkTitle, withMemory = true) 
  * 失败时抛异常，由调用方决定怎么降级 —— 这里不吞。
  * 批注已经提交成功了，回不上来是另一回事，不该让整个提交看起来失败。
  */
-async function callCore(sessionId, prompt) {
+/** 工牌（Runtime Context）：告诉 Core 这一轮是从「共读」来的、在读哪本书。 */
+function readingRuntime(bookTitle) {
+  return { surface: "reading", object: bookTitle ? { title: bookTitle } : undefined };
+}
+
+async function callCore(sessionId, prompt, runtime) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
   try {
     const res = await fetch(`${CORE_URL}/chat`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ session_id: sessionId, text: prompt }),
+      body: JSON.stringify({ session_id: sessionId, text: prompt, runtime }),
       signal: controller.signal,
     });
     if (!res.ok) throw new Error(`Core 返回 ${res.status}`);
@@ -135,8 +141,8 @@ async function callCore(sessionId, prompt) {
  */
 function rememberInBackground({ note, replyText, bookTitle }) {
   const prompt = [
-    "（系统提示：糖糖在读书时划了一段、写了批注，你刚回过她了。",
-    "现在只做一件事：判断这条值不值得记进长期记忆。）",
+    "糖糖在读书时划了一段、写了批注，你刚回过她了。",
+    "现在只做一件事：判断这条值不值得记进长期记忆。",
     "",
     `书：${bookTitle || note.bookId}`,
     `她划的：「${(note.quote || "").slice(0, 200)}」`,
@@ -150,7 +156,7 @@ function rememberInBackground({ note, replyText, bookTitle }) {
 
   // 故意不 await：她不该为了后台记笔记多等几秒。
   // 失败也只记一行日志 —— 记忆没存上不影响她看到回应。
-  callCore(`reading-${note.id}-mem`, prompt).catch((error) => {
+  callCore(`reading-${note.id}-mem`, prompt, readingRuntime(bookTitle)).catch((error) => {
     console.error(`[co-reading] 记忆写入失败 (${note.id}):`, error.message || error);
   });
 }
@@ -162,6 +168,7 @@ export async function replyToNote({ note, chunkText, bookTitle, chunkTitle }) {
   const r = await callCore(
     sessionId,
     buildPrompt(note, chunkText, bookTitle, chunkTitle, false),
+    readingRuntime(bookTitle),
   );
   if (!r.text) throw new Error(`Core 没给出文本（${r.outcome}）`);
 

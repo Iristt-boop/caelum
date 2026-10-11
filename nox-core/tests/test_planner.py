@@ -268,6 +268,7 @@ class FakeChatNox:
 
     def chat(self, text, history=None, **kw):
         self.chat_calls.append(text)
+        self.chat_kwargs = kw
         result = type("LR", (), {
             "ok": self.ok, "text": self.reply,
             "outcome": "answered" if self.ok else "error", "detail": "",
@@ -297,6 +298,8 @@ def test_endpoint_goes_through_chat_so_it_lands_in_history():
     assert "5 小时 40 分" in nox.chat_calls[0]   # 简报确实递过去了
     assert r.json()["text"] == "早，昨晚没睡够吧。"
     assert r.json()["session_id"] == "s1"
+    # 工牌（Runtime Context R1b）：早报是他主动开口
+    assert nox.chat_kwargs.get("runtime") == {"surface": "proactive"}
 
 
 def test_endpoint_skips_without_calling_model():
