@@ -1319,6 +1319,9 @@ async function coreMode(req, res, requestId) {
   // tool_start 压入、tool_end 补全，done 时随消息落 metadata.toolsTrace ——
   // 她翻历史时能看到每次调用的入参和子步骤，不只是工具名清单
   let toolsTrace = [];
+  // 这一轮的用量（2026-10-11 她：「他发出来的每一轮我看命中和 token」）。
+  // done 里拿到 → 立刻发一帧给前端；收尾落库时挂在这一轮**最后一条**上（翻历史还在）
+  let turnUsage = null;
   // 他这一轮的思考（2026-10-06 她：「打开 thinking 在 chat 页也显示 thinking 的内容」）。
   // 「思考」开着 Core 才发 thinking 帧；转给前端，收尾落进这一轮第一条的 metadata.thinking
   let thinkingText = "";
@@ -1658,6 +1661,11 @@ async function coreMode(req, res, requestId) {
           // ⚠️ 这段 2026-07-28 删 apiMode 时被一起删掉了，统计从那天起就冻住了，
           // 表面上完全看不出来 —— Console 照常显示，只是数字不再变。
           if (ev.input_tokens > 0 || ev.output_tokens > 0) {
+            turnUsage = {
+              model: ev.model || "", input: ev.input_tokens || 0,
+              cached: ev.cached_tokens || 0, output: ev.output_tokens || 0,
+            };
+            res.write(`data: ${JSON.stringify({ type: "usage", ...turnUsage })}\n\n`);
             try {
               dbRun("INSERT INTO usage_log VALUES (?,?,?,?,?,?,?,?)", [
                 new Date().toISOString(),
@@ -1725,17 +1733,19 @@ async function coreMode(req, res, requestId) {
   //: 思考挂在这一轮**第一条**上（不管它是字还是组件）—— 两个 Chat 页都把它画在这一轮最前面
   const thinking = thinkingText.trim();
   let firstEntry = true;
+  const lastEntry = timeline[timeline.length - 1];
   for (const e of timeline) {
     const th = firstEntry && thinking ? { thinking } : {};
     firstEntry = false;
+    const us = e === lastEntry && turnUsage ? { usage: turnUsage } : {};
     if (e.att) {
-      saveMessage(coreSid, "assistant", "", { ...e.att, ...th, ...(multi ? { turn } : {}) });
+      saveMessage(coreSid, "assistant", "", { ...e.att, ...th, ...us, ...(multi ? { turn } : {}) });
       continue;
     }
     // metadata 搭积木：segments / toolsUsed 按需往里面加，不为了传一个字段
     // 把另一个空数组也塞进去 —— 前端看到空数组和「没这个 key」行为一样，
     // 白占数据库一行。工具轨迹挂在这一轮的**第一条**文字上（前端的工具块画在回复开头）
-    const meta = { ...th };
+    const meta = { ...th, ...us };
     if (e.text.length > 1) meta.segments = e.text;
     if (firstText && toolsUsed.length) meta.toolsUsed = toolsUsed;
     if (firstText && toolsTrace.length) meta.toolsTrace = toolsTrace;

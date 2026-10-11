@@ -24,7 +24,8 @@ before(async () => {
         const f = (o) => res.write(`data: ${JSON.stringify(o)}\n\n`);
         f({ type: "text", text: "做好了" });
         f({ type: "attachment", kind: "creation", creation_id: "abc", title: "五子棋" });
-        f({ type: "done", ok: true, session_id: "cr-s1", outcome: "answered", tools_used: ["make_creation"] });
+        f({ type: "done", ok: true, session_id: "cr-s1", outcome: "answered", tools_used: ["make_creation"],
+            model: "glm-5.3-flash", input_tokens: 63756, output_tokens: 169, cached_tokens: 61120, cache_write_tokens: 0 });
         res.end();
       });
       return;
@@ -78,5 +79,23 @@ describe("Creations：bridge", () => {
   test("没带 token 的拿不到", async () => {
     const r = await fetch(`${bridge.base}/api/nox/creations`);
     assert.equal(r.status, 403);
+  });
+
+  test("🔴 每轮用量：直播一帧 + 挂在这一轮最后一条上（10-11）", async () => {
+    const r = await fetch(`${bridge.base}/api/chat`, {
+      method: "POST", headers: { "Content-Type": "application/json", "X-Nox-Token": TOKEN },
+      body: JSON.stringify({ message: "再做一个", sessionId: "cr-s2" }),
+    });
+    const frames = (await r.text()).split(/\n\n/).filter((l) => l.startsWith("data: ")).map((l) => JSON.parse(l.slice(6)));
+    assert.deepEqual(frames.find((f) => f.type === "usage"),
+      { type: "usage", model: "glm-5.3-flash", input: 63756, cached: 61120, output: 169 });
+    const mine = (await api(bridge.base, "/api/messages?sessionId=cr-s1")).data.filter((m) => m.role === "assistant");
+    const metas = mine.map((m) => (typeof m.metadata === "string" ? JSON.parse(m.metadata || "{}") : m.metadata || {}));
+    const withUsage = metas.filter((x) => x.usage);
+    // 这个会话两轮（上一条测试一轮 + 这一轮），每轮两条（文字 + Creation 卡片）→ 用量正好两条，各在每轮最后
+    assert.equal(mine.length, 4);
+    assert.equal(withUsage.length, 2, "一轮只挂一次，不是每条都挂");
+    assert.ok(metas[1].usage && !metas[0].usage, "挂在这一轮最后一条，不是第一条");
+    assert.ok(metas.at(-1).usage, "用量要挂在这一轮最后一条上");
   });
 });
