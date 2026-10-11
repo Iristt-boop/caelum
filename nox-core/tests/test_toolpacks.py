@@ -90,6 +90,16 @@ def test_她的10_11拍板_长任务跟电脑走_相册按需():
     assert "send_gallery_image" in offer
 
 
+@pytest.mark.parametrize("text,pack", [
+    ("我的喜欢列表能看到吗？从里面挑一首", "listen"),   # A1 尺子 #19（08-08 她的原话）
+    ("能看到网易云吗", "listen"),
+    ("你看看能不能看到我", "stackchan"),                # A1 尺子 #20（09-24 她的原话）
+])
+def test_A1尺子抓到的触发词漏洞(text, pack):
+    _, mounted = toolpacks.select(NAMES, texts=[text])
+    assert pack in mounted
+
+
 def test_工牌入口挂包():
     offer, mounted = toolpacks.select(NAMES, texts=["这首好听"], surface="stackchan")
     assert "stackchan" in mounted and "stackchan_look" in offer

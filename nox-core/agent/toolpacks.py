@@ -55,11 +55,11 @@ PACKS: tuple[Pack, ...] = (
     Pack("computer", ("computer_",), names=("start_long_task", "task_status", "task_cancel"),
          triggers=r"电脑|屏幕|窗口|截图|桌面|浏览器|网页|打开.{0,8}(网站|页面)|长任务"),
     Pack("garden", ("galatea_",), triggers=r"花园|galatea|帖子"),
-    Pack("listen", ("listen_",), triggers=r"共听|一起听|听.{0,6}歌|歌单|这首|播放|放.{0,4}(首|点)",
+    Pack("listen", ("listen_",), triggers=r"共听|一起听|听.{0,6}歌|歌单|这首|播放|放.{0,4}(首|点)|网易云|喜欢列表|挑一首|听什么",
          surfaces=("listen",)),
     Pack("notion", ("notion_",), triggers=r"notion|笔记本"),
     Pack("reading", ("reading_",), triggers=r"共读|读书|看书|这本书|批注|划线", surfaces=("reading",)),
-    Pack("stackchan", ("stackchan_",), triggers=r"stack|小机器人|看看我|摄像头|你的眼睛",
+    Pack("stackchan", ("stackchan_",), triggers=r"stack|小机器人|看看我|看到我|看得到我|看得见我|摄像头|你的眼睛",
          surfaces=("stackchan",)),
     # 糖糖 10-11：send_gallery_image 几乎没用过 —— 不砍，提到相册 / 照片才挂
     Pack("gallery", names=("send_gallery_image", "favorite_image"), triggers=r"相册|照片|图库|发.{0,4}(张|个)图"),
