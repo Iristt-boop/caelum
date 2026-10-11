@@ -4007,6 +4007,39 @@ const noxConfigProxy = (corePath, tag) => async (req, res) => {
 app.get("/api/nox/config/providers", noxConfigProxy("/api/nox/config/providers", "nox-config-providers"));
 app.get("/api/nox/config/slots", noxConfigProxy("/api/nox/config/slots", "nox-config-slots"));
 
+// 配置层 P2b（写）：前端填 key / 清 key / 加密迁移包导出、预览、导入。
+// 🔴 请求体里是 key 和口令：**这里一个字节都不记**（出错只记路径和 Core 的状态码），也不缓存。
+// 状态码原样带回（400 口令不对 / 404 没有这一家 / 429 点太快 / 503 库没起来），前端按 ok:false 显示 error。
+const noxConfigWrite = (method, corePathOf, tag) => async (req, res) => {
+  const path = corePathOf(req);
+  try {
+    const r = await fetch(`${NOX_CORE_URL}${path}`, {
+      method,
+      headers: { "Content-Type": "application/json" },
+      body: method === "DELETE" ? undefined : JSON.stringify(req.body || {}),
+      signal: AbortSignal.timeout(20000),
+    });
+    const body = await r.json().catch(() => null);
+    if (!r.ok || !body || body.ok === false) {
+      console.warn(`[${tag}] ${method} ${path} → Core ${r.status}`);
+      return res.status(r.ok ? 502 : r.status).json({
+        ok: false, error: (body && (body.detail || body.error)) || `Core 回了 ${r.status}`,
+      });
+    }
+    res.json(body);
+  } catch (e) {
+    console.error(`[${tag}] ${method} ${path} 失败:`, e.message);
+    res.status(502).json({ ok: false, error: e.message });
+  }
+};
+const keyPath = (req) => `/api/nox/config/providers/${encodeURIComponent(req.params.id)}/key`;
+app.put("/api/nox/config/providers/:id/key", noxConfigWrite("PUT", keyPath, "nox-config-key"));
+app.delete("/api/nox/config/providers/:id/key", noxConfigWrite("DELETE", keyPath, "nox-config-key"));
+app.post("/api/nox/config/export", noxConfigWrite("POST", () => "/api/nox/config/export", "nox-config-export"));
+app.post("/api/nox/config/import/preview",
+  noxConfigWrite("POST", () => "/api/nox/config/import/preview", "nox-config-import"));
+app.post("/api/nox/config/import", noxConfigWrite("POST", () => "/api/nox/config/import", "nox-config-import"));
+
 // World 页（户型图）：天 / 家里的设备 / 她在不在家 / 她在忙什么，一次取齐。
 // ⚠️ 超时给到 12 秒 —— 这条要串 ha-mcp 拿清单 + 并发查 HA 状态，
 // 比别的接口慢，8 秒会在设备多的时候偶发超时（那会让整张图无谓地黑掉）。

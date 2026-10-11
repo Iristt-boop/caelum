@@ -72,6 +72,16 @@ backup_missing_dbs() {
   return 0
 }
 
+# 🔴 前端填的 key（settings.keys，配置层 P2b）**不许**在普通备份里（2026-10-11）。
+# 退出码: 0=没有  1=包里有  2=包打不开（打不开不算「没有」）
+backup_leaks_keyfile() {
+  local enc="$1" pass="$2" listing
+  listing=$(openssl enc -d -aes-256-cbc -pbkdf2 -pass file:"$pass" -in "$enc" 2>/dev/null | tar tzf - 2>/dev/null)
+  [ -n "$listing" ] || return 2
+  printf '%s\n' "$listing" | grep -q 'settings\.keys' && return 1
+  return 0
+}
+
 # 单独跑对账（给测试 / 手动演练用）: doctor.sh --verify-backup-dbs <包> <密码文件>
 if [ "${1:-}" = "--verify-backup-dbs" ]; then
   MISS=$(backup_missing_dbs "${2:?缺备份包路径}" "${3:?缺密码文件路径}"); rc=$?
@@ -259,6 +269,11 @@ else
       0) good "最新备份里 SQLite 库齐全（$(echo $REQUIRED_BACKUP_DBS | wc -w) 个）" ;;
       1) bad  "最新备份缺库：$BMISS —— 去 caelum-backup.sh 的热备清单补上" ;;
       *) bad  "最新备份解不开或是空的（密码不对 / 包损坏）—— 恢复会失败" ;;
+    esac
+    backup_leaks_keyfile "$LATEST" /root/.backup-pass; krc=$?
+    case $krc in
+      0) good "最新备份里没有前端 key 文件（key 只走加密迁移包）" ;;
+      1) bad  "最新备份里有 settings.keys —— key 进了普通备份，去 caelum-backup.sh 查是谁把它拷进来的" ;;
     esac
   else
     warn "找不到 /root/.backup-pass，没法核对备份内容"

@@ -5,7 +5,8 @@ P2a 只接三个字段，全是「今天靠嗅探的知识」：
   · 断点有效期 —— `models.cache_ttl`
   · 能不能直接收图 —— `models.capabilities` 里有没有 vision
 
-地址、型号名、key **不从这里改**（还是环境变量 / BACKENDS 说了算，P2d 起才有前端写的厂商）。
+P2b 起还接 **key**：她在前端填过的（`settings.keys`）优先于环境变量；清掉就回到环境变量。
+地址、型号名**不从这里改**（还是环境变量 / BACKENDS 说了算，P2d 起才有前端写的厂商）。
 
 ## 什么时候不用档案（adapter 照旧嗅探，行为与 P2 之前逐字节一致）
 
@@ -22,6 +23,7 @@ import logging
 import os
 from typing import Any
 
+from settings_store.keys import KeyStore
 from settings_store.store import SettingsStore
 
 logger = logging.getLogger("settings_store.profile")
@@ -39,26 +41,43 @@ def _provider_for(store: SettingsStore, llm: Any) -> dict[str, Any] | None:
     return next((p for p in cands if p["protocol"] == llm.provider), cands[0] if cands else None)
 
 
-def apply(store: SettingsStore, llm: Any) -> Any:
-    """返回填好档案字段的 `LLMConfig`（新对象）。找不到厂商就原样返回 —— 走老路，不猜。"""
+def apply(store: SettingsStore, llm: Any, keys: KeyStore | None = None) -> Any:
+    """返回填好档案字段的 `LLMConfig`（新对象）。找不到厂商就原样返回 —— 走老路，不猜。
+
+    `llm` 应当是**环境变量建出来的那份**（见 `attach` 里的 `_env_cfg`）：key 清掉之后要能回到它。
+    """
     p = _provider_for(store, llm)
     if p is None:
         logger.info("档案里没有 %s 这条线路（%s），照旧按名字判断", llm.model, llm.base_url or "默认地址")
         return llm
+    fields: dict[str, Any] = {"cache_style": p["cache_style"]}
+    front_key = keys.get(p["id"]) if keys is not None else ""
+    if front_key:
+        fields["api_key"] = front_key                   # 前端 > 环境变量
     m = next((x for x in store.models()
               if x["provider_id"] == p["id"] and x["model_name"] == llm.model), None)
-    if m is None:
-        # 厂商在、型号不在：缓存跟厂商走；能力不知道 → 不填，交给老规则（别把没测过的标成能看图）
-        return dataclasses.replace(llm, cache_style=p["cache_style"])
-    return dataclasses.replace(
-        llm,
-        cache_style=m.get("cache_style") or p["cache_style"],
-        cache_ttl=m.get("cache_ttl") if m.get("cache_ttl") is not None else "",
-        vision="vision" in (m.get("capabilities") or []),
-    )
+    if m is not None:
+        fields.update(
+            cache_style=m.get("cache_style") or p["cache_style"],
+            cache_ttl=m.get("cache_ttl") if m.get("cache_ttl") is not None else "",
+            vision="vision" in (m.get("capabilities") or []),
+        )
+    # 厂商在、型号不在：缓存跟厂商走；能力不知道 → 不填，交给老规则（别把没测过的标成能看图）
+    return dataclasses.replace(llm, **fields)
 
 
-def attach(core: Any, store: SettingsStore) -> int:
+def _reapply(a: Any, store: SettingsStore, keys: KeyStore | None) -> None:
+    """对一个已经建好的 adapter 重新套档案。key 变了要**重建客户端**（SDK 客户端建的时候就把 key 捏在手里了）。"""
+    base = getattr(a, "_env_cfg", None) or a.cfg
+    new = apply(store, base, keys)
+    if new.api_key != a.cfg.api_key:
+        a.__init__(new)                                 # 同一个对象：Router / Archiver 手里那个跟着换
+    else:
+        a.cfg = new
+    a._env_cfg = base
+
+
+def attach(core: Any, store: SettingsStore, keys: KeyStore | None = None) -> int:
     """启动时把档案套到已经建好的 adapter 上（**就地**换 `cfg`）。返回套了几个。
 
     就地换而不是重建：Router 和 Archiver 持有的是同一个杂活 adapter（Archiver 那个外面
@@ -73,7 +92,7 @@ def attach(core: Any, store: SettingsStore) -> int:
         if a is None or id(a) in seen or not hasattr(a, "cfg"):
             continue
         seen.add(id(a))
-        a.cfg = apply(store, a.cfg)
+        _reapply(a, store, keys)
         n += 1
     # 按请求切的模型（adapter_for 缓存的）丢掉，下一次按档案重建
     cache = getattr(core, "_adapters", None)
@@ -81,6 +100,15 @@ def attach(core: Any, store: SettingsStore) -> int:
         cache.clear()
     # 之后新建的 adapter（按请求切模型、server.py 里各路杂活）在工厂里套：同一条路径，不靠每个调用点记得
     from agent import adapters
-    adapters.use_profiles(lambda llm: apply(store, llm))
+    adapters.use_profiles(lambda llm: apply(store, llm, keys))
     core.profiles = store
+    core.config_keys = keys
     return n
+
+
+def refresh(core: Any) -> int:
+    """她改了 key 之后：已经建好的主线 / 杂活按新档案重套，按请求切的模型缓存丢掉。没装档案就什么都不做。"""
+    store = getattr(core, "profiles", None)
+    if store is None:
+        return 0
+    return attach(core, store, getattr(core, "config_keys", None))

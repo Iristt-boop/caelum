@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from agent import vision
-from agent.adapters import make_adapter, sees_images
+from agent.adapters import make_adapter, profiled, sees_images
 from agent.llm import MEME_TAGS, LLMAdapter, Message, extract_fake_calls, strip_stage_tags
 from agent import meter
 from agent.loop import AgentLoop
@@ -756,7 +756,8 @@ class Nox:
                 model=choice.model,
                 max_tokens=self.cfg.primary.max_tokens,
             )
-            if not cfg.usable:
+            # 先套档案再判「配没配 key」：她可能只在前端填了 key、环境变量里是空的
+            if not profiled(cfg).usable:
                 logger.warning("模型 %s 的后端 %s 没配 key，这轮用默认", model, choice.backend)
                 return None
             adapter = make_adapter(cfg)

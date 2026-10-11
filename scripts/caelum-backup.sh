@@ -110,6 +110,16 @@ if [ "${ENV_LINES:-0}" -lt 20 ]; then
   echo "$LOG_TAG ERROR: nox-core/.env 没收到或不完整（<20 行）—— 恢复出来的他调不了模型"
   FAIL=1
 fi
+# 🔴 2026-10-11（配置层 P2b）：她在前端填的 key 存在 /root/nox-core/data/settings.keys，**不进普通备份**
+# （设计稿 12.2：key 只走她主动导出的加密迁移包）。上面的清单是按名字收的，本来就不会带上它；
+# 这里再查一遍：哪天有人把某个目录整个拷进来，key 文件跟着进了包，就删掉并报错。
+# >>> key-guard（tests/test_config_keys_migrate.py 把这段抠出来真跑）
+if find "$WORK" -name 'settings.keys*' | grep -q .; then
+  echo "$LOG_TAG ERROR: 备份工作目录里出现了 settings.keys —— 已删掉；key 不进普通备份"
+  find "$WORK" -name 'settings.keys*' -delete
+  FAIL=1
+fi
+# <<< key-guard
 # 定时任务和 /root 下的运维脚本（watch / 晨检 / care 周报 / 留存 / 部署）——
 # 备份脚本以前连它自己都没收
 crontab -l > "$WORK/config/crontab.root" 2>/dev/null || true

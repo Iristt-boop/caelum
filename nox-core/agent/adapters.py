@@ -785,12 +785,27 @@ def use_profiles(fn: Callable[[LLMConfig], LLMConfig] | None) -> None:
     _PROFILE = fn
 
 
+def profiled(cfg: LLMConfig) -> LLMConfig:
+    """套上档案（缓存打法 / 能不能看图 / 她在前端填的 key）。没装档案或已经套过就原样返回。"""
+    if _PROFILE is None or cfg.cache_style is not None:
+        return cfg
+    try:
+        return _PROFILE(cfg)
+    except Exception:  # noqa: BLE001 —— 档案坏了也得能说话，但要留痕
+        logger.warning("套档案失败，这个 adapter 走老规则（名字嗅探）", exc_info=True)
+        return cfg
+
+
 def make_adapter(cfg: LLMConfig) -> LLMAdapter:
-    if _PROFILE is not None and cfg.cache_style is None:
-        try:
-            cfg = _PROFILE(cfg)
-        except Exception:  # noqa: BLE001 —— 档案坏了也得能说话，但要留痕
-            logger.warning("套档案失败，这个 adapter 走老规则（名字嗅探）", exc_info=True)
+    env_cfg = cfg
+    cfg = profiled(cfg)
+    adapter = _make(cfg)
+    #: 环境变量建出来的那份，她清掉前端 key 时回到它（settings_store/profile._reapply）
+    adapter._env_cfg = env_cfg
+    return adapter
+
+
+def _make(cfg: LLMConfig) -> LLMAdapter:
     if cfg.provider == "anthropic":
         return AnthropicAdapter(cfg)
     if cfg.provider == "openai_compat":

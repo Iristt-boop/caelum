@@ -44,6 +44,10 @@ def start_shadow(core: Any) -> None:
         res = shadow.run(store, cfg, report)
         #: P1 的只读视图从这儿取
         core.settings = store
+        #: P2b：她在前端填的 key（0600 文件，不在库里）。档案没装时也挂上 —— 接口照样能写、能导出
+        from settings_store.keys import FILENAME, KeyStore
+        keys = KeyStore(Path(cfg.db_path).parent / FILENAME)
+        core.config_keys = keys
 
         # P2a：adapter 改读档案（缓存怎么打、能不能看图）。对账不过就不让库说话
         from settings_store import profile
@@ -52,7 +56,7 @@ def start_shadow(core: Any) -> None:
         elif not res.ok:
             logger.warning("配置库和现状对不上（%d 处），这次 adapter 不读档案、照旧按名字判断", len(res.diffs))
         else:
-            n = profile.attach(core, store)
+            n = profile.attach(core, store, keys)
             logger.info("adapter 改读档案：已套 %d 个，之后新建的在工厂里套", n)
     except Exception:  # noqa: BLE001 —— 观察不许拖垮启动，但必须留痕
         logger.warning("配置影子失败（不影响启动）", exc_info=True)

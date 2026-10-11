@@ -49,7 +49,7 @@ def make_deps(nox) -> MapDeps:
 
         role_of = {slot: role for (slot, attr), (_, role) in zip(SLOT_ATTRS, _ROLES)}
         rows = []
-        for item in slots_view(store)["slots"]:
+        for item in slots_view(store, keys=getattr(nox, "config_keys", None))["slots"]:
             if not item["ok"]:
                 # 槽位坏了：如实说，别当它不存在
                 rows.append({"role": role_of.get(item["slot"], item["slot"]), "backend": "（读不到）",

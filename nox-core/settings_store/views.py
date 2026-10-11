@@ -39,8 +39,19 @@ def safe_url(url: str | None) -> str:
     return urlunsplit((u.scheme, host, u.path, "", ""))
 
 
-def providers_view(store: SettingsStore, env: Mapping[str, str] | None = None) -> dict[str, Any]:
+def _key_source(pid: str, key_envs: list[str], env: Mapping[str, str], front: set[str]) -> str | None:
+    """key 从哪来：她在前端填的优先（P2b），其次环境变量；都没有 = None。**只回来源，不回值。**"""
+    if pid in front:
+        return "front"
+    if resolve_key(key_envs, env):
+        return "env"
+    return None
+
+
+def providers_view(store: SettingsStore, env: Mapping[str, str] | None = None,
+                   keys: Any = None) -> dict[str, Any]:
     env = os.environ if env is None else env
+    front = keys.configured() if keys is not None else set()
     per_provider = Counter(m["provider_id"] for m in store.models())
     items = []
     for p in store.providers():
@@ -54,24 +65,28 @@ def providers_view(store: SettingsStore, env: Mapping[str, str] | None = None) -
             "source": p["source"],                      # seed = 来自代码 + 环境变量；user = 前端改的（P2 起）
             "note": p["note"],
             "key_envs": list(p["key_envs"]),            # 环境变量**名字**
-            "key_configured": bool(resolve_key(list(p["key_envs"]), env)),
+            "key_configured": _key_source(p["id"], list(p["key_envs"]), env, front) is not None,
+            "key_source": _key_source(p["id"], list(p["key_envs"]), env, front),   # front | env | None
             "models": per_provider.get(p["id"], 0),
         })
     return {"providers": items, "shadow": store.shadow_summary(7)}
 
 
-def slots_view(store: SettingsStore, env: Mapping[str, str] | None = None) -> dict[str, Any]:
+def slots_view(store: SettingsStore, env: Mapping[str, str] | None = None,
+               keys: Any = None) -> dict[str, Any]:
     env = os.environ if env is None else env
+    front = keys.configured() if keys is not None else set()
     rows = {s["slot"]: s for s in store.slots()}
     order = [n for n in SLOT_ORDER if n in rows] + sorted(n for n in rows if n not in SLOT_ORDER)
     items = []
     for name in order:
         s = rows[name]
-        items.append(_slot_item(store, s, env))
+        items.append(_slot_item(store, s, env, front))
     return {"slots": items}
 
 
-def _slot_item(store: SettingsStore, s: dict[str, Any], env: Mapping[str, str]) -> dict[str, Any]:
+def _slot_item(store: SettingsStore, s: dict[str, Any], env: Mapping[str, str],
+               front: set[str] = frozenset()) -> dict[str, Any]:
     """一个槽位。指不到东西时**如实报坏**（`ok: False`），不用空值顶替 ——「读不到」和「没有」要分开。"""
     name = s["slot"]
     targets = s.get("targets") or []
@@ -94,6 +109,6 @@ def _slot_item(store: SettingsStore, s: dict[str, Any], env: Mapping[str, str]) 
         "model": {"name": m["model_name"], "label": m["label"], "short_name": m["short_name"],
                   "capabilities": m["capabilities"]},
         "max_tokens": params.get("max_tokens"),
-        "key_configured": bool(resolve_key(key_envs, env)),
+        "key_configured": p["id"] in front or bool(resolve_key(key_envs, env)),
         "updated_by": s["updated_by"],
     }

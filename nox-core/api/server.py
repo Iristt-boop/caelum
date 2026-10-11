@@ -21,6 +21,7 @@ import logging
 import os
 import re
 import threading
+import time
 import urllib.request
 import uuid
 from collections import OrderedDict
@@ -355,6 +356,23 @@ class CowatchSummarizeRequest(BaseModel):
     started_at: str
     ended_at: str
     watch_id: str
+
+
+class ProviderKeyRequest(BaseModel):
+    """配置层 P2b：给一家厂商填 key。**只收不回**（模块顶层，理由同上）"""
+    key: str
+
+
+class ConfigExportRequest(BaseModel):
+    """加密迁移包：口令输两遍。口令不存、不进日志"""
+    passphrase: str
+    passphrase2: str
+
+
+class ConfigImportRequest(BaseModel):
+    """导入迁移包：文件内容 base64 + 口令。预览和真导入共用"""
+    file_b64: str
+    passphrase: str
 
 
 class ChatResponse(BaseModel):
@@ -2919,12 +2937,110 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
         Models 页「Routes」分区的数据源。key 只回「配没配」；地址已剥掉账号密码和查询串。
         见 `settings_store/views.py`。
         """
-        return {"ok": True, **providers_view(_config_store())}
+        return {"ok": True, **providers_view(_config_store(), keys=getattr(core, "config_keys", None))}
 
     @app.get("/api/nox/config/slots")
     def nox_config_slots() -> dict:
         """配置层 P1：功能槽位现在指向谁（主线 / 杂活 / 识图）。只读。"""
-        return {"ok": True, **slots_view(_config_store())}
+        return {"ok": True, **slots_view(_config_store(), keys=getattr(core, "config_keys", None))}
+
+    # ---- 配置层 P2b：key（只写）+ 加密迁移包 ------------------------------------------
+    # 🔴 这几个接口**只挂在这里**，不进他的工具表（他只能提议，不能改 / 导出 / 导入）——
+    # tests/test_config_keys_migrate.py 的哨兵断言 settings_store.keys / migrate 只被这里和配置层自己引用。
+    # 审计日志：谁（这里只有她）、何时、哪一项；**不含值、不含口令**。
+    _config_write_times: dict[str, list[float]] = {}
+
+    def _config_limit(action: str, per_10min: int) -> None:
+        """写类接口限流。导出 / 导入要跑 scrypt（吃 CPU 和 32MB 内存），不能被连点。"""
+        now = time.monotonic()
+        hits = [t for t in _config_write_times.get(action, []) if now - t < 600]
+        if len(hits) >= per_10min:
+            raise HTTPException(status_code=429, detail="点得太快了，过几分钟再试")
+        hits.append(now)
+        _config_write_times[action] = hits
+
+    def _config_keys():
+        keys = getattr(core, "config_keys", None)
+        if keys is None:
+            raise HTTPException(status_code=503, detail="配置库没起来，key 现在写不了 —— 看日志里的「配置影子」")
+        return keys
+
+    def _known_provider(pid: str) -> dict:
+        p = _config_store().provider(pid)
+        if p is None:
+            raise HTTPException(status_code=404, detail=f"没有 {pid} 这一家")
+        return p
+
+    @app.put("/api/nox/config/providers/{pid}/key")
+    def nox_config_set_key(pid: str, req: ProviderKeyRequest) -> dict:
+        """给一家填 key（她在前端填的优先于环境变量）。**响应里没有 key**，只有「配上了」。"""
+        _config_limit("key", 30)
+        _known_provider(pid)
+        try:
+            _config_keys().set(pid, req.key)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from None
+        from settings_store import profile
+        profile.refresh(core)                         # 已经建好的主线 / 杂活换上新 key，下一轮生效
+        logger.info("配置审计：她给 %s 填了新 key", pid)
+        return {"ok": True, "provider": pid, "key_configured": True, "key_source": "front"}
+
+    @app.delete("/api/nox/config/providers/{pid}/key")
+    def nox_config_clear_key(pid: str) -> dict:
+        """清掉前端填的 key，回到环境变量里的那把（如果有）。"""
+        _config_limit("key", 30)
+        _known_provider(pid)
+        cleared = _config_keys().clear(pid)
+        from settings_store import profile
+        profile.refresh(core)
+        logger.info("配置审计：她清掉了 %s 的前端 key（%s）", pid, "清了" if cleared else "本来就没有")
+        item = next(i for i in providers_view(_config_store(), keys=_config_keys())["providers"] if i["id"] == pid)
+        return {"ok": True, "provider": pid, "cleared": cleared,
+                "key_configured": item["key_configured"], "key_source": item["key_source"]}
+
+    @app.post("/api/nox/config/export")
+    def nox_config_export(req: ConfigExportRequest) -> dict:
+        """导出加密迁移包（只有她点）。返回文件内容 base64，前端存成 .caelumcfg。"""
+        from settings_store import migrate
+        _config_limit("migrate", 5)
+        try:
+            pw = migrate.check_passphrase(req.passphrase, req.passphrase2)
+            blob = migrate.export_package(_config_store(), _config_keys(), pw)
+        except migrate.MigrationError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from None
+        logger.info("配置审计：她导出了一份迁移包（%d 字节）", len(blob))
+        return {"ok": True, "filename": f"caelum-{temporal_now():%Y%m%d-%H%M}.caelumcfg",
+                "file_b64": base64.b64encode(blob).decode("ascii")}
+
+    def _open_upload(req: ConfigImportRequest) -> dict:
+        from settings_store import migrate
+        try:
+            blob = base64.b64decode(req.file_b64, validate=True)
+        except (ValueError, TypeError):
+            raise HTTPException(status_code=400, detail=migrate.NOT_A_PACKAGE) from None
+        try:
+            return migrate.open_package(blob, req.passphrase)
+        except migrate.MigrationError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from None
+
+    @app.post("/api/nox/config/import/preview")
+    def nox_config_import_preview(req: ConfigImportRequest) -> dict:
+        """导入前的预览：会新增 / 覆盖哪些、带没带 key（**不显示 key**）。什么都不写。"""
+        from settings_store import migrate
+        _config_limit("migrate", 5)
+        return {"ok": True, **migrate.preview(_config_store(), _open_upload(req))}
+
+    @app.post("/api/nox/config/import")
+    def nox_config_import(req: ConfigImportRequest) -> dict:
+        """她看过预览、点了确认才调。导入的厂商一律「未测」；槽位这一期不导。"""
+        from settings_store import migrate, profile
+        _config_limit("migrate", 5)
+        data = _open_upload(req)
+        result = migrate.apply_package(_config_store(), _config_keys(), data)
+        profile.refresh(core)
+        logger.info("配置审计：她导入了迁移包（%d 家厂商 / %d 个型号 / %d 把 key）",
+                    result["providers"], result["models"], result["keys"])
+        return {"ok": True, **result}
 
     @app.get("/api/nox/tools")
     def nox_tools() -> dict:
