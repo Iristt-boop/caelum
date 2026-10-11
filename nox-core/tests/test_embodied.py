@@ -52,11 +52,18 @@ def test_32度开电热毯_拒且带温度和替代():
     assert g.alternative == "cooling_possible", "必须给替代方向——话术归 Nox，方向归闸门"
 
 
-def test_温度unknown_不因温度拦():
-    """env_temp 拿不到就是 unknown——规则不触发，不假装知道。"""
-    g = gate(BLANKET, "on", _world(temp=None), user_text="")
-    assert g.allow
+def test_温度unknown_她没开口_先问不放行():
+    """糖糖 10-11：拿不到温度先问。原来是「不触发 = 放行」—— 而温度三周都拿不到，等于规则不存在。"""
+    g = gate(BLANKET, "on", _world(temp=None), user_text="我睡了")
+    assert not g.allow and g.reason == "unknown_environment"
+    assert "冷" in g.ask
     assert g.facts["env_temp"] is None
+
+
+def test_温度unknown_她自己要_放行():
+    """她说的就是证据：「开电热毯」「好冷」—— 她在床上，知道冷不冷。"""
+    for text in ("开一下电热毯", "好冷啊", "开吧"):
+        assert gate(BLANKET, "on", _world(temp=None), user_text=text).allow, text
 
 
 def test_关电热毯_永远放行():
@@ -125,36 +132,24 @@ def test_模型里确实有十个设备():
 
 def test_凌晨开灯_放行但警告():
     import embodied.validator as v
-    real = v.datetime
-
-    class _FakeDT:
-        @staticmethod
-        def now():
-            return type("T", (), {"hour": 3})()
-
-    v.datetime = _FakeDT
+    real = v.now_cst
+    v.now_cst = lambda: type("T", (), {"hour": 3})()   # 北京时间（R9），不看机器时区
     try:
         g = gate(LIGHT, "on", _world(presence="home"))
     finally:
-        v.datetime = real
+        v.now_cst = real
     assert g.allow
     assert "凌晨" in g.warning
 
 
 def test_白天开灯_无警告():
     import embodied.validator as v
-    real = v.datetime
-
-    class _FakeDT:
-        @staticmethod
-        def now():
-            return type("T", (), {"hour": 15})()
-
-    v.datetime = _FakeDT
+    real = v.now_cst
+    v.now_cst = lambda: type("T", (), {"hour": 15})()   # 北京时间（R9），不看机器时区
     try:
         g = gate(LIGHT, "on", _world(presence="home"))
     finally:
-        v.datetime = real
+        v.now_cst = real
     assert g.allow and g.warning == ""
 
 
@@ -169,4 +164,4 @@ def test_world_snapshot_容错():
     def _boom():
         raise RuntimeError("world 炸了")
     snap = world_snapshot(_boom)
-    assert snap == {"env_temp": None, "presence": None}
+    assert snap == {"env_temp": None, "env_source": None, "presence": None}

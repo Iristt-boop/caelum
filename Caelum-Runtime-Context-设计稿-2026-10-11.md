@@ -305,6 +305,18 @@ v1 → v2 的两条规则：
 
 ## 六、R3：Contract 前移 —— precondition
 
+> **10-11 实施时发现：家居这一块 09-18 就做了**（`embodied/` 行动闸门，设备档案 = 数据，
+> 规则链 forbidden / not_in_model / requires / deny_when / quiet_hours）。所以**不另起 `ToolSpec.precondition`**，
+> 家居的「执行前契约」就是 embodied；别的域真有需要时再抽象。
+>
+> 但它**一半是瞎的**：温度从 World Model 的 `weather` 状态读，而这个状态**从来没人写过**（东京也没有）——
+> env_temp 三周永远 None，电热毯 26°C 规则一次没生效；闸门又不留日志。家里也没有室内温度传感器（空调只报设定温度）。
+>
+> 糖糖 10-11 定：embodied 0.2 的温湿度传感器还没买，**先读户外天气预报**；**拿不到就先问**。
+> 实际改动：World Model 有温度优先用它，没有读 WeatherProvider（3 小时内的旧值还算数）；
+> 有 deny_when 的设备温度不知道 → `unknown_environment` 先问，除非她这句就是在要（「开电热毯」「好冷」「开吧」）；
+> 每次拦截 / 提醒写日志；quiet_hours 改按北京时间（R9）。下面是原设计，留档。
+
 `ToolSpec` 加 `precondition: Callable[[args, ctx], str | None]`，和 `output_contract` 一样是注册时声明的数据、**不发给模型**、不冷缓存。
 在 `AgentLoop._execute` 里、真正执行前检查；返回非 None = 拒绝，理由作为工具结果回给他。
 
@@ -353,7 +365,7 @@ R1 的验收**不拿**工具调用率当指标，免得把它的效果算错。
 | **R1b** ✅ 10-11 | 日记 / 共读 / 主动开口改填字段；guide `00-where-am-i` 指向工牌 | R1 |
 | **R0** ✅ 10-11 | 量工具 schema token 与缓存账 → 见 5.3½，R2 改成「核心集 + 按需工具包」 | — |
 | **R2** ✅ 10-11 | 核心集 + 按需工具包（`agent/toolpacks.py`），直接上线不跑影子（她 10-11：回放已经替代了观察周） | 回放 |
-| R3 | precondition（家居写类先行） | — |
+| **R3** ✅ 10-11 | 改为修好已有的 embodied 闸门：温度读户外预报、不知道先问、留痕（见第六节） | — |
 
 R1 只动 nox-core 一个 provider + 请求模型 + bridge 两处，不动静态前缀、不动工具表，可以单独上线、单独回滚
 （`NOX_RUNTIME_CONTEXT=off`）。

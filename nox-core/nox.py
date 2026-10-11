@@ -239,8 +239,7 @@ class Nox:
         ha_client: McpClient | None = None
         if self.cfg.ha_url:
             ha_client = McpClient(self.cfg.ha_url, name="ha", timeout=self.cfg.ha_timeout)
-            ha_tools.register_all(self.loop, ha_client,
-                                  world_ref=lambda: self.world)
+            self._register_home(ha_client)
             # 打脱敏后的地址 —— ha-mcp 的访问凭据在 URL 路径里，
             # 原样打日志会把它写进 journal 和日志文件
             logger.info("家居工具已注册（%s）", _mask_url(self.cfg.ha_url))
@@ -979,6 +978,13 @@ class Nox:
                 "**必须真的调用工具**——只写字不调用等于骗她。"
             )
         return "\n\n".join(parts)
+
+    def _register_home(self, ha_client: McpClient) -> None:
+        """家居工具 + 行动闸门的两个事实来源。单拎出来是为了能测接线（10-11：闸门的温度源三周没接上）。"""
+        ha_tools.register_all(self.loop, ha_client,
+                              world_ref=lambda: self.world,
+                              # 天气 Provider 在后面才注册，所以给 lambda 现取（没配和风 = None → 温度不知道 → 先问）
+                              weather_ref=lambda: self.context.get("weather"))
 
     def _offer(self, text: str, history: list[Message] | None,
                session_id: str | None, runtime: dict | None) -> set[str] | None:

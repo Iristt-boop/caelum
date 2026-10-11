@@ -109,7 +109,7 @@ LIGHT_SPEC = ToolSpec(
 )
 
 
-def make_handlers(client: McpClient, world_ref=None) -> dict[str, object]:
+def make_handlers(client: McpClient, world_ref=None, weather_ref=None) -> dict[str, object]:
     """生成处理函数。
 
     失败一律 raise —— 让 loop 按「工具失败」原样回传给模型（见 guard.py）。
@@ -147,7 +147,8 @@ def make_handlers(client: McpClient, world_ref=None) -> dict[str, object]:
         """
         from embodied.validator import gate as _vgate, world_snapshot
         ctx = context.current()
-        world = world_snapshot(world_ref) if world_ref else {}
+        # weather_ref：户外天气预报（WeatherProvider）。World Model 里没温度时用它顶（10-11）
+        world = world_snapshot(world_ref, weather_ref)
         return _vgate(eid, action, world,
                       user_text=(ctx.user_text if ctx else ""))
 
@@ -254,11 +255,11 @@ def make_handlers(client: McpClient, world_ref=None) -> dict[str, object]:
     }
 
 
-def register_all(loop, client: McpClient, world_ref=None) -> None:
+def register_all(loop, client: McpClient, world_ref=None, weather_ref=None) -> None:
     """注册五个家居工具。
 
     注册顺序固定 —— 工具定义是缓存前缀的一部分，顺序变了缓存就失效。
     """
-    handlers = make_handlers(client, world_ref=world_ref)
+    handlers = make_handlers(client, world_ref=world_ref, weather_ref=weather_ref)
     for spec in (LIST_SPEC, GET_SPEC, SWITCH_SPEC, CLIMATE_SPEC, LIGHT_SPEC):
         loop.register(spec, handlers[spec.name])  # type: ignore[arg-type]

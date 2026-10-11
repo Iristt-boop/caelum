@@ -16,6 +16,7 @@ FORBIDDEN_DOMAIN = "forbidden_domain"        # automation./sensor. 等不该碰�
 NOT_IN_MODEL = "not_in_model"                # 没有语义档案的设备 → 降权限
 UNKNOWN_PREREQUISITE = "unknown_prerequisite"  # requires 项 unknown 且无话语证据（蒸蛋器）
 ENVIRONMENT_CONFLICT = "environment_conflict"  # 32°C 开电热毯
+UNKNOWN_ENVIRONMENT = "unknown_environment"  # 温度拿不到 + 她没开口要 → 先问（2026-10-11）
 QUIET_HOURS = "quiet_hours"                  # 深夜开灯/电视 —— 只警告不拦
 
 
