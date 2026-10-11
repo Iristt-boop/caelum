@@ -355,12 +355,23 @@ def _close_of(open_tag: str) -> str:
     return "</" + open_tag[1:]
 
 
+#: `<mood>…</mood>`（10-11 她截图后查库：10-10 起 11 条）。两种用法：
+#: 短的（≤12 字、不换行）是情绪标记 —— 换成标准的 `[mood:撒娇]` 交给 mood.extract，情绪照样更新；
+#: 长的是心里话借了 mood 的名字（库里 11759：一整段在想「系统给我加了心情判断」）—— 当心里话剥掉。
+#: 不放进 INNER_ALIASES：那样流式里短的也会被当成心里话发进 thinking 块（她会看到一个孤零零的「撒娇」）
+_MOOD_XML_SHORT = re.compile(r"<mood>\s*([^<\n]{1,12}?)\s*</mood>", re.I)
+_MOOD_XML_LONG = re.compile(r"<mood>.*?</mood>\s*", re.I | re.S)
+
+
 def strip_inner_voice(text: str | None) -> str | None:
     """整段文本里的心里话拿掉 —— **不进历史**（她 10-06 定的：只给她看，他不记）。
 
     没收口的开标签只摘标签、留内容：那种时候要说的话多半也被包在里面了，删整段就是吞掉他的回复。
-    认 `INNER_ALIASES` 里的任何一种写法（开的是哪个，收的就得是哪个）。
+    认 `INNER_ALIASES` 里的任何一种写法（开的是哪个，收的就得是哪个）；`<mood>…</mood>` 见上面。
     """
+    if text and "<mood>" in text.lower():
+        text = _MOOD_XML_SHORT.sub(lambda m: f"[mood:{m.group(1)}]", text)
+        text = _MOOD_XML_LONG.sub("", text).strip() or None
     if not text or not _INNER_ANY_OPEN_RE.search(text):
         return text
     out = _INNER_ANY_OPEN_RE.sub("", _INNER_BLOCK_RE.sub("", text)).strip()
@@ -477,11 +488,16 @@ class MoodTagFilter:
     _MAX_TAG_BUF = max(len(t) for t in MEME_TAGS) + 3
     # 英文字母开头的方括号要多攒一点：`[intimacy 0.75/0.8 调侃中带真心]` 这种旁注能到 30 多字
     _MAX_STAGE_BUF = STAGE_TAG_MAX + 3
+    #: `<mood>…</mood>` 最多攒这么长等收口（库里最长那段心里话 300 来字）
+    _MAX_MOOD_XML = 2000
     #: 写成文字的表情标记前缀（见 feed 里那段）
     _MEME_LABEL = "[表情包"
 
     def __init__(self, strip_stage: bool = False, contract_markers: tuple[str, ...] = ()) -> None:
         self._buf = ""        # '[' 开头的缓冲
+        #: '<' / '【' 开头的缓冲：只认情绪标记（`<mood:平静>` deepseek 10-11 截图实锤 ——
+        #: 不剥还被 Markdown 当成自动链接）。不是就原样放行，HTML / 普通尖括号不受影响
+        self._abuf = ""
         #: 交互契约的 marker（agent/contracts.py，由 loop 从注册表取）：**行首**出现就整行吞 ——
         #: 和收尾的 contracts.apply 同一个判据，屏幕上看见的和落库的才对得上。
         #: `[表情包` 是 10-10 早上那条的写死前缀，契约注册前的老路，留着兜底
@@ -516,6 +532,30 @@ class MoodTagFilter:
                     self._line_start = False
                     continue
                 self._hold = ""                     # 舞台标签：吞掉，这个字照常处理
+
+            # ── '<' / '【' 缓冲：只看是不是情绪标记
+            if self._abuf:
+                self._abuf += ch
+                body = self._abuf[1:].lstrip().lower()
+                if body.startswith("mood>"):
+                    # `<mood>…</mood>`：短的是情绪标记、长的是心里话借了名字 —— 两种她都不该看见。
+                    # 攒到收口整个吞掉（收尾的 strip_inner_voice 负责把短的换成 [mood:x] 更新情绪）
+                    if self._abuf.lower().endswith("</mood>"):
+                        self._abuf = ""
+                    elif len(self._abuf) > self._MAX_MOOD_XML:
+                        out.append(self._abuf)    # 攒太长还没收口：不是我们想的那个，还给她
+                        self._abuf = ""
+                    continue
+                if any(body.startswith(k) for k in self._MOOD_KEYS):
+                    if ch in ">】":
+                        self._abuf = ""           # 情绪标记：整个吞掉
+                    continue
+                if ch not in (">", "】", chr(10)) and any(k.startswith(body) for k in self._MOOD_KEYS):
+                    continue                      # 还可能是，继续攒
+                out.append(self._abuf)            # 不是：原样放行
+                self._abuf = ""
+                self._line_start = ch == chr(10)
+                continue
 
             # ── 行缓冲：行首 mood: 疑似行，攒到换行统一判定
             if self._line is not None:
@@ -584,6 +624,10 @@ class MoodTagFilter:
                 self._buf_at_line_start = self._line_start
                 self._line_start = False
                 continue
+            if ch in "<【":
+                self._abuf = ch
+                self._line_start = False
+                continue
 
             # ── 普通字符：行首 m/M/心 进 mood 行缓冲（"me too" 这类整行
             #    缓冲到换行再放行，无损只是慢一拍；「心」管中文键
@@ -611,6 +655,13 @@ class MoodTagFilter:
             if resolved:
                 parts.append(resolved)
             self._line = None
+        if self._abuf:
+            body = self._abuf[1:].lstrip().lower()
+            if body.startswith("mood>"):
+                parts.append(self._abuf[len("<mood>"):])   # 没收口：摘标签留内容（同 strip_inner_voice）
+            elif not any(body.startswith(k) for k in self._MOOD_KEYS):
+                parts.append(self._abuf)          # 半截的普通尖括号：还给她
+            self._abuf = ""
         if self._buf:
             if not any(self._buf.lower().startswith(p) for p in self._PREFIXES):
                 parts.append(self._buf)

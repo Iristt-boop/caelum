@@ -82,7 +82,12 @@ _RESPONSE: dict[str, str] = {
 #   同款变体 2026-09-22 已修），这层不认它就原样落库+推送了。
 # ⚠️ 中文键名也认：`[心情: 撒娇]`（glm 2026-10-08 截图实锤，两个独立气泡
 #   出街）—— 指令里写的是英文 mood:，模型时不时自作主张写中文。
-_MOOD_TAG = re.compile(r"\[\s*(?:mood|心情)\s*[:：]\s*([^\]]{1,12}?)\s*\]\s*$", re.MULTILINE | re.IGNORECASE)
+# ⚠️ 尖括号 / 中文方括号也认：`<mood:平静>`（deepseek 2026-10-11 截图实锤 —— 没剥掉，
+#   还被 Markdown 当成自动链接，她屏幕上一行带下划线的「mood:平静」）。
+#   开闭括号成对写进 _OPEN / _CLOSE，别的地方都从这两个拼，不各写一份
+_OPEN = r"[\[<【]"
+_CLOSE = r"[\]>】]"
+_MOOD_TAG = re.compile(_OPEN + r"\s*(?:mood|心情)\s*[:：]\s*([^\]>】]{1,12}?)\s*" + _CLOSE + r"\s*$", re.MULTILINE | re.IGNORECASE)
 
 # 二级兜底：模型偶尔连方括号都不写，直接一行「mood: 撒娇」
 # （2026-09-06 截图实锤）。只认她的七个情绪词、只认整行 —— 零误伤。
@@ -95,7 +100,7 @@ _MOOD_LINE = re.compile(
 # （2026-09-07：「[mood:开心]18:34了…」，上面两个 pattern 都够不着，
 # 她锁屏上就是裸的）。不限行尾、词不限七个，带前导空白一起吃。
 # 方括号内侧空白同 `_MOOD_TAG` 的教训。
-_MOOD_TAG_ANY = re.compile(r"\s*\[\s*(?:mood|心情)\s*[:：]\s*([^\]]{1,12}?)\s*\]", re.IGNORECASE)
+_MOOD_TAG_ANY = re.compile(r"\s*" + _OPEN + r"\s*(?:mood|心情)\s*[:：]\s*([^\]>】]{1,12}?)\s*" + _CLOSE, re.IGNORECASE)
 
 # 让模型顺带判断的指令。挂在动态块里，不进缓存前缀。
 MOOD_INSTRUCTION = (
