@@ -271,3 +271,16 @@ def test_红线_观影源_一场看完只触发一次回调(world):
     src.poll(datetime(2026, 10, 10, 8, 0, tzinfo=UTC))
     src.poll(datetime(2026, 10, 10, 8, 5, tzinfo=UTC))
     assert len(got) == 1 and got[0]["title"] == "风吹半夏第三集.mp4" and got[0]["watch_id"] == "w3"
+
+
+def test_红线_回填端点_收JSON_body():
+    """10-11 线上 422：请求模型定义在 create_app 里，FastAPI 当成了 query 参数。走一遍 HTTP。"""
+    from tests.test_api import FakeNox, client_for
+    fake = FakeNox()
+    got = []
+    fake.cowatch_summarize = lambda info: got.append(info) or {"series": "风吹半夏", "episode": 1}
+    r = client_for(fake).post("/api/nox/cowatch/summarize", json={
+        "title": "风吹半夏第一集.mp4", "started_at": "2026-10-09T09:56:28.758Z",
+        "ended_at": "2026-10-09T10:37:51.092Z", "watch_id": "w1"})
+    assert r.status_code == 200, r.text
+    assert r.json()["ok"] is True and got[0]["started"].tzinfo is not None

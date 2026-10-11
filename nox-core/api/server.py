@@ -348,6 +348,15 @@ class ChatRequest(BaseModel):
         return bool(self.text.strip() or self.images)
 
 
+class CowatchSummarizeRequest(BaseModel):
+    """回填一场共影的剧情记忆。⚠️ 必须在模块顶层 —— 定义在 create_app 里的话，
+    `from __future__ import annotations` 让 FastAPI 解析不到，整个 body 被当成 query 参数（10-11 线上 422）"""
+    title: str
+    started_at: str
+    ended_at: str
+    watch_id: str
+
+
 class ChatResponse(BaseModel):
     text: str
     session_id: str
@@ -3025,12 +3034,6 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
     #: 不缓存等于每次进页面打两次外部 API。
     #: ⚠️ **只缓存天空**：设备状态慢一拍就是谎，那个每次现取。
     _sky_cache: dict = {"at": 0.0, "data": None}
-
-    class CowatchSummarizeRequest(BaseModel):
-        title: str
-        started_at: str
-        ended_at: str
-        watch_id: str
 
     @app.post("/api/nox/cowatch/summarize")
     def cowatch_summarize(req: CowatchSummarizeRequest) -> dict:
