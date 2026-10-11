@@ -129,7 +129,7 @@ def models_view(store: SettingsStore, env: Mapping[str, str] | None = None, keys
             continue
         has_key = _key_source(p["id"], list(p["key_envs"]), env, front) is not None
         items.append({
-            "provider_id": p["id"], "provider_label": p["label"],
+            "id": m["id"], "provider_id": p["id"], "provider_label": p["label"],
             "model_name": m["model_name"], "short_name": m["short_name"], "label": m["label"],
             "capabilities": m["capabilities"], "origin": m["origin"], "enabled": bool(m["enabled"]),
             "cache_style": m.get("cache_style") or p["cache_style"], "cache_ttl": m.get("cache_ttl"),

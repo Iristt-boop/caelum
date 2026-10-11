@@ -248,6 +248,9 @@ def test_接口_加一家_清单里能选到_没过带原因_日志没有key(mon
     pre = c.get("/api/nox/config/presets").json()
     z = next(p for p in pre["presets"] if p["preset"] == "zhipu")
     assert z["base_url"].endswith("/v4") and z["exists"] is True
+    flags = {p["preset"]: p["exists"] for p in pre["presets"]}
+    assert flags["anthropic"] is True, "Anthropic 本来就有（地址为空，按名字认）"
+    assert flags["gemini"] is True and flags["minimax"] is False, "刚加的 Gemini 算有；MiniMax 没加"
 
 
 def test_改完都会让已经建好的线路重套(monkeypatch, tmp_path):

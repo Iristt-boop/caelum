@@ -68,8 +68,12 @@ class EditError(ValueError):
 
 
 def presets(store: SettingsStore) -> list[dict[str, Any]]:
-    here = {(p["base_url"] or "").rstrip("/") for p in store.providers()}
-    return [{**p, "exists": (p["base_url"] or "").rstrip("/") in here and bool(p["base_url"])} for p in PRESETS]
+    rows = store.providers()
+    here = {(p["base_url"] or "").rstrip("/") for p in rows if p["base_url"]}
+    ids = {p["id"] for p in rows}
+    # 按地址认；地址为空的（Anthropic 原生走 SDK 默认地址）按名字认
+    return [{**p, "exists": ((p["base_url"] or "").rstrip("/") in here) if p["base_url"] else (p["preset"] in ids)}
+            for p in PRESETS]
 
 
 def short_name_for(store: SettingsStore, model_name: str) -> str:

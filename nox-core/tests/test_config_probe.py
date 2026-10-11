@@ -174,6 +174,7 @@ def test_接口_真测_型号徽章_换key回到未测(monkeypatch, tmp_path):
     assert r.status_code == 200 and [x["kind"] for x in r.json()["results"]] == ["chat", "cache"]
     m = next(x for x in c.get("/api/nox/config/models").json()["models"] if x["model_name"] == "glm-5.3-flash")
     assert m["status"] == "正常" and m["tests"]["cache"]["ok"] is True
+    assert isinstance(m["id"], int), "前端改 / 删型号要用这个 id"
     assert REPLY not in json.dumps(m, ensure_ascii=False)
     c.put("/api/nox/config/providers/zhipu/key", json={"key": FRONT})
     m = next(x for x in c.get("/api/nox/config/models").json()["models"] if x["model_name"] == "glm-5.3-flash")
