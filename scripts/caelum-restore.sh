@@ -60,7 +60,7 @@ put_db() {  # $1=库名 $2=目标目录
 }
 put_db nox-bridge.db /root/data
 put_db health.db     /root/data
-for db in sessions.db attention.db world.db topics.db orders.db tasks.db settings.db; do
+for db in sessions.db attention.db world.db topics.db orders.db tasks.db settings.db creations.db; do
   put_db "$db" /root/nox-core/data
 done
 

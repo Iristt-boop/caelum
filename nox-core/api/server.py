@@ -1120,6 +1120,13 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
     #: 注册不设条件：桌面版没开时调用会如实报错（room 同款处理）。
     taobao_tools.register_all(core.loop, local_hand)
 
+    #: Creations（2026-10-11，他给她做的单文件小网页，App 的 Studio 里翻得到）。
+    #: **工具串的最后一个** —— 前面所有工具的位置一个不动，旧缓存前缀照样命中。
+    #: 独立小库 creations.db（和 orders.db 平级），只存他写的 HTML，不存她的任何真实数据
+    from tools import creations as creation_tools
+    core.creations = creation_tools.CreationStore(Path(core.cfg.db_path).parent / "creations.db")
+    creation_tools.register_all(core.loop, core.creations)
+
     # 待确认单（2026-09-06）。**独立的库**，和 attention/world/topics 平级。
     #
     # 不并进 world.db：World Model 的契约是「Observation 冻结只追加、永不改写」，
@@ -3034,6 +3041,37 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
     #: 不缓存等于每次进页面打两次外部 API。
     #: ⚠️ **只缓存天空**：设备状态慢一拍就是谎，那个每次现取。
     _sky_cache: dict = {"at": 0.0, "data": None}
+
+    # ---- Creations（Studio 页 + 打开时取 HTML）----
+    def _creations():
+        store = getattr(core, "creations", None)
+        if store is None:
+            raise HTTPException(status_code=503, detail="Creations 没启用")
+        return store
+
+    @app.get("/api/nox/creations")
+    def creations_list() -> dict:
+        return {"ok": True, "items": _creations().list()}
+
+    @app.get("/api/nox/creations/{cid}")
+    def creations_get(cid: str) -> dict:
+        """打开一个 Creation：回 HTML。App 把它塞进沙箱 iframe（srcdoc），CSP / 存储 shim 由 App 包上。"""
+        c = _creations().get(cid)
+        if c is None:
+            raise HTTPException(status_code=404, detail="没有这个 Creation（可能删了）")
+        logger.info("Creation：她打开了「%s」（%s）", c["title"], cid)
+        return {"ok": True, "id": c["id"], "title": c["title"], "html": c["html"],
+                "updated_at": c["updated_at"]}
+
+    @app.delete("/api/nox/creations/{cid}")
+    def creations_delete(cid: str) -> dict:
+        """她在 Studio 里删。删了他 list_creations 也看不到。"""
+        store = _creations()
+        c = store.get(cid)
+        if c is None or not store.delete(cid):
+            raise HTTPException(status_code=404, detail="没有这个 Creation")
+        logger.info("Creation：她在 Studio 里删了「%s」（%s）", c["title"], cid)
+        return {"ok": True}
 
     @app.post("/api/nox/cowatch/summarize")
     def cowatch_summarize(req: CowatchSummarizeRequest) -> dict:

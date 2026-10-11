@@ -48,6 +48,7 @@ for db in /root/data/nox-bridge.db \
           /root/nox-core/data/orders.db \
           /root/nox-core/data/tasks.db \
           /root/nox-core/data/settings.db \
+          /root/nox-core/data/creations.db \
           /root/data/health.db \
           /root/ombre-brain/buckets/embeddings.db; do
   if [ -f "$db" ]; then

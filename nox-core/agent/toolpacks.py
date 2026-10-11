@@ -63,6 +63,9 @@ PACKS: tuple[Pack, ...] = (
          surfaces=("stackchan",)),
     # 糖糖 10-11：send_gallery_image 几乎没用过 —— 不砍，提到相册 / 照片才挂
     Pack("gallery", names=("send_gallery_image", "favorite_image"), triggers=r"相册|照片|图库|发.{0,4}(张|个)图"),
+    # Creations（10-11）：她开口要才做（v1 不自主生成），平常聊天不背这五个
+    Pack("studio", names=("make_creation", "edit_creation", "send_creation", "list_creations", "delete_creation"),
+         triggers=r"做个|做一个|帮我做|弄个|小游戏|小工具|小玩意|creation|studio|五子棋|转盘|那个游戏"),
 )
 
 _TRIGGERS = {p.name: re.compile(p.triggers, re.I) for p in PACKS if p.triggers}

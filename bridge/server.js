@@ -1575,6 +1575,13 @@ async function coreMode(req, res, requestId) {
             res.write(`data: ${JSON.stringify({ type: "order", ...order })}\n\n`);
             keepAttachment({ order });
             console.log(`[Bridge] Core 发待确认单 ${order.orderId}`);
+          } else if (ev.kind === "creation" && ev.creation_id) {
+            // Creation（2026-10-11）：他给她做的小网页。聊天里只放 id + 名字，
+            // HTML 打开时才现取（/api/nox/creations/:id）—— 几十 KB 的代码不进 SSE、不进 conversations
+            const creation = { id: String(ev.creation_id), title: String(ev.title || "") };
+            res.write(`data: ${JSON.stringify({ type: "creation", ...creation })}\n\n`);
+            keepAttachment({ creation });
+            console.log(`[Bridge] Core 发 Creation ${creation.title} (${creation.id})`);
           } else if (ev.kind === "task" && ev.task_id) {
             // 长任务确认卡（2026-09-22）。此时**还没有开跑** ——
             // 她在卡上点「跑」才会在 nox-core 的后台 runner 执行，
@@ -3931,6 +3938,31 @@ app.get("/api/provider-info", async (req, res) => {
   providerInfoCache = { at: Date.now(), data };
   res.json(data);
 });
+
+// ============ Creations（2026-10-11，App 的 Studio）============
+// 逐路由代理（同下面配置层那组的理由）。Core 的错误体 {detail} 翻成 {ok:false, error}，
+// 404（删了）原样带 404 —— 前端据此显示「已删」，不是「打不开」
+const creationsProxy = (method) => async (req, res) => {
+  const id = req.params.id ? `/${encodeURIComponent(req.params.id)}` : "";
+  try {
+    const r = await fetch(`${NOX_CORE_URL}/api/nox/creations${id}`, {
+      method, signal: AbortSignal.timeout(10000),
+    });
+    const body = await r.json().catch(() => null);
+    if (!r.ok || !body) {
+      return res.status(r.status === 404 ? 404 : 502).json({
+        ok: false, error: (body && (body.detail || body.error)) || `Core 回了 ${r.status}`,
+      });
+    }
+    res.json(body);
+  } catch (e) {
+    console.error(`[creations] ${method} ${id || "列表"} 失败:`, e.message);
+    res.status(502).json({ ok: false, error: e.message });
+  }
+};
+app.get("/api/nox/creations", creationsProxy("GET"));
+app.get("/api/nox/creations/:id", creationsProxy("GET"));
+app.delete("/api/nox/creations/:id", creationsProxy("DELETE"));
 
 app.get("/api/nox/models", async (req, res) => {
   try {

@@ -55,7 +55,7 @@ fi
 #: 如果这里从备份脚本里读清单，脚本漏了、体检跟着漏，就是自己查自己。
 #: orders.db / tasks.db 就是这样漏了一个多月（09-06 / 09-22 建库，备份链一直没收）。
 #: **新增 nox-core/data/*.db 要两处一起加。**
-REQUIRED_BACKUP_DBS="nox-bridge.db sessions.db attention.db world.db topics.db orders.db tasks.db settings.db health.db embeddings.db"
+REQUIRED_BACKUP_DBS="nox-bridge.db sessions.db attention.db world.db topics.db orders.db tasks.db settings.db creations.db health.db embeddings.db"
 
 # 解开备份包，对账 sqlite/ 目录。缺的库名打到 stdout。
 # 退出码: 0=齐全  1=有缺  2=包打不开/解出来是空的（空集不是通过）
