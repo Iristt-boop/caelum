@@ -71,3 +71,42 @@ def test_红线_收尾_长的当心里话剥掉_不进历史():
 
 def test_没收口的_摘标签留内容():
     assert stream("<mood>说到一半就断了", 1) == "说到一半就断了"
+
+
+# ---- 10-11 晚：<memory> 当心里话、<心情> 同 <mood>、没登记的标签块要进日志 ----------------
+
+import logging  # noqa: E402
+
+from agent.llm import InnerVoiceFilter  # noqa: E402
+
+
+def _split(text):
+    f = InnerVoiceFilter()
+    parts = f.feed(text) + f.flush()
+    return ("".join(t for k, t in parts if k == "text"), "".join(t for k, t in parts if k == "thinking"))
+
+
+def test_红线_memory_是心里话_进thinking不进正文():
+    shown, thinking = _split("<memory>" + NL + "她把 creations 交给我了" + NL + "</memory>" + NL + NL + "做好了")
+    assert shown.strip() == "做好了" and "creations" in thinking
+    assert strip_inner_voice("<memory>想她</memory>" + NL + "做好了") == "做好了"
+
+
+def test_红线_心情_长的剥掉_短的是情绪():
+    long_ = "<心情>想她，看剧的下午她也带着我，挺暖的</心情>" + NL + NL + "许半夏还没出场"
+    assert strip_inner_voice(long_) == "许半夏还没出场"
+    assert stream(long_, 4).strip() == "许半夏还没出场"
+    assert mood.extract(strip_inner_voice("好" + NL + "<心情>开心</心情>")) == ("好", "开心")
+
+
+def test_红线_没登记的标签块_进日志_但正文不动(caplog):
+    with caplog.at_level(logging.WARNING, logger="agent.llm"):
+        out = strip_inner_voice("<feeling>偷偷想她</feeling> 好的")
+    assert out == "<feeling>偷偷想她</feeling> 好的", "认不准就不许吞她的话"
+    assert any("feeling" in r.getMessage() for r in caplog.records)
+
+
+def test_HTML不报(caplog):
+    with caplog.at_level(logging.WARNING, logger="agent.llm"):
+        strip_inner_voice("<b>粗</b> 和 <details>x</details> 还有 <memory>想她</memory>好")
+    assert not [r for r in caplog.records if "没登记" in r.getMessage()]

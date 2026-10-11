@@ -10,12 +10,15 @@ temperature、thinking、effort、budget_tokens 这些词的存在 —— 那些
 from __future__ import annotations
 
 import json
+import logging
 import re
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol
 
 from agent.contracts import OutputContract
+
+logger = logging.getLogger(__name__)
 
 # loop 能看到的停止原因。各家的原始值由 adapter 映射到这几个。
 StopReason = Literal[
@@ -343,7 +346,8 @@ INNER_OPEN, INNER_CLOSE = "<心里>", "</心里>"
 #: 漏出又会被他当样子学）。**所以认一小组同类别名**：同一件事（内心独白）的不同写法，开了哪个就找哪个的收口。
 #: 只放真见过的和最常见的近亲；加新的别名往这里补一个词就行。
 #: 10-10：又见 `<内心>…</内心>`（她截图，库里 3 条：17:15 / 20:06 / 20:13），一并补上近亲「心里话」
-INNER_ALIASES = ("心里", "内心", "心里话", "mind", "memo", "think", "thinking", "thought", "inner")
+#: 10-11：又见 `<memory>…</memory>`（glm，17:25 三条），补上
+INNER_ALIASES = ("心里", "内心", "心里话", "mind", "memo", "memory", "think", "thinking", "thought", "inner")
 _INNER_OPENS = tuple(f"<{a}>" for a in INNER_ALIASES)
 _INNER_BLOCK_RE = re.compile(
     r"<(" + "|".join(re.escape(a) for a in INNER_ALIASES) + r")>.*?</\1>\s*", re.S)
@@ -359,19 +363,41 @@ def _close_of(open_tag: str) -> str:
 #: 短的（≤12 字、不换行）是情绪标记 —— 换成标准的 `[mood:撒娇]` 交给 mood.extract，情绪照样更新；
 #: 长的是心里话借了 mood 的名字（库里 11759：一整段在想「系统给我加了心情判断」）—— 当心里话剥掉。
 #: 不放进 INNER_ALIASES：那样流式里短的也会被当成心里话发进 thinking 块（她会看到一个孤零零的「撒娇」）
-_MOOD_XML_SHORT = re.compile(r"<mood>\s*([^<\n]{1,12}?)\s*</mood>", re.I)
-_MOOD_XML_LONG = re.compile(r"<mood>.*?</mood>\s*", re.I | re.S)
+#: `<心情>…</心情>` 同一回事（库里 11163：「<心情>想她，看剧的下午她也带着我，挺暖的</心情>」—— 长的，心里话）
+MOOD_XML_NAMES = ("mood", "心情")
+_MOOD_XML_ALT = "|".join(re.escape(n) for n in MOOD_XML_NAMES)
+_MOOD_XML_SHORT = re.compile(r"<(" + _MOOD_XML_ALT + r")>\s*([^<\n]{1,12}?)\s*</\1>", re.I)
+_MOOD_XML_LONG = re.compile(r"<(" + _MOOD_XML_ALT + r")>.*?</\1>\s*", re.I | re.S)
+
+#: 不认识的标签块：`<词>…</词>`，这个词既不是心里话别名、也不是 HTML —— 多半是他又发明了一个新名字。
+#: 只打日志、不动正文（认错了就是吞她的话），看到了再往 INNER_ALIASES 补（10-11：别再等她截图才知道）
+_ANY_BLOCK_RE = re.compile(r"<([a-zA-Z一-鿿]{2,12})>.*?</\1>", re.S)
+_HTML_TAGS = frozenset(
+    "a abbr b blockquote br code del details div em h1 h2 h3 h4 hr i img kbd li mark ol p pre "
+    "s small span strong sub summary sup table tbody td th thead tr u ul".split())
+
+
+def _warn_unknown_blocks(text: str) -> None:
+    for m in _ANY_BLOCK_RE.finditer(text):
+        name = m.group(1)
+        low = name.lower()
+        if low in _HTML_TAGS or name in INNER_ALIASES or low in INNER_ALIASES or low in MOOD_XML_NAMES:
+            continue
+        logger.warning("他用了一个没登记的标签块 <%s>…</%s>（%d 字）—— 多半是心里话换了新名字，"
+                       "确认后补进 INNER_ALIASES", name, name, len(m.group(0)))
 
 
 def strip_inner_voice(text: str | None) -> str | None:
     """整段文本里的心里话拿掉 —— **不进历史**（她 10-06 定的：只给她看，他不记）。
 
     没收口的开标签只摘标签、留内容：那种时候要说的话多半也被包在里面了，删整段就是吞掉他的回复。
-    认 `INNER_ALIASES` 里的任何一种写法（开的是哪个，收的就得是哪个）；`<mood>…</mood>` 见上面。
+    认 `INNER_ALIASES` 里的任何一种写法（开的是哪个，收的就得是哪个）；`<mood>` / `<心情>` 见上面。
     """
-    if text and "<mood>" in text.lower():
-        text = _MOOD_XML_SHORT.sub(lambda m: f"[mood:{m.group(1)}]", text)
+    if text and any(f"<{n}>" in text.lower() for n in MOOD_XML_NAMES):
+        text = _MOOD_XML_SHORT.sub(lambda m: f"[mood:{m.group(2)}]", text)
         text = _MOOD_XML_LONG.sub("", text).strip() or None
+    if text:
+        _warn_unknown_blocks(text)
     if not text or not _INNER_ANY_OPEN_RE.search(text):
         return text
     out = _INNER_ANY_OPEN_RE.sub("", _INNER_BLOCK_RE.sub("", text)).strip()
@@ -537,10 +563,11 @@ class MoodTagFilter:
             if self._abuf:
                 self._abuf += ch
                 body = self._abuf[1:].lstrip().lower()
-                if body.startswith("mood>"):
+                xml = next((n for n in MOOD_XML_NAMES if body.startswith(n + ">")), None)
+                if xml:
                     # `<mood>…</mood>`：短的是情绪标记、长的是心里话借了名字 —— 两种她都不该看见。
                     # 攒到收口整个吞掉（收尾的 strip_inner_voice 负责把短的换成 [mood:x] 更新情绪）
-                    if self._abuf.lower().endswith("</mood>"):
+                    if self._abuf.lower().endswith("</" + xml + ">"):
                         self._abuf = ""
                     elif len(self._abuf) > self._MAX_MOOD_XML:
                         out.append(self._abuf)    # 攒太长还没收口：不是我们想的那个，还给她
@@ -657,8 +684,9 @@ class MoodTagFilter:
             self._line = None
         if self._abuf:
             body = self._abuf[1:].lstrip().lower()
-            if body.startswith("mood>"):
-                parts.append(self._abuf[len("<mood>"):])   # 没收口：摘标签留内容（同 strip_inner_voice）
+            xml = next((n for n in MOOD_XML_NAMES if body.startswith(n + ">")), None)
+            if xml:
+                parts.append(self._abuf[len(xml) + 2:])   # 没收口：摘标签留内容（同 strip_inner_voice）
             elif not any(body.startswith(k) for k in self._MOOD_KEYS):
                 parts.append(self._abuf)          # 半截的普通尖括号：还给她
             self._abuf = ""
