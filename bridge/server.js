@@ -4051,6 +4051,7 @@ app.get("/api/nox/config/models", noxConfigProxy("/api/nox/config/models", "nox-
 const LONG = 150000;
 const idPath = (prefix, suffix = "") => (req) => `${prefix}/${encodeURIComponent(req.params.id)}${suffix}`;
 app.get("/api/nox/config/presets", noxConfigProxy("/api/nox/config/presets", "nox-config-presets"));
+app.post("/api/nox/config/try", noxConfigWrite("POST", () => "/api/nox/config/try", "nox-config-edit", LONG));
 app.post("/api/nox/config/fetch-models", noxConfigWrite("POST", () => "/api/nox/config/fetch-models", "nox-config-edit", LONG));
 app.post("/api/nox/config/providers", noxConfigWrite("POST", () => "/api/nox/config/providers", "nox-config-edit", LONG));
 app.patch("/api/nox/config/providers/:id", noxConfigWrite("PATCH", idPath("/api/nox/config/providers"), "nox-config-edit", LONG));

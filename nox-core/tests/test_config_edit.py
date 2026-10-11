@@ -266,3 +266,29 @@ def test_改完都会让已经建好的线路重套(monkeypatch, tmp_path):
     c.patch("/api/nox/config/providers/gemini", json={"label": "G"})
     c.delete("/api/nox/config/providers/gemini")
     assert len(calls) == 3, "改了不重套：按请求切模型缓存着的旧 adapter 还拿着旧 key / 旧地址"
+
+
+def test_红线_测试回话_只测不存(monkeypatch, tmp_path):
+    _, s, ks, ed, fake = _env(monkeypatch, tmp_path, [ok()])
+    before = (len(s.providers()), len(s.models()))
+    r = ed.try_route(model="gemini-3-flash", base_url=URL, key=KEY)
+    assert [(x.kind, x.ok) for x in r] == [("chat", True)]
+    assert fake.made[0].api_key == KEY and fake.made[0].base_url == URL
+    assert (len(s.providers()), len(s.models())) == before and ks.get("gemini") == ""
+    assert s.last_test("model:/gemini-3-flash", "chat") is None, "只测不存：结论也不落库"
+
+
+def test_测试回话_已有的厂商用存着的key(monkeypatch, tmp_path):
+    _, s, _, ed, fake = _env(monkeypatch, tmp_path, [ok()])
+    ed.try_route(provider_id="openrouter", model="google/gemini-3-flash")
+    assert fake.made[0].api_key == MARKERS["OPENROUTER_API_KEY"] and "openrouter" in fake.made[0].base_url
+
+
+def test_接口_测试回话(monkeypatch, tmp_path):
+    from tests.test_settings_views import _client
+
+    c, _ = _client(monkeypatch, tmp_path)
+    monkeypatch.setattr(probe, "_default_make", lambda llm: Fake([ok(text="")]).make(llm))
+    r = c.post("/api/nox/config/try", json={"model": "m1", "base_url": URL, "key": KEY})
+    assert r.status_code == 200 and r.json()["results"][0]["ok"] is False
+    assert KEY not in r.text

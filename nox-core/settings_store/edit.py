@@ -111,6 +111,29 @@ class Editor:
             raise EditError(f"拉不到型号：{r.detail}", results=[r])
         return sorted(self.prober._list_models(llm))
 
+    # ------------------------------------------------------------ 只测不存（她点「测试回话」）
+
+    def try_route(self, *, model: str, provider_id: str | None = None, protocol: str = "openai_compat",
+                  base_url: str = "", key: str = "", cache_style: str = "auto_prefix") -> list[Result]:
+        """拿一条还没保存的线路发一句很短的话。**什么都不写**（结论也不存 —— 存了也挂不到任何东西上）。"""
+        from config import LLMConfig
+
+        names = _model_names([model])
+        if not names:
+            raise EditError("先挑一个型号再测")
+        if provider_id:
+            llm = llm_for(self.store, self.keys, provider_id, names[0])
+            if (key or "").strip():
+                llm = dataclasses.replace(llm, api_key=key.strip())
+        else:
+            _check_protocol(protocol)
+            _check_cache(cache_style)
+            llm = LLMConfig(provider=protocol, model=names[0], api_key=(key or "").strip(), base_url=_url(base_url),
+                            max_tokens=2048, timeout=35.0, max_retries=0, cache_style=cache_style)
+        if not llm.api_key:
+            raise EditError("要填 key")
+        return self.prober._chat_and_cache("", llm, with_cache=False)
+
     # ------------------------------------------------------------ 厂商
 
     def add_provider(self, *, id: str, label: str, protocol: str, base_url: str, cache_style: str,

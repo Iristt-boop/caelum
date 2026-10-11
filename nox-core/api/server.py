@@ -404,6 +404,16 @@ class FetchModelsRequest(BaseModel):
     key: str = ""
 
 
+class TryRouteRequest(BaseModel):
+    """「测试回话」：只测不存。已有的厂商给 provider_id；新的给协议 + 地址 + key"""
+    model: str
+    provider_id: str | None = None
+    protocol: str = "openai_compat"
+    base_url: str = ""
+    key: str = ""
+    cache_style: str = "auto_prefix"
+
+
 class ModelsAddRequest(BaseModel):
     models: list[str]
 
@@ -3100,6 +3110,14 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
         _config_limit("test", 20)
         return _edit(lambda: {"models": _editor().fetch_models(
             provider_id=req.provider_id, protocol=req.protocol, base_url=req.base_url, key=req.key)})
+
+    @app.post("/api/nox/config/try")
+    def nox_config_try(req: TryRouteRequest) -> dict:
+        """「测试回话」：发一句很短的话，回得出字就算通。**什么都不保存**（保存由「确定」那一步再测一次）。"""
+        _config_limit("test", 20)
+        return _edit(lambda: {"results": [r.as_dict() for r in _editor().try_route(
+            model=req.model, provider_id=req.provider_id, protocol=req.protocol, base_url=req.base_url,
+            key=req.key, cache_style=req.cache_style)]})
 
     @app.post("/api/nox/config/providers")
     def nox_config_add_provider(req: ProviderCreateRequest) -> dict:
