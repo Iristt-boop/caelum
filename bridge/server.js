@@ -487,6 +487,8 @@ db.run(`CREATE TABLE IF NOT EXISTS calls (
 dbTry(`ALTER TABLE calls ADD COLUMN direction TEXT`);
 
 const CALL_RING_SECONDS = 45;
+//: 一通「他打来的」接听后多久内还算正在通话（工牌 caller 用）。可配只为测试能验过期那支；线上不设
+const CALL_LIVE_MS = Number(process.env.CALL_LIVE_MS) || 90 * 60 * 1000;
 //: 她拨出去的电话至少这么久才记（秒）：点进通话页又立刻退出的不算一通
 const CALL_LOG_MIN_S = 5;
 //: 时长上限：前端算错 / 页面挂了一晚上，不能记出「通话 14 小时」
@@ -1275,7 +1277,24 @@ async function downscaleForModel(buf) {
  * 只给片名 + 集数；她停在几秒已经在【共影】那段消息里，写进工牌会每次暂停冷一次缓存。
  */
 function runtimeFor(body) {
-  if (body?.voice) return undefined;
+  if (body?.voice) {
+    // 电话：谁先打的（10-11 A1 尺子：他主动打来，她问「干嘛给我打电话」，工牌原来只写「电话」）。
+    // 现场有一通「已接听、还没挂」的 → 他打的；否则是她拨的（PWA 通话 / OS 的 Caelum Live）。
+    // 只看 status='answered' 就够：他打来的接了是 answered、挂了变 ended；
+    // 她拨的（/api/call/log）挂断后才一次写成 ended，永远不会是 answered。
+    // 窗口：通话页崩了没回写 end 的那通不能永远算「正在通话」
+    let c = null;
+    try {
+      c = dbAll(
+        `SELECT reason FROM calls WHERE status='answered' AND answered_at > ?
+           ORDER BY answered_at DESC LIMIT 1`,
+        [new Date(Date.now() - CALL_LIVE_MS).toISOString()],
+      )[0];
+    } catch (e) { console.log("[Bridge] 工牌读来电现场失败:", e.message); }
+    return c
+      ? { surface: "call", caller: "nox", call_reason: (c.reason || "").slice(0, 30) || undefined }
+      : { surface: "call", caller: "her" };
+  }
   let w = null;
   try { w = liveWatch(); } catch (e) { console.log("[Bridge] 工牌读共影现场失败:", e.message); }
   if (w) {

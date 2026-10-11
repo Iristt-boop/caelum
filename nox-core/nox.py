@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import re
 import uuid
@@ -967,7 +968,7 @@ class Nox:
             info = runtime_ctx.RuntimeInfo.parse(runtime)
             if voice and info.surface is None:
                 # voice 是请求里的结构字段，不是从正文猜的
-                info = runtime_ctx.RuntimeInfo(surface="call", client=info.client)
+                info = dataclasses.replace(info, surface="call")   # 谁先打的（caller）保留
             english = voice and scenes.get(scene).key != "zh"
             parts.insert(0, runtime_ctx.render(info, english=english))
         # 前情（共影剧情记忆，10-11）：在看同一部剧的下一集 → 前面几集讲了什么。

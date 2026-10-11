@@ -35,7 +35,8 @@ logger = logging.getLogger(__name__)
 #: surface → (中文名, 英文名, 这里能用的能力类别)
 #: 能力只写**类别**，不列工具 —— 工具名在 schema 里，两处写迟早不一致
 SURFACES: dict[str, tuple[str, str, str]] = {
-    "chat": ("聊天", "chat", "对话、记忆、家居、视觉、语音条、表情包"),
+    # 「相册」10-11 A1 尺子补：她问「你能不能发图片」，原来能力表里没有
+    "chat": ("聊天", "chat", "对话、记忆、家居、视觉、语音条、表情包、相册"),
     "call": ("电话", "a voice call", "说话、记忆、家居"),
     "watch": ("共影", "watching together", "一起看片、记忆"),
     "reading": ("共读", "reading together", "共读批注、记忆"),
@@ -52,6 +53,11 @@ CLIENTS: dict[str, str] = {"app": "手机 App", "os": "桌面 Caelum OS", "stack
 OBJECT_FIELDS = ("title", "episode")
 _OBJECT_MAX = 24
 
+#: 电话是谁先打的（10-11 A1 尺子补：他主动打来，她问「干嘛给我打电话」—— 工牌原来只写「电话」）。
+#: bridge 看 calls 表现场那一通填：nox = 他打来的，her = 她拨的
+CALLERS = ("nox", "her")
+_REASON_MAX = 30
+
 #: 中文工牌的上限（字符）。卡死在测试里：超了说明有人往工牌里塞了内容
 MAX_CHARS = 120
 
@@ -62,6 +68,8 @@ class RuntimeInfo:
     client: str | None = None
     title: str | None = None
     episode: str | None = None
+    caller: str | None = None
+    call_reason: str | None = None
 
     @classmethod
     def parse(cls, raw: Mapping[str, Any] | None) -> "RuntimeInfo":
@@ -85,11 +93,18 @@ class RuntimeInfo:
         if extra:
             # 只记字段名，不记值 —— 值里可能是字幕原文，甚至别的什么
             logger.warning("Runtime Context：object 多出字段 %s，已丢弃（工牌只放名字和集数）", extra)
+        caller = _clean(raw.get("caller"), 8)
+        if caller is not None and caller not in CALLERS:
+            logger.warning("Runtime Context：不认识的 caller=%r，丢掉", caller)
+            caller = None
         return cls(
             surface=surface,
             client=client.lower() if client else None,
             title=_clean(obj.get("title"), _OBJECT_MAX),
             episode=_clean(obj.get("episode"), 12),
+            caller=caller,
+            # 原因只在「他打来的」时有意义（她拨的没有 reason）
+            call_reason=_clean(raw.get("call_reason"), _REASON_MAX) if caller == "nox" else None,
         )
 
 
@@ -109,7 +124,9 @@ def render(info: RuntimeInfo, *, english: bool = False) -> str:
     surface = info.surface
     if english:
         where = f", on {SURFACES[surface][1]} with her" if surface else ""
-        return (f"[Now] You're inside Caelum{where}. "
+        # 原因是中文（core 生成的），英文工牌里不放 —— 一个中文字都不许有
+        who = {"nox": " You called her", "her": " She called you"}.get(info.caller or "", "") if surface == "call" else ""
+        return (f"[Now] You're inside Caelum{where}.{who + '.' if who else ''} "
                 "Anything you do goes through Caelum's tools, not her device directly.")
 
     lines = ["【你在哪】"]
@@ -120,6 +137,12 @@ def render(info: RuntimeInfo, *, english: bool = False) -> str:
         what = _object_cn(info)
         if surface == "proactive" or surface == "own_time":
             lines.append(f"你在 Caelum 里，现在是{name}。")
+        elif surface == "call" and info.caller:
+            if info.caller == "nox":
+                why = f"（因为{info.call_reason}）" if info.call_reason else ""
+                lines.append(f"你在 Caelum 里，在和她打电话 —— 是你打给她的{why}。")
+            else:
+                lines.append("你在 Caelum 里，在和她打电话 —— 是她打给你的。")
         elif what:
             lines.append(f"你在 Caelum 里，和她在「{name}」{what}。")
         else:

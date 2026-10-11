@@ -184,3 +184,45 @@ def test_红线_API把runtime交给core(path):
     r = c.post(path, json=body)
     assert r.status_code == 200
     assert fake.seen_runtime == [{"surface": "chat", "client": "app"}]
+
+
+# ---- A1 尺子补的两样（10-11）----------------------------------------------
+
+def test_A1_他打来的电话_工牌写清是他打的和为什么():
+    """10-05 他主动打来，她问「干嘛为什么给我打电话」—— 工牌原来只写「电话」。"""
+    out = rt.render(rt.RuntimeInfo.parse(
+        {"surface": "call", "caller": "nox", "call_reason": "想你了，想听听你的声音"}))
+    assert "是你打给她的" in out and "想你了" in out
+
+
+def test_A1_她打来的电话():
+    info = rt.RuntimeInfo.parse({"surface": "call", "caller": "her", "call_reason": "不该出现"})
+    assert info.call_reason is None, "她拨的没有原因可写 —— 解析时就丢"
+    out = rt.render(info)
+    assert "是她打给你的" in out and "不该出现" not in out
+
+
+def test_A1_英文电话_写谁打的_但原因是中文不放():
+    out = rt.render(rt.RuntimeInfo.parse({"surface": "call", "caller": "nox", "call_reason": "想你了"}), english=True)
+    assert "You called her" in out and not CJK.search(out)
+
+
+def test_A1_caller写错了_丢掉留痕(caplog):
+    with caplog.at_level(logging.WARNING, logger="context.runtime"):
+        assert rt.RuntimeInfo.parse({"surface": "call", "caller": "boss"}).caller is None
+    assert any("boss" in r.getMessage() for r in caplog.records)
+
+
+def test_A1_聊天能力里有相册():
+    """08-04 她问「你现在能不能发图片」—— 能力表原来没有相册。"""
+    assert "相册" in rt.render(rt.RuntimeInfo.parse({"surface": "chat"}))
+
+
+def test_A1_电话预算_原因最长也不超():
+    out = rt.render(rt.RuntimeInfo.parse({"surface": "call", "caller": "nox", "call_reason": "长" * 200}))
+    assert len(out) <= rt.MAX_CHARS, out
+
+
+def test_红线_A1_voice兜底成call时_谁打的不丢():
+    d = _nox()._dynamic("hello", True, scene="en", runtime={"caller": "nox"})
+    assert "You called her" in d.split("\n\n")[0]

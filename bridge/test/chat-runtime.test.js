@@ -61,9 +61,20 @@ describe("工牌：bridge 转给 Core 时带 runtime", () => {
     assert.deepEqual(sent.runtime, { surface: "chat" });
   });
 
-  test("电话：不填，交给 Core 按 voice 定", async () => {
+  test("她拨的电话：caller=her", async () => {
     const sent = await chat({ message: "hello", sessionId: "rt-call", voice: true });
-    assert.equal(sent.runtime, undefined);
+    assert.deepEqual(sent.runtime, { surface: "call", caller: "her" });
+  });
+
+  test("🔴 他打来、她接了：caller=nox + 原因（A1 尺子 #2：她问「干嘛给我打电话」）", async () => {
+    const inv = await api(bridge.base, "/api/call/invite", { method: "POST", body: { reason: "想你了，想听听你的声音", opener: "喂" } });
+    await api(bridge.base, "/api/call/answer", { method: "POST", body: { id: inv.data.id } });
+    const sent = await chat({ message: "干嘛给我打电话", sessionId: "rt-call2", voice: true });
+    assert.deepEqual(sent.runtime, { surface: "call", caller: "nox", call_reason: "想你了，想听听你的声音" });
+    // 挂了之后再说话（她回拨 / 开 Live）就不是他打的了
+    await api(bridge.base, "/api/call/end", { method: "POST", body: { id: inv.data.id, duration: 30 } });
+    const after = await chat({ message: "再说两句", sessionId: "rt-call2", voice: true });
+    assert.equal(after.runtime.caller, "her");
   });
 
   test("日记批注（R1b）：surface=diary，正文不再写「这不是聊天窗口」", async () => {
@@ -88,5 +99,23 @@ describe("工牌：bridge 转给 Core 时带 runtime", () => {
                               display: "能看到画面不", sessionId: "rt-watch" });
     assert.deepEqual(sent.runtime, { surface: "watch", object: { title: "摩登家庭", episode: "S03E07" } });
     assert.ok(!JSON.stringify(sent.runtime).includes("315"), "进度不该进工牌");
+  });
+});
+
+describe("工牌：来电过期（通话页崩了没回写 end）", () => {
+  let b2;
+  before(async () => { b2 = await startBridge({ NOX_CORE_URL: core.url, CALL_LIVE_MS: "1" }); });
+  after(async () => { await b2?.stop(); });
+
+  test("🔴 接了但早过了窗口 → 不再算他打的", async () => {
+    const inv = await api(b2.base, "/api/call/invite", { method: "POST", body: { reason: "想你", opener: "喂" } });
+    await api(b2.base, "/api/call/answer", { method: "POST", body: { id: inv.data.id } });
+    await new Promise((r) => setTimeout(r, 20));
+    const r = await fetch(`${b2.base}/api/chat`, {
+      method: "POST", headers: { "Content-Type": "application/json", "X-Nox-Token": TOKEN },
+      body: JSON.stringify({ message: "喂", sessionId: "rt-stale", voice: true }),
+    });
+    await r.text();
+    assert.equal(seen.at(-1).runtime.caller, "her");
   });
 });
