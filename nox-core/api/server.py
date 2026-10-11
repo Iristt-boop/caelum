@@ -71,7 +71,7 @@ from orders import OrderStore
 #: 见下面 `nox_order_confirm` 里那段「下单已经成功」的注释
 from orders import luckin as luckin_order_flow
 from settings_store.startup import start_shadow as start_config_shadow
-from settings_store.views import providers_view, slots_view
+from settings_store.views import models_view, providers_view, slots_view
 
 #: 单子走不下去时给她的人话。**不许直接把状态字符串甩给她**
 _ORDER_STATE_TEXT = {
@@ -367,6 +367,13 @@ class ConfigExportRequest(BaseModel):
     """加密迁移包：口令输两遍。口令不存、不进日志"""
     passphrase: str
     passphrase2: str
+
+
+class ConfigTestRequest(BaseModel):
+    """配置层 P2c：真测一家（不给 model_name）或一个型号。vision=None 时按档案能力决定测不测看图"""
+    provider_id: str
+    model_name: str | None = None
+    vision: bool | None = None
 
 
 class ConfigImportRequest(BaseModel):
@@ -2971,6 +2978,29 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail=f"没有 {pid} 这一家")
         return p
 
+    @app.get("/api/nox/config/models")
+    def nox_config_models() -> dict:
+        """配置层 P2c：所有型号 + 真测徽章（只读，不含密钥）。"""
+        return {"ok": True, **models_view(_config_store(), keys=getattr(core, "config_keys", None))}
+
+    @app.post("/api/nox/config/test")
+    def nox_config_test(req: ConfigTestRequest) -> dict:
+        """真测（花几分钱）：走他平时调模型的同一个工厂；正文非空才算通，缓存 / 看图单独一行。
+        同一项 1 分钟内不重复花钱（回上一次的结论，标 reused）。"""
+        from settings_store.probe import Prober
+        _config_limit("test", 20)
+        _known_provider(req.provider_id)
+        prober = Prober(_config_store(), getattr(core, "config_keys", None))
+        try:
+            if req.model_name:
+                results = prober.test_model(req.provider_id, req.model_name, vision=req.vision)
+            else:
+                results = prober.test_provider(req.provider_id)
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from None
+        logger.info("配置审计：她真测了 %s %s", req.provider_id, req.model_name or "（整家）")
+        return {"ok": True, "results": [r.as_dict() for r in results]}
+
     @app.put("/api/nox/config/providers/{pid}/key")
     def nox_config_set_key(pid: str, req: ProviderKeyRequest) -> dict:
         """给一家填 key（她在前端填的优先于环境变量）。**响应里没有 key**，只有「配上了」。"""
@@ -2980,6 +3010,7 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
             _config_keys().set(pid, req.key)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from None
+        _config_store().forget_tests(pid)              # 换了 key，以前测的不算数 → 回到「未测」
         from settings_store import profile
         profile.refresh(core)                         # 已经建好的主线 / 杂活换上新 key，下一轮生效
         logger.info("配置审计：她给 %s 填了新 key", pid)
@@ -2991,6 +3022,8 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
         _config_limit("key", 30)
         _known_provider(pid)
         cleared = _config_keys().clear(pid)
+        if cleared:
+            _config_store().forget_tests(pid)
         from settings_store import profile
         profile.refresh(core)
         logger.info("配置审计：她清掉了 %s 的前端 key（%s）", pid, "清了" if cleared else "本来就没有")

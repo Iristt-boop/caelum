@@ -32,6 +32,11 @@ before(async () => {
       if (req.url === "/api/nox/config/export") return json(200, { ok: true, filename: "x.caelumcfg", file_b64: "QUJD" });
       if (req.url === "/api/nox/config/import/preview") return json(400, { detail: "口令不对，或者文件被改过" });
       if (req.url === "/api/nox/config/import") return json(429, { detail: "点得太快了，过几分钟再试" });
+      if (req.url === "/api/nox/config/test") {
+        // 真测慢：拖 21 秒再回，超过别的写接口的 20 秒 —— 这条路由必须用更长的超时
+        return setTimeout(() => json(200, { ok: true, results: [{ kind: "chat", ok: true }] }), 21000);
+      }
+      if (req.url === "/api/nox/config/models") return json(200, { ok: true, models: [{ model_name: "glm-5.3-flash", status: "正常" }] });
       json(404, { detail: "nope" });
     });
   });
@@ -85,4 +90,13 @@ test("不带 token 写不了", async () => {
     method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key: KEY }),
   });
   assert.equal(r.status, 403);
+});
+
+test("真测：慢也等得到（超时比别的写接口长）；型号清单能读", { timeout: 60000 }, async () => {
+  const r = await api(bridge.base, "/api/nox/config/test", { method: "POST", body: { provider_id: "zhipu" } });
+  assert.equal(r.status, 200);
+  assert.equal(r.data.results[0].ok, true);
+  assert.deepEqual(seen.find((x) => x.url === "/api/nox/config/test").body, { provider_id: "zhipu" });
+  const m = await api(bridge.base, "/api/nox/config/models");
+  assert.equal(m.data.models[0].status, "正常");
 });

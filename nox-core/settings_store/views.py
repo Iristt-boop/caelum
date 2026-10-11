@@ -18,6 +18,7 @@ from collections import Counter
 from typing import Any, Mapping
 from urllib.parse import urlsplit, urlunsplit
 
+from settings_store.probe import status_of, target_of
 from settings_store.seed import SLOT_ATTRS, resolve_key
 from settings_store.store import SettingsStore
 
@@ -69,6 +70,8 @@ def providers_view(store: SettingsStore, env: Mapping[str, str] | None = None,
             "key_source": _key_source(p["id"], list(p["key_envs"]), env, front),   # front | env | None
             "models": per_provider.get(p["id"], 0),
         })
+        # P2c：真测结论 → 徽章（缺失 / 未测 / 正常 / 失败）
+        items[-1].update(status_of(store, target_of(p["id"]), items[-1]["key_configured"]))
     return {"providers": items, "shadow": store.shadow_summary(7)}
 
 
@@ -112,3 +115,24 @@ def _slot_item(store: SettingsStore, s: dict[str, Any], env: Mapping[str, str],
         "key_configured": p["id"] in front or bool(resolve_key(key_envs, env)),
         "updated_by": s["updated_by"],
     }
+
+
+def models_view(store: SettingsStore, env: Mapping[str, str] | None = None, keys: Any = None) -> dict[str, Any]:
+    """所有型号 + 各自的真测徽章（P2c）。缓存打法给的是**实际生效**的那个（型号覆盖 > 厂商）。"""
+    env = os.environ if env is None else env
+    front = keys.configured() if keys is not None else set()
+    provs = {p["id"]: p for p in store.providers()}
+    items = []
+    for m in store.models():
+        p = provs.get(m["provider_id"])
+        if p is None:
+            continue
+        has_key = _key_source(p["id"], list(p["key_envs"]), env, front) is not None
+        items.append({
+            "provider_id": p["id"], "provider_label": p["label"],
+            "model_name": m["model_name"], "short_name": m["short_name"], "label": m["label"],
+            "capabilities": m["capabilities"], "origin": m["origin"], "enabled": bool(m["enabled"]),
+            "cache_style": m.get("cache_style") or p["cache_style"], "cache_ttl": m.get("cache_ttl"),
+            **status_of(store, target_of(p["id"], m["model_name"]), has_key),
+        })
+    return {"models": items}

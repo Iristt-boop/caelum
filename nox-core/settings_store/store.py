@@ -123,6 +123,36 @@ class SettingsStore:
         return {"runs": row["runs"], "bad_runs": int(row["bad"]), "diffs": int(row["diffs"]),
                 "first": row["first"], "last": row["last"]}
 
+    # ------------------------------------------------------------ 真测结论（P2c）
+
+    def log_test(self, *, target: str, kind: str, ok: bool, latency_ms: int, detail: str) -> None:
+        """只存结论，不存回答正文。"""
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO test_results(target, kind, ok, latency_ms, detail, at) VALUES(?,?,?,?,?,?)",
+                (target, kind, 1 if ok else 0, latency_ms, detail[:300], _now()))
+            self._conn.commit()
+
+    def last_test(self, target: str, kind: str) -> dict[str, Any] | None:
+        with self._lock:
+            r = self._conn.execute(
+                "SELECT * FROM test_results WHERE target=? AND kind=? ORDER BY id DESC LIMIT 1",
+                (target, kind)).fetchone()
+        if r is None:
+            return None
+        d = dict(r)
+        d["age_s"] = (datetime.now(timezone.utc) - datetime.fromisoformat(d["at"])).total_seconds()
+        return d
+
+    def forget_tests(self, provider_id: str) -> int:
+        """key / 地址换了，这一家（和它名下型号）以前的结论作废 → 回到「未测」。"""
+        with self._lock:
+            cur = self._conn.execute(
+                "DELETE FROM test_results WHERE target=? OR target LIKE ?",
+                (f"provider:{provider_id}", f"model:{provider_id}/%"))
+            self._conn.commit()
+        return cur.rowcount
+
     def close(self) -> None:
         with self._lock:
             self._conn.close()
