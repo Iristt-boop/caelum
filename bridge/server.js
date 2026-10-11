@@ -1267,6 +1267,23 @@ async function downscaleForModel(buf) {
 }
 
 
+/** 这一轮的工牌字段（Runtime Context，设计稿 2026-10-11 R1）。
+ *
+ * 电话不在这里填：Core 看 voice 自己定成 call（结构字段，不是猜）。
+ * 共影看 watch_sessions 的**现场**那一行 —— 心跳还新就是她正在看片，
+ * 哪怕这句是从手机聊天页发的，她也确实在「一起看」。
+ * 只给片名 + 集数；她停在几秒已经在【共影】那段消息里，写进工牌会每次暂停冷一次缓存。
+ */
+function runtimeFor(body) {
+  if (body?.voice) return undefined;
+  let w = null;
+  try { w = liveWatch(); } catch (e) { console.log("[Bridge] 工牌读共影现场失败:", e.message); }
+  if (w) {
+    return { surface: "watch", object: { title: w.title || undefined, episode: w.episode || undefined } };
+  }
+  return { surface: "chat" };
+}
+
 // 把 Core 的 SSE 翻译成 bridge 前端认识的格式。
 // 两边帧格式不同：Core 用 {type:"text", text:...}，前端要 {type:"text", content:...}。
 // 这层翻译让前端一行都不用改。
@@ -1363,6 +1380,8 @@ async function coreMode(req, res, requestId) {
         // 前端模型下拉。Core 认短名（sonnet-5 / opus-4-8 …），
         // 不传就用它自己的默认模型
         model: model || undefined,
+        // 工牌（Runtime Context，2026-10-11）：她从哪个入口来。Core 不从正文猜，入口自己报
+        runtime: runtimeFor(req.body),
       }),
     });
 

@@ -339,6 +339,11 @@ class ChatRequest(BaseModel):
     # 不传就用默认那个 —— 只有默认那个的提示词缓存是一直热着的
     model: str | None = None
 
+    # 工牌（Runtime Context，2026-10-11）：她从哪个入口来、对着什么。
+    # {"surface": "chat|watch|…", "client": "app|os|…", "object": {"title", "episode"}}
+    # 入口自己报，Core 不从正文猜；白名单校验在 context/runtime.py。不传 = 老调用方
+    runtime: dict | None = None
+
     def has_content(self) -> bool:
         return bool(self.text.strip() or self.images)
 
@@ -3282,7 +3287,8 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
         try:
             r = core.chat(req.text, sent, images=req.images or None, voice=req.voice,
                           scene=req.scene, model=req.model,
-                          session_id=sid, session_started=started)
+                          session_id=sid, session_started=started,
+                          runtime=req.runtime)
             # 非流式这条路不走 SSE，bridge 的 usage_log 天生看不见它 ——
             # 2026-10-09 对账：一天 17 次全漏。实测这条端点只有日记批注在用
             # （bridge triggerAiComment，session 前缀 diary-），单独立桶看得清
@@ -3363,7 +3369,8 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
                 for ev in core.chat_stream(req.text, sent, images=req.images or None,
                                            voice=req.voice, scene=req.scene,
                                            model=req.model,
-                                           session_id=sid, session_started=started):
+                                           session_id=sid, session_started=started,
+                                           runtime=req.runtime):
                     if ev.type == "text":
                         yield _sse({"type": "text", "text": ev.text})
                     elif ev.type == "thinking":

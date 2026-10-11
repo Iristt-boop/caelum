@@ -21,6 +21,7 @@ from config import Config, _build_llm, config as default_config
 from context import ContextProviderRegistry
 from context.base import Turn
 from context.timeline import humanize
+from context import runtime as runtime_ctx
 from context.providers.understanding import has_live_anchor
 from context.providers import (
     CallsProvider, HealthProvider, HomeProvider, LocationProvider, MemoryProvider,
@@ -920,7 +921,8 @@ class Nox:
                  has_images: bool = False,
                  session_id: str | None = None,
                  session_started: datetime | None = None,
-                 recall: str | None = None) -> str:
+                 recall: str | None = None,
+                 runtime: dict | None = None) -> str:
         """组装每轮可变的提示：情绪 +（语音模式下）该情景的通话指令。
 
         两者都走 dynamic_system，跟在缓存断点之后 —— 静态前缀一个字都不能变。
@@ -945,6 +947,15 @@ class Nox:
         )
         parts = [self.context.render(
             names, turn=Turn(text=text, voice=voice, scene=scene, recall=recall))]
+        # 工牌（Runtime Context，10-11）：他在哪、这里有什么。**常驻、放最前** ——
+        # 不经 classify_context 挑，轻量路径也带；它在一段会话里几乎不变，放最前面前缀最稳
+        if runtime_ctx.enabled():
+            info = runtime_ctx.RuntimeInfo.parse(runtime)
+            if voice and info.surface is None:
+                # voice 是请求里的结构字段，不是从正文猜的
+                info = runtime_ctx.RuntimeInfo(surface="call", client=info.client)
+            english = voice and scenes.get(scene).key != "zh"
+            parts.insert(0, runtime_ctx.render(info, english=english))
         if voice:
             parts.append(scenes.get(scene).render())
         # 共听模式：检测到音乐相关请求时注入 MUSIC_SCENE
@@ -1043,6 +1054,7 @@ class Nox:
         session_id: str | None = None,
         session_started: datetime | None = None,
         recall: str | None = None,
+        runtime: dict | None = None,
     ) -> RouteResult:
         """`recall`：翻记忆用的话，只有他主动开口时才传（见 context/base.py 的 Turn.recall）。"""
         text, images = self._see(text, images, model)
@@ -1051,7 +1063,7 @@ class Nox:
         dynamic = self._dynamic(text, voice, scene, has_images=bool(images),
                                 session_id=session_id,
                                 session_started=session_started,
-                                recall=recall)
+                                recall=recall, runtime=runtime)
         result = self.router.handle(
             text, history, dynamic_system=dynamic, images=images,
             voice=voice, scene=scene, adapter=self.adapter_for(model),
@@ -1098,6 +1110,7 @@ class Nox:
         model: str | None = None,
         session_id: str | None = None,
         session_started: datetime | None = None,
+        runtime: dict | None = None,
     ):
         """流式版 chat。
 
@@ -1111,7 +1124,8 @@ class Nox:
         text, images = self._see(text, images, model)
         dynamic = self._dynamic(text, voice, scene, has_images=bool(images),
                                 session_id=session_id,
-                                session_started=session_started)
+                                session_started=session_started,
+                                runtime=runtime)
         depth = self._chat_depth(voice)
         if depth == "high":
             dynamic = f"{dynamic}\n\n{INNER_VOICE_RULE}" if dynamic else INNER_VOICE_RULE
