@@ -176,6 +176,16 @@ class LLMConfig:
     # 与其干等，不如早点失败让上层退回或重试。
     timeout: float = 90.0
 
+    # ---- 档案字段（配置层 P2a，2026-10-11）----
+    # 由 `settings_store/profile.py` 从 settings.db 填。**None = 没有档案，adapter 走老的名字嗅探**
+    # （`NOX_CONFIG_STORE=off`、库没起来、影子对不上时都是 None —— 行为与 P2 之前逐字节一致）。
+    #: 缓存怎么打：explicit_breakpoint | passthrough | auto_prefix | none
+    cache_style: str | None = None
+    #: 断点的有效期："1h" 带 ttl；"" 不带（厂商默认 5 分钟）
+    cache_ttl: str | None = None
+    #: 能不能直接收图
+    vision: bool | None = None
+
     @property
     def usable(self) -> bool:
         return bool(self.api_key and self.model)

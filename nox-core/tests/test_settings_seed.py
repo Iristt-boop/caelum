@@ -6,7 +6,7 @@ import json
 
 from agent.adapters import AnthropicAdapter, OpenAICompatAdapter, supports_vision
 from config import BACKENDS, LLMConfig
-from settings_store.seed import resolve_key, seed, seed_cache_style
+from settings_store.seed import VERIFIED_VISION, resolve_key, seed, seed_cache_style
 from settings_store.store import SettingsStore
 
 from tests.settings_helpers import MARKERS, assert_no_markers, make_cfg, scan_bytes
@@ -60,7 +60,9 @@ def test_型号清单一一对应(tmp_path, monkeypatch):
         m = by_short[short]
         assert (m["model_name"], m["provider_id"]) == (c.model, c.backend)
         assert m["label"] == (c.label or c.model)
-        assert ("vision" in m["capabilities"]) is supports_vision(c.model)
+        # 名字嗅探的结果 + 真测过的例外（10-11 起 deepseek-flash）
+        assert ("vision" in m["capabilities"]) is (supports_vision(c.model) or c.model in VERIFIED_VISION)
+        assert m["cache_ttl"] == ("1h" if c.model.startswith("anthropic/") else "")
         assert m["price"] == cfg.PRICING_CNY.get(c.model)         # 手填价格表原样作种子
         assert m["origin"] == "seed"
 

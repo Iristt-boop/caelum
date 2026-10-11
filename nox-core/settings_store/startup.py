@@ -3,7 +3,8 @@
 🔴 **永远不许让启动因为它失败。** P0 是观察，不是功能：任何异常都只留一条 warning（带堆栈）
 就返回，Core 照常起来（`docs/LOGGING.md`：每个 catch 必须留痕，禁止静默失败）。
 
-关掉它：`NOX_CONFIG_SHADOW=off`（也认 0 / false）。
+关掉它：`NOX_CONFIG_SHADOW=off`（也认 0 / false）—— 连库带档案一起关。
+只关档案（库照灌、影子照对、P1 视图照看，adapter 回到名字嗅探）：`NOX_CONFIG_STORE=off`。
 """
 
 from __future__ import annotations
@@ -19,6 +20,8 @@ _OFF = ("off", "0", "false", "no")
 
 
 def start_shadow(core: Any) -> None:
+    from agent import adapters
+    adapters.use_profiles(None)          # 先回老路：下面哪一步没走到，都不该留着上一次的档案
     try:
         if (os.environ.get("NOX_CONFIG_SHADOW") or "").strip().lower() in _OFF:
             logger.info("NOX_CONFIG_SHADOW=off，跳过配置影子")
@@ -38,8 +41,18 @@ def start_shadow(core: Any) -> None:
 
         store = SettingsStore(Path(cfg.db_path).parent / "settings.db")
         report = seed(store, cfg)
-        shadow.run(store, cfg, report)
-        #: P1 的只读视图从这儿取；P0 里没有任何东西读它
+        res = shadow.run(store, cfg, report)
+        #: P1 的只读视图从这儿取
         core.settings = store
+
+        # P2a：adapter 改读档案（缓存怎么打、能不能看图）。对账不过就不让库说话
+        from settings_store import profile
+        if not profile.enabled():
+            logger.info("NOX_CONFIG_STORE=off，adapter 照旧按名字判断")
+        elif not res.ok:
+            logger.warning("配置库和现状对不上（%d 处），这次 adapter 不读档案、照旧按名字判断", len(res.diffs))
+        else:
+            n = profile.attach(core, store)
+            logger.info("adapter 改读档案：已套 %d 个，之后新建的在工厂里套", n)
     except Exception:  # noqa: BLE001 —— 观察不许拖垮启动，但必须留痕
         logger.warning("配置影子失败（不影响启动）", exc_info=True)

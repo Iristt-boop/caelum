@@ -11,7 +11,7 @@ P0 只有 `source='seed'` 的行（从代码和环境变量灌的）；`source='
 
 from __future__ import annotations
 
-SCHEMA_VERSION = "1"
+SCHEMA_VERSION = "2"   # 2：models 加 cache_style / cache_ttl（P2a，10-11）
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta(
@@ -41,7 +41,9 @@ CREATE TABLE IF NOT EXISTS models(
   model_name   TEXT NOT NULL,
   short_name   TEXT UNIQUE,                  -- 可空：env 里直接指定的、不在下拉清单里的型号
   label        TEXT NOT NULL DEFAULT '',
-  capabilities TEXT NOT NULL DEFAULT '["chat"]',   -- JSON 列表：chat / vision / tts / stt / image / embedding
+  capabilities TEXT NOT NULL DEFAULT '["chat"]',   -- JSON 列表：chat / vision / video / tts / stt / image / embedding
+  cache_style  TEXT,                         -- 可空 = 跟厂商；同一家里各型号打法不同时覆盖（OpenRouter 上 claude 打断点、deepseek 自动）
+  cache_ttl    TEXT,                         -- 断点有效期："1h" 带 ttl，"" 不带；可空 = 没有档案
   price_json   TEXT,                         -- 手填的价格（元/百万 tokens），可空；不自动抓取、不自动维护
   origin       TEXT NOT NULL,                -- seed | fetched | manual
   enabled      INTEGER NOT NULL DEFAULT 1,
@@ -93,5 +95,8 @@ CREATE TABLE IF NOT EXISTS shadow_log(
 
 #: 任何表里都不许出现的列名片段（测试用）。
 FORBIDDEN_COLUMN_HINTS = ("key", "token", "secret", "password", "passwd")
+#: 老库（schema 1）补列用：列名 → 类型。`SettingsStore.__init__` 里 ALTER TABLE。
+MIGRATIONS = {"models": (("cache_style", "TEXT"), ("cache_ttl", "TEXT"))}
+
 #: 例外：`key_envs` 存的是环境变量**名字**，不是 key；`k` 是 meta 的键名。
 ALLOWED_COLUMNS = {"key_envs"}

@@ -5,11 +5,12 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import Any
 
 from config import LLMConfig
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 
 from agent import effort
 from agent.llm import (
@@ -25,6 +26,8 @@ from agent.llm import (
     parse_arguments,
     split_data_uri,
 )
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------- Anthropic
 
@@ -297,10 +300,19 @@ class OpenAICompatAdapter:
             max_retries=cfg.max_retries,
             timeout=cfg.timeout,
         )
-        # OpenRouter 支持把 cache_control 透传给 Anthropic/Gemini 后端，
-        # 但只有 5 分钟档 —— 没有 Anthropic 原生的 1h TTL。
-        # 对断续聊天来说 5 分钟经常等于没缓存，这是走 OpenRouter 的代价。
-        self._supports_cache = "openrouter" in (cfg.base_url or "").lower()
+
+    @property
+    def _supports_cache(self) -> bool:
+        """要不要打 `cache_control` 断点。
+
+        有档案（P2a 起）就读档案的 `cache_style` —— 中转站换个名字不会悄悄失效；
+        没有档案才退回老的嗅探：地址里有 openrouter 就打。
+        是属性不是 __init__ 里算一次：档案在启动钩子里**就地**换 `self.cfg`，Router / Archiver
+        持有的是同一个 adapter，换一处两边同时生效。
+        """
+        if self.cfg.cache_style is not None:
+            return self.cfg.cache_style in BREAKPOINT_STYLES
+        return "openrouter" in (self.cfg.base_url or "").lower()
 
     def _cache_marker(self) -> dict[str, Any]:
         """OpenRouter → Anthropic 的断点。TTL 默认 1 小时档。
@@ -314,7 +326,10 @@ class OpenAICompatAdapter:
         `NOX_OR_CACHE_TTL=5m` 可以一键退回 5 分钟档。
         """
         marker: dict[str, Any] = {"type": "ephemeral"}
-        if (self.cfg.model or "").startswith("anthropic/") and os.getenv("NOX_OR_CACHE_TTL", "1h") != "5m":
+        # 有档案读档案的 cache_ttl（型号字段，P2a）；没有才按名字嗅探
+        want_1h = (self.cfg.cache_ttl == "1h") if self.cfg.cache_ttl is not None \
+            else (self.cfg.model or "").startswith("anthropic/")
+        if want_1h and os.getenv("NOX_OR_CACHE_TTL", "1h") != "5m":
             marker["ttl"] = "1h"
         return marker
 
@@ -686,7 +701,7 @@ class OpenAICompatAdapter:
                 }
             ]
         if m.images:
-            if not supports_vision(self.cfg.model):
+            if not sees_images(self.cfg):
                 # 这个模型看不了图，把图降级成一句文字。
                 #
                 # ⚠️ 关键在于**历史里的图也会走到这里**：发过一次图之后，那条消息
@@ -742,10 +757,40 @@ def supports_vision(model: str) -> bool:
     return not any(h in m for h in _NO_VISION)
 
 
+def sees_images(cfg: LLMConfig) -> bool:
+    """这条线路能不能直接收图。有档案（`cfg.vision`）听档案的，没有才按名字猜。
+
+    🔴 标错成「能看」比标错成「不能看」危险得多：有的型号收了图不报错、悄悄丢掉
+    （10-11 实测 deepseek-v4-pro：HTTP 200，图没算进 token，答「无法确定」）——
+    而图会留在历史里每轮重发。所以档案里的 vision 要真测过才填。
+    """
+    v = getattr(cfg, "vision", None)          # 测试替身的 cfg 可能只有 model
+    return v if v is not None else supports_vision(getattr(cfg, "model", ""))
+
+
+#: 这几种缓存方式要在请求里打 `cache_control` 断点（OpenAI 兼容那条路）。
+#: auto_prefix（DeepSeek / 智谱 / OpenAI 系）只要前缀稳，没东西可打。
+BREAKPOINT_STYLES = ("passthrough", "explicit_breakpoint")
+
+
 # ------------------------------------------------------------------ 工厂
 
 
+#: 档案（settings_store/profile.py）。启动钩子影子对账通过后才装上；None = 老路（名字嗅探）
+_PROFILE: Callable[[LLMConfig], LLMConfig] | None = None
+
+
+def use_profiles(fn: Callable[[LLMConfig], LLMConfig] | None) -> None:
+    global _PROFILE
+    _PROFILE = fn
+
+
 def make_adapter(cfg: LLMConfig) -> LLMAdapter:
+    if _PROFILE is not None and cfg.cache_style is None:
+        try:
+            cfg = _PROFILE(cfg)
+        except Exception:  # noqa: BLE001 —— 档案坏了也得能说话，但要留痕
+            logger.warning("套档案失败，这个 adapter 走老规则（名字嗅探）", exc_info=True)
     if cfg.provider == "anthropic":
         return AnthropicAdapter(cfg)
     if cfg.provider == "openai_compat":

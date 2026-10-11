@@ -20,3 +20,13 @@ def _night_budget_is_two(monkeypatch):
     from attention import service
 
     monkeypatch.setattr(service, "pick_night_budget", lambda: 2)
+
+
+@pytest.fixture(autouse=True)
+def _no_profile_leak():
+    """配置层 P2a：启动钩子会在 `agent.adapters` 上装一个**模块级**档案（指向某个测试的临时库）。
+    不清的话，后面任何测试 `make_adapter` 都会去读一个已经删掉的库 —— 红在毫不相干的地方。"""
+    yield
+    from agent import adapters
+
+    adapters.use_profiles(None)

@@ -58,6 +58,27 @@ def seed_cache_style(protocol: str, base_url: str) -> str:
     return "auto_prefix"
 
 
+#: 真测过能直接收图的型号（名字嗅探说不行、实际行的）。**只许放真测过的**：标错成「能看」
+#: 的代价是图被悄悄丢掉、还留在历史里每轮重发（见 `agent.adapters.sees_images`）。
+#: 2026-10-11 她说 DeepSeek 都能看图了；红方块实测：deepseek-flash 答「红色」（图算进 225 token），
+#: **deepseek-v4-pro 不行**（HTTP 200，99 token，答「无法确定」）—— 所以只放 flash。
+VERIFIED_VISION = {"deepseek-flash": "2026-10-11 红方块实测"}
+
+
+def seed_capabilities(model_name: str) -> list[str]:
+    from agent.adapters import supports_vision
+
+    caps = ["chat"]
+    if model_name in VERIFIED_VISION or supports_vision(model_name):
+        caps.append("vision")
+    return caps
+
+
+def seed_cache_ttl(model_name: str) -> str:
+    """今天 `_cache_marker` 怎么做种子就怎么填：anthropic/ 的带 1h，其余不带。"""
+    return "1h" if (model_name or "").startswith("anthropic/") else ""
+
+
 def resolve_key(names: list[str], env: Mapping[str, str]) -> str:
     """按顺序找第一个非空的环境变量。和 `config.Backend.api_key` 同一个口径（含 strip）。"""
     for n in names:
@@ -109,14 +130,11 @@ def seed(store: SettingsStore, cfg: Any, env: Mapping[str, str] | None = None) -
             if short and models[index[k]]["short_name"] is None:
                 models[index[k]]["short_name"] = short
             return index[k]
-        caps = ["chat"]
-        from agent.adapters import supports_vision
-        if supports_vision(model_name):
-            caps.append("vision")
         models.append({
             "provider_id": provider_id, "model_name": model_name, "short_name": short,
-            "label": label or model_name, "capabilities": caps,
+            "label": label or model_name, "capabilities": seed_capabilities(model_name),
             "price": price_table.get(model_name),
+            "cache_ttl": seed_cache_ttl(model_name),
         })
         index[k] = len(models) - 1
         return index[k]
@@ -180,10 +198,10 @@ def seed(store: SettingsStore, cfg: Any, env: Mapping[str, str] | None = None) -
         for m in models:
             cur = c.execute(
                 "INSERT INTO models(provider_id,model_name,short_name,label,capabilities,price_json,"
-                "origin,enabled,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                "cache_ttl,origin,enabled,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                 (m["provider_id"], m["model_name"], m["short_name"], m["label"],
                  json.dumps(m["capabilities"]),
-                 json.dumps(m["price"]) if m["price"] else None, "seed", 1, now, now))
+                 json.dumps(m["price"]) if m["price"] else None, m["cache_ttl"], "seed", 1, now, now))
             ids.append(cur.lastrowid)
         for slot_name, s in slots.items():
             c.execute(

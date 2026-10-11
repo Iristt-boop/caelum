@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from agent import vision
-from agent.adapters import make_adapter, supports_vision
+from agent.adapters import make_adapter, sees_images
 from agent.llm import MEME_TAGS, LLMAdapter, Message, extract_fake_calls, strip_stage_tags
 from agent import meter
 from agent.loop import AgentLoop
@@ -784,8 +784,8 @@ class Nox:
             return text, images
 
         adapter = self.adapter_for(model) or self.loop.adapter
-        model_name = getattr(getattr(adapter, "cfg", None), "model", "")
-        if supports_vision(model_name):
+        lcfg = getattr(adapter, "cfg", None)
+        if lcfg is None or sees_images(lcfg):       # 没 cfg 的（测试替身）同老规则：空名字算能看
             return text, images          # 他自己就能看，不用替他看
 
         desc = vision.describe(images, self.cfg.vision, user_text=text,

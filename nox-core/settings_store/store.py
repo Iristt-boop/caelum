@@ -14,7 +14,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
-from settings_store.schema import SCHEMA, SCHEMA_VERSION
+from settings_store.schema import MIGRATIONS, SCHEMA, SCHEMA_VERSION
 
 logger = logging.getLogger(__name__)
 
@@ -32,10 +32,17 @@ class SettingsStore:
         self._conn.row_factory = sqlite3.Row
         with self._lock:
             self._conn.executescript(SCHEMA)
+            # CREATE IF NOT EXISTS 不会给已有的表补列：线上的库是 schema 1 建的
+            for table, cols in MIGRATIONS.items():
+                have = {r["name"] for r in self._conn.execute(f"PRAGMA table_info({table})")}
+                for col, typ in cols:
+                    if col not in have:
+                        self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {typ}")
+                        logger.info("settings.db：%s 补列 %s", table, col)
             self._conn.execute("PRAGMA journal_mode=WAL")
             self._conn.execute("PRAGMA foreign_keys=ON")
             self._conn.execute(
-                "INSERT OR IGNORE INTO meta(k, v) VALUES('schema_version', ?)", (SCHEMA_VERSION,))
+                "INSERT OR REPLACE INTO meta(k, v) VALUES('schema_version', ?)", (SCHEMA_VERSION,))
             self._conn.commit()
 
     # ------------------------------------------------------------ 事务
