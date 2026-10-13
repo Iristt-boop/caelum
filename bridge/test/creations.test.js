@@ -13,6 +13,7 @@ import { api, startBridge, TOKEN } from "./helpers.js";
 const store = { abc: { id: "abc", title: "五子棋", html: "<html><body>棋</body></html>" } };
 let core;
 let bridge;
+const seen = [];
 
 before(async () => {
   const srv = http.createServer((req, res) => {
@@ -32,6 +33,7 @@ before(async () => {
     }
     const m = req.url.match(/^\/api\/nox\/creations(?:\/([^/?]+))?/);
     if (m) {
+      seen.push(req.url);
       if (!m[1]) return json(200, { ok: true, items: Object.values(store).map(({ html, ...x }) => x) });
       const c = store[m[1]];
       if (!c) return json(404, { detail: "没有这个 Creation（可能删了）" });
@@ -69,6 +71,11 @@ describe("Creations：bridge", () => {
     assert.ok(!("html" in list.data.items[0]), "列表不带 HTML");
     const one = await api(bridge.base, "/api/nox/creations/abc");
     assert.equal(one.data.html, "<html><body>棋</body></html>");
+    // 🔴 S1.1：她真点开（?open=1）要带到 Core —— 他自己做的，她打开了才会做下一个；预览不带
+    seen.length = 0;
+    await api(bridge.base, "/api/nox/creations/abc?open=1");
+    await api(bridge.base, "/api/nox/creations/abc");
+    assert.deepEqual(seen, ["/api/nox/creations/abc?open=1", "/api/nox/creations/abc"]);
     const del = await api(bridge.base, "/api/nox/creations/abc", { method: "DELETE" });
     assert.equal(del.data.ok, true);
     const gone = await api(bridge.base, "/api/nox/creations/abc");

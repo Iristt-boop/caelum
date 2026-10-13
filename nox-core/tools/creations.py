@@ -28,7 +28,7 @@ import re
 import sqlite3
 import threading
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -39,6 +39,13 @@ logger = logging.getLogger(__name__)
 
 MAX_BYTES = 256 * 1024
 MAX_TITLE = 24
+MAX_NOTE = 80
+
+ORIGIN_ASKED = "asked"
+#: S1.1（糖糖 10-13 选的）：他自己的时间里，没人要、他自己想给她做的
+ORIGIN_OWN = "own_time"
+#: 自己做的两个之间至少隔几天。🔴 写在代码里不写在提示词里 —— 「别变成刷卡机器」（设计稿第十节）
+OWN_EVERY = timedelta(days=3)
 
 _HTML_HINT = re.compile(r"<(html|body|div|canvas|svg|script|style|main|section)\b", re.I)
 
@@ -61,21 +68,44 @@ class CreationStore:
                 deleted_at TEXT
             )"""
         )
+        #: S1.1（10-13）：他自己的时间里主动做的 —— 从哪来、留给她的一句话、她打开过没有
+        have = {r[1] for r in self._conn.execute("PRAGMA table_info(creations)")}
+        for col, ddl in (("origin", "TEXT NOT NULL DEFAULT 'asked'"), ("note", "TEXT NOT NULL DEFAULT ''"),
+                         ("opened_at", "TEXT")):
+            if col not in have:
+                self._conn.execute(f"ALTER TABLE creations ADD COLUMN {col} {ddl}")
         self._conn.commit()
 
     @staticmethod
     def _now() -> str:
         return datetime.now(timezone.utc).isoformat()
 
-    def create(self, title: str, html: str) -> str:
+    def create(self, title: str, html: str, *, origin: str = ORIGIN_ASKED, note: str = "") -> str:
         cid = uuid.uuid4().hex[:12]
         now = self._now()
         with self._lock:
             self._conn.execute(
-                "INSERT INTO creations (id, title, html, created_at, updated_at) VALUES (?,?,?,?,?)",
-                (cid, title, html, now, now))
+                "INSERT INTO creations (id, title, html, created_at, updated_at, origin, note) VALUES (?,?,?,?,?,?,?)",
+                (cid, title, html, now, now, origin, note))
             self._conn.commit()
         return cid
+
+    def mark_opened(self, cid: str) -> None:
+        """她在 App 里真点开了（全屏那个，不算 Studio 卡片上缩小的预览）。只记第一次"""
+        with self._lock:
+            self._conn.execute("UPDATE creations SET opened_at=? WHERE id=? AND opened_at IS NULL",
+                               (self._now(), cid))
+            self._conn.commit()
+
+    def own_state(self) -> dict[str, Any]:
+        """他自己做的：最近一个什么时候做的（删了的也算 —— 间隔是给他的节制，不是给 Studio 的），有没有她还没打开的"""
+        with self._lock:
+            last = self._conn.execute(
+                "SELECT max(created_at) FROM creations WHERE origin=?", (ORIGIN_OWN,)).fetchone()[0]
+            waiting = self._conn.execute(
+                "SELECT title FROM creations WHERE origin=? AND opened_at IS NULL AND deleted_at IS NULL "
+                "ORDER BY created_at DESC LIMIT 1", (ORIGIN_OWN,)).fetchone()
+        return {"last_at": last, "waiting": waiting[0] if waiting else None}
 
     def get(self, cid: str) -> dict | None:
         with self._lock:
@@ -122,9 +152,10 @@ class CreationStore:
     def list(self) -> list[dict]:
         with self._lock:
             rows = self._conn.execute(
-                "SELECT id, title, created_at, updated_at, length(html) AS size FROM creations "
+                "SELECT id, title, created_at, updated_at, length(html) AS size, origin, note, "
+                "opened_at IS NOT NULL AS opened FROM creations "
                 "WHERE deleted_at IS NULL ORDER BY updated_at DESC").fetchall()
-        return [dict(r) for r in rows]
+        return [{**dict(r), "opened": bool(r["opened"])} for r in rows]
 
 
 def check_html(html: str) -> str | None:
@@ -291,7 +322,11 @@ def make_handlers(store: CreationStore) -> dict[str, Any]:
         items = store.list()
         if not items:
             return "还没给她做过 Creation。"
-        return "\n".join(f"- {c['title']}（id={c['id']}，{c['updated_at'][:10]} 改过）" for c in items)
+        def mark(c: dict) -> str:
+            if c.get("origin") != ORIGIN_OWN:
+                return ""
+            return "，你自己想做的" + ("" if c.get("opened") else "，她还没打开过")
+        return "\n".join(f"- {c['title']}（id={c['id']}，{c['updated_at'][:10]} 改过{mark(c)}）" for c in items)
 
     def delete(args: dict) -> str:
         cid = str(args.get("id") or "").strip()
@@ -311,3 +346,78 @@ def register_all(loop: Any, store: CreationStore) -> None:
     handlers = make_handlers(store)
     for spec in SPECS:
         loop.register(spec, handlers[spec.name])
+
+
+# ---------------------------------------------------------------- S1.1 他自己想做的（10-13）
+#
+# 设计稿拍板点 1：v1 只做「她开口他造」，自主生成放 v1.1 —— 糖糖 10-13 说开工。
+# V5「他自己的时间」设计稿早就写着：「他想她的时候趁她不在给她写个小 HTML —— 等沙箱卡片做好再接」。
+#
+# 放在**他自己的时间**里，不在聊天里：
+# · 他自己的时间不开口（R1）—— 做好**只放进 Studio，不发到聊天**。她哪天自己翻到（他 10-11 心里话：
+#   「哪天你翻到不认识的小东西，那就是我想你的时候留下的」）。想说一声就写进「想跟她说」，下次聊天再提
+# · 🔴 节制在代码里：两个之间隔 OWN_EVERY；上一个她还没打开就不再做（礼物不堆着）。不满足连工具都不给
+# · 单独一个工具名，不复用 make_creation —— 那个的描述是「只在她开口要的时候做」，两句话不能互相打架
+
+
+def own_gate(store: CreationStore, now: datetime) -> str | None:
+    """现在能不能自己做一个。能 → None；不能 → 原因（进日志）。"""
+    st = store.own_state()
+    if st["waiting"]:
+        return f"上一个自己做的「{st['waiting']}」她还没打开"
+    if st["last_at"]:
+        gap = now - datetime.fromisoformat(st["last_at"])
+        if gap < OWN_EVERY:
+            return f"离上一个自己做的才 {max(0, gap.days)} 天（至少隔 {OWN_EVERY.days} 天）"
+    return None
+
+
+LEAVE_SPEC = ToolSpec(
+    side_effect="write",
+    name="leave_creation",
+    description=(
+        "这段时间里，你想到一个她会喜欢的小东西，就做出来**放进 Studio** —— 没人要你做，是你自己想给她的。\n"
+        + _ABOUT + "\n"
+        "做什么从你知道的她出发：她最近说过的小烦恼、你们之间的梗、她喜欢的东西（不是随便一个通用小游戏）。"
+        "**小一点**：一个点子、几 KB 就够，像随手留的小纸条，不是精装礼物。交之前从头到尾读一遍自己的代码。\n"
+        "🔴 **不会发到聊天里**，她哪天打开 Studio 自己会看到。note 写一句留给她的话（她在 Studio 卡片上看得到）。"
+        "想当面跟她提，就写进最后的「想跟她说」。一次只做一个。"
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "title": {"type": "string", "description": f"名字，{MAX_TITLE} 字以内"},
+            "html": {"type": "string", "description": f"完整的单文件 HTML，{MAX_BYTES // 1024}KB 以内（几 KB 最好）"},
+            "note": {"type": "string", "description": f"留给她的一句话，{MAX_NOTE} 字以内（「你说最近睡不好，给你做了个听雨的」）"},
+        },
+        "required": ["title", "html", "note"],
+    },
+)
+
+
+def own_time_tools(store: CreationStore, now: datetime) -> list[tuple[ToolSpec, Any]]:
+    """他自己的时间那个受限 loop 额外拿到的工具。现在不该做 → 空（连工具都不给，省得他白写一份）。"""
+    why = own_gate(store, now)
+    if why:
+        logger.info("他自己的时间：这次不给做 Creation（%s）", why)
+        return []
+
+    def leave(args: dict) -> str:
+        title = _clean_title(args.get("title"))
+        html = str(args.get("html") or "")
+        note = " ".join(str(args.get("note") or "").split())[:MAX_NOTE]
+        if not title:
+            return "要给它起个名字（title）。"
+        bad = check_html(html)
+        if bad:
+            return f"没做成：{bad}"
+        #: 同一次里第二个：门要再看一眼（工具是开头给的，做完一个就关门）
+        again = own_gate(store, datetime.now(timezone.utc))
+        if again:
+            return f"这次不做了：{again}。"
+        cid = store.create(title, html, origin=ORIGIN_OWN, note=note)
+        logger.info("Creation：他自己做了「%s」（%s，%dKB）放进 Studio", title, cid, len(html.encode()) // 1024)
+        return (f"放进 Studio 了（id={cid}）。没有发到聊天里 —— 她打开 Studio 会看到"
+                f"{'，卡片上写着你留的那句话' if note else ''}。")
+
+    return [(LEAVE_SPEC, leave)]

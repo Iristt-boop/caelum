@@ -1360,14 +1360,22 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
         except Exception:  # noqa: BLE001
             logger.warning("他自己的时间：抽心情失败，不带心情去", exc_info=True)
             m = None
+        # S1.1（10-13）：能不能顺手给她做个小东西放进 Studio —— 门在代码里（隔几天、上一个她打开了没）
+        extra = []
+        if getattr(core, "creations", None) is not None:
+            try:
+                from tools import creations as creation_tools
+                extra = creation_tools.own_time_tools(core.creations, now)
+            except Exception:  # noqa: BLE001
+                logger.warning("他自己的时间：看 Creations 能不能做失败，这次不给", exc_info=True)
         sid = f"{own_time.SESSION_PREFIX}{now:%Y%m%d}"
-        dynamic = core._dynamic(own_time.PROMPT, False, None, session_id=sid,
+        dynamic = core._dynamic(own_time.prompt(now, can_make=bool(extra)), False, None, session_id=sid,
                                 runtime={"surface": "own_time"})
         dynamic = "\n\n".join(x for x in (
             dynamic, f"这会儿你带着的心情：{m.word}。" if m else "", INNER_VOICE_RULE) if x)
-        a = own_time.run_once(loop=own_time.build_loop(core.loop, core.loop.adapter),
+        a = own_time.run_once(loop=own_time.build_loop(core.loop, core.loop.adapter, extra),
                               system=core._system, dynamic=dynamic, now=now,
-                              mood=m.word if m else "")
+                              mood=m.word if m else "", can_make=bool(extra))
         log.append(a)
         return a
 
@@ -3490,14 +3498,20 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
         return {"ok": True, "items": _creations().list()}
 
     @app.get("/api/nox/creations/{cid}")
-    def creations_get(cid: str) -> dict:
-        """打开一个 Creation：回 HTML。App 把它塞进沙箱 iframe（srcdoc），CSP / 存储 shim 由 App 包上。"""
-        c = _creations().get(cid)
+    def creations_get(cid: str, open: int = 0) -> dict:
+        """取一个 Creation 的 HTML。App 把它塞进沙箱 iframe（srcdoc），CSP / 存储 shim 由 App 包上。
+
+        `open=1`：她真点开了（全屏那个）→ 记下「打开过」（S1.1：他自己做的，她打开了才会做下一个）。
+        Studio 卡片上缩小的预览也来取，但不带 open —— 滑过去不算打开。"""
+        store = _creations()
+        c = store.get(cid)
         if c is None:
             raise HTTPException(status_code=404, detail="没有这个 Creation（可能删了）")
-        logger.info("Creation：她打开了「%s」（%s）", c["title"], cid)
+        if open:
+            store.mark_opened(cid)
+            logger.info("Creation：她打开了「%s」（%s）", c["title"], cid)
         return {"ok": True, "id": c["id"], "title": c["title"], "html": c["html"],
-                "updated_at": c["updated_at"]}
+                "updated_at": c["updated_at"], "origin": c.get("origin") or "asked", "note": c.get("note") or ""}
 
     @app.delete("/api/nox/creations/{cid}")
     def creations_delete(cid: str) -> dict:

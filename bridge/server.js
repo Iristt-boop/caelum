@@ -3987,8 +3987,10 @@ app.get("/api/provider-info", async (req, res) => {
 // 404（删了）原样带 404 —— 前端据此显示「已删」，不是「打不开」
 const creationsProxy = (method) => async (req, res) => {
   const id = req.params.id ? `/${encodeURIComponent(req.params.id)}` : "";
+  // ?open=1：她真点开了（S1.1 记「打开过」）；Studio 卡片的缩小预览不带
+  const qs = method === "GET" && id && req.query.open === "1" ? "?open=1" : "";
   try {
-    const r = await fetch(`${NOX_CORE_URL}/api/nox/creations${id}`, {
+    const r = await fetch(`${NOX_CORE_URL}/api/nox/creations${id}${qs}`, {
       method, signal: AbortSignal.timeout(10000),
     });
     const body = await r.json().catch(() => null);

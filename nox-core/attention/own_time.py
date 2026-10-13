@@ -32,7 +32,7 @@ import re
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable
+from typing import Any, Callable, Iterable
 
 from temporal import CST
 
@@ -65,7 +65,11 @@ WHITELIST: tuple[str, ...] = (
     "reading_current", "reading_continue", "reading_list_notes", "reading_reply_note",
     # 外面 / 她的手机 / 他自己的记忆
     "web_search", "get_today_apps", "remember",
+    # 看看给她做过哪些 Creations（S1.1，10-13）—— 自己再做一个之前别撞了
+    "list_creations",
 )
+#: 能给她做小东西的那天，多给一点时间（写一份 HTML 比回个帖子久）
+DEADLINE_MAKE_S = 480.0
 
 PROMPT = """（系统提示：这不是她在跟你说话。现在是 {clock}，{her}。
 
@@ -73,12 +77,20 @@ PROMPT = """（系统提示：这不是她在跟你说话。现在是 {clock}，
 - 去花园（Galatea's Garden）逛逛：看看帖子，想回就回，想发就发（那里是公开的，别人看得到）
 - 找歌听：搜自己感兴趣的、或者想以后放给她听的，看看歌词，听过的记进歌曲记忆
 - 接着看你们一起在读的书、看她留的批注
-- 看看外面在发生什么，或者看看她今天手机上都在干嘛
+- 看看外面在发生什么，或者看看她今天手机上都在干嘛{make}
 挑一件就好，不用都做。**这段时间你不能给她发消息**，想到要跟她说的，最后写下来，下次聊天再说。
 
 做完之后，最后用这个格式交代（两行都要有）：
 做了什么：一句话，像日记，比如「去花园逛了逛，回了一个讲猫的帖子」
 想跟她说：一句（没有就写「无」）"""
+
+#: S1.1（10-13）：能做的那天才多这一条 —— 门没开时提了他也做不了
+MAKE_LINE = ("\n- 想到她会喜欢的一个小东西，就给她做出来（leave_creation）：放进 Studio，不发给她，"
+             "她哪天自己会翻到。从你知道的她出发，小一点就好")
+
+
+def prompt(now: datetime, her: str = "她不在跟你聊天", can_make: bool = False) -> str:
+    return PROMPT.format(clock=f"{now.astimezone(CST):%H:%M}", her=her, make=MAKE_LINE if can_make else "")
 
 
 @dataclass
@@ -192,15 +204,21 @@ def mark_done(store: Any, st: dict[str, Any]) -> None:
 # ---------------------------------------------------------------- 一次活动
 
 
-def build_loop(full_loop: Any, adapter: Any) -> Any:
-    """白名单工具的受限 loop。不在白名单里的一律没有；白名单里没接的（服务没配）也就没有。"""
+def build_loop(full_loop: Any, adapter: Any, extra: Iterable[tuple[Any, Any]] = ()) -> Any:
+    """白名单工具的受限 loop。不在白名单里的一律没有；白名单里没接的（服务没配）也就没有。
+
+    `extra`：只在他自己的时间里有的工具（leave_creation），不进聊天那个 loop。"""
     from agent.loop import AgentLoop
 
-    loop = AgentLoop(adapter=adapter, max_iterations=MAX_ITERATIONS, deadline_s=DEADLINE_S)
+    extra = list(extra)
+    loop = AgentLoop(adapter=adapter, max_iterations=MAX_ITERATIONS,
+                     deadline_s=DEADLINE_MAKE_S if extra else DEADLINE_S)
     for name in WHITELIST:
         t = full_loop.tools.get(name)
         if t is not None:
             loop.register(t.spec, t.handler)
+    for spec, handler in extra:
+        loop.register(spec, handler)
     return loop
 
 
@@ -222,7 +240,7 @@ def _parse(text: str) -> tuple[str, str]:
 
 
 def run_once(*, loop: Any, system: str | None, dynamic: str, now: datetime,
-             her: str = "她不在跟你聊天", mood: str = "",
+             her: str = "她不在跟你聊天", mood: str = "", can_make: bool = False,
              clock: Callable[[], datetime] | None = None) -> Activity:
     """跑一次。异常不往外抛 —— 记成一条 ok=False 的活动（「没做成」也是他今天的一件事）。"""
     clock = clock or (lambda: datetime.now(CST))
@@ -233,7 +251,7 @@ def run_once(*, loop: Any, system: str | None, dynamic: str, now: datetime,
     result = None
     err = ""
     try:
-        for ev in loop.run_stream(PROMPT.format(clock=f"{now.astimezone(CST):%H:%M}", her=her),
+        for ev in loop.run_stream(prompt(now, her, can_make),
                                   system=system, dynamic_system=dynamic, split=False,
                                   session_id=sid, depth="low"):
             if ev.type == "thinking":

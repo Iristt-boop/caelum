@@ -203,6 +203,11 @@ def live(monkeypatch, tmp_path):
     return TestClient(create_app(nox, Store(tmp_path / "sessions.db"))), nox
 
 
+def _cards(nox):
+    """bridge 收到的除用量以外的帖子（每次调模型都会记一笔 /api/usage，那不是卡片）"""
+    return [p for p in nox.bridge.posts if p[0] != "/api/usage"]
+
+
 def _wait(pred, s=3.0):
     end = time.time() + s
     while time.time() < end:
@@ -215,8 +220,8 @@ def _wait(pred, s=3.0):
 def test_她说了_出卡片_Keep之后列表里是生效的(live):
     c, nox = live
     assert c.post("/chat", json={"session_id": "s-relation", "text": "别老问我吃没吃饭"}).status_code == 200
-    assert _wait(lambda: nox.bridge.posts), "没出确认卡"
-    path, body = nox.bridge.posts[0]
+    assert _wait(lambda: _cards(nox)), "没出确认卡"
+    path, body = _cards(nox)[0]
     assert path == "/api/relation/card" and body["session_id"] == "s-relation"
     iid = body["item"]["id"]
     items = c.get("/api/nox/relation").json()["items"]
@@ -233,7 +238,7 @@ def test_测试会话不识别(live):
     c, nox = live
     c.post("/chat", json={"session_id": "test-relation", "text": "别老问我吃没吃饭"})
     time.sleep(0.4)
-    assert nox.bridge.posts == [] and nox.router.light_adapter.seen == []
+    assert _cards(nox) == [] and nox.router.light_adapter.seen == []
 
 
 def test_attention没开_列表是503不是空(monkeypatch, tmp_path):
