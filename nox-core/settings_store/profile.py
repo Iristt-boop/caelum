@@ -89,6 +89,8 @@ def attach(core: Any, store: SettingsStore, keys: KeyStore | None = None) -> int
     router = getattr(core, "router", None)
     for a in (getattr(loop, "adapter", None), getattr(router, "light_adapter", None)):
         a = getattr(a, "_inner", a)          # 计量包装（agent/meter.Metered）：往它身上赋值只会落在包装上
+        if hasattr(a, "swap") and hasattr(a, "current"):
+            a = a.current()                  # 槽位代理（settings_store/slots.SlotAdapter）：套到里面那个上
         if a is None or id(a) in seen or not hasattr(a, "cfg"):
             continue
         seen.add(id(a))
@@ -111,4 +113,8 @@ def refresh(core: Any) -> int:
     store = getattr(core, "profiles", None)
     if store is None:
         return 0
-    return attach(core, store, getattr(core, "config_keys", None))
+    n = attach(core, store, getattr(core, "config_keys", None))
+    # 换了 key / 地址：她在 Slots 里选的杂活要按新档案重建（P3）
+    from settings_store import slots
+    slots.apply(core)
+    return n

@@ -84,8 +84,26 @@ def slots_view(store: SettingsStore, env: Mapping[str, str] | None = None,
     items = []
     for name in order:
         s = rows[name]
-        items.append(_slot_item(store, s, env, front))
+        items.append(_with_choice(store, _slot_item(store, s, env, front), env, front))
     return {"slots": items}
+
+
+def _with_choice(store: SettingsStore, item: dict[str, Any], env: Mapping[str, str], front: set[str]) -> dict[str, Any]:
+    """她在 Slots 里给这个位置选过（P3，`slot_choices`）就显示她选的 —— 不然 OS 和地图上写的还是种子那个，和实际对不上。"""
+    from settings_store import slots
+
+    if item.get("slot") not in slots.EDITABLE:
+        return item
+    c = slots.choice(store, item["slot"])
+    if c is None:
+        return item
+    m, p = c["model"], c["provider"]
+    return {**item, "ok": True,
+            "provider": {"id": p["id"], "label": p["label"], "cache_style": p["cache_style"], "protocol": p["protocol"]},
+            "model": {"name": m["model_name"], "label": m["label"], "short_name": m["short_name"],
+                      "capabilities": m["capabilities"]},
+            "key_configured": _key_source(p["id"], list(p["key_envs"]), env, front) is not None,
+            "updated_by": "she"}
 
 
 def _slot_item(store: SettingsStore, s: dict[str, Any], env: Mapping[str, str],

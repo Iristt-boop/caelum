@@ -57,6 +57,9 @@ def start_shadow(core: Any) -> None:
             logger.warning("配置库和现状对不上（%d 处），这次 adapter 不读档案、照旧按名字判断", len(res.diffs))
         else:
             n = profile.attach(core, store, keys)
+            # P3：她在 Slots 里选过的（杂活 / 看图…）上次存下了，这次启动接着用
+            from settings_store import slots
+            slots.apply(core)
             logger.info("adapter 改读档案：已套 %d 个，之后新建的在工厂里套", n)
     except Exception:  # noqa: BLE001 —— 观察不许拖垮启动，但必须留痕
         logger.warning("配置影子失败（不影响启动）", exc_info=True)

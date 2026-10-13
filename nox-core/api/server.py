@@ -404,6 +404,11 @@ class FetchModelsRequest(BaseModel):
     key: str = ""
 
 
+class SlotPickRequest(BaseModel):
+    """配置层 P3：Slots 里选一个型号。model_id 为空 = 回到服务器默认（模块顶层，理由同上）"""
+    model_id: int | None = None
+
+
 class TryRouteRequest(BaseModel):
     """「测试回话」：只测不存。已有的厂商给 provider_id；新的给协议 + 地址 + key"""
     model: str
@@ -630,6 +635,15 @@ class Sessions:
             return len(self._cache)
 
 
+def _shared_utility(core: Any) -> Any:
+    """杂活的槽位代理（P3）：话题池、日卡、电话原来各自另建一个 adapter —— Slots 里换杂活时它们换不着。
+    现在和 Router / Archiver 拿同一个代理；没有代理（测试替身、没配杂活）就返回 None，调用方照旧自己建。"""
+    from settings_store.slots import SlotAdapter
+
+    light = getattr(getattr(core, "router", None), "light_adapter", None)
+    return light if isinstance(light, SlotAdapter) else None
+
+
 def _cowatch_summarizer(core: Nox, db: Store, world: Any):
     """共影剧情记忆的那一步（memory/watched.py）：给一场看完的共影整理「这集讲了什么」。
 
@@ -748,7 +762,7 @@ def _build_attention(core: Nox, sessions: "Sessions", db: Store) -> AttentionSer
                 from agent.adapters import make_adapter as _make_adapter
                 # 贴任务名记账（2026-09-06）——话题池一天 96 次，
                 # 在这之前一个数都没有。见 agent/meter.py
-                _pool_adapter = meter.tag(_make_adapter(_utility_cfg), "topic-filter")
+                _pool_adapter = meter.tag(_shared_utility(core) or _make_adapter(_utility_cfg), "topic-filter")
             _trends_client = None
             if getattr(core.cfg, "trends_url", ""):
                 from tools.mcp_client import McpClient as _McpClient
@@ -870,7 +884,7 @@ def _build_attention(core: Nox, sessions: "Sessions", db: Store) -> AttentionSer
                 _card_cfg = getattr(core.cfg, "utility", None)
                 if _card_cfg is not None and getattr(_card_cfg, "usable", False):
                     from agent.adapters import make_adapter as _make_card_adapter
-                    _card_utility = meter.tag(_make_card_adapter(_card_cfg), "daily-card")
+                    _card_utility = meter.tag(_shared_utility(core) or _make_card_adapter(_card_cfg), "daily-card")
                 card_source = DailyCardSource(
                     astore, utility=_card_utility,
                     bridge=core.bridge, world=world,
@@ -895,7 +909,7 @@ def _build_attention(core: Nox, sessions: "Sessions", db: Store) -> AttentionSer
                 _call_cfg = getattr(core.cfg, "utility", None)
                 if _call_cfg is not None and getattr(_call_cfg, "usable", False):
                     from agent.adapters import make_adapter as _make_call_adapter
-                    _call_utility = meter.tag(_make_call_adapter(_call_cfg), "call")
+                    _call_utility = meter.tag(_shared_utility(core) or _make_call_adapter(_call_cfg), "call")
             logger.info("主动来电接线：mode=%s（shadow 只记不打，on 才真响铃）",
                         _call_mode())
         except Exception:  # noqa: BLE001
@@ -1171,7 +1185,9 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
     #: 拿到字节之后得找视觉模型替他看（`agent/vision.py`）。
     #: ⚠️ 没配 key 也照常注册，只是那一件会如实说"看不了"
     computer_tools.register_all(
-        core.loop, local_hand, getattr(core.cfg, "vision", None))
+        core.loop, local_hand,
+        # 取值函数（P3）：看图的位置在 Slots 里换了，截屏看图也跟着换；测试替身没有就退回固定那份
+        getattr(core, "vision_cfg", None) or getattr(core.cfg, "vision", None))
 
     #: 房间 —— 他在我们家那间像素房里的身体。**走的是同一只手。**
     #:
@@ -3097,6 +3113,42 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
         profile.refresh(core)
         return {"ok": True, **out}
 
+    # ---- 配置层 P3：Slots 里换杂活 / 看图 / 视频 / 画图（聊天模型走 /api/nox/model）----
+
+    def _slots_payload() -> dict:
+        from settings_store import slots
+        return {"ok": True, "slots": slots.editable_view(_config_store(), getattr(core, "config_keys", None),
+                                                         getattr(core, "cfg", None))}
+
+    def _slot_change(fn):
+        from settings_store import slots
+        try:
+            fn()
+        except slots.SlotError as exc:
+            raise HTTPException(status_code=exc.status, detail=str(exc)) from None
+        slots.apply(core)                              # 下一次调用就是新的（杂活换代理里面那个；看图每次现取）
+        return _slots_payload()
+
+    @app.get("/api/nox/config/slot-choices")
+    def nox_config_slot_choices() -> dict:
+        """四个能换的位置：现在是谁、能选哪些、能不能换回去。"""
+        return _slots_payload()
+
+    @app.put("/api/nox/config/slots/{slot}")
+    def nox_config_set_slot(slot: str, req: SlotPickRequest) -> dict:
+        """她在 Slots 里选了一个（model_id 为空 = 回到服务器默认）。立刻生效。"""
+        from settings_store import slots
+        _config_limit("key", 30)
+        return _slot_change(lambda: slots.set_choice(_config_store(), getattr(core, "config_keys", None),
+                                                     slot, req.model_id))
+
+    @app.post("/api/nox/config/slots/{slot}/revert")
+    def nox_config_revert_slot(slot: str) -> dict:
+        """换回上一个。"""
+        from settings_store import slots
+        _config_limit("key", 30)
+        return _slot_change(lambda: slots.revert(_config_store(), slot))
+
     @app.get("/api/nox/config/presets")
     def nox_config_presets() -> dict:
         """添加厂商的预设（智谱 /v4 这类坑写在预设里）；`exists` = 这个地址已经有一家了。"""
@@ -3652,7 +3704,8 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
         让每张相册图都有描述 —— Nox 以后能按内容选图，而不是盲发。
         识别失败返回空描述，不抛错：图片本身没问题，描述空着等手动填。
         """
-        if not core.cfg.vision.api_key:
+        vcfg = core.vision_cfg() if hasattr(core, "vision_cfg") else core.cfg.vision
+        if not vcfg.api_key:
             return {"description": ""}
         bridge_base = (core.cfg.bridge_url or "http://127.0.0.1:3003").rstrip("/")
         img_url = bridge_base + req.url
@@ -3666,7 +3719,7 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
         b64 = base64.b64encode(data).decode("ascii")
         # 相册图都是 jpg（bridge 上传时转的）。describe 只认 base64 data URI。
         desc = vision.describe([f"data:image/jpeg;base64,{b64}"],
-                               core.cfg.vision, timeout=core.cfg.vision_timeout)
+                               vcfg, timeout=core.cfg.vision_timeout)
         return {"description": desc or ""}
 
     @app.post("/chat", response_model=ChatResponse)

@@ -283,7 +283,7 @@ class Nox:
             )
             stackchan_tools.register_all(
                 self.loop, stackchan_client,
-                vision_cfg=self.cfg.vision,
+                vision_cfg=self.vision_cfg,          # 取值函数（P3）：看图的位置在 Slots 里换了，拍照也跟着换
                 world_ref=lambda: self.world,
             )
             logger.info("stackchan 工具已注册（%s）", _mask_url(self.cfg.stackchan_url))
@@ -520,7 +520,9 @@ class Nox:
         light = None
         if self.cfg.utility.usable:
             try:
-                light = make_adapter(self.cfg.utility)
+                # 槽位代理（P3）：Router、Archiver、各路杂活拿的都是这一个，Slots 里换杂活只换它里面那个
+                from settings_store.slots import SlotAdapter
+                light = SlotAdapter("chat.utility", make_adapter(self.cfg.utility))
             except Exception as exc:  # noqa: BLE001
                 logger.warning("杂活模型不可用，轻量路径改用主模型: %s", exc)
 
@@ -728,6 +730,13 @@ class Nox:
         mine = self.user_model(key)
         return mine["model_name"] if mine else self.cfg.primary.model
 
+    def vision_cfg(self):
+        """看图现在走哪条线路（P3）：她在 Slots 里选过就用她选的，没选用服务器默认（环境变量那份）。每次现取。"""
+        from settings_store import slots
+
+        return slots.resolve_llm(getattr(self, "profiles", None), getattr(self, "config_keys", None),
+                                 "vision", self.cfg.vision)
+
     def user_model(self, key: str | None) -> dict | None:
         """她在 OS 里加的型号（配置层 P2d，短名 `u-` 开头）。档案没装（`NOX_CONFIG_STORE=off` / 对账不过）就当没有。"""
         store = getattr(self, "profiles", None)
@@ -831,7 +840,7 @@ class Nox:
         if lcfg is None or sees_images(lcfg):       # 没 cfg 的（测试替身）同老规则：空名字算能看
             return text, images          # 他自己就能看，不用替他看
 
-        desc = vision.describe(images, self.cfg.vision, user_text=text,
+        desc = vision.describe(images, self.vision_cfg(), user_text=text,
                                timeout=self.cfg.vision_timeout)
         if desc is None:
             # 看不了就交给 adapter 那层的降级文案如实说，绝不编一段描述出来

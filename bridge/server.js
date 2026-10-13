@@ -4051,6 +4051,11 @@ app.get("/api/nox/config/models", noxConfigProxy("/api/nox/config/models", "nox-
 const LONG = 150000;
 const idPath = (prefix, suffix = "") => (req) => `${prefix}/${encodeURIComponent(req.params.id)}${suffix}`;
 app.get("/api/nox/config/presets", noxConfigProxy("/api/nox/config/presets", "nox-config-presets"));
+// P3：Slots 里换杂活 / 看图 / 视频 / 画图（聊天模型走 /api/nox/model）
+const slotPath = (suffix = "") => (req) => `/api/nox/config/slots/${encodeURIComponent(req.params.slot)}${suffix}`;
+app.get("/api/nox/config/slot-choices", noxConfigProxy("/api/nox/config/slot-choices", "nox-config-slots"));
+app.put("/api/nox/config/slots/:slot", noxConfigWrite("PUT", slotPath(), "nox-config-slots"));
+app.post("/api/nox/config/slots/:slot/revert", noxConfigWrite("POST", slotPath("/revert"), "nox-config-slots"));
 app.post("/api/nox/config/try", noxConfigWrite("POST", () => "/api/nox/config/try", "nox-config-edit", LONG));
 app.post("/api/nox/config/fetch-models", noxConfigWrite("POST", () => "/api/nox/config/fetch-models", "nox-config-edit", LONG));
 app.post("/api/nox/config/providers", noxConfigWrite("POST", () => "/api/nox/config/providers", "nox-config-edit", LONG));

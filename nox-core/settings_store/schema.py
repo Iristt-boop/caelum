@@ -61,6 +61,17 @@ CREATE TABLE IF NOT EXISTS slots(
   updated_by  TEXT NOT NULL                  -- seed | she | him-proposal
 );
 
+-- 她在 OS 里给某个位置选的型号（P3，10-13）。单独一张，不碰 slots（那张每次启动由种子刷新、影子对账也拿它比）。
+-- 没有这一行 = 用服务器默认。
+-- 🔴 按「厂商 + 型号名」存，**不按 models.id**：种子型号每次启动删了重灌、id 会变，存 id 重启一次就指空了
+CREATE TABLE IF NOT EXISTS slot_choices(
+  slot        TEXT PRIMARY KEY,              -- chat.utility | vision | video | image
+  provider_id TEXT NOT NULL,
+  model_name  TEXT NOT NULL,
+  at          TEXT NOT NULL,
+  by          TEXT NOT NULL DEFAULT 'she'
+);
+
 -- 每次改槽位存一份快照，给「回到上一版」用（P3）。
 CREATE TABLE IF NOT EXISTS slot_history(
   id            INTEGER PRIMARY KEY AUTOINCREMENT,

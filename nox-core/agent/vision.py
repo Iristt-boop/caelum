@@ -54,7 +54,10 @@ def describe(images: list[str], cfg: LLMConfig, user_text: str = "",
     """把图看成文字。看不了就返回 None，不编。"""
     if not images:
         return None
-    if not cfg.api_key:
+    if callable(cfg):
+        # P3（10-13）：看图这个位置能在 Slots 里换 —— 拿的是取值函数（Nox.vision_cfg），每次现取，换了下一张就生效
+        cfg = cfg()
+    if cfg is None or not cfg.api_key:
         logger.info("视觉模型没配 key，跳过看图")
         return None
 

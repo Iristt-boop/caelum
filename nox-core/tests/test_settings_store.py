@@ -19,7 +19,7 @@ def _tables(store: SettingsStore) -> list[str]:
 def test_建出设计稿里的全部表(tmp_path):
     s = SettingsStore(tmp_path / "settings.db")
     assert _tables(s) == sorted(
-        ["meta", "providers", "models", "slots", "slot_history", "test_results", "shadow_log"])
+        ["meta", "providers", "models", "slots", "slot_choices", "slot_history", "test_results", "shadow_log"])
 
 
 def test_重复打开幂等(tmp_path):

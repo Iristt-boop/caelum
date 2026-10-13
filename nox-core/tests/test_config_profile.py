@@ -215,7 +215,8 @@ def test_红线_see_听档案的_能看就不替他看(monkeypatch, tmp_path):
 
     def see(llm):
         fake = SimpleNamespace(adapter_for=lambda m: None,
-                               loop=SimpleNamespace(adapter=OpenAICompatAdapter(llm)), cfg=cfg)
+                               loop=SimpleNamespace(adapter=OpenAICompatAdapter(llm)), cfg=cfg,
+                               vision_cfg=lambda: cfg.vision)          # P3 起看图线路每次现取
         return nox_mod.Nox._see(fake, "看看", [IMG], None)
 
     assert see(profile.apply(s, _llm("v4-flash", cfg))) == ("看看", [IMG]) and not called

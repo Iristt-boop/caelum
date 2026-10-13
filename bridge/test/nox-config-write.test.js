@@ -45,6 +45,9 @@ before(async () => {
       if (req.url === "/api/nox/config/providers/gemini/models" && req.method === "POST") return json(200, { ok: true, models: ["x"] });
       if (req.url === "/api/nox/config/fetch-models") return json(200, { ok: true, models: ["a", "b"] });
       if (req.url === "/api/nox/config/presets") return json(200, { ok: true, presets: [{ preset: "zhipu" }] });
+      if (req.url === "/api/nox/config/slot-choices") return json(200, { ok: true, slots: [{ slot: "chat.utility", choice: null }] });
+      if (req.url === "/api/nox/config/slots/chat.utility" && req.method === "PUT") return json(200, { ok: true, slots: [{ slot: "chat.utility", choice: { model_id: 3 } }] });
+      if (req.url === "/api/nox/config/slots/chat.utility/revert" && req.method === "POST") return json(400, { detail: "没有上一个可以回了" });
       json(404, { detail: "nope" });
     });
   });
@@ -121,4 +124,14 @@ test("P2d：真测没过的原因带回前端；改 / 删 / 加型号 / 拉型�
   assert.deepEqual((await api(bridge.base, "/api/nox/config/fetch-models", { method: "POST", body: { provider_id: "zhipu" } })).data.models, ["a", "b"]);
   assert.equal((await api(bridge.base, "/api/nox/config/presets")).data.presets[0].preset, "zhipu");
   assert.ok(!bridge.logs.join("").includes(KEY));
+});
+
+test("P3：Slots 查 / 换 / 换回去都通，换回去没得退时原因带回来", async () => {
+  assert.equal((await api(bridge.base, "/api/nox/config/slot-choices")).data.slots[0].slot, "chat.utility");
+  const put = await api(bridge.base, "/api/nox/config/slots/chat.utility", { method: "PUT", body: { model_id: 3 } });
+  assert.equal(put.data.slots[0].choice.model_id, 3);
+  assert.deepEqual(seen.find((x) => x.url === "/api/nox/config/slots/chat.utility" && x.method === "PUT").body, { model_id: 3 });
+  const rev = await api(bridge.base, "/api/nox/config/slots/chat.utility/revert", { method: "POST" });
+  assert.equal(rev.status, 400);
+  assert.match(rev.data.error, /没有上一个/);
 });
