@@ -192,6 +192,16 @@ class ToolContext:
             "type": "task", "task_id": task_id, "card": card, **meta,
         })
 
+    def attach_config(self, proposal_id: str, card: dict[str, Any], **meta: Any) -> None:
+        """标记「这张改配置的提议卡要发到聊天里」（配置层 P5，2026-10-13）。
+
+        和长任务卡同一个纪律：**此时什么都没改**，她点「同意」走
+        /api/nox/config/proposals/{id}/confirm，模型够不到。卡上只有一句话和理由，没有 key。
+        """
+        self.attachments.append({
+            "type": "config", "proposal_id": proposal_id, "card": card, **meta,
+        })
+
     def attach_meme(self, tag: str, **meta: Any) -> None:
         """标记「这个表情要发到聊天里」。
 

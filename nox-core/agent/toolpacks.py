@@ -58,6 +58,9 @@ PACKS: tuple[Pack, ...] = (
     Pack("listen", ("listen_",), triggers=r"共听|一起听|听.{0,6}歌|歌单|这首|播放|放.{0,4}(首|点)|网易云|喜欢列表|挑一首|听什么",
          surfaces=("listen",)),
     Pack("notion", ("notion_",), triggers=r"notion|笔记本"),
+    # 配置层 P5（10-13）：提议改模型配置。她聊到模型 / 线路 / key 时才挂上
+    Pack("config", names=("propose_config_change",),
+         triggers=r"模型|脑子|杂活|识图|看图|线路|厂商|供应商|key|密钥|配置|deepseek|glm|智谱|claude|gemini|openrouter|千问|百炼"),
     Pack("reading", ("reading_",), triggers=r"共读|读书|看书|这本书|批注|划线", surfaces=("reading",)),
     Pack("stackchan", ("stackchan_",), triggers=r"stack|小机器人|看看我|看到我|看得到我|看得见我|摄像头|你的眼睛",
          surfaces=("stackchan",)),

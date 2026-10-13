@@ -404,6 +404,11 @@ class FetchModelsRequest(BaseModel):
     key: str = ""
 
 
+class ProposalConfirmRequest(BaseModel):
+    """配置层 P5：她同意他的提议。need_key 时带她在卡上填的 key（只收不回）"""
+    key: str | None = None
+
+
 class SlotPickRequest(BaseModel):
     """配置层 P3：Slots 里选一个型号。model_id 为空 = 回到服务器默认（模块顶层，理由同上）"""
     model_id: int | None = None
@@ -1218,6 +1223,11 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
     from tools import creations as creation_tools
     core.creations = creation_tools.CreationStore(Path(core.cfg.db_path).parent / "creations.db")
     creation_tools.register_all(core.loop, core.creations)
+
+    #: 配置层 P5（10-13）：他提议改模型配置 —— 只出卡，她点「同意」才由确认端点执行。
+    #: **排在工具串最后**（前面的位置一个不动）；按需工具包 config 管它什么时候递给他
+    from tools import config_propose as config_propose_tools
+    config_propose_tools.register_all(core.loop, core_ref=lambda: core, session_id_ref=context.session_id)
 
     # 待确认单（2026-09-06）。**独立的库**，和 attention/world/topics 平级。
     #
@@ -3128,6 +3138,41 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
             raise HTTPException(status_code=exc.status, detail=str(exc)) from None
         slots.apply(core)                              # 下一次调用就是新的（杂活换代理里面那个；看图每次现取）
         return _slots_payload()
+
+    # ---- 配置层 P5：他提议、她点头。这三个是**确认端点**，不在他的工具表里 ----
+
+    def _proposal(fn):
+        from settings_store import proposals
+        try:
+            p = fn()
+        except proposals.ProposalError as exc:
+            raise HTTPException(status_code=exc.status, detail=str(exc)) from None
+        return {"ok": True, **proposals.public(p)}
+
+    @app.get("/api/nox/config/proposals/{pid}")
+    def nox_config_proposal(pid: str) -> dict:
+        """卡片轮询：这条提议现在什么状态。"""
+        from settings_store import proposals
+
+        def get():
+            p = proposals.get(_config_store(), pid)
+            if p is None:
+                raise proposals.ProposalError("没有这条提议", status=404)
+            return p
+        return _proposal(get)
+
+    @app.post("/api/nox/config/proposals/{pid}/confirm")
+    def nox_config_proposal_confirm(pid: str, req: ProposalConfirmRequest) -> dict:
+        """她点了「同意」。need_key 的 key 由她在卡上填、只在这一步出现，不回显、不进日志。"""
+        from settings_store import proposals
+        _config_limit("key", 30)
+        _config_store()
+        return _proposal(lambda: proposals.apply(core, pid, key=req.key))
+
+    @app.post("/api/nox/config/proposals/{pid}/reject")
+    def nox_config_proposal_reject(pid: str) -> dict:
+        from settings_store import proposals
+        return _proposal(lambda: proposals.reject(_config_store(), pid))
 
     @app.get("/api/nox/config/slot-choices")
     def nox_config_slot_choices() -> dict:

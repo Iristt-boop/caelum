@@ -1594,6 +1594,13 @@ async function coreMode(req, res, requestId) {
             res.write(`data: ${JSON.stringify({ type: "task", ...task })}\n\n`);
             keepAttachment({ task });
             console.log(`[Bridge] Core 发长任务卡 ${task.taskId}`);
+          } else if (ev.kind === "config" && ev.proposal_id) {
+            // 改配置的提议卡（配置层 P5，2026-10-13）。此时**什么都没改** ——
+            // 她在卡上点「同意」走 /api/nox/config/proposals/:id/confirm。状态是活的，前端现查（同 task 卡）
+            const config = { proposalId: String(ev.proposal_id), card: ev.card || {} };
+            res.write(`data: ${JSON.stringify({ type: "config", ...config })}\n\n`);
+            keepAttachment({ config });
+            console.log(`[Bridge] Core 发改配置提议卡 ${config.proposalId}`);
           }
         } else if (ev.type === "tool_start" || ev.type === "tool_end") {
           // 他动手的实时进度（2026-09-07）。原样透传，**不落库** ——
@@ -4053,7 +4060,24 @@ const idPath = (prefix, suffix = "") => (req) => `${prefix}/${encodeURIComponent
 app.get("/api/nox/config/presets", noxConfigProxy("/api/nox/config/presets", "nox-config-presets"));
 // P3：Slots 里换杂活 / 看图 / 视频 / 画图（聊天模型走 /api/nox/model）
 const slotPath = (suffix = "") => (req) => `/api/nox/config/slots/${encodeURIComponent(req.params.slot)}${suffix}`;
-app.get("/api/nox/config/slot-choices", noxConfigProxy("/api/nox/config/slot-choices", "nox-config-slots"));
+// P5：他提议的卡 —— 查状态 / 她同意（need_key 时带她在卡上填的 key）/ 不要
+const proposalPath = (suffix = "") => (req) => `/api/nox/config/proposals/${encodeURIComponent(req.params.id)}${suffix}`;
+app.get("/api/nox/config/proposals/:id", async (req, res) => {
+  try {
+    const r = await fetch(`${NOX_CORE_URL}${proposalPath()(req)}`, { signal: AbortSignal.timeout(8000) });
+    const body = await r.json().catch(() => null);
+    if (!r.ok || !body) {
+      return res.status(r.status === 404 ? 404 : 502).json({ ok: false, error: (body && body.detail) || `Core 回了 ${r.status}` });
+    }
+    res.json(body);
+  } catch (e) {
+    console.error("[nox-config-proposal] 查提议失败:", e.message);
+    res.status(502).json({ ok: false, error: e.message });
+  }
+});
+app.post("/api/nox/config/proposals/:id/confirm", noxConfigWrite("POST", proposalPath("/confirm"), "nox-config-proposal", 150000));
+app.post("/api/nox/config/proposals/:id/reject", noxConfigWrite("POST", proposalPath("/reject"), "nox-config-proposal"));
+app.get("/api/nox/config/slot-choices",noxConfigProxy("/api/nox/config/slot-choices", "nox-config-slots"));
 app.put("/api/nox/config/slots/:slot", noxConfigWrite("PUT", slotPath(), "nox-config-slots"));
 app.post("/api/nox/config/slots/:slot/revert", noxConfigWrite("POST", slotPath("/revert"), "nox-config-slots"));
 app.post("/api/nox/config/try", noxConfigWrite("POST", () => "/api/nox/config/try", "nox-config-edit", LONG));
