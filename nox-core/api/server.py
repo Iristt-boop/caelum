@@ -404,6 +404,11 @@ class FetchModelsRequest(BaseModel):
     key: str = ""
 
 
+class VoiceChainRequest(BaseModel):
+    """配置层 P4：一条声音链的新顺序。engines 为空 = 回到默认（模块顶层，理由同上）"""
+    engines: list[str] | None = None
+
+
 class ProposalConfirmRequest(BaseModel):
     """配置层 P5：她同意他的提议。need_key 时带她在卡上填的 key（只收不回）"""
     key: str | None = None
@@ -3138,6 +3143,34 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
             raise HTTPException(status_code=exc.status, detail=str(exc)) from None
         slots.apply(core)                              # 下一次调用就是新的（杂活换代理里面那个；看图每次现取）
         return _slots_payload()
+
+    # ---- 配置层 P4：声音链（Call / Live 用哪几家、什么顺序）。bridge 每次合成前读（缓存 30 秒）----
+
+    def _voice(fn):
+        from settings_store import voice
+        try:
+            fn()
+        except voice.VoiceError as exc:
+            raise HTTPException(status_code=exc.status, detail=str(exc)) from None
+        return {"ok": True, **voice.view(_config_store())}
+
+    @app.get("/api/nox/config/voice")
+    def nox_config_voice() -> dict:
+        """两条声音链现在是什么 + 接好了的引擎。bridge 也读这个（不含任何 key）。"""
+        return _voice(lambda: None)
+
+    @app.put("/api/nox/config/voice/{name}")
+    def nox_config_set_voice(name: str, req: VoiceChainRequest) -> dict:
+        """她改了一条链（顺序 / 加入 / 移出）。下一次合成就按新的走（bridge 缓存 30 秒内）。"""
+        from settings_store import voice
+        _config_limit("key", 30)
+        return _voice(lambda: voice.set_chain(_config_store(), name, req.engines))
+
+    @app.post("/api/nox/config/voice/{name}/revert")
+    def nox_config_revert_voice(name: str) -> dict:
+        from settings_store import voice
+        _config_limit("key", 30)
+        return _voice(lambda: voice.revert(_config_store(), name))
 
     # ---- 配置层 P5：他提议、她点头。这三个是**确认端点**，不在他的工具表里 ----
 

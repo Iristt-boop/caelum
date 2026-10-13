@@ -22,7 +22,8 @@ import { Readable } from "node:stream";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer, WebSocket } from "ws";
-import { ELEVEN_ENGINES, pickChain } from "./lib/tts-chain.js";
+import { ELEVEN_ENGINES, ENGINES as TTS_ENGINES, pickChain } from "./lib/tts-chain.js";
+import { createVoiceChains } from "./lib/voice-chains.js";
 import { collectProviderInfo } from "./lib/provider-quota.js";
 import { doubaoTtsReady, doubaoTtsPickSpeaker, doubaoTtsRequest, parseDoubaoStream } from "./lib/tts-doubao.js";
 import {
@@ -2283,8 +2284,11 @@ async function pipeTts(upstream, res, collect = null) {
 //: ⚠️ `DASHSCOPE_API_KEY`（第 1206 行）**不要跟着删** —— 语音识别还在用它，
 //: 删掉的只是 TTS 这一头。同理 `qwen3.5-flash` 是他的眼睛，也不在这次范围里。
 
+//: 她在 Models 页定的声音链（P4，10-13）：每次合成前读 Core，缓存 30 秒，读不到按默认（lib/voice-chains.js）
+const voiceChains = createVoiceChains({ coreUrl: NOX_CORE_URL });
+
 app.post("/api/tts", async (req, res) => {
-  const { text, engine, voice, instructions, profile } = req.body;
+  const { text, engine, voice, instructions, profile, only, after } = req.body;
   if (!text) return res.status(400).json({ error: "text required" });
 
   const raw = text.trim();
@@ -2313,12 +2317,15 @@ app.post("/api/tts", async (req, res) => {
    * **不带 `profile` 一律按 phone 算** —— 语音条那条老路径不传这个字段，
    * 默认必须是「和今天之前一模一样」，不能因为我加了个新厂商就偷偷换掉她的声音。
    */
-  const chain = pickChain(profile, engine);
+  //: P4（10-13）：链是她在 Models 页定的（Call / Live 两条，不分手机电脑）。
+  //: `only` = 试听：只用这一家、不降级（她要听的就是它本身）；`after` = Live 里豆包流式刚失败，从它后面接着试
+  const auditioning = typeof only === "string" && TTS_ENGINES.includes(only);
+  const chain = auditioning ? [only] : pickChain(profile, engine, { chains: await voiceChains.get(), after });
 
   // 🔴 语音条缓存（2026-09-29 她问「是不是每播一次都耗一次额度」—— 是的，原来每次都重新合成）。
   // 只给**带 cache:true 的请求**（聊天语音条）：通话那条路每句都是新的，存了也没人再听。
   // 命中直接给文件：不花额度，而且每次都是同一个声音（v3 每次合成语气都不一样）。
-  const cacheFile = req.body.cache === true && !profile && !engine ? ttsCachePath(withTags) : null;
+  const cacheFile = req.body.cache === true && !profile && !engine && !auditioning ? ttsCachePath(withTags) : null;
   if (cacheFile && fs.existsSync(cacheFile)) {
     res.setHeader("Content-Type", "audio/mpeg");
     res.setHeader("X-TTS-Engine", "cache");
@@ -4060,6 +4067,17 @@ const idPath = (prefix, suffix = "") => (req) => `${prefix}/${encodeURIComponent
 app.get("/api/nox/config/presets", noxConfigProxy("/api/nox/config/presets", "nox-config-presets"));
 // P3：Slots 里换杂活 / 看图 / 视频 / 画图（聊天模型走 /api/nox/model）
 const slotPath = (suffix = "") => (req) => `/api/nox/config/slots/${encodeURIComponent(req.params.slot)}${suffix}`;
+// P4：声音链。/api/voice/chains 给 OS 实时语音看「Live 链首是不是豆包」（决定走不走流式）；
+// 配置三条是 Models 页 Voice 用的，改完让本进程的缓存立刻失效（下一句就按新的走）
+app.get("/api/voice/chains", async (req, res) => {
+  res.json({ ok: true, chains: await voiceChains.get() });
+});
+app.get("/api/nox/config/voice", noxConfigProxy("/api/nox/config/voice", "nox-config-voice"));
+const voicePath = (suffix = "") => (req) => `/api/nox/config/voice/${encodeURIComponent(req.params.name)}${suffix}`;
+const afterVoiceChange = (handler) => async (req, res) => { voiceChains.invalidate(); await handler(req, res); voiceChains.invalidate(); };
+app.put("/api/nox/config/voice/:name", afterVoiceChange(noxConfigWrite("PUT", voicePath(), "nox-config-voice")));
+app.post("/api/nox/config/voice/:name/revert", afterVoiceChange(noxConfigWrite("POST", voicePath("/revert"), "nox-config-voice")));
+
 // P5：他提议的卡 —— 查状态 / 她同意（need_key 时带她在卡上填的 key）/ 不要
 const proposalPath = (suffix = "") => (req) => `/api/nox/config/proposals/${encodeURIComponent(req.params.id)}${suffix}`;
 app.get("/api/nox/config/proposals/:id", async (req, res) => {

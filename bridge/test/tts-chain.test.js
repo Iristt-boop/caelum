@@ -38,8 +38,9 @@ describe("TTS 引擎顺序", () => {
     for (const [name, chain] of Object.entries(CHAINS)) {
       assert.ok(!chain.includes("qwen"), `${name} 链上不该有 qwen`);
     }
-    assert.equal(pickChain("desktop")[0], "eleven-v4");
+    assert.equal(pickChain("desktop")[0], "eleven-v4");          // 老的端名照样认成 call
     assert.equal(pickChain("phone")[0], "eleven-v4");
+    assert.equal(pickChain("live")[0], "doubao");               // P4（10-13）：Live 默认豆包打头
     // v3 还在第二档：v4 出问题自动落回她听了两个月的那个声音
     assert.equal(pickChain("phone")[1], "eleven-v3");
   });
@@ -55,9 +56,9 @@ describe("TTS 引擎顺序", () => {
     }
   });
 
-  test("认不出的端名落回手机，不是空链", () => {
+  test("认不出的端名落回 call，不是空链", () => {
     //: 空链的话下面那个 for 一轮都不跑，直接 502 —— 一句话都不会说
-    assert.deepEqual(pickChain("tablet"), CHAINS.phone);
+    assert.deepEqual(pickChain("tablet"), CHAINS.call);
     assert.ok(pickChain("tablet").length > 0);
   });
 
@@ -68,14 +69,19 @@ describe("TTS 引擎顺序", () => {
     assert.deepEqual(pickChain("phone", "doubao"), ["doubao", "edge"]);
   });
 
-  test("🔴 ElevenLabs 全挂了先落豆包（复刻声音），不是直接掉 edge —— 她 10-10 点名的", () => {
+  test("🔴 Call 默认：ElevenLabs 全挂了先落豆包（复刻声音），不是直接掉 edge —— 她 10-10 点名的", () => {
     //: 搬到 N150 后 ElevenLabs 经东京节点出口，节点一断整家都连不上。
     //: 她点名用 OS 实时通话里一直在听的那个豆包 clone；顺序还是「她听过 → 她点头 → 改链 → 改测试」
-    for (const [name, chain] of Object.entries(CHAINS)) {
-      const d = chain.indexOf("doubao");
-      assert.ok(d > chain.lastIndexOf("eleven-turbo"), `${name}：豆包要排在所有 ElevenLabs 之后`);
-      assert.equal(chain[d + 1], "edge", `${name}：豆包后面紧跟 edge 兜底`);
-    }
+    //: （Live 默认豆包打头，不在这条规矩里；她在 Models 页改过的也不在 —— 那是她的耳朵定的）
+    const chain = CHAINS.call;
+    const d = chain.indexOf("doubao");
+    assert.ok(d > chain.lastIndexOf("eleven-turbo"), "call：豆包要排在所有 ElevenLabs 之后");
+    assert.equal(chain[d + 1], "edge", "call：豆包后面紧跟 edge 兜底");
+  });
+
+  test("Live 默认和 10-13 之前一样：豆包流式打头，失败了按老的 ElevenLabs 那几档接着来", () => {
+    assert.deepEqual(CHAINS.live, ["doubao", "eleven-v4", "eleven-v3", "eleven-turbo", "edge"]);
+    assert.deepEqual(pickChain("live", null, { after: "doubao" }), ["eleven-v4", "eleven-v3", "eleven-turbo", "edge"]);
   });
 
   test("网络层失败跳过整家 ElevenLabs 用的名单，和链上的 ElevenLabs 档位对得上", () => {
@@ -86,12 +92,12 @@ describe("TTS 引擎顺序", () => {
 
   test("上一句用的就是这一端的首选，那还是走整条", () => {
     //: 不能因为「它在第 0 位」就把链子砍成只剩它自己 —— 它失败了还得有得降
-    assert.deepEqual(pickChain("desktop", "eleven-v4"), CHAINS.desktop);
-    assert.deepEqual(pickChain("phone", "eleven-v4"), CHAINS.phone);
+    assert.deepEqual(pickChain("desktop", "eleven-v4"), CHAINS.call);
+    assert.deepEqual(pickChain("phone", "eleven-v4"), CHAINS.call);
   });
 
   test("认不出的 engine 当没传", () => {
-    assert.deepEqual(pickChain("phone", "whisper"), CHAINS.phone);
+    assert.deepEqual(pickChain("phone", "whisper"), CHAINS.call);
   });
 
   test("每条链都以 edge 收尾 —— 兜底不能缺", () => {
