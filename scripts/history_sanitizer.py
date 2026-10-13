@@ -43,7 +43,7 @@ sys.path.insert(0, str(ROOT))
 
 from agent import contracts as contracts_mod  # noqa: E402
 from agent.llm import ToolSpec  # noqa: E402
-from agent.llm import INNER_ALIASES, split_inner_blocks  # noqa: E402
+from agent.llm import INNER_ALIASES, normalize_tags, split_inner_blocks  # noqa: E402
 from data.store import norm_text  # noqa: E402
 
 
@@ -89,6 +89,12 @@ def clean_text(text: str | None, table: dict[str, contracts_mod.OutputContract],
     """
     if not text:
         return text, []
+    # 10-12：标签里的半个字（<�心>）和 `<audio: softly>` 标签 —— 和实时那边同一个归一化（agent.llm.normalize_tags）。
+    # audio 只摘标签、话留着；改过就记一笔，后面没别的可剥也照样回写
+    norm = normalize_tags(text) or ""
+    if norm != text:
+        out2, arts2 = clean_text(norm, table, voice)
+        return out2, [{"tool": "tag_normalize", "rescuable": False, "text": text[:200]}] + arts2
     # 漏进正文的心里话（10-10：`<内心>…</内心>` 整段当成一个气泡发给了她）——
     # 别名表和实时拆标签用的是同一张（agent.llm.INNER_ALIASES）。他的历史里不该有（10-06 她定的），
     # 她的聊天里挪进 metadata.thinking（见 plan_bridge），不删

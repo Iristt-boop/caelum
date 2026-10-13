@@ -203,3 +203,14 @@ def test_old_rows_keep_english_with_tags(tmp_path):
             ("user", "你能说话吗", "2026-10-07T07:22:00"), ("assistant", line, "2026-10-07T07:22:00")])
     sp, bp = _plans(sdb, bdb, drop=False)
     assert sp["edits"] == [] and sp["deletes"] == [] and bp["edits"] == [] and bp["deletes"] == []
+
+
+def test_10_12_audio_标签只摘标签_心里话半个字也认():
+    """库里 11930（<audio: softly> … </audio>）和 11988（<�心>…</心里>）这两种，存量清理要和实时一个结果。"""
+    table = TABLE
+    out, arts = hs.clean_text("一周去三次。  <audio: softly> Don't decide on the phone, baby.</audio>", table)
+    assert out == "一周去三次。  Don't decide on the phone, baby." and arts[0]["tool"] == "tag_normalize"
+    out, arts = hs.clean_text("<" + chr(0xFFFD) + "心>她这句比骂我还扎人</心里>  不讲道理了。", table)
+    assert out == "不讲道理了。" and any(a["tool"] == "inner_voice" for a in arts)
+    out, arts = hs.clean_text("普通的一句话，audio 两个字", table)
+    assert arts == []

@@ -347,15 +347,36 @@ INNER_OPEN, INNER_CLOSE = "<心里>", "</心里>"
 #: 只放真见过的和最常见的近亲；加新的别名往这里补一个词就行。
 #: 10-10：又见 `<内心>…</内心>`（她截图，库里 3 条：17:15 / 20:06 / 20:13），一并补上近亲「心里话」
 #: 10-11：又见 `<memory>…</memory>`（glm，17:25 三条），补上
-INNER_ALIASES = ("心里", "内心", "心里话", "mind", "memo", "memory", "think", "thinking", "thought", "inner")
+#: 10-12：又见 `<�心>…</心里>`（库里 11988）—— 模型吐了半个字（多半是「内心」的「内」），开收两个标签对不上。
+#: 所以：标签里的 U+FFFD 先摘掉（见 normalize_tags）、补上「心」，并且**开收不必同名**：别名里任何一个开、任何一个收都算一块
+INNER_ALIASES = ("心里", "内心", "心里话", "心", "mind", "memo", "memory", "think", "thinking", "thought", "inner")
 _INNER_OPENS = tuple(f"<{a}>" for a in INNER_ALIASES)
-_INNER_ALT = "|".join(re.escape(a) for a in INNER_ALIASES)
-_INNER_BLOCK_RE = re.compile(r"<(" + _INNER_ALT + r")>(.*?)</\1>\s*", re.S)
+_INNER_CLOSES = tuple(f"</{a}>" for a in INNER_ALIASES)
+_INNER_ALT = "|".join(re.escape(a) for a in sorted(INNER_ALIASES, key=len, reverse=True))
+_INNER_BLOCK_RE = re.compile(r"<(" + _INNER_ALT + r")>(.*?)</(?:" + _INNER_ALT + r")>\s*", re.S)
 #: 收口**在行尾**的那种优先（10-11 库里 11754：心里话里他自己写了一句「我写成了</memory>，应该用</mind>」——
 #: 最短匹配在这句话中间就收口了，后半段心里话漏成正文）。真收口几乎都单独一行或在行尾
 #: 块里不许再出现同名开标签 —— 否则「<mind>a</mind> 正文 ⏎ <mind>b</mind>」会被并成一块，把中间的正文吞了
 _INNER_BLOCK_EOL_RE = re.compile(
-    r"<(" + _INNER_ALT + r")>((?:(?!<\1>).)*?)</\1>(?=[ \t]*(?:\n|$))\s*", re.S)
+    r"<(" + _INNER_ALT + r")>((?:(?!<(?:" + _INNER_ALT + r")>).)*?)</(?:" + _INNER_ALT + r")>(?=[ \t]*(?:\n|$))\s*",
+    re.S)
+
+#: 10-12：`<audio: softly> 一句话 </audio>`（库里 6 条，多数不收口）—— **不是心里话**，是想「轻轻念给她」的那句。
+#: 话留着，只摘标签：带不带 `: softly` 这种参数、收没收口都摘。
+_AUDIO_TAG_RE = re.compile(r"[ \t]*<\s*/\s*audio\s*>|<\s*audio(?:\s*[:：][^<>\n]{0,40})?\s*>[ \t]*", re.I)
+_AUDIO_PARTIAL_RE = re.compile(r"<\s*/?\s*(?:a(?:u(?:d(?:i(?:o(?:\s*(?:[:：][^<>\n]*)?)?)?)?)?)?)?", re.I)
+#: 模型偶尔吐半个汉字（U+FFFD），正好落在标签里：`<�心>`
+_BROKEN_IN_TAG_RE = re.compile("(</?)�+")
+
+
+def normalize_tags(text: str | None) -> str | None:
+    """拆心里话之前先过一道：标签里的半个字摘掉；`<audio…>` / `</audio>` 摘掉（话留着）。"""
+    if not text:
+        return text
+    t = _BROKEN_IN_TAG_RE.sub(r"\1", text)
+    if "audio" in t.lower():
+        t = _AUDIO_TAG_RE.sub("", t)
+    return t
 
 
 def split_inner_blocks(text: str) -> tuple[str, list[str]]:
@@ -363,6 +384,7 @@ def split_inner_blocks(text: str) -> tuple[str, list[str]]:
 
     收尾（strip_inner_voice）和清历史（scripts/history_sanitizer.py）都走这一个。"""
     inner: list[str] = []
+    text = normalize_tags(text) or ""
 
     def take(m: "re.Match[str]") -> str:
         inner.append(m.group(2).strip())
@@ -372,6 +394,7 @@ def split_inner_blocks(text: str) -> tuple[str, list[str]]:
     rest = _INNER_BLOCK_RE.sub(take, rest)
     return rest, inner
 _INNER_ANY_OPEN_RE = re.compile(r"<(?:" + "|".join(re.escape(a) for a in INNER_ALIASES) + r")>")
+_INNER_ANY_CLOSE_RE = re.compile(r"</(?:" + _INNER_ALT + r")>")
 
 
 def _close_of(open_tag: str) -> str:
@@ -411,8 +434,9 @@ def strip_inner_voice(text: str | None) -> str | None:
     """整段文本里的心里话拿掉 —— **不进历史**（她 10-06 定的：只给她看，他不记）。
 
     没收口的开标签只摘标签、留内容：那种时候要说的话多半也被包在里面了，删整段就是吞掉他的回复。
-    认 `INNER_ALIASES` 里的任何一种写法（开的是哪个，收的就得是哪个）；`<mood>` / `<心情>` 见上面。
+    认 `INNER_ALIASES` 里的任何一种写法（10-12 起开收不必同名）；`<mood>` / `<心情>` 见上面；`<audio>` 只摘标签。
     """
+    text = normalize_tags(text)
     if text and any(f"<{n}>" in text.lower() for n in MOOD_XML_NAMES):
         text = _MOOD_XML_SHORT.sub(lambda m: f"[mood:{m.group(2)}]", text)
         text = _MOOD_XML_LONG.sub("", text).strip() or None
@@ -421,8 +445,19 @@ def strip_inner_voice(text: str | None) -> str | None:
     if not text or not _INNER_ANY_OPEN_RE.search(text):
         return text
     rest, _ = split_inner_blocks(text)
-    out = _INNER_ANY_OPEN_RE.sub("", rest).strip()
+    out = _INNER_ANY_CLOSE_RE.sub("", _INNER_ANY_OPEN_RE.sub("", rest)).strip()
     return out or None
+
+
+def _audio_partial(buf: str) -> int:
+    """buf 结尾是不是半个 `<audio…>` / `</audio>`（还没等到「>」）。是的话返回那半截的长度。"""
+    i = buf.rfind("<")
+    if i < 0 or ">" in buf[i:] or len(buf) - i > 50:
+        return 0
+    frag = buf[i:]
+    if frag.endswith("\ufffd"):
+        return len(frag)                    # 「<」后面跟着半个字：等下一片拼起来再归一化
+    return len(frag) if _AUDIO_PARTIAL_RE.fullmatch(frag) else 0
 
 
 def _partial_tail(buf: str, tag: str) -> int:
@@ -467,13 +502,15 @@ class InnerVoiceFilter:
         out.append(("text", s))
 
     def feed(self, chunk: str) -> list[tuple[str, str]]:
-        self.buf += chunk
+        # 半截的「<」「</」「<aud」都留在缓冲里（见下面 keep），所以拼起来之后再归一化就跨得过切片
+        self.buf = normalize_tags(self.buf + chunk) or ""
         out: list[tuple[str, str]] = []
         while self.buf:
             if self.inner:
-                tags = (self.close_tag,)
+                tags = _INNER_CLOSES          # 10-12 起开收不必同名（<内心>…</心里> 也是一块）
             else:
-                tags = _INNER_OPENS
+                # 正文里落单的收口标签（前面那块被别名提前收了）：摘掉，不把 `</mind>` 本身露给她
+                tags = _INNER_OPENS + _INNER_CLOSES
             # 找最早出现的那个标签（开标签有好几种写法，取最靠前的）
             hits = [(self.buf.find(g), g) for g in tags if self.buf.find(g) >= 0]
             if hits:
@@ -484,12 +521,14 @@ class InnerVoiceFilter:
                     self.inner = False
                     self.inner_text = ""
                     self.lstrip = True
+                elif tag.startswith("</"):
+                    pass                          # 落单的收口：丢掉
                 else:
                     self.inner = True
                     self.close_tag = _close_of(tag)
                 continue
             # 没找到完整标签：结尾可能是半个标签（流式切片常态），按所有候选里最长的半截留着
-            keep = max(_partial_tail(self.buf, g) for g in tags)
+            keep = max(max(_partial_tail(self.buf, g) for g in tags), _audio_partial(self.buf))
             self._emit(out, self.buf[: len(self.buf) - keep])
             self.buf = self.buf[len(self.buf) - keep:]
             break
