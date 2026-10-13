@@ -2428,17 +2428,36 @@ app.post("/api/tts", async (req, res) => {
     const edgeVoice = enRatio > 0.5 ? "en-US-ChristopherNeural" : "zh-CN-YunxiNeural";
     console.log(`[TTS] 降级到 edge-tts（${edgeVoice}，英文字母占比 ${(enRatio * 100).toFixed(0)}%）`);
     try {
-      const proc = spawn("edge-tts", ["--voice", edgeVoice, "--text", clean, "--write-media", "-"], {
+      //: EDGE_TTS_CMD（JSON 数组）只给测试用：换成一个假的 edge-tts（Windows 上 spawn 认不了 .cmd）
+      const [edgeBin, ...edgePre] = process.env.EDGE_TTS_CMD ? JSON.parse(process.env.EDGE_TTS_CMD) : ["edge-tts"];
+      const proc = spawn(edgeBin, [...edgePre, "--voice", edgeVoice, "--text", clean, "--write-media", "-"], {
         stdio: ["ignore", "pipe", "pipe"],
         timeout: 15000,
       });
-      sendEngine("edge");
-      res.setHeader("Content-Type", "audio/mpeg");
-      proc.stdout.on("data", chunk => res.write(Buffer.from(chunk)));
-      proc.on("close", () => res.end());
+      // 🔴 2026-10-13：微软把老版 edge-tts 拒了（403），它一个字节没吐、退出码非 0 ——
+      // 原来这里**先设好头再等数据**，于是回了一个 200 的空 body：她那边是一段空白，不是「没声音」的报错，
+      // 日志里也只有「降级到 edge-tts」。现在等到**第一块音频**才发头；一块都没有就说出来（502 + stderr 末尾）
+      let started = false;
+      let errTail = "";
+      proc.stderr.on("data", chunk => { errTail = (errTail + chunk.toString()).slice(-400); });
+      proc.stdout.on("data", chunk => {
+        if (!started) {
+          started = true;
+          sendEngine("edge");
+          res.setHeader("Content-Type", "audio/mpeg");
+        }
+        res.write(Buffer.from(chunk));
+      });
+      proc.on("close", (code) => {
+        if (started) return res.end();
+        const why = (errTail.trim().split("\n").pop() || `exit ${code}`).slice(0, 200);
+        console.error(`[TTS] edge-tts 一个字节都没合成出来（exit ${code}）：${why}`);
+        if (!res.headersSent) res.status(502).json({ error: "tts_all_failed", detail: `edge: ${why}` });
+        else res.end();
+      });
       proc.on("error", e => {
         console.error("[TTS] edge-tts error:", e.message);
-        if (!res.headersSent) res.status(500).json({ error: e.message }); else res.end();
+        if (!res.headersSent) res.status(502).json({ error: "tts_all_failed", detail: `edge: ${e.message}` }); else res.end();
       });
     } catch (e) { try { res.status(500).json({ error: e.message }); } catch { res.end(); } }
   }
