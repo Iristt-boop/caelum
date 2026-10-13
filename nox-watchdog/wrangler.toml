@@ -1,0 +1,31 @@
+name = "nox-watchdog"
+main = "src/worker.js"
+compatibility_date = "2026-10-01"
+
+# 状态页走自定义域(workers.dev 国内难直达;此域纯边缘运行,不依赖家里网络)
+routes = [
+  { pattern = "status.noxtang.com", custom_domain = true }
+]
+
+# 每分钟检查一次
+[triggers]
+crons = ["* * * * *"]
+
+[[kv_namespaces]]
+binding = "STATE"
+id = "9971f4c69644462ca59b7c93accabf7c"
+
+[vars]
+# 探 bridge 的健康接口并读正文（首页是静态页，后端死了也 200）
+CHECK_URL = "https://noxtang.com/api/health"
+MAIL_FROM = "watchdog@noxtang.com"
+MAIL_TO = "1437291363@qq.com"
+
+# Email Routing 的 destination(1437291363@qq.com)已验证;发信 binding:
+[[send_email]]
+name = "SEND_EMAIL"
+destination_address = "1437291363@qq.com"
+
+# WATCHDOG_TOKEN 用 secret 配置:
+#   npx wrangler secret put WATCHDOG_TOKEN
+# 作用:GET /check?token=... 手动触发一次检查;GET /test-mail?token=... 发测试邮件
