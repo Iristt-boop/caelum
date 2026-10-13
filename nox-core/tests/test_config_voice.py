@@ -17,7 +17,8 @@ def store(tmp_path):
 
 
 def test_默认就是10_13之前的样子(store):
-    assert voice.chain(store, "call") == ["eleven-v4", "eleven-v3", "eleven-turbo", "doubao", "edge"]
+    assert voice.chain(store, "call") == ["eleven-v4", "eleven-v3", "eleven-turbo", "doubao"]
+    assert "edge" not in voice.chain(store, "live"), "她 10-13：edge 兜底都不想用"
     assert voice.chain(store, "live")[0] == "doubao"
     v = voice.view(store)
     assert v["chains"]["call"]["custom"] is False and v["chains"]["call"]["can_revert"] is False

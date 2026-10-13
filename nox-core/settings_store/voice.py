@@ -27,14 +27,15 @@ ENGINES = [
     {"id": "eleven-v3", "label": "ElevenLabs v3", "note": "v4 之前一直在用的那个"},
     {"id": "eleven-turbo", "label": "ElevenLabs Turbo", "note": "快，但不认情绪标签"},
     {"id": "doubao", "label": "豆包（复刻声音）", "note": "OS 实时语音一直在听的那个；在 Live 里打头时走流式，首句更快"},
-    {"id": "edge", "label": "Edge 朗读", "note": "免费兜底，陌生的声音"},
+    {"id": "edge", "label": "Edge 朗读", "note": "她说难听，不在默认链上（10-13）"},
 ]
 ENGINE_IDS = tuple(e["id"] for e in ENGINES)
 
 #: 和 10-13 之前的行为一模一样（bridge/lib/tts-chain.js 的 CHAINS）
+#: 10-13 晚：edge 拿掉了 —— 她：「edge 声音很难听，兜底都不想用」（全挂了就如实报没合成出来）
 DEFAULTS = {
-    "call": ["eleven-v4", "eleven-v3", "eleven-turbo", "doubao", "edge"],
-    "live": ["doubao", "eleven-v4", "eleven-v3", "eleven-turbo", "edge"],
+    "call": ["eleven-v4", "eleven-v3", "eleven-turbo", "doubao"],
+    "live": ["doubao", "eleven-v4", "eleven-v3", "eleven-turbo"],
 }
 LABELS = {"call": "Call（打电话）", "live": "Live（OS 实时语音）"}
 

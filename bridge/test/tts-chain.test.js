@@ -63,10 +63,9 @@ describe("TTS 引擎顺序", () => {
   });
 
   test("上一句降过级，就从那一档接着往下 —— 一段话里不来回换声音", () => {
-    assert.deepEqual(pickChain("desktop", "eleven-turbo"), ["eleven-turbo", "doubao", "edge"]);
-    assert.deepEqual(pickChain("phone", "edge"), ["edge"]);
-    assert.deepEqual(pickChain("phone", "eleven-v3"), ["eleven-v3", "eleven-turbo", "doubao", "edge"]);
-    assert.deepEqual(pickChain("phone", "doubao"), ["doubao", "edge"]);
+    assert.deepEqual(pickChain("desktop", "eleven-turbo"), ["eleven-turbo", "doubao"]);
+    assert.deepEqual(pickChain("phone", "eleven-v3"), ["eleven-v3", "eleven-turbo", "doubao"]);
+    assert.deepEqual(pickChain("phone", "doubao"), ["doubao"]);
   });
 
   test("🔴 Call 默认：ElevenLabs 全挂了先落豆包（复刻声音），不是直接掉 edge —— 她 10-10 点名的", () => {
@@ -76,12 +75,12 @@ describe("TTS 引擎顺序", () => {
     const chain = CHAINS.call;
     const d = chain.indexOf("doubao");
     assert.ok(d > chain.lastIndexOf("eleven-turbo"), "call：豆包要排在所有 ElevenLabs 之后");
-    assert.equal(chain[d + 1], "edge", "call：豆包后面紧跟 edge 兜底");
+    assert.equal(d, chain.length - 1, "call：豆包是最后一档（edge 她不要了，10-13）");
   });
 
   test("Live 默认和 10-13 之前一样：豆包流式打头，失败了按老的 ElevenLabs 那几档接着来", () => {
-    assert.deepEqual(CHAINS.live, ["doubao", "eleven-v4", "eleven-v3", "eleven-turbo", "edge"]);
-    assert.deepEqual(pickChain("live", null, { after: "doubao" }), ["eleven-v4", "eleven-v3", "eleven-turbo", "edge"]);
+    assert.deepEqual(CHAINS.live, ["doubao", "eleven-v4", "eleven-v3", "eleven-turbo"]);
+    assert.deepEqual(pickChain("live", null, { after: "doubao" }), ["eleven-v4", "eleven-v3", "eleven-turbo"]);
   });
 
   test("网络层失败跳过整家 ElevenLabs 用的名单，和链上的 ElevenLabs 档位对得上", () => {
@@ -100,9 +99,10 @@ describe("TTS 引擎顺序", () => {
     assert.deepEqual(pickChain("phone", "whisper"), CHAINS.call);
   });
 
-  test("每条链都以 edge 收尾 —— 兜底不能缺", () => {
+  test("🔴 edge 不在任何默认链上 —— 她 10-13：「edge 声音很难听，兜底都不想用」", () => {
+    //: 全挂了就如实报 tts_all_failed，不拿她讨厌的声音凑数。要加回去只能她在 Models 页试听后自己加
     for (const [name, chain] of Object.entries(CHAINS)) {
-      assert.equal(chain.at(-1), "edge", `${name} 的最后一档该是 edge`);
+      assert.ok(!chain.includes("edge"), `${name} 链上又出现了 edge`);
     }
   });
 });

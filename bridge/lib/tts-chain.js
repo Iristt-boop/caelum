@@ -36,8 +36,11 @@ export const CHAINS = {
    *   call  打电话（手机 / 电脑一样），ElevenLabs 打头
    *   live  OS 实时语音，豆包打头（在链首时走流式端点，首句快）
    * 这两条只是**默认**：她在 Models 页 Voice 里改过的，以 Core 那份为准（lib/voice-chains.js 读）。 */
-  call: ["eleven-v4", "eleven-v3", "eleven-turbo", "doubao", "edge"],
-  live: ["doubao", "eleven-v4", "eleven-v3", "eleven-turbo", "edge"],
+  /* 2026-10-13：**edge 不在任何默认链上了** —— 她：「edge 声音很难听，兜底都不想用」。
+   * 全挂了就如实报 tts_all_failed（server.js），不拿一个她讨厌的陌生声音凑数。
+   * edge 还在 ENGINES 里：页面上能试听，她想要可以自己加回去 —— 但代码不替她决定。 */
+  call: ["eleven-v4", "eleven-v3", "eleven-turbo", "doubao"],
+  live: ["doubao", "eleven-v4", "eleven-v3", "eleven-turbo"],
 };
 
 /** 接好了的引擎（试听只许这几个；加新的一家要写代码） */
