@@ -29,7 +29,7 @@ echo "已保存。现在试连一下 R2……"
 set -a; . "$ENV"; set +a
 export RCLONE_CONFIG_R2_TYPE=s3 RCLONE_CONFIG_R2_PROVIDER=Cloudflare \
   RCLONE_CONFIG_R2_ACCESS_KEY_ID="$R2_ACCESS_KEY_ID" RCLONE_CONFIG_R2_SECRET_ACCESS_KEY="$R2_SECRET_ACCESS_KEY" \
-  RCLONE_CONFIG_R2_ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com" RCLONE_CONFIG_R2_NO_CHECK_BUCKET=true
+  RCLONE_CONFIG_R2_ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com" RCLONE_CONFIG_R2_NO_CHECK_BUCKET=true RCLONE_CONFIG_R2_NO_HEAD=true
 probe="r2:${R2_BUCKET}/.caelum-probe"
 if echo "hi $(date -Iseconds)" | rclone rcat "$probe" 2>/tmp/r2probe.err && rclone deletefile "$probe" 2>>/tmp/r2probe.err; then
   echo "✓ 连上了，能写也能删。告诉 Nox「填好了」就行，可以关掉这个窗口。"

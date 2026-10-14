@@ -42,6 +42,8 @@ if [ -z "${R2_REMOTE:-}" ]; then
   export RCLONE_CONFIG_R2_SECRET_ACCESS_KEY="$R2_SECRET_ACCESS_KEY"
   export RCLONE_CONFIG_R2_ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
   export RCLONE_CONFIG_R2_NO_CHECK_BUCKET=true
+  # rclone 1.60 传完会带 versionId 再 HEAD 一次，R2 不支持（501）。大小我们自己用 lsjson 核
+  export RCLONE_CONFIG_R2_NO_HEAD=true
   R2_REMOTE="r2:${R2_BUCKET}"
 fi
 
