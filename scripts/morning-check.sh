@@ -69,6 +69,24 @@ except Exception as e:
     problems.append(f"副本检查炸了:{e}")
     parts.append("副本✗异常")
 
+# ── 1c) 云端副本：Cloudflare R2（2026-10-14 补，真正在家外面的那份）──
+# 心跳由 /root/caelum-r2-push.sh 核对远端大小一致后才写；超 30 小时算断
+try:
+    hb = "/root/.r2-ok"
+    if not os.path.exists(hb):
+        problems.append("云端副本还没开")
+        parts.append("云端✗未开")
+    else:
+        rd_h = (time.time() - os.path.getmtime(hb)) / 3600
+        if rd_h > 30:
+            problems.append(f"云端副本 {rd_h / 24:.0f} 天没传")
+            parts.append(f"云端✗{rd_h / 24:.0f}天前")
+        else:
+            parts.append(f"云端✓{rd_h:.0f}h前")
+except Exception as e:
+    problems.append(f"云端检查炸了:{e}")
+    parts.append("云端✗异常")
+
 # ── 2) 中文热榜话题 ──────────────────────────────────
 try:
     cand = load("/root/nox-core/data/topics.db",
