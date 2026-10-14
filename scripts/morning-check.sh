@@ -49,6 +49,26 @@ except Exception as e:
     problems.append(f"备份检查炸了:{e}")
     parts.append("备份✗异常")
 
+# ── 1b) 她电脑上那份副本（2026-10-14 补）────────────
+# 10-12 起她电脑的拉取任务连着三天没拉成，晨检一直写「备份✓」—— 只看了 N150 自己那份。
+# 心跳由 scripts/pull-vps-backup.cmd 拉成功后回写；超 30 小时算断（漏一次能忍）
+try:
+    import os
+    hb = "/root/.offsite-ok"
+    if not os.path.exists(hb):
+        problems.append("电脑副本从没拉成过")
+        parts.append("副本✗无")
+    else:
+        od_h = (time.time() - os.path.getmtime(hb)) / 3600
+        if od_h > 30:
+            problems.append(f"电脑副本 {od_h / 24:.0f} 天没拉走")
+            parts.append(f"副本✗{od_h / 24:.0f}天前")
+        else:
+            parts.append(f"副本✓{od_h:.0f}h前")
+except Exception as e:
+    problems.append(f"副本检查炸了:{e}")
+    parts.append("副本✗异常")
+
 # ── 2) 中文热榜话题 ──────────────────────────────────
 try:
     cand = load("/root/nox-core/data/topics.db",
