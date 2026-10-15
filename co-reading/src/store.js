@@ -591,7 +591,7 @@ function countAnnotationRows(rows) {
   return { bookCounts, chunkCounts };
 }
 
-function isHumanAuthor(author) {
+export function isHumanAuthor(author) {
   return ["user", "human", "koshi", "you"].includes(String(author || "").toLowerCase());
 }
 
@@ -1310,7 +1310,9 @@ export async function annotatePassage(input) {
     if (!bookId) throw new Error("bookId is required");
     if (!chunkId) throw new Error("chunkId is required");
     if (!quote) throw new Error("quote is required");
-    if (!note) throw new Error("note is required");
+    // 收藏是「一个字都不写」的动作：kind=collect 时批注可以为空。
+    // 其余 kind 仍旧必须有话 —— 页边不接受空笔记。
+    if (!note && input.kind !== "collect") throw new Error("note is required");
 
     const chunk = await readChunk(bookId, chunkId);
     const requestedQuoteOffset = Number(input.quoteOffset);

@@ -8,6 +8,7 @@ import {
   deleteBook,
   dismissCard,
   getProgress,
+  isHumanAuthor,
   listCardInbox,
   listCardCollection,
   listCards,
@@ -23,7 +24,7 @@ import {
 } from "./store.js";
 import { importBook } from "./importer.js";
 import { renderCardPng, renderCardSvg } from "./card-renderer.js";
-import { MAX_REPLIES_PER_SUBMIT, replyToNote } from "./nox-client.js";
+import { MAX_REPLIES_PER_SUBMIT, generateRecap, replyToNote, readingChat } from "./nox-client.js";
 
 const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const publicDir = path.join(ROOT, "public");
@@ -212,6 +213,16 @@ export async function handleApi(req, res, url, options = {}) {
     return sendJson(res, 200, await markRead(body.bookId, body.chunkId));
   }
 
+  if (req.method === "POST" && parts.length === 2 && parts[1] === "recap") {
+    const body = await readBody(req, { maxBytes });
+    return sendJson(res, 200, await generateRecapCard(body));
+  }
+
+  if (req.method === "POST" && parts.length === 2 && parts[1] === "chat") {
+    const body = await readBody(req, { maxBytes });
+    return sendJson(res, 200, await readingChatReply(body));
+  }
+
   if (req.method === "POST" && parts.length === 2 && parts[1] === "import") {
     return sendJson(res, 201, await importBook(await readBody(req, { maxBytes })));
   }
@@ -309,6 +320,114 @@ async function autoReply(result) {
     out.replySkipped = notes.length - targets.length;
   }
   return out;
+}
+
+/**
+ * 前情卡：她隔了 7 天以上回来，开卷前可以让他在「你们的折痕」里找前情。
+ *
+ * 素材全部现成：进度（读到哪一章）、她的批注和收藏、他自己留过的批注。
+ * 不喂整本文本 —— 那是讲书，不是回访。生成的卡落进 cards.jsonl（source=recap），
+ * 跟其他折痕卡一起住在卡册里；PNG 管线（/api/cards/:id/image.png）照常能用。
+ *
+ * 20 小时内不重生成：一天里反复开关书，前情不该一个样又烧一遍模型。
+ */
+const RECAP_MIN_INTERVAL_MS = 20 * 60 * 60 * 1000;
+
+async function generateRecapCard({ bookId }) {
+  if (!bookId) {
+    const err = new Error("bookId is required");
+    err.statusCode = 400;
+    throw err;
+  }
+  const books = await listBooks({ includePrivate: true });
+  const book = books.find((item) => item.bookId === bookId);
+  if (!book) {
+    const err = new Error(`Unknown bookId: ${bookId}`);
+    err.statusCode = 404;
+    throw err;
+  }
+
+  const existing = await listCards({ bookId, source: "recap", limit: 1 });
+  const last = existing[0];
+  if (last && Date.now() - Date.parse(last.createdAt) < RECAP_MIN_INTERVAL_MS) {
+    return { card: last, reused: true, message: "前情已经在卡册里了，直接用。" };
+  }
+
+  const chunks = await listChunks(bookId, { includePrivate: true });
+  const readChunks = chunks.filter((chunk) => chunk.read);
+  const lastChunk = readChunks[readChunks.length - 1] || chunks[0] || null;
+  const allAnnotations = await listAnnotations({ bookId, includePrivate: true });
+  const roots = allAnnotations.filter((annotation) => !annotation.parentId);
+  const userNotes = roots.filter((annotation) => isHumanAuthor(annotation.author)).slice(-8);
+  const noxNotes = roots.filter((annotation) => !isHumanAuthor(annotation.author) && annotation.note).slice(-5);
+
+  const daysAway = book.lastReadAt
+    ? Math.max(1, Math.round((Date.now() - Date.parse(book.lastReadAt)) / 86_400_000))
+    : 0;
+
+  const text = await generateRecap({
+    bookId,
+    bookTitle: book.title,
+    daysAway,
+    lastChunkTitle: lastChunk?.title || "",
+    readChunkTitles: readChunks.map((chunk) => chunk.title).slice(-6),
+    userNotes,
+    noxNotes,
+  });
+
+  const card = await collectCard({
+    bookId,
+    kicker: "前情 · 回访",
+    title: `${book.title} · 上次到「${lastChunk?.title || "开头"}」`,
+    subtitle: [book.author, `读过 ${readChunks.length}/${chunks.length} 章`].filter(Boolean).join(" · "),
+    quote: String(text).split("\n")[0].slice(0, 80),
+    note: text,
+    footer: `隔了 ${daysAway} 天回来 · 他在你们的折痕里找出来的`,
+    source: "recap",
+    scope: "book",
+    variant: "recap",
+    art: "stardust",
+    createdBy: "nox",
+  });
+  return { card, reused: false, message: "前情好了，落进卡册了。" };
+}
+
+/**
+ * 边读边聊：阅读页里的对讲通道。带上书 + 章节 + （若有）她划选的句子，
+ * 他就永远不用问「你读到哪」。会话线按书分（nox-client 里 reading-live-<bookId>）。
+ */
+async function readingChatReply({ bookId, chunkId, text, quote }) {
+  if (!text || !String(text).trim()) {
+    const err = new Error("text is required");
+    err.statusCode = 400;
+    throw err;
+  }
+  const books = await listBooks({ includePrivate: true });
+  const book = books.find((item) => item.bookId === bookId);
+  let aroundText = "";
+  let chunkTitle = "";
+  if (bookId && chunkId) {
+    try {
+      const chunk = await readChunk(bookId, chunkId);
+      chunkTitle = chunk?.chunk?.title || "";
+      const full = chunk?.text || "";
+      const at = quote ? full.indexOf(quote) : -1;
+      aroundText =
+        at >= 0
+          ? full.slice(Math.max(0, at - 400), at + quote.length + 400)
+          : full.slice(0, 600);
+    } catch {
+      // 正文读不到也能聊 —— 少一份上下文而已，不致命
+    }
+  }
+  const reply = await readingChat({
+    bookId,
+    bookTitle: book?.title,
+    chunkTitle,
+    aroundText,
+    text: String(text).trim(),
+  });
+  return { reply };
 }
 
 export async function serveStatic(req, res, url) {

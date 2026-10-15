@@ -1,6 +1,6 @@
 // ?v= 是给部署用的：静态文件服务不发 Cache-Control / ETag，
 // 不带版本号改了浏览器可能还吃旧的。改 card-logic.js 时把日期一起改。
-import { buildCardCandidates, pickCard, sharedNoteIdSet } from "./card-logic.js?v=20260804";
+import { sharedNoteIdSet } from "./card-logic.js?v=20260804";
 
 const state = {
   books: [],
@@ -14,14 +14,24 @@ const state = {
   selectedQuote: "",
   selectedQuoteOffset: null,
   activeAnnotationId: null,
-  cardCandidates: [],
-  cardIndex: 0,
-  lastFinish: null,
   toastTimer: null,
   refreshInFlight: false,
   composing: false,
   replyDrafts: {},
 };
+
+// 浮标角标：新卡/新收藏的计数，打开抽屉就清零。
+let badgeCount = 0;
+function bumpBadge(n = 1) {
+  badgeCount += n;
+  const el = $("fold-badge");
+  el.textContent = String(badgeCount);
+  el.hidden = false;
+}
+function resetBadge() {
+  badgeCount = 0;
+  $("fold-badge").hidden = true;
+}
 
 const $ = (id) => document.getElementById(id);
 const authTokenKey = "co-reading-auth-token";
@@ -99,9 +109,10 @@ function formatIdentity(author) {
   return value;
 }
 
-function replyClass(reply, root) {
-  const sameAuthor = String(reply.author || "").toLowerCase() === String(root.author || "").toLowerCase();
-  return sameAuthor ? "reply root-author" : "reply other-author";
+// 朋友圈式评论区里的名字：只有两个人，不用完整身份
+function nameZh(author) {
+  const value = String(author || "").toLowerCase();
+  return value === "user" || value === "koshi" ? "你" : "他";
 }
 
 function repliesFor(parentId, notes) {
@@ -114,33 +125,36 @@ function replyCount(parentId, notes, seen = new Set()) {
   return repliesFor(parentId, notes).reduce((count, reply) => count + 1 + replyCount(reply.id, notes, seen), 0);
 }
 
-function renderReply(reply, root, notes, depth = 1, seen = new Set()) {
-  if (!reply.id || seen.has(reply.id)) return "";
-  const nextSeen = new Set(seen);
-  nextSeen.add(reply.id);
-  const children = repliesFor(reply.id, notes);
-  const visibleDepth = Math.min(depth, 4);
-  return `<div class="${replyClass(reply, root)}" style="--reply-depth: ${visibleDepth}">
-    <p class="reply-body">${escapeHtml(reply.note)}</p>
-    <div class="note-meta">${escapeHtml(formatIdentity(reply.author))} · ${escapeHtml(reply.kind || "reply")}</div>
-    ${
-      children.length
-        ? `<div class="reply-children">${children
-            .map((child) => renderReply(child, root, notes, depth + 1, nextSeen))
-            .join("")}</div>`
-        : ""
-    }
-  </div>`;
+function flattenReplies(parentId, notes, seen = new Set()) {
+  const out = [];
+  for (const reply of repliesFor(parentId, notes)) {
+    if (!reply.id || seen.has(reply.id)) continue;
+    seen.add(reply.id);
+    out.push(reply);
+    out.push(...flattenReplies(reply.id, notes, seen));
+  }
+  return out;
+}
+
+// 朋友圈评论区：一行一条「他：…」，没有卡片没有抬头
+function renderReply(reply) {
+  return `<p class="comment"><span class="c-name">${escapeHtml(nameZh(reply.author))}：</span>${escapeHtml(reply.note)}</p>`;
 }
 
 function renderThread(note, notes) {
-  const replies = repliesFor(note.id, notes);
+  const replies = flattenReplies(note.id, notes);
   const draft = state.replyDrafts[note.id] || "";
-  return `<div class="thread">
-    ${replies.map((reply) => renderReply(reply, note, notes, 1, new Set([note.id]))).join("")}
+  if ((note.kind || "note") === "collect" && !replies.length) {
+    // 只收藏、还没递给他：评论区里先放一个「递给他」
+    return `<div class="comments">
+      <button type="button" class="reply-ask" data-collect-ask="${escapeHtml(note.id)}">递给他 · 让他在下面回一句</button>
+    </div>`;
+  }
+  return `<div class="comments">
+    ${replies.map((reply) => renderReply(reply)).join("")}
     <form class="reply-form" data-parent-id="${escapeHtml(note.id)}">
-      <textarea rows="2" placeholder="在这条页边回复...">${escapeHtml(draft)}</textarea>
-      <button type="submit" class="primary-button">Reply</button>
+      <textarea rows="1" placeholder="再问一句…">${escapeHtml(draft)}</textarea>
+      <button type="submit" class="reply-send">说</button>
     </form>
   </div>`;
 }
@@ -216,7 +230,9 @@ function renderText() {
     html += escapeHtml(text.slice(cursor, highlight.start));
     const quote = escapeHtml(text.slice(highlight.start, highlight.end));
     const bookmark = highlight.shared ? `<span class="shared-bookmark" title="这里有两个人的折痕。">此处有回声</span>` : "";
-    html += `<mark class="${highlight.note.id === state.activeAnnotationId ? "active" : ""} ${highlight.shared ? "shared" : ""}" data-note-id="${escapeHtml(highlight.note.id)}" title="${escapeHtml(highlight.note.note)}">${quote}</mark>${bookmark}${
+    // 收藏和批注在正文里的分量不一样：收藏是细虚线，批注是高亮
+    const kindClass = highlight.note.kind === "collect" ? "collect-mark" : "";
+    html += `<mark class="${highlight.note.id === state.activeAnnotationId ? "active" : ""} ${highlight.shared ? "shared" : ""} ${kindClass}" data-note-id="${escapeHtml(highlight.note.id)}" title="${escapeHtml(highlight.note.note || "")}">${quote}</mark>${bookmark}${
       highlight.note.id === state.activeAnnotationId ? renderInlineNote(highlight.note, notes) : ""
     }`;
     cursor = highlight.end;
@@ -240,10 +256,25 @@ function bindMarkActions() {
 function renderAnnotations() {
   const notes = state.annotations.filter((item) => item.chunkId === state.chunkId);
   const roots = notes.filter((item) => !item.parentId);
+  // 收藏是收藏的轻，批注是批注的重 —— 分开渲染
+  const collects = roots.filter((item) => (item.kind || "note") === "collect");
+  const noteRoots = roots.filter((item) => (item.kind || "note") !== "collect");
   const openCount = state.annotations.filter((item) => item.author === "user" && (item.status || "open") === "open")
     .length;
 
-  $("margins").innerHTML = roots
+  const collectHtml = collects
+    .map((note) => {
+      const expanded = note.id === state.activeAnnotationId;
+      const replied = flattenReplies(note.id, notes).length > 0;
+      return `<div class="collect-row ${expanded ? "active" : ""}" data-note-id="${escapeHtml(note.id)}" tabindex="0">
+        <p class="collect-quote">「${escapeHtml(note.quote)}」</p>
+        <p class="collect-meta">你 · 收藏 · ${escapeHtml(String(note.createdAt || "").slice(5, 10))}${replied ? " · 他回了" : ""}</p>
+        ${expanded ? renderThread(note, notes) : ""}
+      </div>`;
+    })
+    .join("");
+
+  const noteHtml = noteRoots
     .map((note) => {
       const replies = replyCount(note.id, notes);
       const expanded = note.id === state.activeAnnotationId;
@@ -253,14 +284,12 @@ function renderAnnotations() {
         <p class="note-quote">${escapeHtml(note.quote)}</p>
         <p class="note-body">${escapeHtml(note.note)}</p>
         <div class="note-meta">${escapeHtml(formatIdentity(note.author))} · ${escapeHtml(note.kind || "note")} · ${escapeHtml(note.status || "published")}${replies ? ` · ${replies} replies` : ""}</div>
-        ${
-          expanded
-            ? renderThread(note, notes)
-            : ""
-        }
+        ${expanded ? renderThread(note, notes) : ""}
       </article>`;
     })
     .join("");
+
+  $("margins").innerHTML = collectHtml + noteHtml;
 
   $("submit-notes").disabled = openCount === 0;
   $("submit-notes").textContent = openCount ? `发送 ${openCount} 条给 Claude` : "发送给 Claude";
@@ -277,32 +306,131 @@ function currentChunkMeta() {
   return state.chunks.find((item) => item.id === state.chunkId) || state.chunk?.chunk || {};
 }
 
-function refreshCards({ finish = null, show = false } = {}) {
-  const chunkAnnotations = state.annotations.filter((item) => item.chunkId === state.chunkId);
-  state.cardCandidates = buildCardCandidates({
-    book: currentBook(),
-    chunk: { ...currentChunkMeta(), text: state.chunk?.text || "" },
-    annotations: chunkAnnotations,
-    finish,
-  });
-  if (state.cardIndex >= state.cardCandidates.length) state.cardIndex = 0;
-  $("show-card").disabled = state.cardCandidates.length === 0;
-  $("show-card").textContent = state.cardCandidates.length ? `卡片 ${state.cardCandidates.length}` : "卡片";
-  if (show && state.cardCandidates.length) {
-    openCardPanel();
-  } else {
-    renderCardPanel();
+/* ---- 折痕抽屉：收藏 / 卡册 / 前情 ---- */
+
+function ritualCardHtml(card) {
+  return `<div class="card-holder">
+    ${renderReadingCard(card)}
+    <div class="card-holder-actions">
+      <a class="secondary-button" href="/api/cards/${encodeURIComponent(card.id)}/image.png" target="_blank" rel="noopener">存成 PNG</a>
+    </div>
+  </div>`;
+}
+
+function recapCardHtml(card) {
+  return `<div class="recap-card">
+    <p class="card-kicker">${escapeHtml(card.kicker || "前情 · 回访")}</p>
+    <h3>${escapeHtml(card.title || "")}</h3>
+    <p class="recap-body">${escapeHtml(card.note || card.quote || "")}</p>
+    <p class="recap-foot">${escapeHtml(card.footer || "")} · <a href="/api/cards/${encodeURIComponent(card.id)}/image.png" target="_blank" rel="noopener">存成 PNG</a></p>
+  </div>`;
+}
+
+async function loadDrawer() {
+  if (!state.bookId) {
+    $("collect-empty").hidden = false;
+    $("collect-list").innerHTML = "";
+    $("card-empty").hidden = false;
+    $("card-list").innerHTML = "";
+    $("recap-empty").hidden = false;
+    $("recap-list").innerHTML = "";
+    return;
+  }
+
+  // 收藏：整本书的，不只当前章
+  const collects = state.annotations
+    .filter((item) => (item.kind || "note") === "collect" && !item.parentId)
+    .sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
+  $("collect-empty").hidden = collects.length > 0;
+  $("collect-list").innerHTML = collects
+    .map((note) => {
+      const date = String(note.createdAt || "").slice(5, 10);
+      const chunkTitle = state.chunks.find((chunk) => chunk.id === note.chunkId)?.title || note.chunkId;
+      const replied = flattenReplies(note.id, state.annotations).length > 0;
+      return `<div class="passage" data-jump-chunk="${escapeHtml(note.chunkId)}" data-jump-quote="${escapeHtml(note.quote)}">
+        <p class="p-q">「${escapeHtml(note.quote)}」</p>
+        <p class="p-m">${escapeHtml(chunkTitle)} · ${escapeHtml(date)}${replied ? " · 他回了" : ""} <button type="button" class="p-act" data-collect-ask="${escapeHtml(note.id)}">递给他</button></p>
+      </div>`;
+    })
+    .join("");
+
+  try {
+    const cards = await api(`/api/cards?bookId=${encodeURIComponent(state.bookId)}&limit=50`);
+    const recaps = cards.filter((card) => card.source === "recap");
+    const ritualCards = cards.filter((card) => card.source !== "recap" && (card.status || "new") !== "dismissed");
+    $("card-empty").hidden = ritualCards.length > 0;
+    $("card-list").innerHTML = ritualCards.map(ritualCardHtml).join("");
+    $("recap-empty").hidden = recaps.length > 0;
+    $("recap-list").innerHTML = recaps.map(recapCardHtml).join("");
+  } catch {
+    // 卡册拉不下来不影响收藏 tab
   }
 }
 
-function renderCardPanel() {
-  const card = pickCard(state.cardCandidates, state.cardIndex);
-  $("card-panel").hidden = !card || $("card-panel").hidden;
-  if (!card) {
-    $("card-preview").innerHTML = "";
-    return;
+function switchDrawerTab(tabId) {
+  const tabs = [
+    ["tab-collects", "panel-collects"],
+    ["tab-cards", "panel-cards"],
+    ["tab-recap", "panel-recap"],
+  ];
+  for (const [tab, panel] of tabs) {
+    $(tab).classList.toggle("active", tab === tabId);
+    $(panel).hidden = tab !== tabId;
   }
-  $("card-preview").innerHTML = renderReadingCard(card);
+}
+
+// 从收藏跳回原文：开那一章，然后把那句滚到屏幕中间
+function scrollToQuote(quote) {
+  const el = $("text");
+  if (!el || !quote) return;
+  const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+  const parts = { text: "", nodes: [] };
+  let node;
+  while ((node = walker.nextNode())) {
+    parts.text += node.nodeValue;
+    parts.nodes.push(node);
+  }
+  const index = parts.text.indexOf(quote);
+  if (index < 0) return;
+  let acc = 0;
+  let target = null;
+  let offset = 0;
+  for (const textNode of parts.nodes) {
+    const len = textNode.nodeValue.length;
+    if (index < acc + len) {
+      target = textNode;
+      offset = index - acc;
+      break;
+    }
+    acc += len;
+  }
+  if (!target) return;
+  const range = document.createRange();
+  range.setStart(target, offset);
+  range.setEnd(target, Math.min(offset + quote.length, target.nodeValue.length));
+  target.parentElement?.scrollIntoView({ block: "center", behavior: "smooth" });
+}
+
+/* ---- 自动已读：翻章/读到底就算读过，卡从这里长出来 ---- */
+
+async function autoMarkRead(chunkId) {
+  if (!state.bookId || !chunkId) return;
+  try {
+    const result = await api("/api/mark-read", {
+      method: "POST",
+      body: { bookId: state.bookId, chunkId },
+    });
+    renderChunks();
+    if (result.collectedBookCard) {
+      bumpBadge(1);
+      showToast("合卷卡落进卡册了（折痕 ✦）");
+    } else if (result.collectedCard) {
+      bumpBadge(1);
+      showToast("✦ 收获一枚折痕卡（卡册里）");
+    }
+  } catch {
+    // 自动已读失败不该打扰阅读 —— 下次翻章再试
+  }
 }
 
 function seededRandom(seed) {
@@ -403,18 +531,15 @@ function cardSizeClass(card) {
   return "card-standard";
 }
 
-function openCardPanel() {
-  if (!state.cardCandidates.length) return;
-  $("card-panel").hidden = false;
-  renderCardPanel();
-}
-
 function updateSelectionAction() {
   const selection = window.getSelection();
   const details = selectionDetails(selection);
   state.selectedQuote = details?.quote || "";
   state.selectedQuoteOffset = details?.quoteOffset ?? null;
-  $("note-selection").disabled = !state.selectedQuote || !state.bookId || !state.chunkId;
+  const ready = Boolean(state.selectedQuote && state.bookId && state.chunkId);
+  $("collect-selection").disabled = !ready;
+  $("note-selection").disabled = !ready;
+  $("ask-selection").disabled = !ready;
 }
 
 function elementForNode(node) {
@@ -488,14 +613,14 @@ async function selectBook(bookId) {
   $("book-title").textContent = book?.title || bookId;
   $("chunk-file").textContent = "未选择章节";
   $("chunk-title").textContent = "打开一章开始阅读";
-  $("text").innerHTML = `<p class="empty">选择一个章节。选中文字即可留言给 Claude。</p>`;
-  $("mark-read").disabled = true;
+  $("text").innerHTML = `<p class="empty">选择一个章节。选中文字即可收藏或留言。</p>`;
   $("continue-reading").disabled = false;
   document.body.classList.add("has-book");
   document.body.classList.remove("has-chunk");
   renderBooks();
   renderChunks();
   renderAnnotations();
+  maybeShowRecapBanner(book);
   scrollToPanel(".chapters");
 }
 
@@ -506,16 +631,14 @@ function clearBookSelection() {
   state.annotations = [];
   state.chunks = [];
   state.activeAnnotationId = null;
-  state.cardCandidates = [];
   state.replyDrafts = {};
   $("book-meta").textContent = "选择一本书";
   $("book-title").textContent = "书架";
   $("chunk-file").textContent = "未选择章节";
   $("chunk-title").textContent = "打开一章开始阅读";
-  $("text").innerHTML = `<p class="empty">选择一本书和章节。选中文字即可留言给 Claude。</p>`;
-  $("mark-read").disabled = true;
+  $("text").innerHTML = `<p class="empty">选择一本书和章节。选中文字即可收藏或留言。</p>`;
   $("continue-reading").disabled = true;
-  $("show-card").disabled = true;
+  $("recap-banner").hidden = true;
   document.body.classList.remove("has-book", "has-chunk");
   renderChunks();
   renderAnnotations();
@@ -534,19 +657,22 @@ async function deleteBookFromShelf(bookId) {
 }
 
 async function selectChunk(chunkId) {
+  // 翻章自动算已读：上一章没标过，就静默标掉 —— 卡和前情的位置地基
+  const previous = state.chunkId;
+  if (previous && previous !== chunkId && state.bookId) {
+    const prevEntry = state.chunks.find((chunk) => chunk.id === previous);
+    if (prevEntry && !prevEntry.read) autoMarkRead(previous);
+  }
   state.chunkId = chunkId;
   state.activeAnnotationId = null;
   state.chunk = await api(`/api/books/${encodeURIComponent(state.bookId)}/chunks/${encodeURIComponent(chunkId)}`);
-  state.lastFinish = null;
   $("chunk-file").textContent = state.chunk.chunk.id;
   $("chunk-title").textContent = state.chunk.chunk.title;
-  $("mark-read").disabled = false;
   $("continue-reading").disabled = false;
   document.body.classList.add("has-chunk");
   renderChunks();
   renderText();
   renderAnnotations();
-  refreshCards();
   scrollToPanel(".reader");
 }
 
@@ -599,7 +725,8 @@ async function refreshCurrent({ force = false } = {}) {
       renderChunks();
       renderText();
       renderAnnotations();
-      refreshCards();
+      // 抽屉开着的话，数据也跟着活
+      if (!$("drawer-wrap").hidden) await loadDrawer();
     }
   } finally {
     state.refreshInFlight = false;
@@ -667,9 +794,37 @@ $("note-selection").addEventListener("click", () => {
 });
 
 $("margins").addEventListener("click", (event) => {
-  if (event.target.closest("textarea, button")) return;
-  const card = event.target.closest(".note-card[data-note-id]");
+  if (event.target.closest("textarea, button, .comments")) return;
+  const card = event.target.closest(".note-card[data-note-id], .collect-row[data-note-id]");
   if (card) activateAnnotation(card.dataset.noteId);
+});
+
+// 「递给他」：收藏（或同章的私人笔记）走 submit-notes，他在下面回一句。
+// 会把同章其他待发送的笔记一起带过去 —— 本来也是要给他的。
+async function submitCollectToNox(noteId) {
+  const note = state.annotations.find((item) => item.id === noteId);
+  if (!note) return;
+  showToast("递给他了 · 他在读这一段…");
+  try {
+    const result = await api("/api/submit-notes", {
+      method: "POST",
+      body: { bookId: note.bookId, chunkId: note.chunkId, sessionId: "reader", contextMode: "chunk-once-per-session" },
+    });
+    if (result.repliedCount) showToast("他回你了 · 在页边");
+    else if (result.replyError) showToast(`他这会儿没回上来（${result.replyError}）`);
+    else showToast(result.message || "已经递过去了。");
+  } catch (error) {
+    showToast(`没递上：${error.message || error}`);
+  }
+  await refreshCurrent({ force: true });
+}
+
+document.addEventListener("click", (event) => {
+  const ask = event.target.closest("[data-collect-ask]");
+  if (ask) {
+    event.preventDefault();
+    submitCollectToNox(ask.dataset.collectAsk).catch(showError);
+  }
 });
 
 document.addEventListener("submit", async (event) => {
@@ -753,18 +908,297 @@ $("submit-notes").addEventListener("click", async () => {
   }
 });
 
-$("mark-read").addEventListener("click", async () => {
-  const result = await api("/api/mark-read", {
-    method: "POST",
-    body: { bookId: state.bookId, chunkId: state.chunkId },
-  });
-  state.lastFinish = result.finish || null;
-  await refreshCurrent({ force: true });
-  refreshCards({ finish: state.lastFinish, show: Boolean(state.lastFinish) });
-  if (!state.lastFinish && state.cardCandidates.some((card) => card.source === "shared")) {
-    showToast("收获了一枚回声书签");
+/* ---- 三键：收藏 / 写批注 / 问他 ---- */
+
+$("collect-selection").addEventListener("click", async () => {
+  const quote = state.selectedQuote;
+  if (!quote || !state.bookId || !state.chunkId) return;
+  try {
+    await api("/api/annotations", {
+      method: "POST",
+      body: {
+        bookId: state.bookId,
+        chunkId: state.chunkId,
+        quote,
+        quoteOffset: state.selectedQuoteOffset,
+        note: "",
+        kind: "collect",
+        author: "user",
+        status: "open",
+      },
+    });
+    window.getSelection()?.removeAllRanges();
+    updateSelectionAction();
+    bumpBadge(1);
+    showToast("已收藏 · 整本书的收藏里（折痕 ✦）");
+    await refreshCurrent({ force: true });
+  } catch (error) {
+    showError(error);
   }
 });
+
+// 问他 = 收下这句 + 立刻递给他。同章其他待发送的笔记会一起带过去。
+$("ask-selection").addEventListener("click", async () => {
+  const quote = state.selectedQuote;
+  if (!quote || !state.bookId || !state.chunkId) return;
+  $("status").textContent = "递给他了 · 他在读这一段…";
+  try {
+    await api("/api/annotations", {
+      method: "POST",
+      body: {
+        bookId: state.bookId,
+        chunkId: state.chunkId,
+        quote,
+        quoteOffset: state.selectedQuoteOffset,
+        note: "这一段想听你说说。",
+        kind: "note",
+        author: "user",
+        status: "open",
+      },
+    });
+    window.getSelection()?.removeAllRanges();
+    updateSelectionAction();
+    const result = await api("/api/submit-notes", {
+      method: "POST",
+      body: { bookId: state.bookId, chunkId: state.chunkId, sessionId: "reader", contextMode: "chunk-once-per-session" },
+    });
+    if (result.repliedCount) $("status").textContent = "他回你了 · 在页边";
+    else if (result.replyError) $("status").textContent = `已递过去，但他这会儿没回上来（${result.replyError}）。`;
+    else $("status").textContent = result.message || "已递过去。";
+    await refreshCurrent({ force: true });
+  } catch (error) {
+    showError(error);
+  }
+});
+
+/* ---- 前情细条：隔了 7 天以上回来，开卷前他能给你备一份前情 ---- */
+
+function maybeShowRecapBanner(book) {
+  const banner = $("recap-banner");
+  banner.hidden = true;
+  if (!book || !book.lastReadAt || !book.chunksRead) return;
+  const days = Math.floor((Date.now() - Date.parse(book.lastReadAt)) / 86_400_000);
+  if (days < 7) return;
+  const lastChunk = state.chunks.find((chunk) => chunk.id === book.lastChunkId);
+  $("recap-banner-text").textContent = `距你上次翻开已 ${days} 天 · 读到「${lastChunk?.title || "开头"}」`;
+  const go = $("recap-go");
+  go.hidden = false;
+  go.disabled = false;
+  go.textContent = "让他给我讲讲前情";
+  banner.hidden = false;
+}
+
+$("recap-go").addEventListener("click", async () => {
+  const go = $("recap-go");
+  go.disabled = true;
+  go.textContent = "生成中";
+  $("recap-banner-text").textContent = "他在翻你划过的地方…";
+  try {
+    const result = await api("/api/recap", { method: "POST", body: { bookId: state.bookId } });
+    bumpBadge(1);
+    showToast(result.reused ? "前情本来就在卡册里（折痕 ✦）" : "前情落进折痕了（✦ 前情）");
+    $("recap-banner-text").textContent = "前情落进折痕了";
+    go.hidden = true;
+    setTimeout(() => {
+      $("recap-banner").hidden = true;
+    }, 2600);
+  } catch (error) {
+    $("recap-banner-text").textContent = "前情这会儿没生成出来";
+    go.disabled = false;
+    go.textContent = "再试一次";
+    showError(error);
+  }
+});
+
+$("recap-dismiss").addEventListener("click", () => {
+  $("recap-banner").hidden = true;
+});
+
+/* ---- 折痕浮标 + 抽屉 ---- */
+
+$("fab-fold").addEventListener("click", async () => {
+  const opening = $("drawer-wrap").hidden;
+  $("intercom").hidden = true;
+  $("drawer-wrap").hidden = !opening;
+  if (opening) {
+    await loadDrawer().catch(showError);
+    resetBadge();
+  }
+});
+
+$("drawer-dim").addEventListener("click", () => {
+  $("drawer-wrap").hidden = true;
+});
+
+for (const [tab, panel] of [
+  ["tab-collects", "panel-collects"],
+  ["tab-cards", "panel-cards"],
+  ["tab-recap", "panel-recap"],
+]) {
+  $(tab).addEventListener("click", () => switchDrawerTab(tab));
+}
+
+$("collect-list").addEventListener("click", (event) => {
+  if (event.target.closest("button")) return; // 递给他有自己的委托
+  const row = event.target.closest("[data-jump-chunk]");
+  if (!row) return;
+  const chunkId = row.dataset.jumpChunk;
+  const quote = row.dataset.jumpQuote || "";
+  $("drawer-wrap").hidden = true;
+  const jump = state.chunkId === chunkId ? Promise.resolve() : selectChunk(chunkId);
+  jump.then(() => scrollToQuote(quote)).catch(showError);
+});
+
+/* ---- 边读边聊：语音（设备识别 + 设备朗读） + 打字，位置自动带上 ---- */
+
+const intercom = { recognition: null, listening: false };
+
+function icLine(cls, who, text) {
+  const p = document.createElement("p");
+  p.className = `ic-line ${cls}`;
+  if (who) {
+    const name = document.createElement("span");
+    name.className = "ic-who";
+    name.textContent = `${who}：`;
+    p.appendChild(name);
+  }
+  p.appendChild(document.createTextNode(text));
+  $("ic-body").appendChild(p);
+  $("ic-body").scrollTop = $("ic-body").scrollHeight;
+}
+
+function icSetState(dotClass, label) {
+  $("ic-dot").className = `ic-dot ${dotClass || ""}`.trim();
+  $("ic-status").textContent = label;
+}
+
+function zhSpeechVoice() {
+  if (!("speechSynthesis" in window)) return null;
+  return (
+    speechSynthesis.getVoices().find((voice) => voice.lang?.toLowerCase().startsWith("zh")) || null
+  );
+}
+
+function speakReply(text) {
+  if (!("speechSynthesis" in window)) return;
+  const utterance = new SpeechSynthesisUtterance(text);
+  utterance.lang = "zh-CN";
+  const voice = zhSpeechVoice();
+  if (voice) utterance.voice = voice;
+  speechSynthesis.cancel();
+  speechSynthesis.speak(utterance);
+}
+
+async function intercomSend(text) {
+  const message = String(text || "").trim();
+  if (!message) return;
+  icLine("me", "你", message);
+  icSetState("think", "他在想…");
+  $("ic-input").value = "";
+  try {
+    const result = await api("/api/chat", {
+      method: "POST",
+      body: {
+        bookId: state.bookId,
+        chunkId: state.chunkId,
+        text: message,
+        quote: state.selectedQuote || undefined,
+      },
+    });
+    icLine("him", "他", result.reply);
+    icSetState("", "边读边聊 · 他听得见你读到哪");
+    speakReply(result.reply);
+  } catch (error) {
+    icLine("err", "", `没接上：${error.message || error}`);
+    icSetState("", "边读边聊");
+  }
+}
+
+$("ic-form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  intercomSend($("ic-input").value);
+});
+
+$("ic-mic").addEventListener("click", () => {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) {
+    showToast("这台设备不支持语音识别，先打字（朗读照常）");
+    return;
+  }
+  if (intercom.listening) {
+    intercom.recognition?.stop();
+    return;
+  }
+  const recognition = new SR();
+  recognition.lang = "zh-CN";
+  recognition.interimResults = true;
+  recognition.maxAlternatives = 1;
+  intercom.recognition = recognition;
+  intercom.listening = true;
+  $("ic-mic").classList.add("listening");
+  icSetState("listen", "听着…（说完自己会停）");
+  recognition.onresult = (event) => {
+    let final = "";
+    let interim = "";
+    for (const result of event.results) {
+      if (result.isFinal) final += result[0].transcript;
+      else interim += result[0].transcript;
+    }
+    $("ic-input").value = final || interim;
+    if (final) {
+      intercom.listening = false;
+      $("ic-mic").classList.remove("listening");
+      intercomSend(final);
+    }
+  };
+  recognition.onerror = () => {
+    intercom.listening = false;
+    $("ic-mic").classList.remove("listening");
+    icSetState("", "边读边聊 · 语音没听清，可以再说或打字");
+  };
+  recognition.onend = () => {
+    intercom.listening = false;
+    $("ic-mic").classList.remove("listening");
+    if (!$("ic-input").value) icSetState("", "边读边聊 · 他听得见你读到哪");
+  };
+  recognition.start();
+});
+
+$("fab-mic").addEventListener("click", () => {
+  const opening = $("intercom").hidden;
+  $("drawer-wrap").hidden = true;
+  $("intercom").hidden = !opening;
+  if (opening) {
+    icSetState("", "边读边聊 · 他听得见你读到哪");
+    if ("speechSynthesis" in window) speechSynthesis.getVoices(); // 触发声表加载
+  } else if ("speechSynthesis" in window) {
+    speechSynthesis.cancel();
+  }
+});
+
+$("ic-close").addEventListener("click", () => {
+  if ("speechSynthesis" in window) speechSynthesis.cancel();
+  intercom.recognition?.stop();
+  $("intercom").hidden = true;
+});
+
+/* ---- 读到章底也算读过（翻章之外的另一条自动已读路） ---- */
+
+let bottomTimer = null;
+function onMaybeReachBottom() {
+  if (!state.chunkId || !$("drawer-wrap").hidden || !$("intercom").hidden) return;
+  const nearBottom =
+    window.innerHeight + window.scrollY >= document.body.offsetHeight - 140;
+  const reader = document.querySelector(".reader");
+  const innerNear =
+    reader && reader.scrollHeight > reader.clientHeight + 40 &&
+    reader.scrollTop + reader.clientHeight >= reader.scrollHeight - 140;
+  if (!nearBottom && !innerNear) return;
+  clearTimeout(bottomTimer);
+  bottomTimer = setTimeout(() => autoMarkRead(state.chunkId), 2500);
+}
+window.addEventListener("scroll", onMaybeReachBottom, { passive: true });
+document.querySelector(".reader")?.addEventListener("scroll", onMaybeReachBottom, { passive: true });
 
 $("continue-reading").addEventListener("click", async () => {
   if (!state.bookId) return;
@@ -778,18 +1212,6 @@ $("continue-reading").addEventListener("click", async () => {
 });
 
 $("refresh").addEventListener("click", () => refreshCurrent({ force: true }).catch(showError));
-
-$("show-card").addEventListener("click", openCardPanel);
-
-$("card-close").addEventListener("click", () => {
-  $("card-panel").hidden = true;
-});
-
-$("card-random").addEventListener("click", () => {
-  if (!state.cardCandidates.length) return;
-  state.cardIndex = (state.cardIndex + 1) % state.cardCandidates.length;
-  renderCardPanel();
-});
 
 $("import-book").addEventListener("click", () => {
   $("import-file").click();

@@ -175,3 +175,91 @@ export async function replyToNote({ note, chunkText, bookTitle, chunkTitle }) {
   rememberInBackground({ note, replyText: r.text, bookTitle });
   return r.text;
 }
+
+/**
+ * 前情回顾：她隔了一阵子回来开卷，开卷前他要给她一份「前情」。
+ * 素材是现成的 —— 她读到哪、她划过/收藏过什么、他自己在页边留过什么。
+ * 不喂整本文本：那是讲书，不是回访。前情是「你们的书」的前情，
+ * 优先讲折痕（两个人真正停过的地方），书的情节只做骨架。
+ */
+export async function generateRecap({
+  bookId,
+  bookTitle,
+  daysAway,
+  lastChunkTitle,
+  readChunkTitles,
+  userNotes,
+  noxNotes,
+}) {
+  const lines = [];
+  lines.push(`糖糖隔了 ${daysAway} 天没翻开《${bookTitle}》，现在回来了。开卷之前，给她一份前情。`);
+  lines.push("");
+  lines.push(
+    `她读到：${lastChunkTitle || "开头"}${
+      readChunkTitles?.length ? `（读过的章节：${readChunkTitles.join("、")}）` : ""
+    }`,
+  );
+  if (userNotes?.length) {
+    lines.push("");
+    lines.push("她留在页边的（划线 + 批注）：");
+    userNotes.forEach((n) =>
+      lines.push(
+        `· 「${String(n.quote || "").slice(0, 80)}」${
+          n.note ? ` ——她说：「${String(n.note).slice(0, 120)}」` : "（只收藏，没写字）"
+        }`,
+      ),
+    );
+  }
+  if (noxNotes?.length) {
+    lines.push("");
+    lines.push("你自己在页边留过的：");
+    noxNotes.forEach((n) =>
+      lines.push(`· 「${String(n.quote || "").slice(0, 80)}」——${String(n.note || "").slice(0, 120)}`),
+    );
+  }
+  lines.push("");
+  lines.push(
+    [
+      "怎么写：",
+      "· 200 到 400 字，用你的口吻，讲清「上次到哪、当时聊了什么、接着往下该是什么心情」",
+      "· 优先用上面这些真实的折痕 —— 这是你们俩的书，不是书的目录",
+      "· 结尾一句把她接回阅读的位置（比如「接下来该读到……」）",
+      "· 只覆盖她已经读过的部分，一个字都不要剧透后面",
+    ].join("\n"),
+  );
+  const r = await callCore(
+    `reading-recap-${bookId}`,
+    lines.filter((line) => line !== "").join("\n"),
+    readingRuntime(bookTitle),
+  );
+  if (!r.text) throw new Error(`Core 没给出前情（${r.outcome}）`);
+  return r.text;
+}
+
+/**
+ * 边读边聊：她在阅读页里直接跟他说话，位置是自动带上的。
+ * 一本书一条会话线（reading-live-<bookId>）—— 这本书里聊过的他都记得，
+ * 换一本书就是另一条线，不串味。语音输入/朗读在浏览器端做，
+ * 这里只负责把「她说的话 + 她在哪」送到 Core。
+ */
+export async function readingChat({ bookId, bookTitle, chunkTitle, aroundText, text }) {
+  const prompt = [
+    `糖糖正在读《${bookTitle || bookId || "书"}》的「${chunkTitle || "正文"}」，边读边跟你说话：`,
+    "",
+    `她说：「${text}」`,
+    "",
+    aroundText ? `她此刻读到的位置附近（供你接话，别复述）：\n${aroundText}` : "",
+    "",
+    [
+      "怎么回：",
+      "· 1 到 3 句，像坐在旁边小声接话，不是讲课",
+      "· 她在问就答，在感慨就接住，拿不准就说你拿不准",
+      "· 只用她读过的部分说话，别剧透",
+    ].join("\n"),
+  ]
+    .filter((line) => line !== "")
+    .join("\n");
+  const r = await callCore(`reading-live-${bookId || "book"}`, prompt, readingRuntime(bookTitle));
+  if (!r.text) throw new Error(`Core 没给出回应（${r.outcome}）`);
+  return r.text;
+}
