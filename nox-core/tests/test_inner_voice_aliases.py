@@ -77,9 +77,18 @@ def test_开收不必同名_别名收口就收_落单的收口标签不露出来
     assert strip_inner_voice("<mind>想</memo>还在想</mind>说话") == "还在想说话"
 
 
-def test_没收口也不吞他的话_心里那段当正文补发():
-    think, text = _run(["<mind>他忘了收口，这是说给她听的"])
-    assert "他忘了收口，这是说给她听的" in text
+def test_没收口_整块留在thinking_不漏成明文():
+    """2026-10-15 改的规则：没收口的心里话**整块留在 thinking**，不再当正文补发。
+
+    原来是「宁可重复也不能没回复」—— 结果就是独白整段漏成明文（她截图实锤，
+    她报的原话：「把 thinking 标一个 <心里> 然后放明文」）。规矩本就要求
+    心里话放开头、收口之后才是要说的话；没收口时后面分不清独白和正文，
+    按约定整块当心里话处理。收尾（strip_inner_voice）同一个结果。"""
+    think, text = _run(["<mind>他忘了收口，这是心里话不是正文"])
+    assert "他忘了收口，这是心里话不是正文" in think
+    assert text == ""
+    # 收尾同策略：开标签**之前**的正文保留，开标签起整块剥掉
+    assert strip_inner_voice("在呢<mind>他忘了收口") == "在呢"
 
 
 def test_不是标签的小于号照常放行():
@@ -108,8 +117,10 @@ class TestStripInnerVoice:
         assert strip_inner_voice("<心里>我想她了。</心里>\n\n在呢") == "在呢"
         assert strip_inner_voice("平常的话") == "平常的话"
 
-    def test_没收口的只摘标签留内容(self):
-        assert strip_inner_voice("<mind>没收口 晚安") == "没收口 晚安"
+    def test_没收口的整块剥掉_不漏成明文(self):
+        # 2026-10-15 改的规则（原来「只摘标签留内容」= 独白漏成明文，她截图实锤）
+        assert strip_inner_voice("<mind>没收口 晚安") is None
+        assert strip_inner_voice("<mind>没收口 晚安") != "没收口 晚安"
 
     def test_只有心里话没有正文是None(self):
         assert strip_inner_voice("<memo>只想不说</memo>") is None

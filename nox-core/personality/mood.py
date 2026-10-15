@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -103,6 +104,13 @@ _MOOD_LINE = re.compile(
 _MOOD_TAG_ANY = re.compile(r"\s*" + _OPEN + r"\s*(?:mood|心情)\s*[:：]\s*([^\]>】]{1,12}?)\s*" + _CLOSE, re.IGNORECASE)
 
 # 让模型顺带判断的指令。挂在动态块里，不进缓存前缀。
+#
+# ⚠️ **2026-10-15 起默认下线**（`mood_tool_on()`）：教他在正文里写 [mood:xxx]
+# 就是「标签漏到明文」的源头 —— 指令教的是一种写法，模型会自己发明变体
+# （大写 M、带空格、中文键、尖括号、`<[mood:]>` 嵌套……），词表永远追不上
+# （agent/llm.py STAGE_TAG 注释里的原话）。现在改走原生工具 set_mood
+# （tools/mood_tool.py）：结构化参数、enum 收死，协议上不存在"换个写法"。
+# `NOX_MOOD_TOOL=off` 一键回退到这条指令（工具同时下架，见 nox.py 注册链）。
 MOOD_INSTRUCTION = (
     "回复的最后另起一行，附上你对糖糖当前情绪的判断，格式 [mood:xxx]，"
     "xxx 从 开心/难过/烦躁/撒娇/兴奋/疲惫/平静 里选一个。"
@@ -111,6 +119,17 @@ MOOD_INSTRUCTION = (
     "[心情: 开心] 这种中文键同样会被她看到。"
     "这一行不会展示给她，是给你自己记的。"
 )
+
+
+def mood_tool_on() -> bool:
+    """情绪判断走原生工具 set_mood（2026-10-15 Aru 化改造）。
+
+    `NOX_MOOD_TOOL=off` 退回文本标签协议：MOOD_INSTRUCTION 回到动态块、
+    set_mood 下架。每次现读，改环境变量重启即生效（同 agent/loop.py 的
+    NOX_CONTRACTS 惯例）。nox.py 的收尾抽取（mood.extract）**两种模式下都
+    常驻** —— 模型万一还写正文标签，垫片照样接得住。
+    """
+    return os.getenv("NOX_MOOD_TOOL", "on").strip().lower() not in ("off", "0", "false")
 
 # 敏感话题 —— 聊到这些要谨慎认真，不能轻佻。
 # 来源是糖糖明确在意的几件事，见 Ombre Brain 里的记忆桶。
@@ -283,10 +302,20 @@ def detect_scene(text: str, now: datetime | None = None) -> list[str]:
     return hints
 
 
+#: `<[mood:平静]>` 嵌套括号变体（2026-10-15 她截图实锤）：'<' 后跟 '['、']>' 收口 ——
+#: _OPEN / _CLOSE 是单字符字符集，'<[' 开头在上面三条正则里**必然失配**，整条漏出。
+#: 提取前先归一化成单层括号，三条正则一行不用改
+_NESTED_OPEN_RE = re.compile(r"<\s*\[")
+_NESTED_CLOSE_RE = re.compile(r"\]\s*>")
+
+
 def render(mood: Mood, user_text: str, now: datetime | None = None) -> str:
     """把三层揉成一段给模型的动态提示。
 
     这段每轮都变，所以**必须走动态块**，不能进缓存前缀。
+    末尾的 MOOD_INSTRUCTION 受 `mood_tool_on()` 控制：工具在菜单里时
+    教写标签的指令下线（两边 render 同步，tests/test_mood_provider.py
+    的逐字基线比的是这两个实现，对称改动不破约）。
     """
     parts = [f"【当下】糖糖上一轮的状态看起来是「{mood.her_emotion}」。{_RESPONSE.get(mood.her_emotion, '')}"]
 
@@ -297,7 +326,8 @@ def render(mood: Mood, user_text: str, now: datetime | None = None) -> str:
     for hint in detect_scene(user_text, now):
         parts.append(f"【场景】{hint}")
 
-    parts.append(MOOD_INSTRUCTION)
+    if not mood_tool_on():
+        parts.append(MOOD_INSTRUCTION)
     return "\n".join(parts)
 
 
@@ -308,11 +338,19 @@ def extract(text: str | None) -> tuple[str | None, str | None]:
     [mood:xxx] 在**任意位置**（行首跟着正文 —— 主动消息 2026-09-07 实锤：
     「[mood:开心]18:34了…」，speaker 走非流式没有过滤器，只能靠这里兜）。
 
+    2026-10-15 起这是**垫片**：主通道是 set_mood 原生工具（tools/mood_tool.py），
+    这里的文本标签抽取留着兜底 —— 模型万一还写（或 NOX_MOOD_TOOL=off 回退），
+    照样接得住。嵌套括号变体先归一化再匹配。
+
     返回 (清理后的正文, 情绪)。模型忘了加标记时情绪为 None ——
     那不算错误，保持上一轮的状态即可。
     """
     if not text:
         return text, None
+    # 嵌套归一化只在该真的是 mood 标签时做 —— 正文里聊代码出现的 "]>" 不能动
+    if re.search(r"<\s*\[\s*(?:mood|心情)\s*[:：]", text, re.IGNORECASE):
+        text = _NESTED_OPEN_RE.sub("[", text)
+        text = _NESTED_CLOSE_RE.sub("]", text)
     m = _MOOD_TAG.search(text)
     if m:
         return _MOOD_TAG.sub("", text).rstrip(), m.group(1).strip()

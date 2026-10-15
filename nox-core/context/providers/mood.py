@@ -66,6 +66,8 @@ class MoodProvider(BaseContextProvider):
         ⚠️ 输出必须和 `personality.mood.render()` **逐字相同**。
         这是他跟糖糖说话的语气，改一个标点都要先问她。
         改这个函数前先跑 `tests/test_mood_provider.py`。
+        （2026-10-15：末尾的 MOOD_INSTRUCTION 与那边同步受 mood_tool_on()
+        控制 —— set_mood 工具在菜单里时，教写标签的指令两边一起下线。）
         """
         if state.get("available") is False:
             return ""
@@ -81,5 +83,6 @@ class MoodProvider(BaseContextProvider):
         for hint in state.get("scene_hints", []):
             parts.append(f"【场景】{hint}")
 
-        parts.append(mood_mod.MOOD_INSTRUCTION)
+        if not mood_mod.mood_tool_on():
+            parts.append(mood_mod.MOOD_INSTRUCTION)
         return "\n".join(parts)

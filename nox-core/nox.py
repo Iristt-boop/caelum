@@ -11,11 +11,12 @@ import logging
 import re
 import uuid
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Callable
 
 from agent import vision
 from agent.adapters import make_adapter, profiled, sees_images
 from agent.llm import MEME_TAGS, LLMAdapter, Message, extract_fake_calls, strip_stage_tags
+from agent.llm import HER_EMOTIONS
 from agent import meter
 from agent.loop import AgentLoop
 from config import Config, _build_llm, config as default_config
@@ -55,6 +56,7 @@ from tools import intimate as intimate_tools
 from tools import kd100 as kd100_tools
 from tools import mcd as mcd_tools
 from tools import misc as misc_tools
+from tools import mood_tool
 from tools import netease as netease_tools
 from tools import notion as notion_tools
 from tools import planner as planner_tools
@@ -93,14 +95,31 @@ def _strip_mood_tag(result: RouteResult, cleaned: str) -> None:
             break
 
 
-def _rescue_fake_calls(attachments: list, calls: list[tuple[str, str]]) -> None:
-    """他把工具调用写成了文字（`[!send_meme] 晚安`，见 agent/llm.py FAKE_CALL_RE）。
+def _rescue_fake_calls(attachments: list, calls: list[tuple[str, str]],
+                       mood: mood.Mood | None = None,
+                       save: Callable[[], None] | None = None) -> None:
+    """他把工具调用写成了文字 —— 行形态（`[!send_meme] 晚安`，10-04 她截图）和
+    XML 形态（`<send_meme tag="笨爪开心">`，2026-10-15 她截图），见 agent/llm.py
+    FAKE_CALL_RE / FAKE_XML_RE。
 
-    表情能补就补：名单里有、这轮还没发过、没超一轮两个的上限 —— 她本来就该收到它。
-    别的（假的 remind_myself 之类）**不替他执行**：参数是他随手写的文字，执行错了更糟；
-    只报警，让日志里看得见「他以为留了纸条，其实没有」。
+    能无损转真调用的转：
+    - 表情：名单里有、这轮还没发过、没超一轮两个的上限 —— 她本来就该收到它。
+    - set_mood（2026-10-15 Aru 化配套）：词在名单里就 mood.update + 落盘。
+    别的（假的 remind_myself / send_voice_message 之类）**不替他执行**：
+    参数是他随手写的文字，执行错了更糟（语音条还有语言规矩）；只报警，
+    让日志里看得见「他以为发了，其实没有」。
     """
     for name, arg in calls:
+        if name == "set_mood":
+            word = arg.strip()
+            if mood is not None and word in HER_EMOTIONS:
+                mood.update(word)
+                if save is not None:
+                    save()
+                logger.info("他把 set_mood 写成了文字，替他记下「%s」", word)
+            else:
+                logger.warning("他把 set_mood 写成了文字但没法转（词：%r）—— 已从正文剥掉", word[:40])
+            continue
         tag = arg.strip().strip("\"'“”「」")
         memes = [a for a in attachments if a.get("type") == "meme"]
         if (name == "send_meme" and tag in MEME_TAGS
@@ -503,6 +522,18 @@ class Nox:
             session_id_ref=context.session_id,
         )
         logger.info("长任务工具已注册（立任务走确认卡）")
+
+        # 情绪判断的原生工具（2026-10-15 Aru 化改造，设计见 tools/mood_tool.py）。
+        # 以前是正文文本协议（[mood:xxx] + 正则追堵），现在结构化调用；
+        # NOX_MOOD_TOOL=off 回退纯文本协议（工具下架、MOOD_INSTRUCTION 回来）。
+        # ⚠️ self.mood 在下面才建 —— 传取值函数，同 luckin 的 store_ref 惯例
+        if mood.mood_tool_on():
+            mood_tool.register_all(
+                self.loop, mood_ref=lambda: self.mood, save=self._save_state
+            )
+            logger.info("set_mood 工具已注册（mood 文本标签指令下线，收尾垫片保留）")
+        else:
+            logger.info("NOX_MOOD_TOOL=off：沿用 [mood:xxx] 文本标签协议")
 
         # 启动时取一次核心准则，之后**永不重取**。
         # 不做定时刷新：糖糖明确说了不需要，需要新记忆时他会自己调
@@ -1183,9 +1214,11 @@ class Nox:
         cleaned, meme_tags = intimate_tools.extract_text_tags(cleaned)
         if meme_tags:
             result.attachments.extend({"type": "meme", "tag": t} for t in meme_tags)
-        # 写成文字的工具调用（`[!send_meme] 晚安`）：剥掉，能补的补（2026-10-04 她截图）。语音也剥
+        # 写成文字的工具调用（`[!send_meme] 晚安` / `<send_meme tag="…">`）：
+        # 剥掉，能补的补（2026-10-04 她截图；XML 形态 2026-10-15 她截图）。语音也剥
         cleaned, fake_calls = extract_fake_calls(cleaned)
-        _rescue_fake_calls(result.attachments, fake_calls)
+        _rescue_fake_calls(result.attachments, fake_calls,
+                           mood=self.mood, save=self._save_state)
         # 舞台标签（[softly] [intimacy …]）剥掉 —— 主动消息走的就是这条非流式路（2026-09-29）。
         # 语音模式不剥：那边的语气标签要送 TTS。
         # 🔴 控制标记 [SKIP] [NEXT 60] 留着：speaker / 唤醒链要读，它们自己会剥
@@ -1262,7 +1295,8 @@ class Nox:
                             {"type": "meme", "tag": t} for t in meme_tags
                         )
                     cleaned, fake_calls = extract_fake_calls(cleaned)
-                    _rescue_fake_calls(result.attachments, fake_calls)
+                    _rescue_fake_calls(result.attachments, fake_calls,
+                                       mood=self.mood, save=self._save_state)
                     # 完整正文也剥一遍舞台标签（流里已经被 MoodTagFilter 挡了，
                     # 这里管的是落库 / 进历史那一份 —— 留着会教他下次接着写）
                     if not voice:

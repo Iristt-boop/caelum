@@ -23,6 +23,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from agent.llm import Message, MoodTagFilter, strip_stage_tags  # noqa: E402
 from agent.loop import LoopResult, Usage  # noqa: E402
 from nox import Nox  # noqa: E402
+from personality import mood as mood_mod  # noqa: E402
 from router.intent import Decision, Intent  # noqa: E402
 from router.router import RouteResult  # noqa: E402
 
@@ -85,6 +86,8 @@ def _nox(reply: str) -> Nox:
     n._dynamic = lambda *a, **k: ""                     # type: ignore[method-assign]
     n._flush_dirty = lambda r: None                     # type: ignore[method-assign]
     n.adapter_for = lambda m: None                      # type: ignore[method-assign]
+    n.mood = mood_mod.Mood()          # 假调用 rescue 用（set_mood 转真调用）
+    n._save_state = lambda: None                        # type: ignore[method-assign]
     n.router = SimpleNamespace(handle=lambda *a, **k: RouteResult(
         LoopResult(outcome="answered", text=reply, iterations=1, usage=Usage(),
                    messages=[Message(role="assistant", text=reply)], attachments=[]),

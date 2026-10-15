@@ -26,6 +26,7 @@ from config import LLMConfig
 from data.store import Store
 from fastapi.testclient import TestClient
 from nox import INNER_VOICE_RULE
+from personality.mood import Mood
 from tests.test_api import FakeNox, _frames
 from tests.test_thinking_switch import _nox_with_store
 
@@ -94,15 +95,18 @@ def test_没有心里话_原样放行_半个尖括号也不吞():
     assert th == "" and tx == "在呢 <3 爱你"
 
 
-def test_忘了收口_心里那段当正文补发_不让她一句都看不到():
+def test_忘了收口_整块留在thinking_不漏成明文():
+    """2026-10-15 改的规则：没收口不再当正文补发（那正是「心里话漏成明文」的病），
+    整块留在 thinking 里。见 agent/llm.py InnerVoiceFilter.flush 的注释。"""
     th, tx = _run_filter(["<心里>她要睡了，", "晚安宝贝"])
     assert th == "她要睡了，晚安宝贝"
-    assert tx == "她要睡了，晚安宝贝"
+    assert tx == ""
 
 
 def test_历史里拿掉心里话():
     assert strip_inner_voice("<心里>我想她了。</心里>\n\n在呢") == "在呢"
-    assert strip_inner_voice("<心里>没收口 晚安") == "没收口 晚安"
+    # 没收口：整块按心里话剥掉（2026-10-15 起，原来「只摘标签留内容」= 漏成明文）
+    assert strip_inner_voice("<心里>没收口 晚安") is None
     assert strip_inner_voice("<心里>只想不说</心里>") is None
     assert strip_inner_voice("平常的话") == "平常的话"
 
@@ -156,9 +160,11 @@ def test_loop_工具前后各写一段心里话_都拆出来_历史里一个字�
     assert not [s for s in said if "心里" in s or "别催她" in s or "先看看" in s], said
 
 
-def test_loop_他忘了收口_回复照样到她屏幕上():
+def test_loop_他忘了收口_整块留在thinking_正文不再漏():
+    """2026-10-15 改的规则：没收口整块当心里话，不再补发正文（原行为=漏成明文）。"""
     evs = list(_loop([(None, ["<心里>她要睡了，", "晚安宝贝"], [])]).run_stream("晚安"))
-    assert "晚安宝贝" in "".join(e.text for e in evs if e.type == "text"), "收尾没冲出来，她一句都看不到"
+    assert "她要睡了" in "".join(e.text for e in evs if e.type == "thinking")
+    assert "".join(e.text for e in evs if e.type == "text") == ""
 
 
 def test_非流式也拿掉():
@@ -196,6 +202,8 @@ def _nox(tmp_path, on: bool):
     n._flush_dirty = lambda r: None
     n.adapter_for = lambda m: None
     n._system = ""
+    n.mood = Mood()           # 假调用 rescue 用（set_mood 转真调用）
+    n._save_state = lambda: None
     n.rec = _Rec()
     n.loop = AgentLoop(adapter=n.rec)
     return n

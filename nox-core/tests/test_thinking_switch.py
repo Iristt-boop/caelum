@@ -19,12 +19,17 @@ from agent.llm import Message, Turn, Usage
 from agent.loop import AgentLoop
 from attention.store import AttentionStore
 from nox import Nox
+from personality.mood import Mood
 from tests.test_api_models import ModelFakeNox, _client
 
 
 def _nox_with_store(tmp_path) -> Nox:
     n = Nox.__new__(Nox)
     n.state_store = AttentionStore(tmp_path / "attn.db")
+    # chat/chat_stream 收尾的假调用 rescue 要用（set_mood 转真调用）——
+    # 这里是 __new__ 裸构造，得像 _see/_dynamic 一样补上
+    n.mood = Mood()
+    n._save_state = lambda: None
     return n
 
 

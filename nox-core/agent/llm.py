@@ -300,15 +300,48 @@ CONTROL_TAG_RE = re.compile(r"\[\s*(?:SKIP|PASS|STOP|NEXT|DONE)(?:\s+\d+)?\s*\]"
 #: 形状：行内 `[!名字]` 起到行尾都是它（参数跟在后面）。**语音也剥**：TTS 会把它念出来
 FAKE_CALL_RE = re.compile(r"[ \t]*\[!\s*([A-Za-z_]\w*)\s*\]([^\n]*)")
 
+#: 🔴 假调用第二形态：把调用写成 **XML 标签**（2026-10-15 她截图：
+#:   `<send_meme tag="笨爪开心">`）。原生 tool_use 的参数被他排进了正文 ——
+#:   上面的 FAKE_CALL_RE 只认 `[!名字]` 行形态，XML 形态没有任何处理直接出街。
+#: 尖括号 + 注册过的工具名 = 假调用，跟写法（属性 / 内文）、收没收口无关，
+#: 一律从正文剥掉；能转真调用的转（nox._rescue_fake_calls），不能的只报警。
+FAKE_XML_NAMES = ("send_meme", "send_voice_message", "set_mood", "remind_myself")
+_FAKE_XML_ALT = "|".join(FAKE_XML_NAMES)
+#: 三种形态：自闭合 `<send_meme tag="x"/>`、成对 `<send_meme>开心</send_meme>`、
+#: 光开标签 `<send_meme tag="x">`（她截图这种）。`\b` 防止 `<send_memes>` 被咬成 send_meme
+_FAKE_XML_RE = re.compile(
+    r"<\s*(?P<n>" + _FAKE_XML_ALT + r")\b(?P<a1>[^>]*)/\s*>"
+    r"|<\s*(?P<p>" + _FAKE_XML_ALT + r")\b(?P<a2>[^>]*)>(?P<inner>.*?)<\s*/\s*(?P=p)\s*>"
+    r"|<\s*(?P<o>" + _FAKE_XML_ALT + r")\b(?P<a3>[^>]*)>",
+    re.S | re.I,
+)
+_FAKE_XML_ATTR_RE = re.compile(r'\b(?:tag|mood)\s*=\s*["\']?([^"\'>\s]+)')
+
 
 def extract_fake_calls(text: str | None) -> tuple[str | None, list[tuple[str, str]]]:
-    """把写成文字的工具调用从正文里拿出来：返回 (剥干净的正文, [(工具名, 参数原文)])。"""
-    if not text or "[!" not in text:
+    """把写成文字的工具调用从正文里拿出来：返回 (剥干净的正文, [(工具名, 参数原文)])。
+
+    认两种形态：`[!名字] 参数` 行形态（FAKE_CALL_RE，10-04 起）和
+    XML 标签形态（FAKE_XML_RE，2026-10-15 起）。"""
+    if not text or ("[!" not in text and "<" not in text):
         return text, []
-    calls = [(m.group(1), m.group(2).strip()) for m in FAKE_CALL_RE.finditer(text)]
-    if not calls:
+    calls: list[tuple[str, str]] = []
+    out = text
+    if "<" in out:
+        def _take_xml(m: "re.Match[str]") -> str:
+            name = (m.group("n") or m.group("p") or m.group("o")).lower()
+            attrs = m.group("a1") or m.group("a2") or m.group("a3") or ""
+            a = _FAKE_XML_ATTR_RE.search(attrs)
+            arg = a.group(1) if a else (m.group("inner") or "").strip().split("\n")[0]
+            calls.append((name, arg.strip().strip("\"'“”「」")))
+            return ""
+
+        out = _FAKE_XML_RE.sub(_take_xml, out)
+    if "[!" in out:
+        calls.extend((m.group(1), m.group(2).strip()) for m in FAKE_CALL_RE.finditer(out))
+        out = FAKE_CALL_RE.sub("", out)
+    if len(calls) == 0:
         return text, []
-    out = FAKE_CALL_RE.sub("", text)
     out = re.sub(r"\n{3,}", "\n\n", out).strip()
     return out, calls
 
@@ -433,8 +466,13 @@ def _warn_unknown_blocks(text: str) -> None:
 def strip_inner_voice(text: str | None) -> str | None:
     """整段文本里的心里话拿掉 —— **不进历史**（她 10-06 定的：只给她看，他不记）。
 
-    没收口的开标签只摘标签、留内容：那种时候要说的话多半也被包在里面了，删整段就是吞掉他的回复。
     认 `INNER_ALIASES` 里的任何一种写法（10-12 起开收不必同名）；`<mood>` / `<心情>` 见上面；`<audio>` 只摘标签。
+
+    🔴 **没收口的开标签：从开标签起整块按心里话剥掉**（2026-10-15 定）。
+    原来的做法是「只摘标签、留内容」——结果就是独白整段漏成明文（她截图实锤，
+    正是她报的「把 thinking 标一个 <心里> 然后放明文」）。规矩本就要求心里话
+    放在回复**最开头**、`</心里>` 之后才是要说的话；开标签没收口时后面分不清
+    独白和正文，按约定整块当心里话处理。开标签**之前**的正文永远保留。
     """
     text = normalize_tags(text)
     if text and any(f"<{n}>" in text.lower() for n in MOOD_XML_NAMES):
@@ -445,6 +483,9 @@ def strip_inner_voice(text: str | None) -> str | None:
     if not text or not _INNER_ANY_OPEN_RE.search(text):
         return text
     rest, _ = split_inner_blocks(text)
+    m = _INNER_ANY_OPEN_RE.search(rest)
+    if m:
+        rest = rest[: m.start()]
     out = _INNER_ANY_CLOSE_RE.sub("", _INNER_ANY_OPEN_RE.sub("", rest)).strip()
     return out or None
 
@@ -473,8 +514,10 @@ class InnerVoiceFilter:
 
     - 标签被切成好几片到达也认得（半截留在缓冲里等下一片）
     - 心里话收口之后的空行吃掉，不然第一个气泡以空行开头
-    - 🔴 **没收口就结束**（他忘了写 `</心里>`）：`flush` 把心里那段再当正文补发一次 ——
-      宁可 thinking 块和正文重复，也不能让她一句回复都看不到
+    - 🔴 **没收口就结束**（他忘了写 `</心里>`）：整块留在 thinking 里，
+      **不再补发正文**（2026-10-15 改）。原来的做法是当正文补发一次
+      「宁可 thinking 块和正文重复，也不能让她一句回复都看不到」——
+      结果就是独白漏成明文（她截图实锤，正是这次改造要治的病）。
     每次调模型新开一个（工具循环里每一轮回复都可能以心里话开头）。
     """
 
@@ -538,9 +581,8 @@ class InnerVoiceFilter:
         out: list[tuple[str, str]] = []
         rest, self.buf = self.buf, ""
         self._emit(out, rest)
-        if self.inner and self.inner_text.strip():
-            self.inner = False
-            out.append(("text", self.inner_text.strip()))
+        # 没收口的心里话：整块留在 thinking（已在上面流式发过），不再补发正文。
+        # 见类 docstring —— 2026-10-15 从「当正文补发」改过来
         self.inner, self.inner_text, self.lstrip = False, "", True
         return out
 
@@ -578,6 +620,10 @@ class MoodTagFilter:
     _MAX_MOOD_XML = 2000
     #: 写成文字的表情标记前缀（见 feed 里那段）
     _MEME_LABEL = "[表情包"
+    #: XML 假调用的开标签吞掉之后，最多等这么多字收口（</名字>）——
+    #: 内文形态 `<send_meme>开心</send_meme>` 的内文很短；等不到就放弃，
+    #: 后面是他的正文，不能陪葬（收尾 extract 会按开标签规则兜历史）
+    _MAX_FAKE_XML_WAIT = 120
 
     def __init__(self, strip_stage: bool = False, contract_markers: tuple[str, ...] = ()) -> None:
         self._buf = ""        # '[' 开头的缓冲
@@ -599,11 +645,32 @@ class MoodTagFilter:
         self._hold = ""
         #: 正在吞一行假工具调用（`[!send_meme] 晚安`，见 FAKE_CALL_RE），吞到换行为止
         self._eat_line = False
+        #: 正在吞 XML 假调用的内文，等 `</名字>` 收口（`<send_meme tag="…">` 开标签
+        #: 已吞、没自闭合时进入；见 FAKE_XML_RE）
+        self._fake_close: str | None = None
+        self._fake_buf = 0
+
+    @staticmethod
+    def _looks_like_fake_xml(low: str) -> bool:
+        """尖括号缓冲去掉 '<' 后的小写正文，是不是（可能是）XML 假调用的开标签。"""
+        if not low:
+            return False
+        return any(n.startswith(low) or low.startswith(n) for n in FAKE_XML_NAMES)
 
     def feed(self, chunk: str) -> str:
         """吃进增量，吐出可以安全显示的部分。"""
         out: list[str] = []
         for ch in chunk:
+            # ── 正在吞 XML 假调用的内文：等 </名字> 收口
+            if self._fake_close is not None:
+                self._fake_buf += ch
+                if self._fake_buf.endswith(self._fake_close):
+                    self._fake_close, self._fake_buf = None, 0
+                elif self._fake_buf > self._MAX_FAKE_XML_WAIT and ">" in self._fake_buf:
+                    # 等不到收口（他没收口就接着说话）：放弃等待，恢复放行。
+                    # 已吞的这段是内文/独白，收尾 extract 会把开标签从历史里剥掉
+                    self._fake_close, self._fake_buf = None, 0
+                continue
             if self._eat_line:
                 if ch == "\n":
                     self._eat_line = False
@@ -619,11 +686,16 @@ class MoodTagFilter:
                     continue
                 self._hold = ""                     # 舞台标签：吞掉，这个字照常处理
 
-            # ── '<' / '【' 缓冲：只看是不是情绪标记
+            # ── '<' / '【' 缓冲：情绪标记（含 <[mood:]> 嵌套）+ XML 假调用开标签
             if self._abuf:
                 self._abuf += ch
                 body = self._abuf[1:].lstrip().lower()
-                xml = next((n for n in MOOD_XML_NAMES if body.startswith(n + ">")), None)
+                # <[mood:…]> 嵌套括号变体（2026-10-15 她截图实锤）：'<' 后跟 '['、
+                # ']>' 收口 —— 单字符的 _OPEN/_CLOSE 在这里必然失配。判定时摘掉
+                # 那层 '['，闭合条件相应变成 endswith(']>')
+                nested = body.startswith("[")
+                judge = body[1:].lstrip() if nested else body
+                xml = next((n for n in MOOD_XML_NAMES if judge.startswith(n + ">")), None)
                 if xml:
                     # `<mood>…</mood>`：短的是情绪标记、长的是心里话借了名字 —— 两种她都不该看见。
                     # 攒到收口整个吞掉（收尾的 strip_inner_voice 负责把短的换成 [mood:x] 更新情绪）
@@ -633,12 +705,32 @@ class MoodTagFilter:
                         out.append(self._abuf)    # 攒太长还没收口：不是我们想的那个，还给她
                         self._abuf = ""
                     continue
-                if any(body.startswith(k) for k in self._MOOD_KEYS):
-                    if ch in ">】":
+                if any(judge.startswith(k) for k in self._MOOD_KEYS):
+                    # 确认是情绪标记，吃掉直到闭合。单层收口是 '>' / '】'
+                    # （`<mood:平静>` 10-11 修过的那种），嵌套是 ']>'
+                    if (not nested and ch in ">】") or (nested and self._abuf.endswith("]>")):
                         self._abuf = ""           # 情绪标记：整个吞掉
                     continue
-                if ch not in (">", "】", chr(10)) and any(k.startswith(body) for k in self._MOOD_KEYS):
+                fake = self._looks_like_fake_xml(body)
+                may_continue = (
+                    any(k.startswith(judge) for k in self._MOOD_KEYS)
+                    or (nested and not judge)
+                    or (fake and ch not in (">", chr(10)))
+                )
+                if may_continue:
                     continue                      # 还可能是，继续攒
+                if ch == ">" and fake:
+                    # XML 假调用的开标签收口了（`<send_meme tag="笨爪开心">`）：
+                    # 整个吞掉，不让她看见。没自闭合就等 </名字>，内文也是参数
+                    opener = self._abuf[1:].rstrip()
+                    self_closed = opener.endswith("/")
+                    name = opener.rstrip("/").strip().split(" ", 1)[0].lower()
+                    self._abuf = ""
+                    if name in FAKE_XML_NAMES and not self_closed:
+                        self._fake_close = "</" + name + ">"
+                        self._fake_buf = 0
+                    self._line_start = ch == chr(10)
+                    continue
                 out.append(self._abuf)            # 不是：原样放行
                 self._abuf = ""
                 self._line_start = ch == chr(10)
@@ -737,6 +829,9 @@ class MoodTagFilter:
         parts: list[str] = []
         self._hold = ""       # 流到头了，后面没有 `(` —— 舞台标签，吞掉
         self._eat_line = False
+        if self._fake_close is not None:
+            # 等假调用收口等到流结束：整段吞掉（历史那侧由收尾 extract 兜底）
+            self._fake_close, self._fake_buf = None, 0
         if self._line is not None:
             resolved = self._resolve_line()
             if resolved:
@@ -744,10 +839,14 @@ class MoodTagFilter:
             self._line = None
         if self._abuf:
             body = self._abuf[1:].lstrip().lower()
-            xml = next((n for n in MOOD_XML_NAMES if body.startswith(n + ">")), None)
+            nested = body.startswith("[")
+            core = body[1:].lstrip() if nested else body
+            xml = next((n for n in MOOD_XML_NAMES if core.startswith(n + ">")), None)
             if xml:
                 parts.append(self._abuf[len(xml) + 2:])   # 没收口：摘标签留内容（同 strip_inner_voice）
-            elif not any(body.startswith(k) for k in self._MOOD_KEYS):
+            elif nested or self._looks_like_fake_xml(body):
+                pass   # <[mood:… / 假调用开标签没收口：情绪标记与假调用家族，吞掉不漏
+            elif not any(core.startswith(k) for k in self._MOOD_KEYS):
                 parts.append(self._abuf)          # 半截的普通尖括号：还给她
             self._abuf = ""
         if self._buf:

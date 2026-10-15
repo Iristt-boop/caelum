@@ -128,9 +128,17 @@ def test_response_matches_her_state():
     assert "宠" in spoiled
 
 
-def test_render_always_asks_for_mood_tag():
+def test_render_按开关决定要不要教写mood标签(monkeypatch):
+    """2026-10-15 Aru 化：默认走 set_mood 原生工具，教写 [mood:xxx] 的指令下线；
+    NOX_MOOD_TOOL=off 回退文本协议时指令回来。两个实现（render / MoodProvider.render）
+    对称切换，tests/test_mood_provider.py 的逐字基线比的是这两个，不破约。"""
+    monkeypatch.setenv("NOX_MOOD_TOOL", "off")
     out = render(Mood(), "随便说点什么", now=datetime(2026, 7, 28, 15, 0))
     assert "[mood:" in out
+
+    monkeypatch.setenv("NOX_MOOD_TOOL", "on")
+    out = render(Mood(), "随便说点什么", now=datetime(2026, 7, 28, 15, 0))
+    assert "[mood:" not in out, "工具在菜单里，教写标签的指令必须下线 —— 它是标签漏明文的源头"
 
 
 # ---------------------------------------------------- 标记解析
