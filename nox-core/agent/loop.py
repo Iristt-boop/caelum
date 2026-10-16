@@ -106,6 +106,9 @@ class LoopResult:
     #: 拿它去 `registry.invalidate()`，否则下一轮递给他的还是写之前那份快照。
     #: 见 `tools/context.py` 里 `wrote()` 的完整说明。
     dirty_providers: list[str] = field(default_factory=list)
+    #: 分块账本（减重设计稿第一节，2026-10-16）：这一轮的上下文四块各多重 + 每次调模型一行。
+    #: 见 `measure_ledger`。None = 没量（老调用方 / 测试替身）
+    ledger: dict[str, Any] | None = None
 
     @property
     def ok(self) -> bool:
@@ -204,6 +207,7 @@ class AgentLoop:
         started = time.monotonic()
         base = len(history or [])
         shape = cache_shape(system, self._offered(offer), history)
+        blocks = measure_ledger(system, dynamic_system, self._offered(offer), history, user_text)
         result = self._run_inner(
             user_text, ctx, system=system, dynamic_system=dynamic_system,
             history=history, images=images, adapter=adapter, depth=depth,
@@ -213,6 +217,7 @@ class AgentLoop:
         self.used_packs.note(session_id, _tools_used(result.messages, base))
         result.attachments = ctx.attachments
         result.dirty_providers = sorted(ctx.dirty)
+        result.ledger = {"blocks": blocks, "calls": list(ctx.llm_calls)}
         log_turn(
             result,
             model=adapter_name(adapter or self.adapter),
@@ -221,6 +226,7 @@ class AgentLoop:
             stream=False,
             shape=shape,
         )
+        log_ledger(result.ledger)
         return result
 
     def _run_inner(
@@ -271,6 +277,7 @@ class AgentLoop:
             _accumulate(total, turn.usage)
             # 非流式一般不会有心里话（规矩只在聊天流里加），万一写了也别漏进主动消息和历史
             turn.text = strip_inner_voice(turn.text)
+            ctx.llm_calls.append(_call_record(iterations, turn))
 
             if turn.stop_reason == "error":
                 return LoopResult("error", None, iterations, total, messages, turn.error)
@@ -357,6 +364,7 @@ class AgentLoop:
         base = len(history or [])
         model = adapter_name(adapter or self.adapter)
         shape = cache_shape(system, self._offered(offer), history)
+        blocks = measure_ledger(system, dynamic_system, self._offered(offer), history, user_text)
         finished = False
         try:
             for ev in self._stream_inner(
@@ -373,12 +381,14 @@ class AgentLoop:
                         self.used_packs.note(session_id, _tools_used(result.messages, base))
                         result.attachments = ctx.attachments
                         result.dirty_providers = sorted(ctx.dirty)
+                        result.ledger = {"blocks": blocks, "calls": list(ctx.llm_calls)}
                         finished = True
                         log_turn(
                             result, model=model,
                             elapsed_s=time.monotonic() - started,
                             history_len=base, stream=True, shape=shape,
                         )
+                        log_ledger(result.ledger)
                 yield ev
         finally:
             # 🔴 **走不到 done 的那条路也要留痕。**
@@ -527,6 +537,7 @@ class AgentLoop:
             # 心里话只给她看，**不进历史**（她 10-06：「不记，只给你看」）—— 下面所有 append / _done 都读 turn.text
             turn.text = strip_inner_voice(turn.text)
             _accumulate(total, turn.usage)
+            ctx.llm_calls.append(_call_record(iterations, turn))
 
             if turn.stop_reason in ("error", "refusal", "max_tokens"):
                 yield from drain()
@@ -805,6 +816,70 @@ def _tools_used(messages: list[Message], history_len: int) -> list[str]:
         for call in msg.tool_calls:
             names.append(f"{call.name}✗" if call.id in failed else call.name)
     return names
+
+
+def _call_record(n: int, turn: Turn) -> dict[str, Any]:
+    """账本里「一次调模型」那一行。had_text = 这次回复里有没有对她说的正文（心里话已剥）——
+    减重第二步要靠它判断「调工具的时候话是不是已经说完了」"""
+    u = turn.usage or Usage()
+    return {
+        "n": n,
+        "in": u.input_tokens, "cached": u.cache_read_tokens, "out": u.output_tokens,
+        "tools": [c.name for c in (turn.tool_calls or [])],
+        "had_text": bool((turn.text or "").strip()),
+    }
+
+
+def _block(text: str) -> dict[str, int]:
+    from context.token_budget import estimate_text_tokens
+    return {"chars": len(text), "tokens": estimate_text_tokens(text)}
+
+
+def measure_ledger(
+    system: str | None,
+    dynamic_system: str | None,
+    tools: list[Any],
+    history: list[Message] | None,
+    user_text: str,
+) -> dict[str, dict[str, int]]:
+    """这一轮发给模型的上下文分四块各多重（减重设计稿第一节，2026-10-16）。
+
+    双口径：chars + 估算 tokens（`estimate_text_tokens`，CJK×0.6，与压缩器同口径 —— 和真实分词有 ±20%，
+    看的是**块和块之间的比例**，总数以 adapter 回的 usage 为准）。
+    工具块照 `cache_shape` 的序列化（name + description + parameters）。"""
+    specs = [getattr(t, "spec", t) for t in tools]
+    tool_text = json.dumps(
+        [(getattr(s, "name", ""), getattr(s, "description", ""), getattr(s, "parameters", None)) for s in specs],
+        ensure_ascii=False, default=str)
+    hist_parts: list[str] = []
+    for m in history or []:
+        hist_parts.append(m.text or "")
+        for c in m.tool_calls:
+            hist_parts.append(json.dumps(c.arguments, ensure_ascii=False, default=str))
+        for r in m.tool_results:
+            hist_parts.append(str(getattr(r, "content", "") or ""))
+    return {
+        "prefix": _block(system or ""),
+        "tools": {**_block(tool_text), "count": len(specs)},
+        "dynamic": _block(dynamic_system or ""),
+        "history": {**_block("\n".join(hist_parts)), "messages": len(history or [])},
+        "user": _block(user_text or ""),
+    }
+
+
+def log_ledger(ledger: dict[str, Any] | None) -> None:
+    """账本一行（journalctl 里按块拆账就靠它）。估算 token，看比例用"""
+    if not ledger:
+        return
+    b = ledger.get("blocks") or {}
+    calls = ledger.get("calls") or []
+    logger.info(
+        "ledger | prefix=%d tools=%d/%d dyn=%d hist=%d/%d calls=%s",
+        b.get("prefix", {}).get("tokens", 0), b.get("tools", {}).get("tokens", 0), b.get("tools", {}).get("count", 0),
+        b.get("dynamic", {}).get("tokens", 0), b.get("history", {}).get("tokens", 0),
+        b.get("history", {}).get("messages", 0),
+        ";".join(f"{c['n']}:in{c['in']}/{'T' if c['had_text'] else '-'}/{','.join(c['tools']) or '-'}" for c in calls) or "-",
+    )
 
 
 def cache_shape(system: str | None, tools: list[Any], history: list[Message] | None) -> str:

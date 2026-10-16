@@ -270,6 +270,12 @@ def run_once(*, loop: Any, system: str | None, dynamic: str, now: datetime,
     except Exception as exc:  # noqa: BLE001
         logger.exception("他自己的时间这次挂了")
         err = f"{type(exc).__name__}: {exc}"
+    # 记账（减重第一节，10-16）：他自己的时间走 run_stream，`meter.Metered` 只包 complete，
+    # 所以这一路的用量以前哪本账里都没有。单独记成 own_time，不混进 chat
+    if result is not None and getattr(result, "usage", None) is not None:
+        from agent import meter
+        model = getattr(getattr(getattr(loop, "adapter", None), "cfg", None), "model", "") or ""
+        meter.record("own_time", model, result.usage)
     what, share = _parse(getattr(result, "text", "") or "")
     ok = bool(result is not None and result.ok and not err)
     if not ok and not err:

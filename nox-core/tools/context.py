@@ -58,6 +58,10 @@ class ToolContext:
 
     attachments: list[dict[str, Any]] = field(default_factory=list)
 
+    #: 这一轮每次调模型一行（减重账本，2026-10-16，见 agent/loop.py `_call_record`）。
+    #: 放这里是因为它和 attachments 一样按轮隔离，loop 两条路径都现成拿得到
+    llm_calls: list[dict[str, Any]] = field(default_factory=list)
+
     #: 这一轮里**写过的状态** → 管着它的 Context Provider 名字。
     #: 由工具经 `wrote()` 登记，调用方（`nox.py`）在轮次结束时拿去清缓存。
     dirty: set[str] = field(default_factory=set)

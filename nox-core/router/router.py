@@ -98,6 +98,11 @@ class RouteResult:
         """这一轮里**写过**的状态 → 管着它的 Provider 名字（见 tools/context.py）。"""
         return self.result.dirty_providers
 
+    @property
+    def ledger(self) -> dict[str, Any] | None:
+        """分块账本（减重第一节，10-16）。light 路径不走 loop，没有就是 None。"""
+        return getattr(self.result, "ledger", None)
+
 
 class Router:
     def __init__(

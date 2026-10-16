@@ -466,6 +466,8 @@ class ChatResponse(BaseModel):
     # 工具产生的附带产物，目前只有「要发到聊天里的图片」。
     # bridge 收到后转成前端认识的 image 事件。
     attachments: list[dict] = []
+    #: 分块账本（减重第一节，10-16）：四块各多重 + 每次调模型一行。light 路径 / 测试替身没有就是 None
+    ledger: dict | None = None
 
 
 class Sessions:
@@ -2158,6 +2160,16 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
         tasks.sort(key=lambda x: -len(x["stack"]))
         return {"count": len(tasks), "tasks": tasks}
 
+    def _keep_ledger(result: Any) -> dict | None:
+        """把这一轮的账本挂到 core 上给 /health 看，原样返回给 done 帧 / ChatResponse。"""
+        led = getattr(result, "ledger", None)
+        if led is not None:
+            try:
+                core.last_ledger = led
+            except Exception:  # noqa: BLE001 —— 测试替身可能不让设属性；账本是旁路，不许影响对话
+                logger.debug("挂 last_ledger 失败", exc_info=True)
+        return led
+
     @app.get("/health")
     def health() -> dict:
         return {
@@ -2184,6 +2196,8 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
             # （`deploy-remote.sh` 不过就自动回滚），而一条陈旧的话题池
             # 不该把一次正常发布回滚掉。两件事，两个字段。
             "background_stale": heartbeat.stale_jobs(),
+            # 最近一轮的分块账本（减重第一节，10-16）：前缀 / 工具 / 动态 / 历史各多重 + 每次调模型一行
+            "last_turn": getattr(core, "last_ledger", None),
         }
 
     @app.get("/api/nox/state")
@@ -3878,6 +3892,7 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
             cache_write_tokens=u.cache_write_tokens,
             model=core.model_name(req.model),
             attachments=result.attachments,
+            ledger=_keep_ledger(result),
         )
 
     @app.post("/chat/stream")
@@ -3985,6 +4000,8 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
                 # ⚠️ 2026-08-04 之前这里没有 —— bridge 侧的工具展示逻辑早就
                 # 写好等着了，但流式 done 永远拿不到 tools_used，前端就一直空白。
                 "tools_used": _tools_this_turn(final.messages, history),
+                # 分块账本（减重第一节）：bridge 不认识也不碍事，前端 / 排查直接看
+                "ledger": _keep_ledger(final),
             }
             if not final.ok:
                 payload["message"] = _OUTCOME_TEXT.get(final.outcome, _OUTCOME_TEXT["error"])
