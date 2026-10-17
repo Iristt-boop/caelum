@@ -84,7 +84,7 @@ def _sign(secret: str, parts: list[str]) -> str:
     return hmac.new(secret.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).hexdigest()
 
 
-def read_secret(env: dict[str, str] | None = None) -> str | None:
+def read_secret(env: dict[str, str] | None = None, var: str = "CAELUM_LINK_SECRET") -> str | None:
     """读密钥。
 
     🔴 **没配就返回 None，让调用方拒绝连接。**
@@ -92,7 +92,7 @@ def read_secret(env: dict[str, str] | None = None) -> str | None:
     敞开给任何连上来的人，而且**不会有任何报错**。
     """
     src = os.environ if env is None else env
-    secret = src.get("CAELUM_LINK_SECRET")
+    secret = src.get(var)
     if not secret or len(secret) < MIN_SECRET_LENGTH:
         return None
     return secret
@@ -117,8 +117,13 @@ class LocalLink:
     """
 
     def __init__(self, name: str = "computer", world: Any = None,
-                 dejection: Any = None) -> None:
+                 dejection: Any = None, *, secret_env: str = "CAELUM_LINK_SECRET",
+                 whose: str = "她的电脑") -> None:
         self.name = name
+        #: 2026-10-17 Nox 的电脑（设计稿 3.2）：第二条链路**独立密钥、独立路由**（/agent/desk），
+        #: 和她电脑那条互不顶掉。`whose` 只用在说给他听的话里（「她的电脑」/「我的电脑」）
+        self.secret_env = secret_env
+        self.whose = whose
         #: World Model。**可以为 None** —— 那样只是不记，链路照常
         self.world = world
         #: 低落（2026-08-27）。执行失败 → 「想帮但帮不上」。
@@ -268,9 +273,9 @@ class LocalLink:
         ⚠️ 整个函数**不抛** —— 它跑在 FastAPI 的连接处理里，
         抛出去只会在日志里留一条栈，而她那边只看到连接莫名断掉。
         """
-        secret = read_secret()
+        secret = read_secret(var=self.secret_env)
         if secret is None:
-            logger.error("没配 CAELUM_LINK_SECRET，拒绝所有本地链路连接")
+            logger.error("没配 %s，拒绝所有 %s 链路连接", self.secret_env, self.name)
             await _safe_close(ws)
             return
 
@@ -339,7 +344,7 @@ class LocalLink:
                 self._up_since = None
             # 🔴 链路断了要把等着的请求全部叫醒，否则它们会挂到超时。
             # 更要紧的是：调用方会以为"还在执行"，而其实那边已经没了
-            self._fail_all("她的电脑断开了")
+            self._fail_all(f"{self.whose}断开了")
 
     async def _handshake(self, ws: Any, secret: str) -> str | None:
         """验 PC 的身份，并证明自己是 Nox Core。返回 deviceId，失败返回 None。"""
@@ -627,7 +632,7 @@ class LocalLink:
         """
         loop = self._loop
         if loop is None:
-            return CallResult(False, error="她的电脑现在没连上")
+            return CallResult(False, error=f"{self.whose}现在没连上")
         try:
             running = asyncio.get_running_loop()
         except RuntimeError:
@@ -660,7 +665,7 @@ class LocalLink:
         ws = self._ws
         if ws is None:
             # 不是错误，是常态 —— 她的电脑关着而已
-            return CallResult(False, error="她的电脑现在没连上")
+            return CallResult(False, error=f"{self.whose}现在没连上")
 
         mid = self._next_id
         self._next_id += 1

@@ -69,6 +69,9 @@ PACKS: tuple[Pack, ...] = (
     # Creations（10-11）：她开口要才做（v1 不自主生成），平常聊天不背这五个
     Pack("studio", names=("make_creation", "edit_creation", "send_creation", "list_creations", "delete_creation"),
          triggers=r"做个|做一个|帮我做|弄个|小游戏|小工具|小玩意|creation|studio|五子棋|转盘|那个游戏"),
+    # Nox 的电脑 v0（10-17）：他自己的浏览器。她让他去查 / 看 / 逛 / 给了网址才挂
+    Pack("desk", ("desk_",),
+         triggers=r"https?://|网址|链接|网页|上网|去查|查查|查一下|搜一下|搜搜|去看看|帮我看看|逛逛|你的电脑|自己的电脑"),
 )
 
 _TRIGGERS = {p.name: re.compile(p.triggers, re.I) for p in PACKS if p.triggers}

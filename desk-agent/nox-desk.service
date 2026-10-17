@@ -1,0 +1,24 @@
+[Unit]
+Description=Nox 的电脑 desk-agent（浏览器那只手，外连 Core /agent/desk）
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=desk
+Group=desk
+Environment=DESK_URL=ws://192.168.1.52:8110/agent/desk
+Environment=DESK_SECRET_FILE=/etc/nox-desk/secret
+Environment=DESK_PROFILE=/var/lib/nox-desk/profile
+Environment=PLAYWRIGHT_BROWSERS_PATH=/opt/nox-desk/browsers
+ExecStart=/opt/nox-desk/.venv/bin/python /opt/nox-desk/agent.py
+Restart=always
+RestartSec=5
+# 浏览器只需要这些；不碰 /root、不碰别的
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/nox-desk
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

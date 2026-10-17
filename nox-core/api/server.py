@@ -1236,6 +1236,14 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
     from tools import config_propose as config_propose_tools
     config_propose_tools.register_all(core.loop, core_ref=lambda: core, session_id_ref=context.session_id)
 
+    #: Nox 的电脑 v0（10-17，设计稿 Caelum-Nox的电脑-设计稿-2026-10-14.md）：N150 上 VM nox-desk 里的浏览器。
+    #: **独立链路**（自己的密钥 CAELUM_DESK_SECRET、自己的路由 /agent/desk），和她电脑那条互不顶掉。
+    #: 两件工具都在按需工具包 desk 里，平常聊天不背；登记在这一串后面，前面的位置一个不动
+    from tools import desk as desk_tools
+    desk_hand = LocalLink(name="desk", secret_env="CAELUM_DESK_SECRET", whose="我的电脑")
+    core.desk_hand = desk_hand
+    desk_tools.register_all(core.loop, desk_hand)
+
     # 待确认单（2026-09-06）。**独立的库**，和 attention/world/topics 平级。
     #
     # 不并进 world.db：World Model 的契约是「Observation 冻结只追加、永不改写」，
@@ -2132,6 +2140,18 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
     else:
         logger.info("没配 CAELUM_LINK_SECRET，本地执行端不启用")
 
+    #: Nox 的电脑（10-17）。同上：没配密钥就不开这条路由
+    if read_secret(var="CAELUM_DESK_SECRET") is not None:
+        @app.websocket("/agent/desk")
+        async def agent_desk(ws: WebSocket) -> None:
+            """N150 上那台 VM 里的 desk-agent 连上来。认证在 LocalLink 里做（独立密钥）。"""
+            await ws.accept()
+            await desk_hand.serve(ws)
+
+        logger.info("Nox 的电脑已启用：ws /agent/desk")
+    else:
+        logger.info("没配 CAELUM_DESK_SECRET，Nox 的电脑不启用")
+
     @app.get("/debug/tasks")
     async def debug_tasks() -> dict:
         """卡死诊断（2026-09-19）：列出所有 asyncio 任务悬在哪里。
@@ -2184,6 +2204,11 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
             "local_hand": (
                 {"ready": local_hand.is_ready, "device": local_hand.device_id}
                 if read_secret() is not None else None
+            ),
+            # 我自己的电脑（N150 上的 VM，10-17）。没配就是 None
+            "desk": (
+                {"ready": desk_hand.is_ready, "device": desk_hand.device_id}
+                if read_secret(var="CAELUM_DESK_SECRET") is not None else None
             ),
             # 没开就是 None，看一眼就知道这套东西在不在跑
             "attention": attention.snapshot() if attention is not None else None,
