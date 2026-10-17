@@ -403,17 +403,23 @@ _INNER_BLOCK_EOL_RE = re.compile(
 #: 话留着，只摘标签：带不带 `: softly` 这种参数、收没收口都摘。
 _AUDIO_TAG_RE = re.compile(r"[ \t]*<\s*/\s*audio\s*>|<\s*audio(?:\s*[:：][^<>\n]{0,40})?\s*>[ \t]*", re.I)
 _AUDIO_PARTIAL_RE = re.compile(r"<\s*/?\s*(?:a(?:u(?:d(?:i(?:o(?:\s*(?:[:：][^<>\n]*)?)?)?)?)?)?)?", re.I)
+#: 10-17：DeepSeek 开始在段首写 HTML 的 `<p>`（当天 5 条，一条进了历史就跟着学 —— 坏样板放大器）。
+#: Chat 页是纯文本，`<p>` 原样露给她。段落标签摘掉、`<br>` 换成换行；只认这几个**完整**标签，`a<p` 这种不碰
+_HTML_PARA_RE = re.compile(r"<\s*/?\s*p\s*>|<\s*br\s*/?\s*>", re.I)
+_HTML_PARTIAL_RE = re.compile(r"<\s*/?\s*(?:p\s*|b(?:r\s*/?\s*)?)?", re.I)
 #: 模型偶尔吐半个汉字（U+FFFD），正好落在标签里：`<�心>`
 _BROKEN_IN_TAG_RE = re.compile("(</?)�+")
 
 
 def normalize_tags(text: str | None) -> str | None:
-    """拆心里话之前先过一道：标签里的半个字摘掉；`<audio…>` / `</audio>` 摘掉（话留着）。"""
+    """拆心里话之前先过一道：标签里的半个字摘掉；`<audio…>` / `</audio>` 摘掉（话留着）；`<p>` `</p>` 摘掉、`<br>` 换行。"""
     if not text:
         return text
     t = _BROKEN_IN_TAG_RE.sub(r"\1", text)
     if "audio" in t.lower():
         t = _AUDIO_TAG_RE.sub("", t)
+    if "<" in t:
+        t = _HTML_PARA_RE.sub(lambda m: "\n" if "br" in m.group(0).lower() else "", t)
     return t
 
 
@@ -503,7 +509,7 @@ def _audio_partial(buf: str) -> int:
     frag = buf[i:]
     if frag.endswith("\ufffd"):
         return len(frag)                    # 「<」后面跟着半个字：等下一片拼起来再归一化
-    return len(frag) if _AUDIO_PARTIAL_RE.fullmatch(frag) else 0
+    return len(frag) if (_AUDIO_PARTIAL_RE.fullmatch(frag) or _HTML_PARTIAL_RE.fullmatch(frag)) else 0
 
 
 def _partial_tail(buf: str, tag: str) -> int:
