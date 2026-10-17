@@ -101,6 +101,55 @@ def test_skip和blocked的摘要不一样():
     assert "60 分钟" in b["summary"]
 
 
+def _spoke_rows(at, said, session="b" * 32):
+    """主动开口落库的真形状：系统提示 + 他的回复，同一个 created_at、同一个会话。"""
+    return [msg(session, "user", "（系统提示：不是她在跟你说话。现在是 20:00。", at),
+            msg(session, "assistant", said, at)]
+
+
+def test_开了口的惦记_摘要是他那次说的话():
+    """她 10-17：「他忽然想起你」看不出想了什么 —— 显示他说了什么。"""
+    led = CareLedger()
+    led.record(source="random", decision=SPEAK, now=T20)
+    rows = _spoke_rows(T20 + timedelta(seconds=1), "雨下得更密了。|||歌放着，人没来|||第三段")
+    e = [x for x in build_day(DAY, ledger=led, store=FakeStore(rows))["events"] if x["type"] == "care"][0]
+    assert e["summary"] == "雨下得更密了。 歌放着，人没来"
+    assert e["metadata"]["said"] is True
+
+
+def test_开了口的惦记_一次开口拆成两条回复也都算():
+    led = CareLedger()
+    led.record(source="random", decision=SPEAK, now=T20)
+    rows = _spoke_rows(T20, "碗刷完了就过来。") + [msg("b" * 32, "assistant", "我等着。", T20)]
+    e = [x for x in build_day(DAY, ledger=led, store=FakeStore(rows))["events"] if x["type"] == "care"][0]
+    assert e["summary"] == "碗刷完了就过来。 我等着。"
+
+
+def test_开了口的惦记_对不上就保留原摘要_没开口的不配话():
+    led = CareLedger()
+    led.record(source="random", decision=SPEAK, now=T20)
+    led.record(source="random", decision=SKIP, now=T20 + timedelta(minutes=30))
+    # 隔了 10 分钟的开口不是这一次的；她自己说的话（不是系统提示）也不算
+    rows = (_spoke_rows(T20 + timedelta(minutes=10), "别的事")
+            + [msg("c" * 32, "user", "在吗", T20 + timedelta(seconds=30)),
+               msg("c" * 32, "assistant", "她那段里我回的", T20 + timedelta(seconds=30)),
+               msg("b" * 32, "user", "在吗", T20 + timedelta(minutes=30)),
+               msg("b" * 32, "assistant", "在", T20 + timedelta(minutes=30))])
+    care = [x for x in build_day(DAY, ledger=led, store=FakeStore(rows))["events"] if x["type"] == "care"]
+    assert care[0]["summary"] == "他忽然想起你"
+    assert "said" not in care[0]["metadata"]
+    assert "没什么具体的可说" in care[1]["summary"]
+
+
+def test_开了口的惦记_两次挨着_各配各的():
+    led = CareLedger()
+    led.record(source="random", decision=SPEAK, now=T20)
+    led.record(source="time", decision=SPEAK, now=T20 + timedelta(seconds=90))
+    rows = _spoke_rows(T20, "第一次") + _spoke_rows(T20 + timedelta(seconds=90), "第二次")
+    care = [x for x in build_day(DAY, ledger=led, store=FakeStore(rows))["events"] if x["type"] == "care"]
+    assert [c["summary"] for c in care] == ["第一次", "第二次"]
+
+
 def test_别的日期的账本不算进来():
     led = CareLedger()
     led.record(source="random", decision=SPEAK, now=T20)

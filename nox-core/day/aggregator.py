@@ -264,6 +264,55 @@ def _his_words(text: str | None) -> str:
     return out if len(out) <= HIS_WORDS_MAX else out[:HIS_WORDS_MAX].rstrip() + "…"
 
 
+#: 惦记那条账本记的时刻 和 那次开口落库的时刻 最多差多久还算同一件事。
+#: 线上两边同一秒落（deliver 完才记账），给两分钟余量
+SPOKEN_MATCH_S = 120
+
+
+def _attach_spoken(events: list[dict], rows: list[dict]) -> None:
+    """开了口的惦记，摘要换成**他那次说了什么**（她 10-17：「他忽然想起你」一样的话看不出想了什么）。
+
+    账本不存 message_id（deliver 只回 True），所以按时间对：主动开口落库的形状是
+    一条系统提示（role=user）+ 紧跟着他的回复，**同一个 created_at、同一个会话**。
+    取离账本时刻最近、`SPOKEN_MATCH_S` 内的那一组。对不上就保留原来的摘要，不编。
+    """
+    groups: dict[tuple, dict] = {}
+    for r in rows or []:
+        key = (r.get("session_id"), r.get("created_at"))
+        g = groups.setdefault(key, {"sys": False, "his": []})
+        if r.get("role") == "user" and _is_system_injected(r.get("text") or ""):
+            g["sys"] = True
+        elif r.get("role") == "assistant":
+            g["his"].append(r.get("text") or "")
+    spoken = []
+    for (_, at_raw), g in groups.items():
+        if not g["sys"] or not g["his"]:
+            continue
+        try:
+            at = datetime.fromisoformat(at_raw)
+        except (ValueError, TypeError):
+            continue
+        words = _his_words("|||".join(g["his"]))
+        if words:
+            spoken.append((at, words))
+    if not spoken:
+        return
+    used: set[int] = set()
+    for e in events:
+        if e.get("type") != "care" or e.get("status") != "completed":
+            continue
+        t = datetime.fromisoformat(e["timestamp"])
+        best = None
+        for i, (at, _) in enumerate(spoken):
+            gap = abs((at - t).total_seconds())
+            if i not in used and gap <= SPOKEN_MATCH_S and (best is None or gap < best[1]):
+                best = (i, gap)
+        if best is not None:
+            used.add(best[0])
+            e["summary"] = spoken[best[0]][1]
+            e["metadata"]["said"] = True
+
+
 def _summary_of(first_user: dict | None, n: int) -> str:
     text = ((first_user or {}).get("text") or "").strip()
     return text[:40] if text else f"{n} 条消息"
@@ -739,6 +788,11 @@ def build_day(
             events += _from_conversations(rows, date_str)
         except Exception:  # noqa: BLE001
             logger.exception("聚合对话失败，跳过这个源")
+            rows = []
+        try:
+            _attach_spoken(events, rows)
+        except Exception:  # noqa: BLE001
+            logger.exception("给惦记配上他说的话失败，保留原摘要")
 
     if wakeups is not None:
         try:
