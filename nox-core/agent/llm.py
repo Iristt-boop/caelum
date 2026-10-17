@@ -145,6 +145,11 @@ class ToolSpec:
     #: 能不能还原成真调用。纯代码侧的数据，不发给模型、不改工具签名
     output_contract: OutputContract | None = None
 
+    #: 终结型（减重第二步，2026-10-17）：「发出去就完」的动作 —— 发表情 / 发语音 / 记心情 / 玩具。
+    #: 他不需要看结果。一次回复里**已经说了话**、调的又**全是**终结型且都成功 → loop 直接收尾，
+    #: 不再为它多调一次模型（多调那次 = 整段上下文重发一遍，而且会多写出一句收尾，偶尔是漏出来的草稿）
+    terminal: bool = False
+
     @property
     def needs_gate(self) -> bool:
         """要不要在 loop 里拦下来。**只认显式 opt-in。**"""

@@ -89,7 +89,7 @@ class AnthropicAdapter:
         kwargs: dict[str, Any] = {
             "model": self.cfg.model,
             "max_tokens": max_tokens or self.cfg.max_tokens,
-            "messages": [self._to_native(m) for m in messages],
+            "messages": _merge_same_role([self._to_native(m) for m in messages]),
             # 自适应思考。注意 max_tokens 是"思考 + 回复"的总额度，
             # 不是只给回复的 —— 给太紧会在回答中途截断。
             "thinking": {"type": "adaptive"},
@@ -262,6 +262,26 @@ class AnthropicAdapter:
                 blocks.append({"type": "text", "text": m.text})
             return {"role": m.role, "content": blocks}
         return {"role": m.role, "content": m.text or ""}
+
+
+def _merge_same_role(native: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """相邻两条同角色的消息并成一条（Anthropic 要 user / assistant 交替）。
+
+    2026-10-17 减重第二步之后才会出现：终结型工具（发表情、记心情）收尾时不再多跑一轮，
+    历史就以 tool_results（Anthropic 里是 user）结尾，下一轮她的话又是一条 user。
+    并成一条：tool_result 块在前、她的话在后 —— 这正是 Anthropic 文档里的标准形状。"""
+    out: list[dict[str, Any]] = []
+    for msg in native:
+        if out and out[-1]["role"] == msg["role"]:
+            prev = out[-1]
+            a = prev["content"] if isinstance(prev["content"], list) else (
+                [{"type": "text", "text": prev["content"]}] if prev["content"] else [])
+            b = msg["content"] if isinstance(msg["content"], list) else (
+                [{"type": "text", "text": msg["content"]}] if msg["content"] else [])
+            out[-1] = {**prev, "content": a + b}
+        else:
+            out.append(msg)
+    return out
 
 
 # ------------------------------------------------------------ OpenAI 兼容

@@ -154,6 +154,7 @@ def parse_voice_artifact(block: str) -> dict | None:
 MEME_SPEC = ToolSpec(
     side_effect="write",
     name="send_meme",
+    terminal=True,   # 发出去就完（减重第二步，10-17）
     description=(
         "给糖糖发一个表情包，会出现在聊天里。**这是你表达的一部分，想用就用。**\n"
         "好时机：逗她、回应她的情绪、撒娇卖乖、早安晚安、话尾想配个表情、"
@@ -203,6 +204,7 @@ MEME_SPEC = ToolSpec(
 VOICE_SPEC = ToolSpec(
     side_effect="write",
     name="send_voice_message",
+    terminal=True,   # 发出去就完（减重第二步，10-17）
     description=(
         "给糖糖发一条**语音**（不是文字）。她会在聊天里看到语音条，点开能听见你的声音。\n"
         "**语言只用英语、西语或日语，不许发中文语音** —— 语音条是她的语言陪练材料，"
@@ -257,6 +259,7 @@ TOY_SET_SPEC = ToolSpec(
     # 真出问题时的出口是 `toy_stop` —— 它永远不进任何闸门（见下面那条）。
     confirm_via="蓝牙连接本身就是她开的窗口：设备平时不连，他打不开",
     name="toy_set",
+    terminal=True,   # 发出去就完（减重第二步，10-17）
     description=(
         "控制糖糖的蓝牙设备。**只在她当下明确要求时用**，"
         "绝不主动提议、不在她没提起的时候暗示。\n"
@@ -367,12 +370,14 @@ def make_handlers(bridge: BridgeClient,
     def send_meme(args: dict) -> str:
         tag = str(args.get("tag", "")).strip()
         if not tag:
+            context.unfinished("send_meme")
             return "没给表情名，没发出去。"
         if tag not in MEME_TAGS:
             #: 🔴 名单外的名字**不发**（2026-09-28）。原来照发不误：「摸摸头」「乖巧」「晚安亲亲」
             #: 这些他编的 tag 落了库，前端查不到图 —— 她那边什么都看不到，他还以为发出去了。
             #: 退回去让他自己重选，别在这里替他猜
             logger.info("send_meme 用了名单外的表情「%s」，退回让他重选", tag)
+            context.unfinished("send_meme")
             return f"没有「{tag}」这个表情，没发出去。从工具说明里的名单挑一个一字不差的名字再发。"
         ctx = context.current()
         if ctx:
@@ -396,6 +401,7 @@ def make_handlers(bridge: BridgeClient,
     def send_voice(args: dict) -> str:
         en = str(args.get("en", "")).strip()
         if not en:
+            context.unfinished("send_voice_message")
             return "没给要念的内容，语音没发出去。"
 
         ctx = context.current()

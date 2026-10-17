@@ -35,6 +35,7 @@ logger = logging.getLogger(__name__)
 MOOD_SPEC = ToolSpec(
     side_effect="none",
     name="set_mood",
+    terminal=True,   # 发出去就完（减重第二步，10-17）
     description=(
         "记下你对糖糖**这一轮**情绪的判断，给你的下一轮定调 —— "
         "她会得到更连贯的接法（她难过时你下一轮还记得心疼）。"

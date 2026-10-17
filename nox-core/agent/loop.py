@@ -162,6 +162,26 @@ class AgentLoop:
         """
         return ctx is not None and call.name in ctx.confirmed
 
+    def _ends_here(self, turn: Turn, outcomes: list[Any], ctx: Any = None) -> bool:
+        """减重第二步（2026-10-17）：这次回复里**已经说了话**，调的又**全是**终结型工具、**都成功了** → 这一轮到此为止。
+
+        账本（10-16 起 23 轮多次调用）：14 轮是「说完话 + 发表情/记心情」之后又多调一次，
+        而那一次也都写了字 —— 多出来的收尾句，偶尔是漏出来的草稿（10-17「用户问的是…我查了两条来源。」）。
+        失败了不收：他得知道没发出去，可能要改口；工具登记了「没做成」（`context.unfinished`，
+        比如表情名写错了）也不收。没说话（先调 set_mood 再说）也不收：话还没说。
+        开关 NOX_TERMINAL_STOP=off 退回老行为。
+        """
+        if os.getenv("NOX_TERMINAL_STOP", "on").strip().lower() in ("off", "0", "false"):
+            return False
+        if not (turn.text or "").strip() or not turn.tool_calls:
+            return False
+        undone = getattr(ctx, "unfinished", set()) or set()
+        for call, outcome in zip(turn.tool_calls, outcomes):
+            tool = self.tools.get(call.name)
+            if tool is None or not getattr(tool.spec, "terminal", False) or outcome.failed or call.name in undone:
+                return False
+        return True
+
     def _timeout_detail(self, iterations: int) -> str:
         return (
             f"这一轮超过 {self.deadline_s:.0f} 秒的预算，在第 {iterations} 轮收尾。"
@@ -307,11 +327,14 @@ class AgentLoop:
             messages.append(_assistant_message(turn))
             spoke = spoke or bool((turn.text or "").strip())
 
+            ctx.unfinished.clear()   # 只看这一次调用里的工具（上一次写错名字、这次改对了就该能收尾）
             outcomes = [self._execute(call, tracker, ctx) for call in turn.tool_calls]
             # 一轮里的全部结果放进同一条消息（见文件开头第 3 条）
             messages.append(
                 Message(role="tool_results", tool_results=[o.result for o in outcomes])
             )
+            if self._ends_here(turn, outcomes, ctx):
+                return LoopResult("answered", turn.text, iterations, total, messages)
 
             stuck = tracker.exhausted()
             if stuck:
@@ -568,6 +591,8 @@ class AgentLoop:
             # 语音通话那边就是十几秒的死寂，她分不清他在干活还是卡死了。
             # （非流式那条 `run()` 没有这个问题 —— 那边本来就是等全部做完才回。）
             outcomes = []
+            if ctx is not None:
+                ctx.unfinished.clear()   # 同非流式：只看这一次调用里的工具
             for c in turn.tool_calls:
                 if ctx is not None:
                     ctx.pending_steps = []
@@ -594,6 +619,10 @@ class AgentLoop:
             messages.append(
                 Message(role="tool_results", tool_results=[o.result for o in outcomes])
             )
+            if self._ends_here(turn, outcomes, ctx):
+                yield from drain()
+                yield _done("answered", turn.text, iterations, total, messages)
+                return
 
             stuck = tracker.exhausted()
             if stuck:

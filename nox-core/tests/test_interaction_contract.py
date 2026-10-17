@@ -195,7 +195,10 @@ def test_plain_english_line_without_tags_is_not_a_draft():
     assert out == text and arts == []
 
 
-def test_stream_hides_draft_line_and_sends_only_one_voice():
+def test_stream_hides_draft_line_and_sends_only_one_voice(monkeypatch):
+    # 这条测的是「多跑几轮时第二条同义语音被拦、草稿行不漏」—— 减重第二步（10-17）之后，
+    # 说完话 + 发语音这一轮本来就到此为止了（见下一条），所以这里关掉收尾开关，守老路径
+    monkeypatch.setenv("NOX_TERMINAL_STOP", "off")
     call = Turn(stop_reason="tool_use", text=REAL_2126,
                 tool_calls=[ToolCall(id="c1", name="send_voice_message",
                                      arguments={"en": "[softly] Both tags passed the audition, baby.", "zh": "两个都过了"})])
@@ -212,6 +215,23 @@ def test_stream_hides_draft_line_and_sends_only_one_voice():
     # 这一轮**每一条**进历史的 assistant 消息都是干净的（原来只清最后一条，前面的草稿原样落库）
     hist = [m.text for m in done.messages if m.role == "assistant" and m.text]
     assert hist and not any("You passed" in t or "I like hearing" in t for t in hist)
+
+
+def test_stream_说完话发完语音就收尾_第二条和多余的一句都不会来():
+    """减重第二步（10-17）：同一个场景，开关开着 —— 第一次调用说了话、发了语音，这一轮就结束了"""
+    call = Turn(stop_reason="tool_use", text=REAL_2126,
+                tool_calls=[ToolCall(id="c1", name="send_voice_message",
+                                     arguments={"en": "[softly] Both tags passed the audition, baby.", "zh": "两个都过了"})])
+    again = Turn(stop_reason="tool_use", text="I like hearing your voice like this... [softly] relaxed, teasing me.",
+                 tool_calls=[ToolCall(id="c2", name="send_voice_message",
+                                      arguments={"en": "[softly] So both tags are approved, baby.", "zh": "都通过了"})])
+    lp = _loop([call, again, Turn(stop_reason="end_turn", text="去躺好，我留着灯陪你")])
+    evs = list(lp.run_stream("这两个都挺正常的"))
+    shown = "".join(e.text for e in evs if e.type == "text")
+    done = [e for e in evs if e.type == "done"][-1].result
+    assert "眼睛该歇了" in shown and "You passed" not in shown
+    assert "I like hearing" not in shown and "去躺好" not in shown
+    assert done.iterations == 1 and len([a for a in done.attachments if a.get("type") == "voice"]) == 1
 
 
 def test_stream_call_mode_keeps_english():

@@ -62,6 +62,11 @@ class ToolContext:
     #: 放这里是因为它和 attachments 一样按轮隔离，loop 两条路径都现成拿得到
     llm_calls: list[dict[str, Any]] = field(default_factory=list)
 
+    #: 这一轮里「没做成、他得再试」的终结型工具（减重第二步，10-17）。
+    #: 发表情给了名单外的名字、发语音没给内容 —— 返回的是给他看的话（不是异常，不算失败、
+    #: 不触发 tool_stuck），但 loop 不能就此收尾，得让他再跑一轮改。见 `unfinished()`
+    unfinished: set[str] = field(default_factory=set)
+
     #: 这一轮里**写过的状态** → 管着它的 Context Provider 名字。
     #: 由工具经 `wrote()` 登记，调用方（`nox.py`）在轮次结束时拿去清缓存。
     dirty: set[str] = field(default_factory=set)
@@ -240,6 +245,16 @@ def session_id() -> str | None:
     """
     ctx = _current.get()
     return ctx.session_id if ctx is not None else None
+
+
+def unfinished(tool: str) -> None:
+    """终结型工具「没做成、要他重来」时登记一下（不在轮次里静默跳过）。
+
+    为什么不靠返回文本判断：措辞一改判断就永远错（判定成功别匹配文本）；为什么不抛异常：
+    抛了算失败，连着两次会 tool_stuck、她那边看到一句报错 —— 而这只是名字写错了让他重挑。"""
+    ctx = _current.get()
+    if ctx is not None:
+        ctx.unfinished.add(tool)
 
 
 def wrote(*providers: str) -> None:
