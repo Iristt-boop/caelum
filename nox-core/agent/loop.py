@@ -548,9 +548,10 @@ class AgentLoop:
                 if ev.type == "text":
                     yield from route(inner.feed(ev.text))
                 elif ev.type == "thinking":
-                    # 模型的 reasoning 草稿：不递。她 10-06 选了「只放他的心里话」——
-                    # 草稿是英文分析笔记，不是他的内心。想连草稿一起给她看就在这里放行
-                    continue
+                    # 模型自己的 reasoning 草稿。10-06 她选了「只放他的心里话」（当时 GLM 的草稿是英文分析笔记）；
+                    # 10-17 她看了 Aru 想对比：**换个名字递出去（draft）**，和心里话（thinking）分开 ——
+                    # 前端折在思考块里单独一栏「草稿」。照旧不进历史、不进正文
+                    yield StreamEvent("draft", text=ev.text)
                 else:
                     turn = ev.turn
             yield from route(inner.flush())

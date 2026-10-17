@@ -39,6 +39,11 @@ before(async () => {
       frame({ type: "attachment", kind: "meme", tag: "早安" });
       frame({ type: "thinking", text: "再说一句。" });
       frame({ type: "text", text: "早安呀" });
+    } else if (t.includes("看草稿")) {
+      frame({ type: "draft", text: "她问在吗。" });
+      frame({ type: "draft", text: "简短回一句。" });
+      frame({ type: "thinking", text: "想她。" });
+      frame({ type: "text", text: "在呢" });
     } else if (t.includes("不想")) {
       frame({ type: "text", text: "在呢" });
     } else {
@@ -98,10 +103,20 @@ describe("思考", () => {
     assert.equal(r[0].meta.turn, r[1].meta.turn, "同一轮");
   });
 
+  test("🔴 模型的草稿（10-17）：单独一种帧转给前端、单独落 meta.draft，不混进心里话也不进正文", async () => {
+    const frames = await chat("test-think-5", "看草稿");
+    assert.deepEqual(frames.filter((f) => f.type === "draft").map((f) => f.content), ["她问在吗。", "简短回一句。"]);
+    const r = await rows("test-think-5");
+    assert.equal(r[0].meta.draft, "她问在吗。简短回一句。");
+    assert.equal(r[0].meta.thinking, "想她。", "心里话不许混进草稿");
+    assert.ok(!r[0].content.includes("她问在吗"));
+  });
+
   test("没思考（开关关着）：metadata 里没有这个键", async () => {
     await chat("test-think-4", "不想");
     const r = await rows("test-think-4");
     assert.equal(r.length, 1);
     assert.equal(r[0].meta.thinking, undefined);
+    assert.equal(r[0].meta.draft, undefined);
   });
 });

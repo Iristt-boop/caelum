@@ -3962,6 +3962,9 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
                     elif ev.type == "thinking":
                         # 他的思考（「思考」开着才有，Nox.chat_stream 筛过）。bridge 转给 Chat 页、落 meta.thinking
                         yield _sse({"type": "thinking", "text": ev.text})
+                    elif ev.type == "draft":
+                        # 模型自己的草稿（10-17 她要和心里话分开看）。bridge 转给 Chat 页、落 meta.draft
+                        yield _sse({"type": "draft", "text": ev.text})
                     elif ev.type == "split":
                         # 分段点。前端收到这个就开一个新气泡 ——
                         # 切点是模型自己标的（|||），不是按标点机械切

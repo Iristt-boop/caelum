@@ -1326,6 +1326,8 @@ async function coreMode(req, res, requestId) {
   // 他这一轮的思考（2026-10-06 她：「打开 thinking 在 chat 页也显示 thinking 的内容」）。
   // 「思考」开着 Core 才发 thinking 帧；转给前端，收尾落进这一轮第一条的 metadata.thinking
   let thinkingText = "";
+  //: 模型自己的草稿（10-17）：和心里话分开攒、分开落（meta.draft）。太长只留后面一截
+  let draftText = "";
   // Core 收不到 session_id 时会自己 uuid4 生成一个，并在 done 帧里报出来。
   // 这里必须接住它回传给前端 —— 否则前端下一轮又传空，Core 又建一个新会话，
   // 表现成「每说一句话就多一个 Recents 窗口，而且他永远记不住上一句」。
@@ -1509,6 +1511,10 @@ async function coreMode(req, res, requestId) {
           // 草稿纸：不进 fullReply / 分段（搜索、预览、他下一轮读到的都是说出口的话）
           thinkingText += ev.text || "";
           res.write(`data: ${JSON.stringify({ type: "thinking", content: ev.text || "" })}\n\n`);
+        } else if (ev.type === "draft") {
+          // 模型自己的草稿（10-17 她要和心里话分开看）：同上不进正文，单独一栏
+          draftText += ev.text || "";
+          res.write(`data: ${JSON.stringify({ type: "draft", content: ev.text || "" })}\n\n`);
         } else if (ev.type === "split") {
           // 分段点。content 里仍旧用换行分隔（搜索、导出、Recents 预览都读那一列，
           // 保持纯文本），分段边界另外记进 metadata.segments。
@@ -1740,10 +1746,14 @@ async function coreMode(req, res, requestId) {
   const multi = timeline.length > 1;
   //: 思考挂在这一轮**第一条**上（不管它是字还是组件）—— 两个 Chat 页都把它画在这一轮最前面
   const thinking = thinkingText.trim();
+  const draftKept = draftText.trim().slice(-12000);
   let firstEntry = true;
   const lastEntry = timeline[timeline.length - 1];
   for (const e of timeline) {
-    const th = firstEntry && thinking ? { thinking } : {};
+    const th = {
+      ...(firstEntry && thinking ? { thinking } : {}),
+      ...(firstEntry && draftKept ? { draft: draftKept } : {}),
+    };
     firstEntry = false;
     const us = e === lastEntry && turnUsage ? { usage: turnUsage } : {};
     if (e.att) {

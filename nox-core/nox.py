@@ -1280,7 +1280,7 @@ class Nox:
         ):
             # 心里话给她看（她 10-06）—— **只在「思考」开着时**。关着时规矩不加、本来就不该有；
             # 万一他自己写了也不放出来，开关关了还冒出思考块，那个开关就说不清了
-            if ev.type == "thinking" and depth != "high":
+            if ev.type in ("thinking", "draft") and depth != "high":
                 continue
             if ev.type == "done":
                 result = getattr(ev, "result", None)

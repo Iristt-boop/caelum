@@ -142,7 +142,9 @@ def _loop(rounds):
 def test_loop_心里话成thinking_草稿不递_不过情绪过滤和分段():
     evs = list(_loop([("Reply gently.", ["<心里>[mood:开心] 想她|||好想", "</心里>在呢|||抱抱"], [])])
                .run_stream("在吗"))
-    assert [e.text for e in evs if e.type == "thinking"] == ["[mood:开心] 想她|||好想"], "英文草稿不该出现"
+    assert [e.text for e in evs if e.type == "thinking"] == ["[mood:开心] 想她|||好想"], "草稿不许混进心里话"
+    # 10-17 她要和心里话分开看：模型的草稿单独一种事件（draft），原样、不过任何过滤
+    assert [e.text for e in evs if e.type == "draft"] == ["Reply gently."]
     assert "".join(e.text for e in evs if e.type == "text") == "在呢抱抱"
     assert len([e for e in evs if e.type == "split"]) == 1, "只有正文里那个 ||| 分段"
 
@@ -211,6 +213,7 @@ def _nox(tmp_path, on: bool):
 
 def _run(n, **kw):
     evs = list(n.chat_stream("在吗", [], **kw))
+    n.drafts = [e.text for e in evs if e.type == "draft"]
     return ([e.text for e in evs if e.type == "thinking"],
             "".join(e.text for e in evs if e.type == "text"))
 
@@ -219,20 +222,21 @@ def test_开关开着_加心里话的规矩_给她看心里话(tmp_path):
     n = _nox(tmp_path, True)
     th, tx = _run(n)
     assert th == ["想她了。"] and tx == "在呢"
+    assert n.drafts == ["draft"], "开关开着：模型的草稿也给她看（单独一栏）"
     assert INNER_VOICE_RULE in n.rec.dynamic[0] and n.rec.dynamic[0].startswith("（动态块）"), "规矩拼在动态块后面"
 
 
 def test_开关关着_不加规矩_有也不给看(tmp_path):
     n = _nox(tmp_path, False)
     th, tx = _run(n)
-    assert th == [] and tx == "在呢"
+    assert th == [] and tx == "在呢" and n.drafts == [], "关着：心里话、草稿都不给"
     assert INNER_VOICE_RULE not in n.rec.dynamic[0]
 
 
 def test_打电话_开着也不加不给看(tmp_path):
     n = _nox(tmp_path, True)
     th, _ = _run(n, voice=True)
-    assert th == [] and INNER_VOICE_RULE not in n.rec.dynamic[0]
+    assert th == [] and n.drafts == [] and INNER_VOICE_RULE not in n.rec.dynamic[0]
 
 
 # ---------------------------------------------------------------- /chat/stream
@@ -240,6 +244,7 @@ def test_打电话_开着也不加不给看(tmp_path):
 
 class _ThinkingFakeNox(FakeNox):
     def chat_stream(self, text, history=None, **kw):
+        yield StreamEvent("draft", text="她问在吗")
         yield StreamEvent("thinking", text="想一下")
         yield from super().chat_stream(text, history, **kw)
 
@@ -249,4 +254,5 @@ def test_接口_思考帧在正文之前发出():
     frames = _frames(c.post("/chat/stream", json={"text": "在吗"}))
     kinds = [f["type"] for f in frames]
     assert {"type": "thinking", "text": "想一下"} in frames
+    assert {"type": "draft", "text": "她问在吗"} in frames, "草稿要转成自己的帧（bridge 落 meta.draft）"
     assert kinds.index("thinking") < kinds.index("text")
