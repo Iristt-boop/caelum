@@ -1242,7 +1242,9 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
     from tools import desk as desk_tools
     desk_hand = LocalLink(name="desk", secret_env="CAELUM_DESK_SECRET", whose="我的电脑")
     core.desk_hand = desk_hand
-    desk_tools.register_all(core.loop, desk_hand)
+    #: v1（10-17）多了截屏兜底 desk_look —— 和 computer_read_image 同一个视觉取值函数（Slots 里换了下一张就生效）
+    desk_tools.register_all(core.loop, desk_hand,
+                            getattr(core, "vision_cfg", None) or getattr(core.cfg, "vision", None))
 
     # 待确认单（2026-09-06）。**独立的库**，和 attention/world/topics 平级。
     #

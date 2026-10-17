@@ -61,6 +61,23 @@ class _FakeBrowser:
     async def read(self, part=1):
         return f"第 {part} 段"
 
+    async def click(self, ref):
+        self.opened.append(f"click:{ref}")
+        return f"点了 [{ref}]"
+
+    async def type(self, ref, text, submit=False):
+        self.opened.append(f"type:{ref}:{text}:{submit}")
+        return "填了"
+
+    async def scroll(self, direction="down"):
+        return f"往{direction}翻了"
+
+    async def back(self):
+        return "退回上一页"
+
+    async def look(self):
+        return "【页】https://a.com\nIMAGE image/jpeg QUJD"
+
 
 def _free_port():
     s = socket.socket()
@@ -139,6 +156,12 @@ def test_红线_端到端_他调desk_open_经链路到我的电脑再回来(core
         assert registered["desk_read"]({"part": 2}).startswith("第 2 段")
         assert "file://" not in browser.opened
         assert registered["desk_open"]({"url": "file:///etc/passwd"}) == "只能开 http / https 的网址。"
+        # v1：点 / 填 / 翻 / 退也经同一条链路走到我的电脑
+        assert registered["desk_click"]({"ref": 3}) == "点了 [3]"
+        registered["desk_type"]({"ref": 2, "text": "猫粮", "submit": True})
+        assert browser.opened[-2:] == ["click:3", "type:2:猫粮:True"]
+        assert registered["desk_scroll"]({"direction": "up"}) == "往up翻了"
+        assert registered["desk_back"]({}) == "退回上一页"
     finally:
         stop.set()
         th.join(5)
@@ -172,14 +195,50 @@ class _Link:
         return CallResult(True, text="【页】正文")
 
 
-def test_红线_读网页必标untrusted(monkeypatch):
+def test_红线_每一件都带页面内容_都必标untrusted(monkeypatch):
     from tools.untrusted import ingest
     marked = []
     monkeypatch.setattr(ingest, "mark", lambda src: marked.append(src) or None)
     h = desk_tools.make_handlers(_Link())
-    h["desk_open"]({"url": "https://a.com"})
-    h["desk_read"]({})
-    assert marked == ["desk_open", "desk_read"]
+    calls = {"desk_open": {"url": "https://a.com"}, "desk_read": {}, "desk_click": {"ref": 1},
+             "desk_type": {"ref": 1, "text": "x"}, "desk_scroll": {}, "desk_back": {}, "desk_look": {}}
+    for name, args in calls.items():
+        h[name](args)
+    assert marked == list(calls)
+    assert set(calls) == {s.name for s in desk_tools.SPECS}, "新加一件就得进这张表"
+
+
+@pytest.mark.parametrize("name,args", [("desk_click", {}), ("desk_click", {"ref": "3"}), ("desk_type", {"text": "x"})])
+def test_没给编号_不发过去(name, args):
+    link = _Link()
+    out = desk_tools.make_handlers(link)[name](args)
+    assert "编号" in out and link.calls == []
+
+
+class _ImgLink(_Link):
+    def call(self, cap, payload, timeout=None):
+        from tools.mcp_client import CallResult
+        return CallResult(True, text="【某页】https://a.com\nIMAGE image/jpeg " + "Q" * 5000)
+
+
+def test_红线_截屏_图在这儿拦下换成描述_base64不进他的上下文(monkeypatch):
+    from agent import vision
+    seen = []
+    monkeypatch.setattr(vision, "describe", lambda imgs, cfg, **k: seen.append(imgs[0][:30]) or "一张商品列表")
+    out = desk_tools.make_handlers(_ImgLink(), vision_cfg=object())["desk_look"]({})
+    assert seen == ["data:image/jpeg;base64,QQQQQQQ"]
+    assert "一张商品列表" in out and "QQQQ" not in out and "转述" in out
+
+
+def test_截屏_没配视觉就直说(monkeypatch):
+    out = desk_tools.make_handlers(_ImgLink(), vision_cfg=None)["desk_look"]({})
+    assert "看不了" in out and "QQQQ" not in out
+
+
+def test_他自己的时间里没有我电脑的手():
+    """她 10-17：自己的时间先不做"""
+    from attention import own_time
+    assert not [n for n in own_time.WHITELIST if n.startswith("desk_")]
 
 
 def test_没连上就直说_不去等也不标记(monkeypatch):
