@@ -1,6 +1,15 @@
 # Nox 的电脑 设计稿 · 2026-10-14
 
-> **状态：设计稿，未动工，等拍板（第十节）。**
+> **状态：v0 已上线（2026-10-17）**，v1 起待做。
+>
+> **v0 施工记录（10-17）**：VM 103 `nox-desk`（192.168.1.53，2 核 / 4G / 40G，Debian 12 cloud 镜像 + cloud-init，开机自启）。
+> 偏离 3.2 一处：**没装 dsh 那份 Gateway**（它是 Windows 上整套 harness 的 Cordis 插件，搬进 Linux 小 VM 太重），
+> 换成 `desk-agent/agent.py`（Python + Playwright，只说同一套链路协议：caelum/hello HMAC 握手 + tools/call），v0 只有 desk.open / desk.read。
+> Core 侧：`tools/desk.py`、`LocalLink(name="desk", secret_env="CAELUM_DESK_SECRET", whose="我的电脑")`、路由 `/agent/desk`、工具包 `desk`。
+> 网络：Proxmox 防火墙（cluster.fw 开、全放行；103.fw 只给这台）→ VM 只出公网 + CT 102 的 Caddy `:8110`（只放 `/agent/desk`，别的路径 404）；
+> 从 VM 里实测宿主 / HAOS / 路由器 / AdGuard / CT 102 的 22·80·8100 / 她的电脑全部不通。VM 的 apt 换清华源（deb.debian.org 在家里卡住）。
+> 真实冒烟（测试会话，已删）：gov.cn 打开读回头条 ✓；python.org **超时** —— VM 没接节点，海外站都会这样（第十节第 4 条）。
+> 观察到：海外站打不开时他退去用了她电脑的 `computer_browse`（只读、不用点头）—— 要不要拦，待她定。
 > 起因：糖糖 10-14 —— 「150 是他自己的电脑，他在电脑上做轻量的事情；我的电脑是我的，harness 连过来做的是写代码的事。」
 > 调研：`CAELUM-云电脑Agent调研-2026-10-14.md`（GLM 写，关键说法 10-14 已逐条对原文核过，三处更正见第二节）。
 > 资源实测：N150 15G 内存、一周峰值 7.4G、CPU 峰 18%、虚拟机盘剩 ~127G —— 扛得住。
