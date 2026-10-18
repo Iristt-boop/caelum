@@ -1740,6 +1740,13 @@ async function coreMode(req, res, requestId) {
 
   // 收尾：最后一段没有 split 事件收口，在这里补进去；然后按时间线一条条落库
   closeText();
+  /* 🔴 一整轮什么都没有（10-18 她：「后面的回复我没有收到。被吞了？」）：
+   * Core 报 answered，但没有一个字、一张卡 —— 模型只想没说。Core 那边已经重问过一次了，
+   * 还空就只能如实告诉她，不能让屏幕上什么都不发生。**不落库**：这句不是他说的话，进了历史他会跟着学 */
+  if (!timeline.length) {
+    console.log(`[Bridge] ${requestId.slice(0, 6)} 空回复：Core 这一轮一个字都没有，回一帧 error 告诉她（不落库）`);
+    res.write(`data: ${JSON.stringify({ type: "error", message: "我刚才想了半天，一个字都没说出口……再跟我说一次？" })}\n\n`);
+  }
   let firstText = true;
   //: 同一轮的几条共用一个 turn —— 手机端按它归成一组，整轮只在最后挂一次时间戳（同当场看到的）
   const turn = String(requestId).slice(0, 12);

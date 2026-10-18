@@ -44,6 +44,9 @@ before(async () => {
       frame({ type: "draft", text: "简短回一句。" });
       frame({ type: "thinking", text: "想她。" });
       frame({ type: "text", text: "在呢" });
+    } else if (t.includes("一个字没说")) {
+      //: 10-18：模型只想没说 —— 只有草稿，没有一个字、一张卡（Core 重问过还是空）
+      frame({ type: "draft", text: "她在纠结买不买。" });
     } else if (t.includes("不想")) {
       frame({ type: "text", text: "在呢" });
     } else {
@@ -118,5 +121,21 @@ describe("思考", () => {
     assert.equal(r.length, 1);
     assert.equal(r[0].meta.thinking, undefined);
     assert.equal(r[0].meta.draft, undefined);
+  });
+});
+
+describe("一整轮什么都没有（10-18 她：「后面的回复我没有收到。被吞了？」）", () => {
+  test("屏幕上要有一句话；不落库（那句不是他说的）", async () => {
+    const evs = await chat("t-empty-1018", "一个字没说");
+    const err = evs.find((e) => e.type === "error");
+    assert.ok(err, "一帧 error 都没有 = 她那边什么都不发生");
+    assert.match(err.message, /没说出口/);
+    assert.equal(evs.at(-1).type, "done", "收尾的 done 照发，loading 才落得下来");
+    assert.deepEqual(await rows("t-empty-1018"), []);
+  });
+
+  test("有字的轮次不多这一句", async () => {
+    const evs = await chat("t-empty-1018b", "不想");
+    assert.equal(evs.filter((e) => e.type === "error").length, 0);
   });
 });

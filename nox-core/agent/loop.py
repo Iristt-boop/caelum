@@ -515,6 +515,8 @@ class AgentLoop:
 
         deadline = self._deadline()
         spoke = False   # 前面的调用已经对她说过话（见 SPOKEN_NOTE）
+        delivered = False   # 前面已经有终结型工具（表情 / 语音…）成功发到她那边了
+        empty_retried = False   # 「一个字都没说出口」已经重问过一次了
 
         for iterations in range(1, self.max_iterations + 1):
             # 同非流式那条：只拦"开下一轮"，拦不住正在进行的那一次调用。
@@ -531,10 +533,13 @@ class AgentLoop:
             turn: Turn | None = None
             # 心里话先拆（每次调模型一个新的）：拆出来的不过情绪过滤和分段，原样当 thinking 递出去
             inner = InnerVoiceFilter()
+            #: 这一次调用里心里话 / 草稿各多少字 —— 空回复时记进日志，分得清「全写进心里话了」还是「只打了草稿」
+            seen = {"inner": 0, "draft": 0}
 
             def route(pairs: list[tuple[str, str]]) -> Iterator[StreamEvent]:
                 for kind, piece in pairs:
                     if kind == "thinking":
+                        seen["inner"] += len(piece)
                         yield StreamEvent("thinking", text=piece)
                     else:
                         yield from emit(piece)
@@ -542,12 +547,13 @@ class AgentLoop:
             for ev in llm.stream(
                 messages, specs,
                 system=system,
-                dynamic_system=_with_spoken_note(dynamic_system, spoke),
+                dynamic_system=_with_spoken_note(dynamic_system, spoke, empty=empty_retried),
                 depth=depth,
             ):
                 if ev.type == "text":
                     yield from route(inner.feed(ev.text))
                 elif ev.type == "thinking":
+                    seen["draft"] += len(ev.text or "")
                     # 模型自己的 reasoning 草稿。10-06 她选了「只放他的心里话」（当时 GLM 的草稿是英文分析笔记）；
                     # 10-17 她看了 Aru 想对比：**换个名字递出去（draft）**，和心里话（thinking）分开 ——
                     # 前端折在思考块里单独一栏「草稿」。照旧不进历史、不进正文
@@ -574,6 +580,18 @@ class AgentLoop:
                 return
 
             if turn.stop_reason == "end_turn" or not turn.tool_calls:
+                if not (turn.text or "").strip() and not spoke and not delivered:
+                    # 🔴 一整轮一个字都没对她说出口（10-18 两次：模型 token 全花在想上，正文是空的）。
+                    # 以前照样报 answered —— bridge 那边没有一条可存的，她那句话就像被吞了。
+                    # 再问一次（这次空的不进历史，缓存前缀不变），还是空的才认
+                    logger.warning(
+                        "空回复｜第 %d 次调用一个正文字都没有（心里话 %d 字，草稿 %d 字，out=%s）%s",
+                        iterations, seen["inner"], seen["draft"], turn.usage.output_tokens if turn.usage else "?",
+                        "，已经重问过一次，认了" if empty_retried else "，再问一次",
+                    )
+                    if not empty_retried:
+                        empty_retried = True
+                        continue
                 yield from drain()
                 messages.append(_assistant_message(turn))
                 yield _done("answered", turn.text, iterations, total, messages)
@@ -617,6 +635,12 @@ class AgentLoop:
                     result_truncated=len(result_text) > 2000,
                 )
                 outcomes.append(outcome)
+            undone = getattr(ctx, "unfinished", set()) or set()
+            delivered = delivered or any(
+                getattr(getattr(self.tools.get(c.name), "spec", None), "terminal", False)
+                and not o.failed and c.name not in undone
+                for c, o in zip(turn.tool_calls, outcomes)
+            )
             messages.append(
                 Message(role="tool_results", tool_results=[o.result for o in outcomes])
             )
@@ -995,11 +1019,20 @@ SPOKEN_NOTE = (
 )
 
 
-def _with_spoken_note(dynamic_system: str | None, spoke: bool) -> str | None:
-    """这一轮里前面的模型调用已经对她说过话 → 动态块末尾加一条「别重说」。"""
-    if not spoke:
+#: 一轮下来一个字都没说出口、再问一次时加的那句（10-18：她两句话都没收到回音，账本两次 calls=…/-/…）
+EMPTY_NOTE = (
+    "【你刚才只在心里想了，一个字都没对她说出口】她还在等你回。"
+    "这次把要对她说的话直接说出来。"
+)
+
+
+def _with_spoken_note(dynamic_system: str | None, spoke: bool, empty: bool = False) -> str | None:
+    """这一轮里前面的模型调用已经对她说过话 → 动态块末尾加一条「别重说」；
+    上一次调用一个字都没说出口（在重问）→ 加一条「把话说出来」。"""
+    notes = [n for n, on in ((SPOKEN_NOTE, spoke), (EMPTY_NOTE, empty)) if on]
+    if not notes:
         return dynamic_system
-    return "\n\n".join([dynamic_system, SPOKEN_NOTE]) if dynamic_system else SPOKEN_NOTE
+    return "\n\n".join([dynamic_system, *notes] if dynamic_system else notes)
 
 
 def _assistant_message(turn: Turn) -> Message:

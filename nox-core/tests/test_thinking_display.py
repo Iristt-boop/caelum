@@ -162,11 +162,14 @@ def test_loop_工具前后各写一段心里话_都拆出来_历史里一个字�
     assert not [s for s in said if "心里" in s or "别催她" in s or "先看看" in s], said
 
 
-def test_loop_他忘了收口_整块留在thinking_正文不再漏():
-    """2026-10-15 改的规则：没收口整块当心里话，不再补发正文（原行为=漏成明文）。"""
-    evs = list(_loop([(None, ["<心里>她要睡了，", "晚安宝贝"], [])]).run_stream("晚安"))
+def test_loop_他忘了收口_整块留在thinking_正文不再漏_再问一次说出来():
+    """2026-10-15 改的规则：没收口整块当心里话，不再补发正文（原行为=漏成明文）。
+    10-18 起：这样一整轮就一个字都没说出口 —— 再问他一次（test_empty_reply.py），她收到的是第二次说的话。"""
+    evs = list(_loop([(None, ["<心里>她要睡了，", "晚安宝贝"], []),
+                      (None, ["晚安，乖。"], [])]).run_stream("晚安"))
     assert "她要睡了" in "".join(e.text for e in evs if e.type == "thinking")
-    assert "".join(e.text for e in evs if e.type == "text") == ""
+    text = "".join(e.text for e in evs if e.type == "text")
+    assert text == "晚安，乖。" and "她要睡了" not in text and "晚安宝贝" not in text
 
 
 def test_非流式也拿掉():
