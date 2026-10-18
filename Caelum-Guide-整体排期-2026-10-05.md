@@ -49,10 +49,10 @@ Guide 线  ✅ 手册+地图上线 ── 10-11 判：他不翻（0 次）→ �
 |---|---|---|---|---|
 | A1 | 🔁 **回放尺子（10-11 改）**：抽 20 条她过去问系统 / 配置的话，**先分两类**再标：「你在哪 / 在干嘛 / 这里能干嘛」归**工牌**，标准是**不调工具直接答对**；「这套东西怎么搭的 / 某个机制怎么运作」才归**手册**，标「该翻哪一篇」 | S | 现在就能做（不再等手册观察期） | 先验尺子再量（弱标注教训）；要她过目标注。~~原：标「该翻哪一篇、查哪张图」，对线上日志回放~~ |
 | A2 | 🚫 ~~他不翻手册时的加强触发（目录措辞 / 工具描述 / Router 提示）~~ | — | **10-11 推翻** | 糖糖 10-11：别再给 `guide_read` 加「请记得调用」—— 实验已证伪。他日常不翻手册是**正常的**，环境认知归工牌 |
-| A3 | **OS 里读手册**：bridge 加两条路由 + OS 一页只读（同一份文件，不做第二份） | M | 不急；**碰 `nox-app`** | 给她看的，和他翻不翻无关 —— 10-11 改向不影响它，优先级照旧低 |
-| A4 | 🔁 **OS 页面表（10-11 改）**：先喂给**工牌** —— 她在 OS 的哪一页，他每轮就知道（`runtime.client=os` + 页面名）；`caelum_map` 的 `os` 段顺带接上 | S–M | Runtime Context R1 已上线（工牌字段现成）；**碰 `nox-app`**（OS 发请求时带上当前页） | ~~原：只接进 `caelum_map`，与 A3 同期做~~。手册 `where-in-os` 篇保留「查不到就别编页面名」 |
+| A3 | ✅ **10-18 上线**：OS「Settings › Guide」，Core `/api/nox/guide` 读他启动时载入的那份、bridge 两条只读代理。**OS 里读手册**：bridge 加两条路由 + OS 一页只读（同一份文件，不做第二份） | M | 不急；**碰 `nox-app`** | 给她看的，和他翻不翻无关 —— 10-11 改向不影响它，优先级照旧低 |
+| A4 | ✅ **10-18 上线**：OS 报菜单 id（Chat 页带「刚从哪页过来」，语音浮层带当前页）→ bridge 只认形状透传 → Core `context/runtime.py` 的 `OS_PAGES` 翻成「父 › 子」，认不出的丢；测试拿 OS 的 config.js 对表查漏。`caelum_map` 的 os 段没动。手机端还不报 client / page。🔁 **OS 页面表（10-11 改）**：先喂给**工牌** —— 她在 OS 的哪一页，他每轮就知道（`runtime.client=os` + 页面名）；`caelum_map` 的 `os` 段顺带接上 | S–M | Runtime Context R1 已上线（工牌字段现成）；**碰 `nox-app`**（OS 发请求时带上当前页） | ~~原：只接进 `caelum_map`，与 A3 同期做~~。手册 `where-in-os` 篇保留「查不到就别编页面名」 |
 | A5 | 手册 `models-and-routes` / `confirm-and-permissions` 跟着配置线更新 | S | P2、P5 各一次 | 手册只写「怎么运作」，状态走地图 |
-| A6 | 🔁 `PROJECT.md` / `CAELUM-MAP.md` 各记一笔（新增 `guide/`、`settings_store/`、七个库、工具登记有两处）**+ 10-11 起：三层（Runtime Context / Interaction Contract / Guide·Map）、按需工具包 `agent/toolpacks.py`、共影剧情记忆 `memory/watched.py`** | S | 这两个文件在主仓有别的会话的未提交改动，**等它们落地** | 现在碰会冲突 |
+| A6 | ✅ **10-18 补上**：PROJECT.md 第六十节 + CAELUM-MAP 第一·五节（MAP 只提交自己的部分，别的会话那两行留在工作区）。🔁 `PROJECT.md` / `CAELUM-MAP.md` 各记一笔（新增 `guide/`、`settings_store/`、七个库、工具登记有两处）**+ 10-11 起：三层（Runtime Context / Interaction Contract / Guide·Map）、按需工具包 `agent/toolpacks.py`、共影剧情记忆 `memory/watched.py`** | S | 这两个文件在主仓有别的会话的未提交改动，**等它们落地** | 现在碰会冲突 |
 | A7 | ~~魔法棒「问问这个页面」入口~~ | — | 🚫 她 10-05 明确不要 | 调研文档里留了 Aru 的做法，以后想要再翻 |
 
 ### B. 配置线（设计已终稿，六条拍板见设计稿第十六节）
