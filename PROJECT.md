@@ -8121,7 +8121,7 @@ Claude 订阅登录态（OAuth）**不接**：官方条款只许 Claude Code / c
 - 公网门：Cloudflare 隧道 `caelum-n150`，`noxtang.com` / `reading.` / `music.` 是 CNAME 到隧道（橙云）。
   claude.ai 连接器、健康快捷指令、local-gateway、Stack-chan 的 URL **都没改**，靠 DNS 翻转
 - 她的侧门：Tailscale，`https://nox.tail6fa1e7.ts.net`（`tailscale serve` → Caddy :80 的 `:80` 兜底站点）
-- 东京：Caelum 单元 `stop + disable`，**只留 Caddy + x-ui**（`panel.` Reality 节点 / 订阅、`cdn.` 备用线）。11-01 到期前迁 RackNerd
+- 东京：Caelum 单元 `stop + disable`，**只留 Caddy + x-ui**（`panel.` Reality 节点 / 订阅、`cdn.` 备用线）。~~11-01 到期前迁 RackNerd~~ → 10-14 她定：留东京，先按月续，双十一买腾讯海外轻量再搬
 - 部署脚本、`pull-vps-backup.cmd`（计划任务名没改）、`moments-shadow-pull.ps1`、`credential-sweep.ps1` 全改指 `192.168.1.52`
 
 ### 59.2 怎么搬的（为什么不双开 shadow）
@@ -8152,11 +8152,47 @@ crontab / `/root` 运维脚本 / 书架封面 / DoH 描述文件 / DEPLOY_INFO�
 
 ### 59.5 遗留（按要紧程度）
 
-- 🔴 **没有任何外部告警**：`caelum-watch` 跟东京一起停了；不能原样装回 N150（自己监控自己）。退租东京前必须补（UptimeRobot 或小鸡）
-- 🔴 **没有异地备份**：她电脑拉的那份和 N150 在同一屋檐下。原计划 GitHub 私仓
+- ~~🔴 没有任何外部告警~~ ✅ 10-12 补上：`nox-watchdog`（Cloudflare Worker 每分钟探 `/api/health`，连坏 2 次发她 QQ 邮箱，状态页 `status.noxtang.com`）
+- ~~🔴 没有异地备份~~ ✅ 10-14 补上：每天 05:07 推 Cloudflare R2（daily 留 7 / weekly 留 4），晨检多「副本」「云端」两项（见第六十节）
 - 共感娃娃固件 POST 写死东京 IP，要重刷成 `192.168.1.52:9333`；Stack-chan 固件 OTA 写死 `:8013`，要重刷
 - Stack-chan 搬家后没自己重连（DNS 翻转前吃了几次 502 就不重试了），要她断电重启
 - 东京的 journald 历史日志没搬（N150 日志从 10-10 16:05 起）
 - 小智 docker（`/opt/xiaozhi-server`，模型 893M）没搬
-- Reality 节点迁 RackNerd（11-01 前），之后东京退租
+- Reality 节点：留东京（10-14 改主意，见 59.1）
+
+## 六十、他每轮手里拿着什么：三层 + 按需工具，以及 10-11 ~ 10-18 的几件大事
+
+> 一页概览在 `CAELUM-MAP.md` 第一·五节；设计稿：`Caelum-Runtime-Context-设计稿-2026-10-11.md`、
+> `Caelum-Interaction-Contract-设计稿-2026-10-10.md`、`Caelum-Guide-整体排期-2026-10-05.md`、`Caelum-配置层-设计稿-2026-10-05.md`。
+
+### 60.1 三层（「他该知道的环境」不再指望他自己查）
+
+10-11 判：手册上线四周、2103 轮，`guide_read` **0 次**。需要模型主动决定「我该查一下自己在哪」的认知不可靠，所以按可靠性重排：
+
+- **工牌（Runtime Context，`nox-core/context/runtime.py`）**：每轮动态块最前，他在哪个入口（聊天 / 电话 / 共影 / 共读 / 日记 / 共听 / Stack-chan / 主动开口 / 他自己的时间）、
+  这里能干嘛、当前对象（片名 + 集数，**不写进度**，那会每次暂停冷一次缓存）、电话是谁先打的；10-18 起还有**她在 OS 的哪一页**（Guide A4，`OS_PAGES` 表，测试拿 OS 的 `config.js` 对表）。
+  入口自己报（`runtime` 字段），Core 不从正文猜；认不出的丢掉留痕。`NOX_RUNTIME_CONTEXT=off` 关
+- **交互契约（Interaction Contract，`agent/contracts.py`）**：他偶尔不调工具、把参数写进正文（`[语音条 softly] …`），进了历史下一轮就照抄（10-10 一条传成 9 条）。
+  现在由工具自己声明 `ToolSpec.output_contract`，loop 收尾统一处理；只扫他的输出
+- **手册 · 地图（Guide · Map）**：手册 12 篇（`guide/topics/`，讲怎么运作，前缀里只放目录）+ 地图 `caelum_map`（`guide/world_map.py`，运行期现取现状）。他深查时自己翻；
+  🔴 不许给它加「记得调用」（A2 已推翻）
+
+### 60.2 结构上新增的东西
+
+- **按需工具包** `agent/toolpacks.py`（R2）：工具表原来 ≈ 23K token、占每轮固定开销 85%。现在核心集常驻，其余按「她最近的话 / 30 分钟内用过 / 工牌入口」挂上，每轮约 53 / 178 个
+- **共影剧情记忆** `memory/watched.py`：一集看完收成「剧情」+「我们一起看的」，下次打开同一部剧给他【前情】
+- **配置层** `settings_store/` → `settings.db`：P0 影子 → P2 前端写 → P5 他提议、她点头（`propose_config_change` 只出卡）
+- **库**：nox-core 现在**八库**（`sessions / attention / world / topics / orders / tasks / settings / creations`）
+- ⚠️ **工具登记有两处**：`Nox.__init__` 一串 + `api/server.py` 再追加一串
+
+### 60.3 10-11 ~ 10-18 其余几件（细节在各自设计稿 / commit）
+
+- **Creations**（10-11 定名，菜单 Studio）：他做的小网页，只做玩的和送的；S1.1 起他自己的时间里也会做一个，只进 Studio（3 天一次、上一个没打开不做新的）
+- **我的电脑**（`Caelum-Nox的电脑-设计稿-2026-10-14.md`）：VM 103 `nox-desk`（`192.168.1.53`），`desk-agent/` 用 Playwright 开浏览器；
+  v0 能开能读、v1 能点能翻页（10-17）。防火墙只放出公网 + `:8110` 一个口子，独立密钥
+- **减重**（`Caelum-减重三件套-设计稿-2026-10-15.md`）：每轮账本（`ledger |` 日志行）+ 终结型工具（表情 / 语音 / 心情 / 玩具）说完就停
+- **异地备份**：`scripts/caelum-r2-push.sh`，每天 05:07 推 R2；rclone 1.60 要 `NO_HEAD=true`
+- **在家走近路**：AdGuard 把 `noxtang.com` 改写到 `.52`，Caddy `:443` 用 Let's Encrypt 证书（certbot 在 `/opt/certbot` venv，Cloudflare DNS 验证）；外面照旧走隧道，一个图标
+- **一整轮没说出口不再被吞**（10-18）：流式聊天里一个字都没写 → 带「把话说出来」重问一次；还空，bridge 给她一句、不落库
+- **人设加「自我认知与自主性」「对话节奏」**（10-18，她写的，不给例子）
 

@@ -41,10 +41,25 @@
   陪伴服务：共读 :3100 · 共影 :3200 · 共听 eryu :9090 + netease :3456
 ```
 
-存储一览：bridge `/root/data/nox-bridge.db` · nox-core `sessions/attention/world/topics/orders` **五库** · OB `buckets/ + embeddings.db`（全 SQLite；备份见 `scripts/caelum-backup.sh`，体检 `/root/doctor.sh`，探活 `/api/health`）。
+存储一览（10-10 起全在家里 N150 的 CT 102 `192.168.1.52`）：bridge `/root/data/nox-bridge.db` · nox-core `sessions/attention/world/topics/orders/tasks/settings/creations` **八库** · OB `buckets/ + embeddings.db`（全 SQLite；备份见 `scripts/caelum-backup.sh`，每天 05:07 另推一份到 Cloudflare R2，体检 `/root/doctor.sh`，探活 `/api/health`，外部告警 `nox-watchdog`）。
 
 > `orders.db`（2026-09-06 加）：待确认单的状态机。不并进 world.db —— 那边契约是
 > 「Observation 冻结只追加、永不改写」，订单状态天生要改。付款链接单独一张表带 TTL。
+
+## 一·五、每轮递到他手里的东西：三层 + 按需工具（2026-10-10 起）
+
+「他该知道的环境」不再指望他自己去查（10-11 判：四周 2103 轮 `guide_read` 0 次）。按可靠性分三层：
+
+| 层 | 管什么 | 在哪 | 怎么到他手里 |
+|---|---|---|---|
+| **Runtime Context（工牌）** | 他在哪、她从哪个端 / OS 哪一页、这里能干嘛、当前对象（片名 / 集数） | `nox-core/context/runtime.py` | 每轮动态块**最前**；**入口自己报**（bridge / co-reading / attention 填 `runtime`），不从正文猜；认不出的丢 + 留痕；≤160 字 |
+| **Interaction Contract（交互契约）** | 他把工具参数写进正文的伪输出（`[语音条…]` `[表情包]`），进了历史会被照抄 | `agent/contracts.py` + `ToolSpec.output_contract` | loop 收尾统一 `apply()`；只扫他的输出，不扫她的 |
+| **Guide · Map** | 手册 = 怎么运作（`guide/topics/` 12 篇，`guide_read` 翻）；地图 = 现在有什么（`caelum_map`，`guide/world_map.py`，运行期现取） | 前缀里只放手册**目录** | 他深查时自己翻。🔴 别给它加「记得调用」—— 环境认知归工牌 |
+
+- **按需工具包**（`agent/toolpacks.py`，R2）：核心集常驻；点单 / 电脑 / 花园 / 共听…按「她最近的话有触发词 / 30 分钟内真调过 / 工牌入口」挂上（每轮约 53 / 178 个）。`NOX_TOOL_PACKS=off` 退回全量
+- **共影剧情记忆**（`memory/watched.py`）：一集看完收成「剧情」+「我们一起看的」；World Model 精确取【前情】，OB 只 hold 一起看的
+- **配置层**（`settings_store/` → `settings.db`）：厂商 / 型号 / 用途（Slots）存库，她在 OS 的 Settings › Models 改；前端填的 key 单独 0600 文件，不进库
+- ⚠️ **工具登记有两处**：`Nox.__init__` 一串 + `api/server.py` 再追加一串 —— 工具包、排序、计数要两处都看
 
 ## 二、边界法则（写死，哨兵盯着）
 
