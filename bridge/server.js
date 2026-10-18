@@ -2311,8 +2311,9 @@ async function pipeTts(upstream, res, collect = null) {
  * 所以这一版**把用了哪个引擎回给前端**（响应头 + 通话面板小字），
  * 不再让它悄悄发生。
  */
-//: ⚠️ `DASHSCOPE_API_KEY`（第 1206 行）**不要跟着删** —— 语音识别还在用它，
-//: 删掉的只是 TTS 这一头。同理 `qwen3.5-flash` 是他的眼睛，也不在这次范围里。
+//: ⚠️ `DASHSCOPE_API_KEY` **不要跟着删** —— 阿里那几条语音识别还在用它（OS 通话、
+//: 语音浮层的第二条、两边通话的批量转写兜底 `/api/stt`；手机通话默认是 ElevenLabs Scribe），
+//: 删掉的只是 TTS 这一头。
 
 //: 她在 Models 页定的声音链（P4，10-13）：每次合成前读 Core，缓存 30 秒，读不到按默认（lib/voice-chains.js）
 const voiceChains = createVoiceChains({ coreUrl: NOX_CORE_URL });
