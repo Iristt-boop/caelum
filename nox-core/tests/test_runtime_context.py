@@ -226,3 +226,81 @@ def test_A1_电话预算_原因最长也不超():
 def test_红线_A1_voice兜底成call时_谁打的不丢():
     d = _nox()._dynamic("hello", True, scene="en", runtime={"caller": "nox"})
     assert "You called her" in d.split("\n\n")[0]
+
+
+# ------------------------------------------------------------ Guide A4：她在 OS 的哪一页（10-18）
+
+
+def test_A4_OS的Chat页_说她刚从哪页切过来():
+    out = rt.render(rt.RuntimeInfo.parse({"surface": "chat", "client": "os", "page": "chat", "from": "hisday"}))
+    assert "她刚从 OS 的「Mind › His Day」页切过来" in out
+    assert "桌面 Caelum OS" in out
+
+
+def test_A4_语音浮层在别的页_说她开着哪页():
+    out = rt.render(rt.RuntimeInfo.parse({"surface": "call", "caller": "her", "client": "os", "page": "voices"}))
+    assert "她现在开着 OS 的「Life › Voices」页" in out
+
+
+def test_A4_在Chat页又没有来处_不多说一句():
+    out = rt.render(rt.RuntimeInfo.parse({"surface": "chat", "client": "os", "page": "chat"}))
+    assert "OS 的「" not in out
+
+
+def test_A4_不在Chat页时_来处不算数():
+    info = rt.RuntimeInfo.parse({"surface": "call", "client": "os", "page": "moments", "from": "hisday"})
+    assert info.came_from is None and "His Day" not in rt.render(info)
+
+
+def test_A4_认不出的页面_丢掉留痕_不编页面名(caplog):
+    with caplog.at_level(logging.WARNING, logger="context.runtime"):
+        info = rt.RuntimeInfo.parse({"surface": "chat", "client": "os", "page": "secret-room"})
+    assert info.page is None
+    assert any("secret-room" in r.getMessage() for r in caplog.records)
+
+
+def test_A4_只认OS报的页面(caplog):
+    with caplog.at_level(logging.WARNING, logger="context.runtime"):
+        assert rt.RuntimeInfo.parse({"surface": "chat", "client": "app", "page": "moments"}).page is None
+        assert rt.RuntimeInfo.parse({"surface": "chat", "page": "moments"}).page is None
+
+
+def test_A4_英文电话也说页面_一个中文字都没有():
+    out = rt.render(rt.RuntimeInfo.parse({"surface": "call", "client": "os", "page": "set-notifications"}), english=True)
+    assert "Settings › Notifications" in out and not CJK.search(out)
+
+
+@pytest.mark.parametrize("surface", sorted(rt.SURFACES))
+def test_A4_预算_最长页面名加最长片名也不超(surface):
+    longest = max(rt.OS_PAGES, key=lambda k: len(rt.OS_PAGES[k]))
+    for page, frm in ((longest, None), ("chat", longest)):
+        info = rt.RuntimeInfo.parse({"surface": surface, "client": "os", "page": page, "from": frm,
+                                     "caller": "nox", "call_reason": "长" * 200,
+                                     "object": {"title": "长" * 500, "episode": "E" * 500}})
+        out = rt.render(info)
+        assert len(out) <= rt.MAX_CHARS, f"{surface}: {len(out)} 字 > {rt.MAX_CHARS}\n{out}"
+
+
+def test_A4_OS菜单里的每一页这张表都认得():
+    """OS 加了页（10-18 刚加了 Voices）这边忘了补，她在那页问他，他就不知道 —— 拿 OS 的 config.js 对表。"""
+    import re
+    from pathlib import Path
+    cfg = Path(__file__).resolve().parents[2] / "nox-app" / "caelum-os-ui" / "src" / "lib" / "config.js"
+    if not cfg.exists():
+        pytest.skip("没有 nox-app 检出（worktree 里）")
+    src = cfg.read_text(encoding="utf-8")
+    nav = src[src.index("export const NAV"):]
+    nav = nav[:nav.index("\n];")]
+    ids = set(re.findall(r'\{\s*id:\s*"([a-z0-9-]+)"', nav))
+    # 带子项的一级项只是索引，点它落到第一个子项 —— 不会停在它自己身上
+    parents = set(re.findall(r'id:\s*"([a-z0-9-]+)",\s*\n?\s*label:[^\n]*\n\s*icon:[^\n]*\n(?:\s*/\*\*[\s\S]*?\*/\n)?\s*children', nav))
+    parents |= {"mind", "tasks", "life", "studio", "settings"}
+    pages = ids - parents
+    assert pages - set(rt.OS_PAGES) == set(), f"OS 有、表里没有：{sorted(pages - set(rt.OS_PAGES))}"
+    assert set(rt.OS_PAGES) - pages == set(), f"表里有、OS 没有了：{sorted(set(rt.OS_PAGES) - pages)}"
+
+
+def test_红线_A4_从使用方看_他这一轮真的拿到了页面():
+    d = _nox()._dynamic("这个页面怎么用", True, scene="zh",
+                        runtime={"surface": "call", "caller": "her", "client": "os", "page": "voices"})
+    assert "她现在开着 OS 的「Life › Voices」页" in d.split("\n\n")[0]

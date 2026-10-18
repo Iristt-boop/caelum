@@ -58,8 +58,30 @@ _OBJECT_MAX = 24
 CALLERS = ("nox", "her")
 _REASON_MAX = 30
 
-#: 中文工牌的上限（字符）。卡死在测试里：超了说明有人往工牌里塞了内容
-MAX_CHARS = 120
+#: 她在 OS 的哪一页（Guide A4，10-18）：菜单 id → 她屏幕上看到的名字（`nox-app/caelum-os-ui/src/lib/config.js` 的 NAV）。
+#: 子页写「父 › 子」—— 有重名（Tasks › History / Studio › Tools / Settings › Models）。
+#: 🔴 认不出的 id 一律丢，不编页面名（手册 where-in-os 的规矩）。OS 加了页记得来这里补一行，
+#: tests/test_runtime_context.py 拿 OS 的 config.js 对着这张表查漏
+OS_PAGES: dict[str, str] = {
+    "home": "Home", "chat": "Chat",
+    "memory": "Mind › Memory", "attention": "Mind › Attention", "world": "Mind › World",
+    "room": "Mind › Room", "hisday": "Mind › His Day",
+    "tasks-active": "Tasks › Active", "tasks-scheduled": "Tasks › Scheduled",
+    "tasks-history": "Tasks › History", "tasks-automations": "Tasks › Automations",
+    "moments": "Life › Moments", "books": "Life › Books", "todo": "Life › Todo",
+    "health": "Life › Health", "music": "Life › Music", "movies": "Life › Movies",
+    "voices": "Life › Voices",
+    "skills": "Studio › Skills", "agents": "Studio › Agents", "workflows": "Studio › Workflows",
+    "tools": "Studio › Tools", "mcp": "Studio › MCP",
+    "set-general": "Settings › General", "set-models": "Settings › Models",
+    "set-permissions": "Settings › Permissions", "set-integrations": "Settings › Integrations",
+    "set-notifications": "Settings › Notifications", "set-appearance": "Settings › Appearance",
+    "set-privacy": "Settings › Privacy", "set-advanced": "Settings › Advanced",
+}
+
+#: 中文工牌的上限（字符）。卡死在测试里：超了说明有人往工牌里塞了内容。
+#: 10-18 120 → 160：多了「她在 OS 的哪一页」一行（最长「Settings › Notifications」+ 最长片名实测 152）
+MAX_CHARS = 160
 
 
 @dataclass(frozen=True)
@@ -70,6 +92,9 @@ class RuntimeInfo:
     episode: str | None = None
     caller: str | None = None
     call_reason: str | None = None
+    #: 她在 OS 的哪一页 / 切到 Chat 之前在哪页（都是 OS_PAGES 的 id；只认 client=os）
+    page: str | None = None
+    came_from: str | None = None
 
     @classmethod
     def parse(cls, raw: Mapping[str, Any] | None) -> "RuntimeInfo":
@@ -97,15 +122,43 @@ class RuntimeInfo:
         if caller is not None and caller not in CALLERS:
             logger.warning("Runtime Context：不认识的 caller=%r，丢掉", caller)
             caller = None
+        page, came_from = _page(raw.get("page"), client), _page(raw.get("from"), client)
         return cls(
             surface=surface,
             client=client.lower() if client else None,
+            page=page,
+            came_from=came_from if page == "chat" else None,
             title=_clean(obj.get("title"), _OBJECT_MAX),
             episode=_clean(obj.get("episode"), 12),
             caller=caller,
             # 原因只在「他打来的」时有意义（她拨的没有 reason）
             call_reason=_clean(raw.get("call_reason"), _REASON_MAX) if caller == "nox" else None,
         )
+
+
+def _page(v: Any, client: str | None) -> str | None:
+    """页面 id → 认得的才留。只有 OS 报页面（手机的页面另一套名字，还没接）。"""
+    pid = _clean(v, 24)
+    if pid is None:
+        return None
+    if (client or "").lower() != "os":
+        logger.warning("Runtime Context：client=%r 报了页面 %r，只认 OS 的页面，丢掉", client, pid)
+        return None
+    if pid not in OS_PAGES:
+        logger.warning("Runtime Context：不认识的 OS 页面 %r，丢掉（OS 加了新页？补 OS_PAGES）", pid)
+        return None
+    return pid
+
+
+def _page_line(info: "RuntimeInfo", english: bool) -> str:
+    """她在 OS 的哪一页。在 Chat 页打字 → 说刚从哪页过来；在别的页（语音浮层）→ 说开着哪页。"""
+    if info.page == "chat" and info.came_from:
+        name = OS_PAGES[info.came_from]
+        return f" She just came over from the {name} page." if english else f"她刚从 OS 的「{name}」页切过来。"
+    if info.page and info.page != "chat":
+        name = OS_PAGES[info.page]
+        return f" She has the {name} page open in Caelum OS." if english else f"她现在开着 OS 的「{name}」页。"
+    return ""
 
 
 def _clean(v: Any, limit: int) -> str | None:
@@ -126,7 +179,7 @@ def render(info: RuntimeInfo, *, english: bool = False) -> str:
         where = f", on {SURFACES[surface][1]} with her" if surface else ""
         # 原因是中文（core 生成的），英文工牌里不放 —— 一个中文字都不许有
         who = {"nox": " You called her", "her": " She called you"}.get(info.caller or "", "") if surface == "call" else ""
-        return (f"[Now] You're inside Caelum{where}.{who + '.' if who else ''} "
+        return (f"[Now] You're inside Caelum{where}.{who + '.' if who else ''}{_page_line(info, True)} "
                 "Anything you do goes through Caelum's tools, not her device directly.")
 
     lines = ["【你在哪】"]
@@ -149,6 +202,9 @@ def render(info: RuntimeInfo, *, english: bool = False) -> str:
             via = f"（{CLIENTS[info.client]}）" if info.client else ""
             lines.append(f"你在 Caelum 里，她现在从「{name}」找你{via}。")
         lines.append(f"这里能用：{caps}。")
+    page = _page_line(info, False)
+    if page:
+        lines.append(page)
     lines.append("你做的事都经由 Caelum 的工具完成，不直接碰她的设备。")
     return "\n".join(lines)
 

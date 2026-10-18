@@ -1277,7 +1277,20 @@ async function downscaleForModel(buf) {
  * 哪怕这句是从手机聊天页发的，她也确实在「一起看」。
  * 只给片名 + 集数；她停在几秒已经在【共影】那段消息里，写进工牌会每次暂停冷一次缓存。
  */
+//: 她从哪个端、在哪一页（Guide A4，10-18）：前端自己报，这里只认形状 ——
+//: client 只放 app / os；页面是菜单 id（小写字母、数字、连字符），翻成名字、认不认得是 Core 的事
+const RUNTIME_CLIENTS = new Set(["app", "os"]);
+const PAGE_ID_RE = /^[a-z0-9-]{1,24}$/;
+function whereFrom(body) {
+  const out = {};
+  if (RUNTIME_CLIENTS.has(body?.client)) out.client = body.client;
+  if (typeof body?.page === "string" && PAGE_ID_RE.test(body.page)) out.page = body.page;
+  if (typeof body?.from === "string" && PAGE_ID_RE.test(body.from)) out.from = body.from;
+  return out;
+}
+
 function runtimeFor(body) {
+  const where = whereFrom(body);
   if (body?.voice) {
     // 电话：谁先打的（10-11 A1 尺子：他主动打来，她问「干嘛给我打电话」，工牌原来只写「电话」）。
     // 现场有一通「已接听、还没挂」的 → 他打的；否则是她拨的（PWA 通话 / OS 的 Caelum Live）。
@@ -1293,15 +1306,15 @@ function runtimeFor(body) {
       )[0];
     } catch (e) { console.log("[Bridge] 工牌读来电现场失败:", e.message); }
     return c
-      ? { surface: "call", caller: "nox", call_reason: (c.reason || "").slice(0, 30) || undefined }
-      : { surface: "call", caller: "her" };
+      ? { surface: "call", caller: "nox", call_reason: (c.reason || "").slice(0, 30) || undefined, ...where }
+      : { surface: "call", caller: "her", ...where };
   }
   let w = null;
   try { w = liveWatch(); } catch (e) { console.log("[Bridge] 工牌读共影现场失败:", e.message); }
   if (w) {
-    return { surface: "watch", object: { title: w.title || undefined, episode: w.episode || undefined } };
+    return { surface: "watch", object: { title: w.title || undefined, episode: w.episode || undefined }, ...where };
   }
-  return { surface: "chat" };
+  return { surface: "chat", ...where };
 }
 
 // 把 Core 的 SSE 翻译成 bridge 前端认识的格式。

@@ -55,6 +55,26 @@ async function chat(body) {
   return seen.at(-1);
 }
 
+//: 放在共影那组前面：共影现场会在窗口里一直算「在看」，后面的轮次都会变成 watch
+describe("工牌：她从哪个端、在哪一页（Guide A4，10-18）", () => {
+  test("OS 的 Chat 页：client=os + page + 刚从哪页过来", async () => {
+    const sent = await chat({ message: "这个是什么", sessionId: "rt-os1", client: "os", page: "chat", from: "hisday" });
+    assert.deepEqual(sent.runtime, { surface: "chat", client: "os", page: "chat", from: "hisday" });
+  });
+
+  test("语音浮层在别的页面呼出：电话的工牌也带页面", async () => {
+    const sent = await chat({ message: "这个页面怎么用", sessionId: "rt-os2", voice: true, client: "os", page: "voices" });
+    assert.deepEqual(sent.runtime, { surface: "call", caller: "her", client: "os", page: "voices" });
+  });
+
+  test("🔴 形状不对的一律不传（不认识的端、带空格 / 大写 / 太长 / 不是字符串的页面）", async () => {
+    const sent = await chat({ message: "嗯", sessionId: "rt-os3", client: "web", page: "Voices 页", from: { x: 1 } });
+    assert.deepEqual(sent.runtime, { surface: "chat" });
+    const sent2 = await chat({ message: "嗯", sessionId: "rt-os4", client: "os", page: "a".repeat(25) });
+    assert.deepEqual(sent2.runtime, { surface: "chat", client: "os" });
+  });
+});
+
 describe("工牌：bridge 转给 Core 时带 runtime", () => {
   test("平常聊天：surface=chat", async () => {
     const sent = await chat({ message: "在吗", sessionId: "rt-chat" });
