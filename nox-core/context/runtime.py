@@ -77,6 +77,7 @@ OS_PAGES: dict[str, str] = {
     "set-permissions": "Settings › Permissions", "set-integrations": "Settings › Integrations",
     "set-notifications": "Settings › Notifications", "set-appearance": "Settings › Appearance",
     "set-privacy": "Settings › Privacy", "set-advanced": "Settings › Advanced",
+    "set-guide": "Settings › Guide",
 }
 
 #: 中文工牌的上限（字符）。卡死在测试里：超了说明有人往工牌里塞了内容。

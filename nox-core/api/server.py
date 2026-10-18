@@ -3528,6 +3528,25 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
     _sky_cache: dict = {"at": 0.0, "data": None}
 
     # ---- Creations（Studio 页 + 打开时取 HTML）----
+    # ---- 手册给她看（Guide A3，10-18：OS 的 Settings › Guide）。
+    # 和他 guide_read 读的是**同一份**（启动时载入的 topics），不做第二份；只读
+    def _guide_topics():
+        topics = getattr(core, "_guide_topics", None)
+        if topics is None:
+            raise HTTPException(status_code=503, detail="手册没载入")
+        return topics
+
+    @app.get("/api/nox/guide")
+    def guide_list() -> dict:
+        return {"ok": True, "items": [{"id": t.id, "title": t.title, "ask": t.ask} for t in _guide_topics()]}
+
+    @app.get("/api/nox/guide/{tid}")
+    def guide_get(tid: str) -> dict:
+        t = next((t for t in _guide_topics() if t.id == tid), None)
+        if t is None:
+            raise HTTPException(status_code=404, detail="没有这一篇")
+        return {"ok": True, "id": t.id, "title": t.title, "ask": t.ask, "body": t.body}
+
     def _creations():
         store = getattr(core, "creations", None)
         if store is None:

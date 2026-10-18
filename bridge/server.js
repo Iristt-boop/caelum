@@ -4035,6 +4035,28 @@ const creationsProxy = (method) => async (req, res) => {
     res.status(502).json({ ok: false, error: e.message });
   }
 };
+// ============ 手册（Guide A3，10-18：OS 的 Settings › Guide）============
+// 和他 guide_read 读的同一份，只读。404（没有这一篇）/ 503（Core 没载入手册）原样带回 ——
+// 前端要分得清「读不到」和「没有」
+async function guideProxy(req, res) {
+  const id = req.params.id ? `/${encodeURIComponent(req.params.id)}` : "";
+  try {
+    const r = await fetch(`${NOX_CORE_URL}/api/nox/guide${id}`, { signal: AbortSignal.timeout(8000) });
+    const body = await r.json().catch(() => null);
+    if (!r.ok || !body) {
+      return res.status([404, 503].includes(r.status) ? r.status : 502).json({
+        ok: false, error: (body && (body.detail || body.error)) || `Core 回了 ${r.status}`,
+      });
+    }
+    res.json(body);
+  } catch (e) {
+    console.error(`[guide] ${id || "目录"} 失败:`, e.message);
+    res.status(502).json({ ok: false, error: e.message });
+  }
+}
+app.get("/api/nox/guide", guideProxy);
+app.get("/api/nox/guide/:id", guideProxy);
+
 app.get("/api/nox/creations", creationsProxy("GET"));
 app.get("/api/nox/creations/:id", creationsProxy("GET"));
 app.delete("/api/nox/creations/:id", creationsProxy("DELETE"));
