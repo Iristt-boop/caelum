@@ -42,6 +42,7 @@ from typing import Any
 from agent import contracts as contracts_mod
 from agent import guard
 from agent import toolpacks
+from context.openers import model_view
 from tools import context as tool_context
 from agent.llm import (
     GATED_EFFECTS,
@@ -226,8 +227,8 @@ class AgentLoop:
         # 日志用的两个基准，必须在进 _run_inner 之前取（见 _tools_used）
         started = time.monotonic()
         base = len(history or [])
-        shape = cache_shape(system, self._offered(offer), history)
-        blocks = measure_ledger(system, dynamic_system, self._offered(offer), history, user_text)
+        shape = cache_shape(system, self._offered(offer), model_view(list(history or [])))
+        blocks = measure_ledger(system, dynamic_system, self._offered(offer), model_view(list(history or [])), user_text)
         result = self._run_inner(
             user_text, ctx, system=system, dynamic_system=dynamic_system,
             history=history, images=images, adapter=adapter, depth=depth,
@@ -269,6 +270,10 @@ class AgentLoop:
         llm = adapter or self.adapter
         messages: list[Message] = list(history or [])
         messages.append(Message(role="user", text=user_text, images=images or []))
+        #: 减重第三步：发给模型的那份 —— 进来之前的历史里开场白换成一行，这一轮追加的照原样。
+        #: `messages`（返回、落库的那份）一个字都不动，见 context/openers.py
+        n_hist = len(history or [])
+        view = model_view(list(history or []))
 
         specs = [t.spec for t in self._offered(offer)]
         tracker = guard.FailureTracker(limit=self.failure_limit)
@@ -288,7 +293,7 @@ class AgentLoop:
                 )
 
             turn = llm.complete(
-                messages,
+                view + messages[n_hist:],
                 specs,
                 system=system,
                 dynamic_system=_with_spoken_note(dynamic_system, spoke),
@@ -386,8 +391,8 @@ class AgentLoop:
         started = time.monotonic()
         base = len(history or [])
         model = adapter_name(adapter or self.adapter)
-        shape = cache_shape(system, self._offered(offer), history)
-        blocks = measure_ledger(system, dynamic_system, self._offered(offer), history, user_text)
+        shape = cache_shape(system, self._offered(offer), model_view(list(history or [])))
+        blocks = measure_ledger(system, dynamic_system, self._offered(offer), model_view(list(history or [])), user_text)
         finished = False
         try:
             for ev in self._stream_inner(
@@ -448,6 +453,10 @@ class AgentLoop:
         llm = adapter or self.adapter
         messages: list[Message] = list(history or [])
         messages.append(Message(role="user", text=user_text, images=images or []))
+        #: 减重第三步：发给模型的那份 —— 进来之前的历史里开场白换成一行，这一轮追加的照原样。
+        #: `messages`（返回、落库的那份）一个字都不动，见 context/openers.py
+        n_hist = len(history or [])
+        view = model_view(list(history or []))
 
         specs = [t.spec for t in self._offered(offer)]
         tracker = guard.FailureTracker(limit=self.failure_limit)
@@ -545,7 +554,7 @@ class AgentLoop:
                         yield from emit(piece)
 
             for ev in llm.stream(
-                messages, specs,
+                view + messages[n_hist:], specs,
                 system=system,
                 dynamic_system=_with_spoken_note(dynamic_system, spoke, empty=empty_retried),
                 depth=depth,

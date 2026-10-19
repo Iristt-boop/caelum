@@ -151,10 +151,17 @@ def tail_within(messages: list[Message], budget: int) -> list[Message]:
 
 def render_segment(messages: list[Message]) -> str:
     """把要压缩的消息段渲染成给摘要模型的文本。"""
+    from context.openers import is_opener, opener_label
+
     lines = []
     for m in messages:
         role = "糖糖" if m.role == "user" else ("Nox" if m.role == "assistant" else m.role)
-        if m.text:
+        if m.role == "user" and m.text and is_opener(m.text):
+            # 减重第三步（10-19）：他主动开口的系统提示不是她说的话 —— 原来渲染成「糖糖：（系统提示：…」，
+            # 摘要器把七百字的提示词当她的话去总结
+            label = opener_label(m.text)
+            lines.append(f"（Nox 主动开口：{label}）" if label else "（Nox 主动开口）")
+        elif m.text:
             lines.append(f"{role}：{m.text.strip()}")
         elif m.tool_calls:
             names = ", ".join(tc.name for tc in m.tool_calls)
