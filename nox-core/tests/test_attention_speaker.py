@@ -237,7 +237,7 @@ def test_prompt_mentions_repeat_count():
 
 
 def test_prompt_carries_the_number():
-    """关心必须落在具体数字上 —— 空泛地问「睡得好吗」不看数据也说得出口。"""
+    """数据要给到他（他得真看了才知道该惦记什么）—— 10-19 起只是不许念出来，见下面那条。"""
     intent = _intent()
     p = build_prompt(intent, _decision(intent), 0, None, EVENING)
     assert "4.5 小时" in p
@@ -466,3 +466,20 @@ def test_没有附件就不带这个键(astore):
     core = FakeCore()
     build_speaker(core, FakeSessions(), FakeStore(), astore)(_intent(), _decision(_intent()))
     assert "attachments" not in core.bridge.calls[0][1]
+
+
+def test_红线_P2_0_数据是依据不是台词_不给例句():
+    """她 10-19：「你昨天就睡了 XXh」这种没营养的话就是瞎念叨；在乎要落进她的生活里。
+    例句会被照抄（她 10-18），原来那句「昨晚才睡了五个小时」也一并拿掉。"""
+    intent = _intent()
+    p = build_prompt(intent, _decision(intent), 0, None, EVENING)
+    assert "别把数字念给她" in p and "落进她现在的生活里" in p
+    assert "话要落在你看见的那个具体数字上" not in p
+    assert "五个小时" not in p and "睡得好吗" not in p, "不许留例句"
+
+
+def test_红线_P2_0_早报也一样():
+    from planner.push import _MORNING_PROMPT
+    assert "别把数字念给她" in _MORNING_PROMPT and "落进她今天的安排里" in _MORNING_PROMPT
+    assert "先看她的身体" in _MORNING_PROMPT, "「没睡好要先注意到」那一半仍然成立（她 08-04）"
+    assert "具体数字上" not in _MORNING_PROMPT and "醒了那么久" not in _MORNING_PROMPT
