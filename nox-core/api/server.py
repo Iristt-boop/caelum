@@ -1405,7 +1405,8 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
                 logger.exception("他自己的时间这轮出错，下轮再看")
 
     def _care_review_tick(utility: Any) -> list[str]:
-        done = care_review.tick(attention.store, store, utility, datetime.now(timezone.utc))
+        # 🔴 会话库用 `db` —— `store` 是测试才传的参数，线上是 None（10-19 上线第一轮就栽在这）
+        done = care_review.tick(attention.store, db, utility, datetime.now(timezone.utc))
         if done:
             from growth.care_review import KIND_HEALTH_CARE
             for line in care_patterns.shadow_lines(attention.store.list_experiences(KIND_HEALTH_CARE),
@@ -2148,6 +2149,7 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
     app = FastAPI(title="Nox Core", version="0.1.0", lifespan=lifespan)
     #: 他自己的时间那一眼（测试和排查时手动敲一下用；平时由 lifespan 里的循环每 5 分钟调）
     app.state.own_time_tick = _own_time_tick
+    app.state.care_review_tick = _care_review_tick
 
     # ---------------------------------------------------------------- 本地执行端
     #

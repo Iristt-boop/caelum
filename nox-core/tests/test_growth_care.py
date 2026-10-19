@@ -265,3 +265,22 @@ def test_尺子_聊天里他说完她没接_不算没理():
     ad = _Ad(items=[{"i": 0, "nag": True, "topic": "睡眠", "style": "担心", "reception": "没理"}])
     chat = {**_c(hers=None), "proactive": False}
     assert cr.classify(ad, [chat]) == []
+
+
+def test_红线_线上那样不传会话库_回看也真能跑(monkeypatch, tmp_path):
+    """10-19 上线第一轮：回看用了 create_app 的 `store` 参数 —— 测试会传、线上是 None，
+    AttributeError。上面那些测试都传了 store，所以要单独按线上的样子构造一次。"""
+    from api.server import create_app
+    from data.store import Store
+    from tests.test_api import FakeNox
+    from tests.test_api_world import _Ctx
+
+    monkeypatch.setenv("NOX_ATTENTION", "1")
+    nox = FakeNox()
+    nox.cfg.db_path = str(tmp_path / "nox.db")
+    nox.context = _Ctx()
+    nox.bridge = None
+    Store(nox.cfg.db_path)   # 线上那个库已经在了
+    app = create_app(nox, None)
+    done = app.state.care_review_tick(_Ad(items=[]))
+    assert len(done) == cr.MAX_DAYS_PER_TICK
