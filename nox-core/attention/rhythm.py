@@ -59,6 +59,10 @@ COLDER_WINDOW_MIN = (180.0, 360.0)
 #: longing=满 → ×0.75（很想就快一点）。±25% 是故意的，理由见文件头
 GAP_FACTOR_MAX = 1.25
 GAP_FACTOR_MIN = 0.75
+#: P1 bias 的硬上下限（Growth Loop ⑥：最多克制三成、最多积极三成）。和想念那条叠起来最短是默认的
+#: 0.75 / 1.3 ≈ 58%（惦记 20~90 分钟 → 最快 12~52 分钟）—— 她 10-19 说「P1 生效」时点过头
+P1_BIAS_MIN = 0.7
+P1_BIAS_MAX = 1.3
 
 #: 念头急迫度的乘数范围（longing 0→×0.8，满→×1.2）
 URGENCY_BOOST_LO = 0.8
@@ -86,6 +90,10 @@ class RhythmModulator:
         #: 交给它看一眼，它去算「如果 P1 生效，这个窗口本来会是多少」并写日志。
         #: 🔴 **窗口的返回值不受它影响** —— shadow 期间他的行为一个字都不变
         self.window_observer: Callable[..., None] | None = None
+        #: Growth Loop 第 2 期：P1 生效（2026-10-19 她定）。真摇时间时问它「这个时刻的时段 bias 是多少」，
+        #: 窗口除以它（bias 1.3 → 间隔缩到 77%）。返回 None = 这个时段还没学成 / 关着，窗口不动。
+        #: 🔴 冷档时不问（G10：同一件「她没回」快慢两层不叠罚），而且这里再夹一次 0.7~1.3 —— 保险不靠对方守规矩
+        self.window_bias: Callable[[datetime], float | None] | None = None
         self._load()
 
     # ------------------------------------------------------------ 记录
@@ -196,12 +204,23 @@ class RhythmModulator:
         cold = self._cold_window()
         base = cold if cold else (lo_min, hi_min)
         window = (base[0] * f, base[1] * f)
+        when = at or datetime.now(timezone.utc)
+        bias = None
+        if why and cold is None and self.window_bias is not None:
+            try:
+                bias = self.window_bias(when)
+            except Exception:  # noqa: BLE001
+                logger.exception("P1 bias 读不到（窗口照默认）")
+                bias = None
+        if bias:
+            bias = min(P1_BIAS_MAX, max(P1_BIAS_MIN, float(bias)))
         if why and self.window_observer is not None:
             try:
-                self.window_observer(why=why, at=at or datetime.now(timezone.utc),
-                                     window=window, cold=cold is not None)
+                self.window_observer(why=why, at=when, window=window, cold=cold is not None, applied=bias)
             except Exception:  # noqa: BLE001
                 logger.exception("节奏窗口的观察者失败（窗口照常）")
+        if bias:
+            window = (window[0] / bias, window[1] / bias)
         return window
 
     def urgency_boost(self) -> float:

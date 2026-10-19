@@ -129,11 +129,31 @@ def receptive(rows: list[dict[str, Any]], now: datetime) -> dict[str, BucketPatt
     return out
 
 
+def p1_live() -> bool:
+    """P1 生效没有（Growth Loop 第 2 期，2026-10-19 她定）。`NOX_GROWTH_P1=shadow` 退回只看不动（每次现读）。"""
+    import os
+    return os.getenv("NOX_GROWTH_P1", "on").strip().lower() not in ("shadow", "off", "0", "false")
+
+
+def bias_for(store: Any, at: datetime) -> float | None:
+    """这个时刻所在时段的 P1 bias。没学成 / 没开 → None（rhythm 那边窗口不动）。"""
+    if not p1_live():
+        return None
+    p = receptive(store.list_experiences(KIND_PROACTIVE_REPLY), datetime.now(timezone.utc)).get(bucket(at))
+    return p.bias if p is not None and p.effective else None
+
+
 def shadow(store: Any, *, why: str, at: datetime, window: tuple[float, float],
-           cold: bool) -> None:
-    """rhythm 每次真摇时间时调一次：写一行「如果 P1 生效，本来会是多少」。不改任何东西。"""
+           cold: bool, applied: float | None = None) -> None:
+    """rhythm 每次真摇时间时调一次，写一行：生效了就写「用了多少」，没生效写「如果生效本来会是多少」。
+
+    `window` 是**乘 P1 之前**的窗口；`applied` 是 rhythm 真乘上的 bias（None = 没乘）。"""
     b = bucket(at)
     lo, hi = window
+    if applied:
+        logger.info("P1 生效：%s %s 时段 bias %.2f → 间隔 %.0f-%.0f 分钟（不乘是 %.0f-%.0f）",
+                    why, b, applied, lo / applied, hi / applied, lo, hi)
+        return
     if cold:
         logger.info("P1 shadow：%s %s 时段，rhythm 冷档优先，P1 不参与（窗口 %.0f-%.0f 分钟）",
                     why, b, lo, hi)

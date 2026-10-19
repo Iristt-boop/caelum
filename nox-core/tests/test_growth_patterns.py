@@ -204,3 +204,91 @@ def test_惦记和话题摇时间时都会通知_快照不会():
     think.snapshot()
     topic.snapshot()
     assert seen == ["惦记", "话题"], "读状态不许记 shadow"
+
+
+# ---------------------------------------------------------------- 第 2 期：P1 生效（2026-10-19 她定）
+
+
+def _cold(m: RhythmModulator) -> RhythmModulator:
+    """最近 5 条一条没理 → rhythm 冷档。"""
+    m._history = [{"at": NOW.isoformat(), "replied": False} for _ in range(5)]
+    assert m._cold_window() is not None
+    return m
+
+
+def test_P1生效_真摇时间时窗口除以bias_快照不动():
+    m = RhythmModulator(_Store())
+    m.window_bias = lambda at: 1.25
+    plain = RhythmModulator(_Store()).gap_window(20, 90)
+    got = m.gap_window(20, 90, why="惦记", at=NOW)
+    assert got == (plain[0] / 1.25, plain[1] / 1.25)
+    assert m.gap_window(20, 90) == plain, "快照接口不传 why，不乘"
+
+
+def test_红线_冷档时P1不参与_连问都不问():
+    """G10：同一件「她没回」快慢两层不叠罚 —— 冷档说了算。"""
+    asked = []
+    m = _cold(RhythmModulator(_Store()))
+    m.window_bias = lambda at: asked.append(at) or 1.3
+    want = _cold(RhythmModulator(_Store())).gap_window(20, 90)
+    assert m.gap_window(20, 90, why="惦记", at=NOW) == want
+    assert asked == []
+
+
+def test_红线_任何bias下间隔都不短于默认的1除以1点3_也不长于1除以0点7():
+    """上下限在 rhythm 里再夹一次 —— 保险不靠 patterns 那边守规矩。"""
+    plain = RhythmModulator(_Store()).gap_window(20, 90)
+    for wild in (5.0, 1.31, 0.1, 0.69):
+        m = RhythmModulator(_Store())
+        m.window_bias = lambda at, b=wild: b
+        lo, hi = m.gap_window(20, 90, why="惦记", at=NOW)
+        assert lo >= plain[0] / 1.3 - 1e-9 and hi >= plain[1] / 1.3 - 1e-9, (wild, lo, hi)
+        assert lo <= plain[0] / 0.7 + 1e-9 and hi <= plain[1] / 0.7 + 1e-9, (wild, lo, hi)
+
+
+def test_没学成_或bias读挂了_窗口照默认(caplog):
+    plain = RhythmModulator(_Store()).gap_window(20, 90)
+    m = RhythmModulator(_Store())
+    m.window_bias = lambda at: None
+    assert m.gap_window(20, 90, why="惦记", at=NOW) == plain
+
+    def boom(at):
+        raise RuntimeError("账本锁了")
+
+    m.window_bias = boom
+    with caplog.at_level(logging.ERROR, logger="attention.rhythm"):
+        assert m.gap_window(20, 90, why="惦记", at=NOW) == plain
+    assert any("P1 bias 读不到" in r.getMessage() for r in caplog.records)
+
+
+def test_bias_for_只给生效时段的_开关可退回shadow(monkeypatch):
+    rows = week(22, 10, days=range(1, 5)) + week(10, 80) + week(15, 80)
+    store = _Store(rows)
+    late = datetime(2026, 10, 5, 22, tzinfo=CN)
+    want = receptive(rows, datetime.now(UTC))["21-1"].bias
+    monkeypatch.delenv("NOX_GROWTH_P1", raising=False)
+    assert patterns.bias_for(store, late) == want
+    assert patterns.bias_for(store, datetime(2026, 10, 5, 13, tzinfo=CN)) is None, "12-14 没证据 → 不动"
+    # 有证据但还没攒够（一天 3 条，全是快回）→ 候选，也不动：一天的好心情不能变成习惯
+    few = rows + [row(2, 13, reply_min=5) for _ in range(3)]
+    assert receptive(few, datetime.now(UTC))["12-14"].effective is False
+    assert receptive(few, datetime.now(UTC))["12-14"].bias != 1.0
+    assert patterns.bias_for(_Store(few), datetime(2026, 10, 5, 13, tzinfo=CN)) is None
+    monkeypatch.setenv("NOX_GROWTH_P1", "shadow")
+    assert patterns.bias_for(store, late) is None
+
+
+def test_生效后日志写用了多少_不再说本来会是(caplog):
+    with caplog.at_level(logging.INFO, logger="growth.patterns"):
+        shadow(_Store(), why="惦记", at=NOW, window=(20.0, 90.0), cold=False, applied=1.25)
+    line = caplog.records[-1].getMessage()
+    assert "P1 生效" in line and "bias 1.25" in line and "16-72 分钟" in line and "本来会是" not in line
+
+
+def test_接线_service把bias接到rhythm上():
+    """接线漏了 = P1 悄悄没生效而测试全绿 —— 从 service 真构造一遍。"""
+    import inspect
+
+    from attention import service
+    src = inspect.getsource(service)
+    assert "rhythm.window_bias = lambda at: growth_patterns.bias_for(store, at)" in src

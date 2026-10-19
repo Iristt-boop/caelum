@@ -243,6 +243,8 @@ class AttentionService:
             #: 第 1 期 shadow（2026-10-05）：每次真摇开口时间，记一行「P1 生效的话本来会是多少」。
             #: 只写日志，rhythm 返回的窗口不变
             rhythm.window_observer = lambda **kw: growth_patterns.shadow(store, **kw)
+            #: 第 2 期：P1 生效（2026-10-19 她定）。`NOX_GROWTH_P1=shadow` 退回只看不动
+            rhythm.window_bias = lambda at: growth_patterns.bias_for(store, at)
         #: 主动来电（2026-09-19）：bridge 通道 + 开场白生成用的 utility。
         #: 两个都是 None = 打不出去（CallSource 不会因此少产念头 —— 交付会失败留痕）
         self.call_bridge = call_bridge
