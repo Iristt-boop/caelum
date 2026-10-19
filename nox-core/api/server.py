@@ -60,6 +60,7 @@ from attention import todo_defer
 from attention.fond import FondSource
 from attention.relation_book import RelationBook
 from attention import own_time
+from growth import care_patterns, care_review
 from attention.care import her_state
 from attention.resonance import DRIVE_FAMILY
 from attention.appraisal import ANCHOR_PREFIX, RuleAppraiser
@@ -1403,6 +1404,27 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
             except Exception:  # noqa: BLE001
                 logger.exception("他自己的时间这轮出错，下轮再看")
 
+    def _care_review_tick(utility: Any) -> list[str]:
+        done = care_review.tick(attention.store, store, utility, datetime.now(timezone.utc))
+        if done:
+            from growth.care_review import KIND_HEALTH_CARE
+            for line in care_patterns.shadow_lines(attention.store.list_experiences(KIND_HEALTH_CARE),
+                                                   datetime.now(timezone.utc)):
+                logger.info(line)
+        return done
+
+    async def _care_review_loop(utility: Any) -> None:
+        await asyncio.sleep(120)   # 刚启动先让别的循环起来
+        while True:
+            try:
+                await asyncio.to_thread(_care_review_tick, utility)
+                heartbeat.beat(care_review.HEARTBEAT_JOB)
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001
+                logger.exception("健康念叨回看这轮出错，下轮再看")
+            await asyncio.sleep(care_review.TICK_S)
+
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         """Attention 的后台心跳。**这是全 Core 唯一允许 async 的那层。**
@@ -1485,6 +1507,17 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
                 logger.info("他自己的时间 循环启动")
         except Exception:  # noqa: BLE001
             logger.exception("他自己的时间 接线失败，这条线不跑")
+        # Growth Loop 第 2 期 shadow（10-19）：每小时看一眼，把还没回看过的日子回看掉 ——
+        # 他念叨她身体的那些话、她怎么接（P2 / P3-健康的证据）。只记账、只写日志，不改他任何行为。
+        # 整段 try 照 Moments 的理由：附加层起不来不该拖垮 Core
+        try:
+            _care_utility = core.router.light_adapter if getattr(core, "router", None) else None
+            if attention is not None and _care_utility is not None and hasattr(attention.store, "append_experience"):
+                heartbeat.declare(care_review.HEARTBEAT_JOB, every_s=3 * care_review.TICK_S)
+                tasks.append(asyncio.create_task(_care_review_loop(meter.tag(_care_utility, "growth-care"))))
+                logger.info("健康念叨回看 循环启动（P2 / P3-健康 shadow）")
+        except Exception:  # noqa: BLE001
+            logger.exception("健康念叨回看 接线失败，这条线不跑")
         # 长任务 runner（2026-09-22）。默认开 —— 它是惰性的：没有她确认过的
         # 任务就只是在队上等，不花一分钱。NOX_TASKS_DISABLED 留给排查日
         try:
@@ -2369,13 +2402,24 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
         from growth import patterns as growth_patterns
         from growth.experience import KIND_PROACTIVE_REPLY
 
+        from growth.care_review import KIND_HEALTH_CARE
+
+        now_utc = datetime.now(timezone.utc)
         rows = attention.store.list_experiences(KIND_PROACTIVE_REPLY)
-        p1 = growth_patterns.receptive(rows, datetime.now(timezone.utc))
+        p1 = growth_patterns.receptive(rows, now_utc)
+        #: 10-19 起：P1 生效；P2 念叨耐受度 + P3-健康 说法偏好 shadow（`growth/care_patterns.py`）
+        care = attention.store.list_experiences(KIND_HEALTH_CARE)
+        tol = care_patterns.tolerance(care, now_utc)
+        sty = care_patterns.styles(care, now_utc)
         return {
             "ok": True, "enabled": True, "now": now_cst().isoformat(),
-            "stage": "shadow",
+            "stage": "p1-live" if growth_patterns.p1_live() else "shadow",
             "ledger_rows": len(rows),
             "p1": [p1[b].to_dict() for b in growth_patterns.BUCKET_ORDER if b in p1],
+            "care_rows": len(care),
+            "p2": [p.to_dict() for p in tol.values()],
+            "p3_health": [s.to_dict() for s in sty.values()],
+            "p3_hints": [h for h in (care_patterns.style_hint(sty, t) for t in tol) if h],
         }
 
     def _pulse_events(since: int) -> list[dict]:
