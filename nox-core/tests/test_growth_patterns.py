@@ -24,6 +24,13 @@ CN = timezone(timedelta(hours=8))
 NOW = datetime(2026, 10, 5, 12, tzinfo=CN)
 
 
+#: bias_for / shadow 里自己调 datetime.now() —— 测试钉成 NOW，两边才是同一个「现在」
+class _FrozenDatetime(datetime):
+    @classmethod
+    def now(cls, tz=None):
+        return NOW.astimezone(tz) if tz else NOW.replace(tzinfo=None)
+
+
 def row(day: int, hour: int, *, reply_min: int | None = 10, silent: int = 60,
         posture: str = "normal", bucket: str | None = None) -> dict:
     at = datetime(2026, 10, day, hour, tzinfo=CN)
@@ -172,7 +179,8 @@ def test_观察者挂了_窗口照常_而且留痕(caplog):
     assert any("观察者失败" in r.getMessage() for r in caplog.records)
 
 
-def test_shadow_日志说得出本来会是多少(caplog):
+def test_shadow_日志说得出本来会是多少(caplog, monkeypatch):
+    monkeypatch.setattr(patterns, "datetime", _FrozenDatetime)
     rows = week(22, 10, days=range(1, 5)) + week(10, 80) + week(15, 80)
     store = _Store(rows)
     at = datetime(2026, 10, 5, 22, tzinfo=CN)
@@ -181,7 +189,7 @@ def test_shadow_日志说得出本来会是多少(caplog):
         shadow(store, why="惦记", at=at, window=(60.0, 180.0), cold=True)
         shadow(store, why="惦记", at=datetime(2026, 10, 5, 13, tzinfo=CN), window=(20.0, 90.0), cold=False)
     lines = [r.getMessage() for r in caplog.records]
-    bias = receptive(rows, datetime.now(UTC))["21-1"].bias
+    bias = receptive(rows, NOW)["21-1"].bias
     assert "21-1" in lines[0] and f"本来会是 {20 / bias:.0f}-{90 / bias:.0f} 分钟" in lines[0], lines[0]
     assert "冷档优先" in lines[1]
     assert "12-14" in lines[2] and "没有证据" in lines[2]
@@ -262,17 +270,20 @@ def test_没学成_或bias读挂了_窗口照默认(caplog):
 
 
 def test_bias_for_只给生效时段的_开关可退回shadow(monkeypatch):
+    # 钉死 bias_for 里的「现在」：原来两边各调一次 datetime.now()，衰减权重差几微秒，
+    # 浮点 == 偶尔差最后一位 —— 整套跑偶发 1 红、重跑就绿（2026-10-19 抓到）
+    monkeypatch.setattr(patterns, "datetime", _FrozenDatetime)
     rows = week(22, 10, days=range(1, 5)) + week(10, 80) + week(15, 80)
     store = _Store(rows)
     late = datetime(2026, 10, 5, 22, tzinfo=CN)
-    want = receptive(rows, datetime.now(UTC))["21-1"].bias
+    want = receptive(rows, NOW)["21-1"].bias
     monkeypatch.delenv("NOX_GROWTH_P1", raising=False)
     assert patterns.bias_for(store, late) == want
     assert patterns.bias_for(store, datetime(2026, 10, 5, 13, tzinfo=CN)) is None, "12-14 没证据 → 不动"
     # 有证据但还没攒够（一天 3 条，全是快回）→ 候选，也不动：一天的好心情不能变成习惯
     few = rows + [row(2, 13, reply_min=5) for _ in range(3)]
-    assert receptive(few, datetime.now(UTC))["12-14"].effective is False
-    assert receptive(few, datetime.now(UTC))["12-14"].bias != 1.0
+    assert receptive(few, NOW)["12-14"].effective is False
+    assert receptive(few, NOW)["12-14"].bias != 1.0
     assert patterns.bias_for(_Store(few), datetime(2026, 10, 5, 13, tzinfo=CN)) is None
     monkeypatch.setenv("NOX_GROWTH_P1", "shadow")
     assert patterns.bias_for(store, late) is None

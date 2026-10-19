@@ -226,7 +226,8 @@ def test_no_bridge_raises(astore):
 def test_prompt_mentions_repeat_count():
     """说过几次要写进 prompt，否则第三天还是同一句话。"""
     intent = _intent()
-    now = datetime.now(timezone.utc)
+    # 钉死时刻：「昨天」是日历概念，墙上时钟 00:00~01:00 跑时 25 小时前是前天
+    now = EVENING
     fresh = build_prompt(intent, _decision(intent), 0, None, now)
     again = build_prompt(intent, _decision(intent), 2,
                          now - timedelta(hours=25), now)

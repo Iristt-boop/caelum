@@ -51,8 +51,26 @@ def _render(calls):
     return p.render(p.get_state(Turn()))
 
 
+#: 钉死的「现在」（2026-10-19）。原来拿墙上时钟：00:00~00:30 跑，「30 分钟前」就落到昨天，
+#: 「今天 」那条断言随机红 —— 跑测试的时刻不该决定测试结果。
+FROZEN = datetime(2026, 10, 19, 15, 0, tzinfo=LOCAL_TZ)
+
+
+class _FrozenDatetime(datetime):
+    @classmethod
+    def now(cls, tz=None):
+        return FROZEN.astimezone(tz) if tz else FROZEN.replace(tzinfo=None)
+
+
+@pytest.fixture(autouse=True)
+def _frozen_clock(monkeypatch):
+    from context.providers import calls
+
+    monkeypatch.setattr(calls, "datetime", _FrozenDatetime)
+
+
 def _now():
-    return datetime.now(LOCAL_TZ).replace(second=0, microsecond=0)
+    return FROZEN
 
 
 def test_她拨的_带时长_昨天和今天分得清():
