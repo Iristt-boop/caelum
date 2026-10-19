@@ -140,8 +140,24 @@ def collect(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return sorted(out, key=lambda c: c["at"])[:MAX_PER_DAY]
 
 
+#: 一次最多送几条去归类。utility 会先在后台想（reasoning 和回答抢 max_tokens），
+#: 一天 24 条一次送 → 10-06 那天 stop_reason=max_tokens、回答没写完。分批送，每批给足额度
+BATCH = 20
+CLASSIFY_MAX_TOKENS = 8000
+
+
 def classify(adapter: Any, cands: list[dict[str, Any]]) -> list[dict[str, Any]] | None:
-    """一次调用归类整天的候选。挂了 / 回的不是 JSON → None（这一天下次再试）。"""
+    """分批归类整天的候选。任何一批挂了 / 回的不是 JSON → None（这一天整天下次再试，不记半天）。"""
+    out = []
+    for k in range(0, len(cands), BATCH):
+        got = _classify_batch(adapter, cands[k:k + BATCH])
+        if got is None:
+            return None
+        out += got
+    return out
+
+
+def _classify_batch(adapter: Any, cands: list[dict[str, Any]]) -> list[dict[str, Any]] | None:
     from agent.llm import Message
 
     if not cands:
@@ -151,7 +167,7 @@ def classify(adapter: Any, cands: list[dict[str, Any]]) -> list[dict[str, Any]] 
         lines.append(f"{n}. 他：{c['his'][:200]}\n   她：{(c['hers'] or '（她没回）')[:120]}")
     try:
         turn = adapter.complete([Message(role="user", text="\n".join(lines))], tools=[],
-                                system=_PROMPT, depth="low")
+                                system=_PROMPT, depth="low", max_tokens=CLASSIFY_MAX_TOKENS)
     except Exception as exc:  # noqa: BLE001
         logger.warning("健康念叨回看：归类调用失败：%s: %s", type(exc).__name__, exc)
         return None

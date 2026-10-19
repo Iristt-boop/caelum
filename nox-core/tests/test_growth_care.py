@@ -284,3 +284,26 @@ def test_红线_线上那样不传会话库_回看也真能跑(monkeypatch, tmp_
     app = create_app(nox, None)
     done = app.state.care_review_tick(_Ad(items=[]))
     assert len(done) == cr.MAX_DAYS_PER_TICK
+
+
+def test_分批送_每批给足额度_一批挂了整天不算():
+    """10-06 那天一次送 24 条，utility 的 reasoning 吃光 max_tokens，回答没写完。"""
+    class _Rec(_Ad):
+        def __init__(self, fail_on=None):
+            super().__init__(items=[])
+            self.kw, self.fail_on = [], fail_on
+
+        def complete(self, messages, tools=None, **kw):
+            self.kw.append(kw)
+            if self.fail_on is not None and len(self.kw) == self.fail_on:
+                raise RuntimeError("这批挂了")
+            n = messages[0].text.count("\n   她：")
+            return Turn(stop_reason="end_turn", usage=Usage(), text=json.dumps({"items": [
+                {"i": i, "nag": True, "topic": "睡眠", "style": "担心", "reception": "带过"} for i in range(n)]}))
+
+    cands = [_c() for _ in range(25)]
+    ad = _Rec()
+    got = cr.classify(ad, cands)
+    assert len(ad.kw) == 2 and len(got) == 25, "20 + 5，两批"
+    assert all(k.get("max_tokens") == cr.CLASSIFY_MAX_TOKENS for k in ad.kw)
+    assert cr.classify(_Rec(fail_on=2), cands) is None
