@@ -33,7 +33,9 @@ class OwnDayProvider(BaseContextProvider):
         from attention.dream import today_dream
         from temporal import now as temporal_now
 
-        now = turn.now or temporal_now()  # Turn.now 线上是 None（memory ctx-turn-now-is-none）
+        # nox.py 拼上下文时 Turn 不带 now（同 TimeProvider 的 `turn.now or now_cst()`）。
+        # 10-10~10-18 没兜这一下，每轮都在 None 上炸、这段静默缺席（journalctl 800+ 条）
+        now = turn.now or temporal_now()
         dream = today_dream(self.data_dir, now) if self.data_dir else ""
         attention = self.attention_ref() if callable(self.attention_ref) else self.attention_ref
         log = getattr(attention, "activity_log", None) if attention is not None else None
