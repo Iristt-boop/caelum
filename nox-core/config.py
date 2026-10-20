@@ -268,6 +268,15 @@ class Config:
     ha_url: str = field(default_factory=lambda: _env("NOX_HA_URL", ""))
     ha_timeout: float = 20.0
 
+    # ---- stackchan-mcp（他的「身体」：转头/表情/说话/灯环/看一眼，2026-09-24）----
+    # gateway daemon 和 Core 同机（VPS），只听回环。留空则不注册身体工具 ——
+    # 设备不在线他照样能聊天，工具调了也会在 get_status 里如实说不在线
+    stackchan_url: str = field(default_factory=lambda: _env("NOX_STACKCHAN_MCP_URL", ""))
+    #: 网关的 Bearer（gateway .env 里同一个 STACKCHAN_TOKEN）；空 = 网关没配鉴权
+    stackchan_token: str = field(default_factory=lambda: _env("NOX_STACKCHAN_TOKEN", ""))
+    #: 拍照→视觉转述（stackchan_look）比一般工具慢：抓帧+编码+上传+看图
+    stackchan_timeout: float = 60.0
+
     #: 我们家那间像素房间的 MCP（caelum-room）。他在房间里的身体走这条。
     #:
     #: ⚠️ 房间的 MCP **只允许绑回环**（上游源码写死：
