@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+import os
 import re
 import uuid
 from datetime import datetime, timezone
@@ -618,9 +619,10 @@ class Nox:
         # 你们之间的事（关系状态账本，10-06）：约定 / 别问 / 上心 / 气氛。没有就是空串
         self.context.register(RelationProvider(
             attention_ref=lambda: getattr(self, "attention", None)))
-        # 他今天自己做过什么（V5「他自己的时间」，10-06）。没有就是空串
+        # 他今天自己做过什么（V5「他自己的时间」，10-06）+ 昨晚的梦（10-20 起梦不进 OB）。没有就是空串
         self.context.register(OwnDayProvider(
-            attention_ref=lambda: getattr(self, "attention", None)))
+            attention_ref=lambda: getattr(self, "attention", None),
+            data_dir=os.path.dirname(str(self.cfg.db_path))))
         # 你们最近通过的电话（2026-10-10，她：「放在上下文就行了」）。没有 bridge 就没有这一栏。
         # 专用 2 秒超时的 client：它进每轮名单，bridge 卡住不能拖慢轻量路径
         if self.cfg.bridge_url:

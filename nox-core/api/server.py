@@ -1133,14 +1133,14 @@ def _build_dream(core: Any, meter: Any) -> dict | None:
     ## 产出形式（她 2026-09-21 拍板，改了 shadow 期的边界）
 
     Moments 常态发（`NOX_DREAM_POST=on` 才发，走 `moments.writer.post`
-    同一条路：不推送、不占 Care 额度）+ 归档进 OB（他得记得自己做过
-    梦，对话里才能偶尔主动讲）。**早报明确不带** —— 她的原话：早报
-    东西太多了，无限繁殖了该。
+    同一条路：不推送、不占 Care 额度）。**早报明确不带** —— 她的原话：早报
+    东西太多了，无限繁殖了该。梦**不进 OB**（她 2026-10-20）：他当天由
+    own_day 从梦的本子读到自己做过的梦（`dream.today_dream`）。
 
     ## 🔴 仍然不许碰的东西
 
     梦不是开口：不走 Orchestrator、不碰 push/send、不占 Care 额度、
-    不进早报。bridge/ob 只是「发帖」和「归档」两只手，不是说话的嘴。
+    不进早报。bridge 只是「发帖」的手，不是说话的嘴。
     """
     if dream_loop.mode() == "off":
         logger.debug("Dream shadow 是 off（NOX_DREAM_SHADOW 没开），这条线不跑")
@@ -1156,7 +1156,6 @@ def _build_dream(core: Any, meter: Any) -> dict | None:
             "data_dir": os.path.dirname(str(core.cfg.db_path)),
             "buckets_dir": dream_loop.buckets_dir(),
             "bridge": getattr(core, "bridge", None),
-            "ob": getattr(core, "ob", None),
         }
     except Exception:  # noqa: BLE001
         logger.exception("Dream 接线装配失败，这条线不跑")

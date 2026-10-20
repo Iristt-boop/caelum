@@ -189,6 +189,23 @@ def test_他记得自己今天做过什么_没有就一个字都不占(store):
     assert "没做成" not in out, "没做成的不进他上下文（她在 His Day 里看得到）"
 
 
+def test_昨晚的梦进他的上下文_只当天(store, tmp_path):
+    """10-20 起梦不进 OB —— 他靠这一栏记得自己做过梦。第二天就不背了。"""
+    import json as _json
+    (tmp_path / "dream-shadow.jsonl").write_text(_json.dumps(
+        {"date": "2026-10-07", "dream": "梦见十一在副驾驶上看地图"}, ensure_ascii=False) + "\n",
+        encoding="utf-8")
+    log = ActivityLog(store)
+    p = OwnDayProvider(attention_ref=lambda: SimpleNamespace(activity_log=log),
+                       data_dir=str(tmp_path))
+    out = p.render(p._fetch(CtxTurn(text="在吗", now=NOW)))
+    assert "【你昨晚做的梦】梦见十一在副驾驶上看地图" in out
+    assert "自己的时间" not in out, "没做事的日子只给梦，不给空的活动栏"
+    assert p.render(p._fetch(CtxTurn(text="在吗", now=NOW + timedelta(days=1)))) == ""
+    # 线上 Turn.now 是 None：不许炸，按现在的时间算（今天不是 10-07 → 没有梦）
+    assert "梦" not in p.render(p._fetch(CtxTurn(text="在吗", now=None)))
+
+
 def test_他的一天里有这一类_带心里话和轨迹(store):
     log = ActivityLog(store)
     log.append(_act(10))

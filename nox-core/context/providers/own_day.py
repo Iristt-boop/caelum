@@ -22,26 +22,37 @@ class OwnDayProvider(BaseContextProvider):
     section = "self"
     volatile = True
 
-    def __init__(self, attention_ref: Any, **kw: Any) -> None:
+    def __init__(self, attention_ref: Any, data_dir: str | None = None, **kw: Any) -> None:
         super().__init__(**kw)
         self.attention_ref = attention_ref
+        #: 梦的本子所在（dream-shadow.jsonl）。2026-10-20 起梦不进 OB，当天从这里读给他
+        self.data_dir = data_dir
 
     def _fetch(self, turn: Turn) -> dict[str, Any]:
         from attention.own_time import describe_today
+        from attention.dream import today_dream
+        from temporal import now as temporal_now
 
+        now = turn.now or temporal_now()  # Turn.now 线上是 None（memory ctx-turn-now-is-none）
+        dream = today_dream(self.data_dir, now) if self.data_dir else ""
         attention = self.attention_ref() if callable(self.attention_ref) else self.attention_ref
         log = getattr(attention, "activity_log", None) if attention is not None else None
         if log is None:
-            return {"text": ""}
+            return {"text": "", "dream": dream}
         try:
-            return {"text": describe_today(log, turn.now)}
+            return {"text": describe_today(log, now), "dream": dream}
         except Exception as exc:  # noqa: BLE001
             logger.warning("读活动日志失败，这轮不给他这段：%s", exc)
-            return {"text": ""}
+            return {"text": "", "dream": dream}
 
     def render(self, state: dict[str, Any]) -> str:
         text = (state or {}).get("text") or ""
-        if not text:
-            return ""
-        return ("【你今天自己的时间】" + text + "\n"
-                "这是你自己做过的事，聊到了可以自然提起；想跟她说的那句，什么时候说、说不说你自己定。")
+        dream = (state or {}).get("dream") or ""
+        out = []
+        if text:
+            out.append("【你今天自己的时间】" + text + "\n"
+                       "这是你自己做过的事，聊到了可以自然提起；想跟她说的那句，什么时候说、说不说你自己定。")
+        if dream:
+            out.append("【你昨晚做的梦】" + dream + "\n"
+                       "是你自己的梦。想跟她讲就讲，不讲也行；她问起来你记得。")
+        return "\n".join(out)

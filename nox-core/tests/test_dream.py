@@ -263,35 +263,23 @@ class _Bridge:
         return SimpleNamespace(ok=True, data={"id": "mom-1"}, error=None)
 
 
-class _OB:
-    def __init__(self):
-        self.grown = []
-
-    def grow(self, content):
-        self.grown.append(content)
-        return SimpleNamespace(ok=True, text="已归档", error=None)
-
-
-def test_night_tick_post_off_sends_nothing_but_archives(buckets, night_env):
-    """NOX_DREAM_POST 默认 off：不发帖；OB 归档照做（他要记得自己做过梦）。"""
-    bridge, ob = _Bridge(), _OB()
-    now = datetime.now(CST)
+def test_night_tick_post_off_sends_nothing(buckets, night_env):
+    """NOX_DREAM_POST 默认 off：不发帖；梦照样落进梦的本子。"""
+    bridge = _Bridge()
     rec = dream.night_tick(utility=_Utility(), buckets_dir=buckets,
                            data_dir=night_env["data_dir"],
-                           bridge=bridge, ob=ob, now=now)
+                           bridge=bridge, now=datetime.now(CST))
     assert rec is not None
     assert bridge.posts == []
-    assert len(ob.grown) == 1
-    assert ob.grown[0].startswith(f"【{now.date().isoformat()} 的梦】")
 
 
 def test_night_tick_post_on_posts_via_writer_path(buckets, night_env, monkeypatch):
     """开闸：梦走 moments.writer.post 同一条路（drive=dream，不推送）。"""
     monkeypatch.setenv("NOX_DREAM_POST", "1")
-    bridge, ob = _Bridge(), _OB()
+    bridge = _Bridge()
     rec = dream.night_tick(utility=_Utility(), buckets_dir=buckets,
                            data_dir=night_env["data_dir"],
-                           bridge=bridge, ob=ob, now=datetime.now(CST))
+                           bridge=bridge, now=datetime.now(CST))
     assert rec is not None
     assert len(bridge.posts) == 1
     path, body = bridge.posts[0]
@@ -299,8 +287,6 @@ def test_night_tick_post_on_posts_via_writer_path(buckets, night_env, monkeypatc
     assert body["kind"] == "moment" and body["author"] == "Nox"
     assert body["drive"] == "dream"
     assert body["content"] == rec["dream"]
-    # 梦也归了档
-    assert len(ob.grown) == 1
 
 
 def test_night_tick_post_failure_does_not_kill_the_night(buckets, night_env,
@@ -314,23 +300,36 @@ def test_night_tick_post_failure_does_not_kill_the_night(buckets, night_env,
 
     rec = dream.night_tick(utility=_Utility(), buckets_dir=buckets,
                            data_dir=night_env["data_dir"],
-                           bridge=_DeadBridge(), ob=_OB(),
-                           now=datetime.now(CST))
+                           bridge=_DeadBridge(), now=datetime.now(CST))
     assert rec is not None
     log = Path(night_env["data_dir"]) / "dream-shadow.jsonl"
     assert len(log.read_text(encoding="utf-8").strip().splitlines()) == 1
 
 
-def test_ob_grow_failure_does_not_kill_the_night(buckets, night_env):
-    class _DeadOB:
-        def grow(self, content):
-            raise RuntimeError("OB 睡了")
+# --------------------------------------------------------------- 2026-10-20：梦不进 OB
 
+
+def test_梦不进OB():
+    """她 10-20：「梦存 OB 有点奇怪」。night_tick 不再收 ob、源码里也没有往 OB 写的路。"""
+    import inspect
+    assert "ob" not in inspect.signature(dream.night_tick).parameters
+    assert "ob" not in inspect.signature(dream.run_dream_loop).parameters
+    src = inspect.getsource(dream)
+    for forbidden in (".grow(", ".hold("):
+        assert forbidden not in src, f"梦又往 OB 写了：{forbidden}"
+
+
+def test_today_dream_读当天那场(buckets, night_env):
+    now = datetime.now(CST)
     rec = dream.night_tick(utility=_Utility(), buckets_dir=buckets,
-                           data_dir=night_env["data_dir"],
-                           bridge=_Bridge(), ob=_DeadOB(),
-                           now=datetime.now(CST))
-    assert rec is not None
+                           data_dir=night_env["data_dir"], now=now)
+    assert dream.today_dream(night_env["data_dir"], now) == rec["dream"]
+    # 第二天就不给了 —— 昨天的梦该由她聊起时的记忆管，不每轮背着
+    assert dream.today_dream(night_env["data_dir"], now + timedelta(days=1)) == ""
+
+
+def test_today_dream_没有本子就是空(tmp_path):
+    assert dream.today_dream(str(tmp_path), datetime.now(CST)) == ""
 
 
 # --------------------------------------------------------------- 2026-09-23：三晚「太短」

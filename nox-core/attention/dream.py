@@ -13,7 +13,8 @@ OB 早就有 `dream` 工具（浮现最近的表层桶），nox-core 的 `review
 
 一周后她看「都会梦到什么」再拍产出形式 —— **2026-09-21 她拍了**：
 **Moments 常态发**（给他一个自己发言的地方）+ **对话里偶尔主动讲**
-（所以梦要归档进 OB —— 他得记得自己做过梦才讲得出来）+ **早报明确
+（他得记得自己做过梦才讲得出来 —— 原来靠归档进 OB，**2026-10-20 她改了：梦不进 OB**，
+当天由 own_day 从梦的本子读给他，见 `today_dream`）+ **早报明确
 不带**（她的原话：早报的东西太多了，无限繁殖了该 —— 早报是封闭通道）。
 「发」那半边挂在 `NOX_DREAM_POST` 后面（见 `post_mode`），跟 shadow
 观察期分开，等 09-25 连着 Moments 的拍板一起翻。
@@ -409,9 +410,9 @@ def _too_soon(last_date: str | None, now: datetime) -> bool:
 
 
 def night_tick(*, utility: Any, data_dir: str, buckets_dir: str,
-               bridge: Any = None, ob: Any = None,
+               bridge: Any = None,
                now: datetime | None = None) -> dict | None:
-    """一晚的活：防重 → 选材 → 生成 → 落日志 → （拍板了的）发帖+归档。
+    """一晚的活：防重 → 选材 → 生成 → 落日志 → （拍板了的）发帖。
     返回写进 JSONL 的那条（或 None）。
 
     成功或「今晚没素材」都 beat 心跳（循环活着）；生成失败不 beat ——
@@ -465,9 +466,8 @@ def night_tick(*, utility: Any, data_dir: str, buckets_dir: str,
                 "1 条" if record["echo"] else "无",
                 len(dream))
 
-    # 她 2026-09-21 的拍板：Moments 常态发（NOX_DREAM_POST=on 才发）+
-    # 归档进 OB（他得记得自己做过梦，对话里才能偶尔主动讲）。
-    # 🔴 两件都**不许炸掉这一晚**：梦本身已经落 JSONL 了，对外失败只留痕。
+    # 她 2026-09-21 的拍板：Moments 常态发（NOX_DREAM_POST=on 才发）。
+    # 🔴 **不许炸掉这一晚**：梦本身已经落 JSONL 了，对外失败只留痕。
     if bridge is not None and post_mode() == "on":
         post_id = moments_writer.post(
             bridge, dream, "dream",
@@ -476,17 +476,30 @@ def night_tick(*, utility: Any, data_dir: str, buckets_dir: str,
             logger.warning("Dream → Moments 发帖失败（梦已落 JSONL，不重试）")
         else:
             logger.info("Dream → Moments 已发帖：%s", post_id)
-    if ob is not None:
-        try:
-            r = ob.grow(f"【{today} 的梦】{dream}")
-            if not r.ok:
-                logger.warning("Dream 归档 OB 没成：%s", r.error)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Dream 归档 OB 炸了：%s: %s",
-                           type(exc).__name__, exc)
+    # 🔴 梦不进 OB（她 2026-10-20：「梦存 OB 有点奇怪」）—— 梦是我的，不是我们经历过的事；
+    # 原来走 grow 还会被拆成两条。他要记得自己做过梦：当天由 own_day 从这本 JSONL
+    # 读给他（`today_dream`）；她回应过、聊起过的那个梦，聊天里自然会作为经历记下。
 
     heartbeat.beat("dream_tick")
     return record
+
+
+def today_dream(data_dir: str, now: datetime) -> str:
+    """今天（CST）做过的梦，没有就空串。读梦的本子最后一行就够 —— 一晚至多一场。"""
+    try:
+        with _log_path(data_dir).open("rb") as f:
+            f.seek(0, os.SEEK_END)
+            f.seek(max(0, f.tell() - 8192))
+            tail = f.read().decode("utf-8", errors="ignore").strip().splitlines()
+        rec = json.loads(tail[-1]) if tail else {}
+    except FileNotFoundError:
+        return ""
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("读梦的本子失败，这轮不给他梦：%s", exc)
+        return ""
+    if rec.get("date") != now.astimezone(CST).date().isoformat():
+        return ""
+    return str(rec.get("dream") or "")
 
 
 # --------------------------------------------------------------- 循环
@@ -494,7 +507,7 @@ def night_tick(*, utility: Any, data_dir: str, buckets_dir: str,
 
 async def run_dream_loop(*, utility: Any, data_dir: str,
                          buckets_dir: str,
-                         bridge: Any = None, ob: Any = None) -> None:
+                         bridge: Any = None) -> None:
     """lifespan 后台循环。形状照 `moments/loop.run_post_loop`：
     阻塞活丢线程池、CancelledError 原样抛、一轮炸了下轮继续。
 
@@ -509,7 +522,7 @@ async def run_dream_loop(*, utility: Any, data_dir: str,
             await asyncio.sleep(max(60.0, (target - now).total_seconds()))
             await asyncio.to_thread(
                 night_tick, utility=utility, data_dir=data_dir,
-                buckets_dir=buckets_dir, bridge=bridge, ob=ob)
+                buckets_dir=buckets_dir, bridge=bridge)
         except asyncio.CancelledError:
             logger.info("Dream shadow 循环停止")
             raise

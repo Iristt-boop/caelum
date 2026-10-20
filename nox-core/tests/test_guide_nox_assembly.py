@@ -99,3 +99,10 @@ def test_仓库没建好时_待确认段老实说取不到(nox):
     """订单 / 任务仓库在 api/server.py 才建；Nox 单独构造时还没有。"""
     out = nox.loop.tools["caelum_map"].handler({"scope": "pending"})
     assert "取不到" in out and "点单 0" not in out
+
+
+def test_own_day拿到梦的本子所在(nox):
+    """10-20 梦不进 OB，他靠 own_day 读梦的本子记得自己的梦 —— 真装配路径上得接上 data_dir。"""
+    import os
+    p = nox.context.get("own_day")
+    assert p is not None and p.data_dir == os.path.dirname(str(nox.cfg.db_path))
