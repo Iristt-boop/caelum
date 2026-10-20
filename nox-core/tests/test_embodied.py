@@ -120,11 +120,12 @@ def test_未收录设备_降权限不是放行():
     assert "什么" in g.ask, "降权限的出口是问她，不是默默拒绝"
 
 
-def test_模型里确实有十个设备():
-    """清单 11 行里 automation 故意不入表（forbidden_domain）。
+def test_模型里确实有十一个设备():
+    """清单 12 行里 automation 故意不入表（forbidden_domain）。
     家里真加了设备 → 给它补语义并改这个数；数量变了说不清原因就是误删。
-    2026-09-19 9→10：滚筒洗衣机（海尔，banto6/haier 集成接入）。"""
-    assert len(DEVICE_MODEL) == 10
+    2026-09-19 9→10：滚筒洗衣机（海尔，banto6/haier 集成接入）。
+    2026-09-24 10→11：stackchan（他的身体，category=robot）。"""
+    assert len(DEVICE_MODEL) == 11
 
 
 # ---------------------------------------------------------------- quiet hours
@@ -165,3 +166,24 @@ def test_world_snapshot_容错():
         raise RuntimeError("world 炸了")
     snap = world_snapshot(_boom)
     assert snap == {"env_temp": None, "env_source": None, "presence": None}
+
+
+# ---------------------------------------------------------------- stackchan
+
+
+def test_stackchan_转头_放行():
+    """他的身体是他自己的动作，不吃环境冲突 —— 2026-09-24 收进模型。"""
+    g = gate("stackchan", "turn", _world())
+    assert g.allow
+
+
+def test_stackchan_不在模型里_拦():
+    """🔴 把 DEVICE_MODEL 里的 stackchan 删了的话，闸门会把他自己的一切
+    动作 DENY（not_in_model）。这条钉着：删词条必须连这条测试一起改。"""
+    saved = DEVICE_MODEL.pop("stackchan", None)
+    try:
+        g = gate("stackchan", "say", _world())
+        assert not g.allow and g.reason == "not_in_model"
+    finally:
+        if saved is not None:
+            DEVICE_MODEL["stackchan"] = saved

@@ -66,6 +66,15 @@ DEVICE_MODEL: dict[str, dict] = {
     },
     # 「蒸蛋器 10 分钟自动断电」automation 故意不入表 ——
     # 它走 forbidden_domain 被拒；真要动家里的自动化，人工加白并写明理由。
+    # ---- F 类：他的身体（stackchan，2026-09-24）----
+    # 转头/表情/说话/灯环都是他自己的动作，不是「她家的设备」——
+    # 不设 environment_conflict / requires。quiet_hours 只警告：
+    # 深夜对着一台会说话的机器人说话，该有人提醒他小声点
+    "stackchan": {
+        "name": "stackchan（他的身体）",
+        "category": "robot",
+        "quiet_hours": True,
+    },
 }
 
 #: B 类就绪证据的形状。**她说过的话就是证据**（同 Mem0 attributed_to 的思想）：
