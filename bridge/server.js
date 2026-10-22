@@ -447,6 +447,20 @@ dbTry(`ALTER TABLE todos ADD COLUMN last_done_at TEXT DEFAULT ''`)
 // 条目行上收起、点开才展示，列表接口原样透传即可。
 dbTry(`ALTER TABLE todos ADD COLUMN note TEXT DEFAULT ''`)
 dbTry(`ALTER TABLE todos ADD COLUMN tag TEXT DEFAULT ''`)
+// 2026-10-22 目标层（《Caelum-记忆目标主动-设计稿》第三节，她 10-20 定「Goal 和 Todo 一页、而且结合」）：
+// 目标拆出来的事落进 Todo，每条带上它属于哪个目标。放在 todos 旁边 —— 一页、一个库、删目标能连带删
+dbTry(`ALTER TABLE todos ADD COLUMN goal_id TEXT DEFAULT ''`)
+//   status = active | paused | done | deleted（删 = 软删，进展记录还在）
+//   plan   = JSON [{ "step": "定目标体重", "status": "todo|doing|done" }]
+db.run(`CREATE TABLE IF NOT EXISTS goals (
+  id TEXT PRIMARY KEY, title TEXT NOT NULL, category TEXT DEFAULT '其他',
+  origin TEXT DEFAULT '', plan TEXT DEFAULT '[]', status TEXT DEFAULT 'active',
+  created_at TEXT, updated_at TEXT
+)`);
+//   kind = progress（推进了）| done（划掉了一条属于它的 Todo）| note（他记的）| plan（改了计划）
+db.run(`CREATE TABLE IF NOT EXISTS goal_log (
+  goal_id TEXT, at TEXT, kind TEXT, text TEXT
+)`);
 // 聊天消息表（搜索用 + Nox 兼容）
 db.run(`CREATE TABLE IF NOT EXISTS conversations (
   id TEXT, role TEXT, content TEXT, timestamp TEXT, metadata TEXT
@@ -3448,6 +3462,8 @@ app.get("/api/todo/list", (req, res) => {
       //: 她说过「哪天再做」—— 那天之前他不追（Temporal P4）。过了那天就是空串
       deferredUntil: (t.deferred_until || "") > now.date ? t.deferred_until : "",
       createdAt: t.created_at || "",
+      //: 属于哪个目标（10-22）。空串 = 她自己的
+      goalId: t.goal_id || "",
     });
   }
   res.json({ ok: true, sections, items, source: "local" });
@@ -4449,6 +4465,20 @@ function markDone(t) {
   return { repeat: rep, closed: false, doneThisWeek: doneThisWeek({ ...t, done_log: trimmed }, now) };
 }
 
+//: 划掉一条属于目标的 Todo → 那个目标记一笔进展（设计稿 3.5）。
+//: 同一条一天只记一笔：循环任务点掉又点回来再点，不该刷出三条「练完了」
+function logGoalDone(t) {
+  if (!t.goal_id) return;
+  const now = cnNow();
+  const text = `${t.text}：做完了`;
+  const dup = dbAll("SELECT 1 FROM goal_log WHERE goal_id=? AND kind='done' AND text=? AND at LIKE ?",
+                    [t.goal_id, text, `${now.date}%`]);
+  if (dup.length) return;
+  dbRun("INSERT INTO goal_log (goal_id, at, kind, text) VALUES (?,?,?,?)",
+        [t.goal_id, `${now.date}T${now.hm}`, "done", text]);
+  dbRun("UPDATE goals SET updated_at=? WHERE id=?", [new Date().toISOString(), t.goal_id]);
+}
+
 app.post("/api/todo/complete", (req, res) => {
   const { keyword } = req.body;
   if (!keyword) return res.status(400).json({ error: "keyword required" });
@@ -4458,6 +4488,7 @@ app.post("/api/todo/complete", (req, res) => {
   )[0];
   if (!hit) return res.json({ ok: false, error: `清单里没找到「${keyword}」` });
   const r = markDone(hit);
+  logGoalDone(hit);
   res.json({ ok: true, id: hit.id, text: hit.text, ...r });
 });
 
@@ -4465,8 +4496,13 @@ app.post("/api/today", (req, res) => {
   // repeat/at/weekdays/due 是 2026-08-18 的时间模型，都可选：
   // 什么都不给就是「随时」档，只进清单、不占提醒名额
   // note/tag 是 2026-08-27 双端重构加的：条目备注与轻量分类
-  const { text, time, date, repeat, at, weekdays, due, times, note, tag } = req.body;
+  const { text, time, date, repeat, at, weekdays, due, times, note, tag, goal_id } = req.body;
   if (!text) return res.status(400).json({ error: "text required" });
+  //: 属于哪个目标（10-22）。给了个不存在 / 已删的目标就 400 —— 不落一条挂在空气上的 Todo
+  const goalId = String(goal_id || "").trim();
+  if (goalId && !dbAll("SELECT 1 FROM goals WHERE id=? AND status != 'deleted'", [goalId]).length) {
+    return res.status(400).json({ error: "no such goal" });
+  }
   const id = randomUUID();
   // 指定日期时把 created_at 锚到那天（比如在"明天"页加的计划就落在明天）
   let createdAt = new Date().toISOString();
@@ -4478,14 +4514,14 @@ app.post("/api/today", (req, res) => {
     : (clock ? "once" : "anytime");
 
   dbRun(
-    `INSERT INTO todos (id, text, time, done, created_at, synced, repeat, at, weekdays, due, times, note, tag)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+    `INSERT INTO todos (id, text, time, done, created_at, synced, repeat, at, weekdays, due, times, note, tag, goal_id)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
     [id, text, time || "", 0, createdAt, 0, rep, clock,
      weekdays || "", due || (rep === "once" ? createdAt.slice(0, 10) : ""),
      rep === "weekly_count" ? Math.max(1, parseInt(times) || 1) : 0,
-     String(note || "").slice(0, 2000), String(tag || "").trim().slice(0, 24)]
+     String(note || "").slice(0, 2000), String(tag || "").trim().slice(0, 24), goalId]
   );
-  res.json({ id, ok: true, repeat: rep, at: clock, times: parseInt(times) || 0 });
+  res.json({ id, ok: true, repeat: rep, at: clock, times: parseInt(times) || 0, goal_id: goalId });
 });
 
 app.patch("/api/today/:id", (req, res) => {
@@ -4501,12 +4537,143 @@ app.patch("/api/today/:id", (req, res) => {
     dbRun("UPDATE todos SET done = 0, done_log = ? WHERE id = ?", [log, req.params.id]);
     return res.json({ ok: true, done: false });
   }
-  res.json({ ok: true, ...markDone(row) });
+  const r = markDone(row);
+  logGoalDone(row);
+  res.json({ ok: true, ...r });
 });
 
 app.delete("/api/today/:id", (req, res) => {
   dbRun(`DELETE FROM todos WHERE id=?`, [req.params.id]);
   res.json({ ok: true });
+});
+
+// ==============================================================
+// 🎯 目标 Goals（2026-10-22，《Caelum-记忆目标主动-设计稿》第三节）
+//
+// 她 10-20 定的三条：判断就立、事后能删；Goal 和 Todo 一页；
+// 目标拆出来的事落进 Todo 的具体日子（「每周三次力量训练」→ 一条 weekly_count 的 Todo，带 goal_id）。
+// 立 / 改 / 记进展是 Nox 的工具（nox-core tools/goals.py）经这里写；页面也读写这里。
+// ==============================================================
+
+const GOAL_CATEGORIES = ["健康", "关系", "财务", "事业", "兴趣", "效率", "其他"];
+const GOAL_STATUS = ["active", "paused", "done", "deleted"];
+const STEP_STATUS = ["todo", "doing", "done"];
+
+//: 计划：接受字符串数组或 [{step, status}]，一律规整成后者。最多 12 步，一步 80 字
+function normPlan(plan) {
+  if (!Array.isArray(plan)) return [];
+  return plan.slice(0, 12).map(p => (typeof p === "string" ? { step: p } : (p || {})))
+    .map(p => ({ step: String(p.step || "").trim().slice(0, 80),
+                 status: STEP_STATUS.includes(p.status) ? p.status : "todo" }))
+    .filter(p => p.step);
+}
+
+//: 一条 Todo 这周应该做几次（给目标卡的「本周进展」）。随时 / 不在本周的一次性 = 0
+function plannedThisWeek(t, now) {
+  const rep = t.repeat || (t.at ? "once" : "anytime");
+  if (rep === "daily") return 7;
+  if (rep === "weekly") return String(t.weekdays || "").split(",").filter(s => s.trim()).length;
+  if (rep === "weekly_count") return t.times || 1;
+  if (rep === "once") {
+    const monday = new Date(`${now.date}T00:00:00Z`);
+    monday.setUTCDate(monday.getUTCDate() - (now.weekday - 1));
+    const sunday = new Date(monday); sunday.setUTCDate(monday.getUTCDate() + 6);
+    const due = t.due || String(t.created_at || "").slice(0, 10);
+    return due >= monday.toISOString().slice(0, 10) && due <= sunday.toISOString().slice(0, 10) ? 1 : 0;
+  }
+  return 0;
+}
+
+function goalView(g, now) {
+  const todos = dbAll("SELECT * FROM todos WHERE goal_id = ? AND done = 0", [g.id]).map(t => ({
+    id: t.id, text: t.text, repeat: t.repeat || "anytime", at: t.at || "",
+    when: describeRepeat(t, now), doneThisWeek: doneThisWeek(t, now),
+    plannedThisWeek: plannedThisWeek(t, now), today: hitsToday(t, now), doneToday: doneToday(t, now),
+  }));
+  let plan = [];
+  try { plan = normPlan(JSON.parse(g.plan || "[]")); } catch { plan = []; }
+  return {
+    id: g.id, title: g.title, category: g.category, origin: g.origin || "", plan, status: g.status,
+    createdAt: g.created_at, updatedAt: g.updated_at, todos,
+    week: { done: todos.reduce((n, t) => n + Math.min(t.doneThisWeek, t.plannedThisWeek || t.doneThisWeek), 0),
+            planned: todos.reduce((n, t) => n + t.plannedThisWeek, 0) },
+    log: dbAll("SELECT at, kind, text FROM goal_log WHERE goal_id = ? ORDER BY at DESC LIMIT 20", [g.id]),
+  };
+}
+
+app.get("/api/goals", (req, res) => {
+  const now = cnNow();
+  const all = req.query.status === "all";
+  const rows = dbAll(all ? "SELECT * FROM goals WHERE status != 'deleted' ORDER BY created_at DESC"
+                         : "SELECT * FROM goals WHERE status = 'active' ORDER BY created_at DESC");
+  res.json({ ok: true, items: rows.map(g => goalView(g, now)) });
+});
+
+app.get("/api/goals/:id", (req, res) => {
+  const g = dbAll("SELECT * FROM goals WHERE id = ?", [req.params.id])[0];
+  if (!g || g.status === "deleted") return res.status(404).json({ error: "no such goal" });
+  res.json({ ok: true, item: goalView(g, cnNow()) });
+});
+
+app.post("/api/goals", (req, res) => {
+  const { title, category, origin, plan } = req.body || {};
+  const t = String(title || "").trim().slice(0, 40);
+  if (!t) return res.status(400).json({ error: "title required" });
+  const id = randomUUID();
+  const nowIso = new Date().toISOString();
+  dbRun(`INSERT INTO goals (id, title, category, origin, plan, status, created_at, updated_at)
+         VALUES (?,?,?,?,?,?,?,?)`,
+        [id, t, GOAL_CATEGORIES.includes(category) ? category : "其他",
+         String(origin || "").slice(0, 300), JSON.stringify(normPlan(plan)), "active", nowIso, nowIso]);
+  res.json({ ok: true, id });
+});
+
+app.patch("/api/goals/:id", (req, res) => {
+  const g = dbAll("SELECT * FROM goals WHERE id = ?", [req.params.id])[0];
+  if (!g || g.status === "deleted") return res.status(404).json({ error: "no such goal" });
+  const { title, category, plan, status } = req.body || {};
+  const sets = [], vals = [];
+  if (title !== undefined && String(title).trim()) { sets.push("title = ?"); vals.push(String(title).trim().slice(0, 40)); }
+  if (category !== undefined && GOAL_CATEGORIES.includes(category)) { sets.push("category = ?"); vals.push(category); }
+  if (status !== undefined) {
+    // 删走 DELETE（要问连不连带 Todo），这里不收 deleted
+    if (!GOAL_STATUS.includes(status) || status === "deleted") return res.status(400).json({ error: "bad status" });
+    sets.push("status = ?"); vals.push(status);
+  }
+  if (plan !== undefined) { sets.push("plan = ?"); vals.push(JSON.stringify(normPlan(plan))); }
+  if (!sets.length) return res.status(400).json({ error: "nothing to change" });
+  sets.push("updated_at = ?"); vals.push(new Date().toISOString());
+  dbRun(`UPDATE goals SET ${sets.join(", ")} WHERE id = ?`, [...vals, g.id]);
+  const now = cnNow();
+  if (plan !== undefined) dbRun("INSERT INTO goal_log (goal_id, at, kind, text) VALUES (?,?,?,?)",
+                                [g.id, `${now.date}T${now.hm}`, "plan", "改了计划"]);
+  if (status !== undefined && status !== g.status) dbRun("INSERT INTO goal_log (goal_id, at, kind, text) VALUES (?,?,?,?)",
+    [g.id, `${now.date}T${now.hm}`, "progress", { active: "继续", paused: "先停一停", done: "完成了" }[status]]);
+  res.json({ ok: true });
+});
+
+app.post("/api/goals/:id/log", (req, res) => {
+  const g = dbAll("SELECT * FROM goals WHERE id = ?", [req.params.id])[0];
+  if (!g || g.status === "deleted") return res.status(404).json({ error: "no such goal" });
+  const text = String((req.body || {}).text || "").trim().slice(0, 200);
+  if (!text) return res.status(400).json({ error: "text required" });
+  const kind = (req.body || {}).kind === "note" ? "note" : "progress";
+  const now = cnNow();
+  dbRun("INSERT INTO goal_log (goal_id, at, kind, text) VALUES (?,?,?,?)", [g.id, `${now.date}T${now.hm}`, kind, text]);
+  dbRun("UPDATE goals SET updated_at=? WHERE id=?", [new Date().toISOString(), g.id]);
+  res.json({ ok: true });
+});
+
+//: 删目标（软删）。?with_todos=1 连它落进 Todo 的那些一起删；不带 = 那些 Todo 留下、变成她自己的
+app.delete("/api/goals/:id", (req, res) => {
+  const g = dbAll("SELECT * FROM goals WHERE id = ?", [req.params.id])[0];
+  if (!g || g.status === "deleted") return res.status(404).json({ error: "no such goal" });
+  const withTodos = ["1", "true"].includes(String(req.query.with_todos || ""));
+  const n = dbAll("SELECT COUNT(*) AS n FROM todos WHERE goal_id = ?", [g.id])[0].n;
+  if (withTodos) dbRun("DELETE FROM todos WHERE goal_id = ?", [g.id]);
+  else dbRun("UPDATE todos SET goal_id = '' WHERE goal_id = ?", [g.id]);
+  dbRun("UPDATE goals SET status = 'deleted', updated_at = ? WHERE id = ?", [new Date().toISOString(), g.id]);
+  res.json({ ok: true, todos: n, todosDeleted: withTodos });
 });
 
 // ==============================================================
