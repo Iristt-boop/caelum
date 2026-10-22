@@ -4074,6 +4074,32 @@ async function guideProxy(req, res) {
 app.get("/api/nox/guide", guideProxy);
 app.get("/api/nox/guide/:id", guideProxy);
 
+// 「关于你」档案（10-22，设计稿 2.4：她能看、能改）。原样转给 nox-core（它再经 ob_client 找 OB）。
+// 状态码原样回：409 是「这一行已经在了」这种她能看懂的原因，不能被压成 502
+async function profileProxy(req, res) {
+  const edit = req.method === "POST";
+  try {
+    const r = await fetch(`${NOX_CORE_URL}/api/nox/profile${edit ? "/edit" : ""}`, {
+      method: req.method,
+      headers: edit ? { "Content-Type": "application/json" } : undefined,
+      body: edit ? JSON.stringify(req.body || {}) : undefined,
+      signal: AbortSignal.timeout(15000),
+    });
+    const body = await r.json().catch(() => null);
+    if (!r.ok || !body) {
+      return res.status([409, 503].includes(r.status) ? r.status : 502).json({
+        ok: false, error: (body && (body.detail || body.error)) || `Core 回了 ${r.status}`,
+      });
+    }
+    res.json(body);
+  } catch (e) {
+    console.error(`[profile] ${edit ? "改" : "读"}失败:`, e.message);
+    res.status(502).json({ ok: false, error: e.message });
+  }
+}
+app.get("/api/nox/profile", profileProxy);
+app.post("/api/nox/profile/edit", profileProxy);
+
 app.get("/api/nox/creations", creationsProxy("GET"));
 app.get("/api/nox/creations/:id", creationsProxy("GET"));
 app.delete("/api/nox/creations/:id", creationsProxy("DELETE"));
