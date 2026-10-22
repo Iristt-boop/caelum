@@ -812,7 +812,10 @@ def _build_attention(core: Nox, sessions: "Sessions", db: Store) -> AttentionSer
         # 2026-10-22 她定：惦记改由开口压力推（Resonance 攒够 θ 才想起她），不再是 20–90 分钟计时器 +
         # 一天 8 次配额。`NOX_PRESSURE=off` 退回计时器。drives_ref 等 svc 建完回填
         from attention.sources import pressure as _pressure
-        _thinking = (_pressure.PressureSource(astore, db, rhythm=rhythm) if _pressure.enabled()
+        from attention.goal_nudge import GoalNudge
+        _thinking = (_pressure.PressureSource(astore, db, rhythm=rhythm,
+                                              goals=GoalNudge(core.bridge, astore) if core.bridge else None)
+                     if _pressure.enabled()
                      else ThinkingSource(astore, db, rhythm=rhythm))
         logger.info("惦记：%s", "开口压力（θ=%.1f）" % _pressure.theta() if _pressure.enabled()
                     else "20–90 分钟计时器（NOX_PRESSURE=off）")
@@ -1253,6 +1256,12 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
     #: v1（10-17）多了截屏兜底 desk_look —— 和 computer_read_image 同一个视觉取值函数（Slots 里换了下一张就生效）
     desk_tools.register_all(core.loop, desk_hand,
                             getattr(core, "vision_cfg", None) or getattr(core.cfg, "vision", None))
+
+    #: 目标（10-22，设计稿第三节，她定「判断就立、事后能删」）：goal_create / goal_update，核心集（不进包 ——
+    #: 她随口一句「我要减肥」就得接得住）。登记在这一串最后，前面的位置一个不动
+    if getattr(core, "bridge", None) is not None:
+        from tools import goals as goal_tools
+        goal_tools.register_all(core.loop, core.bridge)
 
     # 待确认单（2026-09-06）。**独立的库**，和 attention/world/topics 平级。
     #

@@ -106,3 +106,8 @@ def test_own_day拿到梦的本子所在(nox):
     import os
     p = nox.context.get("own_day")
     assert p is not None and p.data_dir == os.path.dirname(str(nox.cfg.db_path))
+
+
+def test_目标那一行注册了_用的是2秒超时的client(nox):
+    p = nox.context.get("goals")
+    assert p is not None and p.bridge is not nox.bridge and p.bridge.timeout == 2.0

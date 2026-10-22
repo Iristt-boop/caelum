@@ -106,5 +106,8 @@ class RestClient:
     def post(self, path: str, body: dict | None = None) -> RestResult:
         return self._request("POST", path, body or {})
 
+    def patch(self, path: str, body: dict | None = None) -> RestResult:
+        return self._request("PATCH", path, body or {})
+
     def delete(self, path: str) -> RestResult:
         return self._request("DELETE", path)

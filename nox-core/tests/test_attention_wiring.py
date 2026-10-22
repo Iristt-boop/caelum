@@ -272,3 +272,23 @@ def test_NOX_PRESSURE_off_退回计时器(monkeypatch, tmp_path):
     svc = _build_attention(WorkingCore(tmp_path / "nox.db"), None, None)
     assert isinstance(next(s for s in svc.fast_sources if s.name == "random"), ThinkingSource)
     svc.store.close()
+
+
+def test_有bridge时_压力接上目标那一股_工具也登记了(tmp_path, monkeypatch):
+    """10-22 目标层：GoalNudge 漏接 = 落后了也不会更快想起她；工具漏登记 = 他立不了目标。都不报错。"""
+    from api.server import Store, create_app
+    from attention.goal_nudge import GoalNudge
+
+    monkeypatch.setenv("NOX_ATTENTION", "1")
+    monkeypatch.delenv("NOX_PRESSURE", raising=False)
+    core = AppReadyCore(tmp_path)
+    core.bridge = object()
+    store = Store(tmp_path / "sessions.db")
+    try:
+        create_app(core, store)
+        src = next(s for s in core.attention.fast_sources if s.name == "random")
+        assert isinstance(src.goals, GoalNudge) and src.goals.bridge is core.bridge
+        assert core.loop.registered[-2:] == ["goal_create", "goal_update"] or \
+            {"goal_create", "goal_update"} <= set(core.loop.registered)
+    finally:
+        store.close()

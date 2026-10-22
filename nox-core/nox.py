@@ -683,6 +683,11 @@ class Nox:
         # （`planner/daily.py` 的 `missing`，她会看见）。
         if self.bridge is not None:
             self.context.register(TodoProvider(bridge=self.bridge))
+            # 你在跟她的目标（10-22，设计稿第三节）。没有目标就是空串。
+            # 常驻每轮 → 同 CallsProvider 用专用 2 秒超时的 client，bridge 卡住不拖慢轻量路径
+            from context.providers.goals import GoalsProvider
+            self.context.register(GoalsProvider(bridge=BridgeClient(
+                self.cfg.bridge_url, self.cfg.bridge_token, 2.0)))
             logger.info("TodoProvider 读本地清单（bridge）")
         else:
             logger.info("没配 bridge，跳过 TodoProvider（GitHub todo.md 已退役，不再回退）")

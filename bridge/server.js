@@ -4587,6 +4587,7 @@ function plannedThisWeek(t, now) {
 function goalView(g, now) {
   const todos = dbAll("SELECT * FROM todos WHERE goal_id = ? AND done = 0", [g.id]).map(t => ({
     id: t.id, text: t.text, repeat: t.repeat || "anytime", at: t.at || "",
+    weekdays: t.weekdays || "", times: t.times || 0, due: t.due || "",
     when: describeRepeat(t, now), doneThisWeek: doneThisWeek(t, now),
     plannedThisWeek: plannedThisWeek(t, now), today: hitsToday(t, now), doneToday: doneToday(t, now),
   }));
@@ -4606,7 +4607,8 @@ app.get("/api/goals", (req, res) => {
   const all = req.query.status === "all";
   const rows = dbAll(all ? "SELECT * FROM goals WHERE status != 'deleted' ORDER BY created_at DESC"
                          : "SELECT * FROM goals WHERE status = 'active' ORDER BY created_at DESC");
-  res.json({ ok: true, items: rows.map(g => goalView(g, now)) });
+  //: weekday 给 nox-core 算「这周落后了没」（attention/goal_nudge.py）—— 星期几按她的时区，别让那边再算一遍
+  res.json({ ok: true, date: now.date, weekday: now.weekday, items: rows.map(g => goalView(g, now)) });
 });
 
 app.get("/api/goals/:id", (req, res) => {

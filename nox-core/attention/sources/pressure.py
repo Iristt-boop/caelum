@@ -64,13 +64,16 @@ class PressureSource:
     name = "random"
 
     def __init__(self, store: Any, sessions_store: Any, rhythm: Any = None,
-                 drives_ref: Callable[[datetime], dict] | None = None) -> None:
+                 drives_ref: Callable[[datetime], dict] | None = None,
+                 goals: Any = None) -> None:
         self.store = store
         #: 她状态读法从叫 "random" 的快源上拿会话库（service._her_state_inputs）
         self.sessions = sessions_store
         self.rhythm = rhythm
         #: svc 建完回填（同 rhythm.longing_ref）：现算的 Resonance
         self.drives_ref = drives_ref
+        #: 目标那一股（attention/goal_nudge.py，10-22）：属于目标的事这周落后了 → 多一股「该推进了」
+        self.goals = goals
         self.value = 0.0
         self._last_tick: datetime | None = None
         self._last_her: datetime | None = None
@@ -89,6 +92,9 @@ class PressureSource:
         step = timedelta(0) if self._last_tick is None else min(MAX_STEP, max(now - self._last_tick, timedelta(0)))
         self._last_tick = now
         drives = self._drives(now)
+        goal = self._goal_drive(now)
+        if goal is not None:
+            drives["goal"] = goal
         s = sum(float(getattr(d, "intensity", 0.0) or 0.0) for d in drives.values())
         pace = self._pace(now)
         self.value += step.total_seconds() / 3600 * (BASE + s) * pace
@@ -106,6 +112,11 @@ class PressureSource:
                     "、".join(f"{w['name']} {w['intensity']:.2f}" for w in why) or "无")
         fired = round(self.value, 2)
         self.value = 0.0
+        if goal is not None and any(d is goal for d in top):
+            try:
+                self.goals.fired(list(goal.goal_ids), now)
+            except Exception:  # noqa: BLE001
+                logger.warning("目标冷却没记上（最坏是 24 小时内多推一次）", exc_info=True)
         self._save()
         return [CareSignal(
             source=self.name,
@@ -125,6 +136,15 @@ class PressureSource:
         except Exception:  # noqa: BLE001
             logger.warning("开口压力读不到 Resonance，这一分钟只按时间涨", exc_info=True)
             return {}
+
+    def _goal_drive(self, now: datetime) -> Any:
+        if self.goals is None:
+            return None
+        try:
+            return self.goals.drive(now)
+        except Exception:  # noqa: BLE001
+            logger.warning("目标那一股算不出来，这一分钟不算它", exc_info=True)
+            return None
 
     def _pace(self, now: datetime) -> float:
         if self.rhythm is None or not hasattr(self.rhythm, "pace"):

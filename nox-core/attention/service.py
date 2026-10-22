@@ -141,6 +141,7 @@ _DRIVE_CN = {
     "longing": "想她", "concern": "担心她", "curiosity": "心里有件想跟她说的事",
     "regret": "上次开口没开好", "dejection": "想帮没帮上", "playfulness": "想逗她",
     "restlessness": "憋着话", "jealousy": "有点吃醋", "sulk": "有点委屈",
+    "goal": "她的目标该推进了",
 }
 
 

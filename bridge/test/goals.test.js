@@ -44,6 +44,12 @@ describe("和 Todo 结合", () => {
     const g = (await api(bridge.base, `/api/goals/${id}`)).data.item;
     assert.equal(g.todos.length, 1);
     assert.deepEqual(g.week, { done: 0, planned: 3 });
+    // nox-core 算「这周落后了没」要的形状（attention/goal_nudge.py）
+    const list = (await api(bridge.base, "/api/goals")).data;
+    assert.ok(list.weekday >= 1 && list.weekday <= 7 && /^\d{4}-\d{2}-\d{2}$/.test(list.date));
+    const tv = list.items.find(x => x.id === id).todos[0];
+    assert.equal(tv.times, 3);
+    assert.equal(tv.repeat, "weekly_count");
   });
 
   test("目标不存在就不落 Todo", async () => {
