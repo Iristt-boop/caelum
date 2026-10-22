@@ -292,3 +292,17 @@ def test_有bridge时_压力接上目标那一股_工具也登记了(tmp_path, m
             {"goal_create", "goal_update"} <= set(core.loop.registered)
     finally:
         store.close()
+
+
+def test_有记忆时_profile_update登记了(tmp_path, monkeypatch):
+    """10-22：他当场改「关于她」档案靠这一件工具；漏登记他就只能嘴上说记住了。"""
+    from api.server import Store, create_app
+    monkeypatch.setenv("NOX_ATTENTION", "1")
+    core = AppReadyCore(tmp_path)
+    core.ob = object()
+    store = Store(tmp_path / "sessions.db")
+    try:
+        create_app(core, store)
+        assert "profile_update" in core.loop.registered
+    finally:
+        store.close()

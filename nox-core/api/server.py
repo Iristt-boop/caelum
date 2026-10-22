@@ -1262,6 +1262,10 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
     if getattr(core, "bridge", None) is not None:
         from tools import goals as goal_tools
         goal_tools.register_all(core.loop, core.bridge)
+    #: 「关于她」档案（10-22，设计稿 2.1½）：她明说一件长期的事，当场改那一行。核心集，排在目标后面
+    if getattr(core, "ob", None) is not None:
+        from tools import profile as profile_tools
+        profile_tools.register_all(core.loop, core.ob)
 
     # 待确认单（2026-09-06）。**独立的库**，和 attention/world/topics 平级。
     #
@@ -3608,6 +3612,32 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
         if t is None:
             raise HTTPException(status_code=404, detail="没有这一篇")
         return {"ok": True, "id": t.id, "title": t.title, "ask": t.ask, "body": t.body}
+
+    # ---- 「关于你」档案（10-22，设计稿 2.4：她能看、能改）。数据在 OB，经 ob_client（R4）----
+    def _ob_or_503():
+        ob = getattr(core, "ob", None)
+        if ob is None:
+            raise HTTPException(status_code=503, detail="记忆没接上")
+        return ob
+
+    @app.get("/api/nox/profile")
+    async def profile_get() -> dict:
+        r = await _ob_or_503().aprofile_read()
+        if not r.ok:
+            raise HTTPException(status_code=502, detail=f"读档案失败：{r.error}")
+        return {"ok": True, **json.loads(r.text or "{}")}
+
+    @app.post("/api/nox/profile/edit")
+    async def profile_edit(body: dict) -> dict:
+        r = await _ob_or_503().aprofile_edit(str((body or {}).get("op", "")), source="her",
+                                             **{k: (body or {}).get(k, "") for k in ("section", "text", "old", "why")})
+        if not r.ok:
+            raise HTTPException(status_code=502, detail=f"改档案失败：{r.error}")
+        d = json.loads(r.text or "{}")
+        if not d.get("ok"):
+            #: 改不了是她能看懂的原因（「这一行已经在了」），原样回 409
+            raise HTTPException(status_code=409, detail=d.get("error") or "没改成")
+        return d
 
     def _creations():
         store = getattr(core, "creations", None)

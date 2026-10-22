@@ -347,6 +347,29 @@ class OmbreBrain:
         except Exception as exc:  # noqa: BLE001
             return MemoryResult(False, error=f"hold: {type(exc).__name__}: {exc}")
 
+    # 「关于糖糖」档案（2026-10-22，设计稿 2.2 / 2.4）。OB 回的是 JSON 文本，这里不解析 —— 调用方自己 json.loads
+    def profile_read(self) -> MemoryResult:
+        return self._call("profile_read", {})
+
+    def profile_edit(self, op: str, *, section: str = "", text: str = "", old: str = "",
+                     why: str = "", source: str = "nox") -> MemoryResult:
+        return self._call("profile_edit", {"op": op, "section": section, "text": text,
+                                           "old": old, "why": why, "source": source})
+
+    async def aprofile_read(self) -> MemoryResult:
+        try:
+            return await self._acall("profile_read", {})
+        except Exception as exc:  # noqa: BLE001
+            return MemoryResult(False, error=f"profile_read: {type(exc).__name__}: {exc}")
+
+    async def aprofile_edit(self, op: str, **kwargs: Any) -> MemoryResult:
+        args = {"op": op, **{k: str(kwargs.get(k, "")) for k in ("section", "text", "old", "why")},
+                "source": kwargs.get("source", "her")}
+        try:
+            return await self._acall("profile_edit", args)
+        except Exception as exc:  # noqa: BLE001
+            return MemoryResult(False, error=f"profile_edit: {type(exc).__name__}: {exc}")
+
     async def aextract_memory(self, dialog: str, today: str = "",
                               mode: str = "shadow") -> MemoryResult:
         """Phase 3 shadow 钩子（2026-09-16）：一轮对话交给 OB 抽记忆候选。
