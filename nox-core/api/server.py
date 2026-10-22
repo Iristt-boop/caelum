@@ -809,7 +809,14 @@ def _build_attention(core: Nox, sessions: "Sessions", db: Store) -> AttentionSer
         # svc 建完才回填 longing_ref（同 ResonanceProvider 的取值函数套路）
         from attention.rhythm import RhythmModulator
         rhythm = RhythmModulator(astore)
-        fast_sources = [ThinkingSource(astore, db, rhythm=rhythm)]
+        # 2026-10-22 她定：惦记改由开口压力推（Resonance 攒够 θ 才想起她），不再是 20–90 分钟计时器 +
+        # 一天 8 次配额。`NOX_PRESSURE=off` 退回计时器。drives_ref 等 svc 建完回填
+        from attention.sources import pressure as _pressure
+        _thinking = (_pressure.PressureSource(astore, db, rhythm=rhythm) if _pressure.enabled()
+                     else ThinkingSource(astore, db, rhythm=rhythm))
+        logger.info("惦记：%s", "开口压力（θ=%.1f）" % _pressure.theta() if _pressure.enabled()
+                    else "20–90 分钟计时器（NOX_PRESSURE=off）")
+        fast_sources = [_thinking]
         # ⚠️ 2026-09-11：这里原来还 `or os.getenv("NOX_HA_URL")` —— 但 NOX_HA_URL 是
         # **ha-mcp 的 MCP 端点**（http://127.0.0.1:8004/mcp），拿它当 REST base 会拼出
         # `.../mcp/api/states/person.nox` 这种必然 404 的地址，而且失败是静默的。
@@ -941,8 +948,9 @@ def _build_attention(core: Nox, sessions: "Sessions", db: Store) -> AttentionSer
         rhythm.longing_ref = lambda: getattr(svc, "longing", None)
         if _call_source is not None:
             _call_source.longing_ref = svc.longing
-        # svc 建完才有 longing —— 回填取值函数（rhythm.gap_window 每次现取）
-        rhythm.longing_ref = lambda: getattr(svc, "longing", None)
+        # 开口压力要现算的 Resonance —— 走 svc.drives（醋意/委屈/躁动只有从那儿读才不是 0）
+        if isinstance(_thinking, _pressure.PressureSource):
+            _thinking.drives_ref = svc.drives
         # 她睡着时他自言自语可以提一句夜里的梦（2026-09-23）。只读 JSONL，
         # 梦那条线本身照旧不推送、不占 Care 额度（dream.py 的边界不动）
         svc.dream_log_path = dream_loop._log_path(os.path.dirname(str(core.cfg.db_path)))

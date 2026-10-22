@@ -250,3 +250,25 @@ def test_想起旧事的来源接上了一起做过的事(monkeypatch, tmp_path)
     svc = _build_attention(WorkingCore(tmp_path / "nox.db"), None, None)
     assert svc is not None and svc.fond.world is not None, "fond 没拿到 world：一起听 / 看 / 读过的永远想不起来"
     svc.store.close()
+
+
+def test_惦记默认走开口压力_并接上了现算的Resonance(monkeypatch, tmp_path):
+    """10-22 她定直接上线：快源里叫 random 的那个是 PressureSource，drives_ref 回填成 svc.drives ——
+    漏回填的话压力只按时间涨，Resonance 一点不起作用，而且不报错。"""
+    from attention.sources.pressure import PressureSource
+    monkeypatch.setenv("NOX_ATTENTION", "1")
+    monkeypatch.delenv("NOX_PRESSURE", raising=False)
+    svc = _build_attention(WorkingCore(tmp_path / "nox.db"), None, None)
+    src = next(s for s in svc.fast_sources if s.name == "random")
+    assert isinstance(src, PressureSource)
+    assert src.drives_ref == svc.drives
+    svc.store.close()
+
+
+def test_NOX_PRESSURE_off_退回计时器(monkeypatch, tmp_path):
+    from attention.sources.thinking import ThinkingSource
+    monkeypatch.setenv("NOX_ATTENTION", "1")
+    monkeypatch.setenv("NOX_PRESSURE", "off")
+    svc = _build_attention(WorkingCore(tmp_path / "nox.db"), None, None)
+    assert isinstance(next(s for s in svc.fast_sources if s.name == "random"), ThinkingSource)
+    svc.store.close()

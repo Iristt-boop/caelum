@@ -574,6 +574,20 @@ def test_惦记真的抽心情_说出口才记进最近(tmp_path):
     store.close()
 
 
+def test_开口压力推的那次_开场白里有为什么是现在(tmp_path):
+    """10-22：压力攒够了想起她 → 告诉他心里最重的那几股（设计稿 4.3），醒着不吃 8 次配额。"""
+    from attention.service import AWAKE_DAILY_MAX, THINK_KEY
+    said: list = []
+    svc, store = _svc(tmp_path, FakeSessions("好", cn(23, 13)), FakePresence("home"), said)
+    svc.drives = lambda now: {}
+    store.set_source_state(THINK_KEY, {"day": "2026-09-23", "awake": AWAKE_DAILY_MAX})
+    sig = CareSignal(source="random", subject="想起你了", payload={
+        "pressure": 2.01, "drives": [{"name": "concern", "intensity": 0.9, "because": ["她说的：腰"]}]})
+    assert svc._think_of_her(sig, type("T", (), {"steps": 0})(), cn(23, 16))
+    assert "这会儿你心里最重的是：担心她（她说的：腰）" in said[0]
+    store.close()
+
+
 # ---------------------------------------------------------------- 线上真实的行形状（部署后抓到的）
 
 def test_真库_他的开场白和SKIP不算她说的话(tmp_path, monkeypatch):

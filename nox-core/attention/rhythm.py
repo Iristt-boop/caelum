@@ -50,6 +50,10 @@ RATE_OK = 0.6
 #: 低于这条线 = 很冷
 RATE_COLD = 0.2
 
+#: 惦记的默认窗口（同 sources/thinking.py 的 20–90，pace 拿它当「不冷」的基准）
+MIN_GAP_DEFAULT = 20.0
+MAX_GAP_DEFAULT = 90.0
+
 #: 有点冷（0.2–0.6）：默认窗口的三倍左右
 COLD_WINDOW_MIN = (60.0, 180.0)
 #: 很冷（<0.2）：收敛到半天一条的量级
@@ -222,6 +226,24 @@ class RhythmModulator:
         if bias:
             window = (window[0] / bias, window[1] / bias)
         return window
+
+    def pace(self, at: datetime) -> float:
+        """开口压力的涨速乘数（2026-10-22，attention/sources/pressure.py）。
+
+        和 `gap_window` 同一套档位，只是方向反过来（窗口是时长，这里是速度）：
+        冷档 → 默认窗口中点 / 冷档中点（有点冷 ×0.46、很冷 ×0.2）；不冷 → P1 时段 bias（夹 0.7~1.3）。
+        🔴 **不含想念** —— 想念已经是压力里 Resonance 的一股，这里再乘就算了两遍。"""
+        cold = self._cold_window()
+        if cold is not None:
+            return (MIN_GAP_DEFAULT + MAX_GAP_DEFAULT) / (cold[0] + cold[1])
+        if self.window_bias is None:
+            return 1.0
+        try:
+            bias = self.window_bias(at)
+        except Exception:  # noqa: BLE001
+            logger.exception("P1 bias 读不到（涨速照 ×1）")
+            return 1.0
+        return min(P1_BIAS_MAX, max(P1_BIAS_MIN, float(bias))) if bias else 1.0
 
     def urgency_boost(self) -> float:
         """念头急迫度乘数。越想她，同一轮撞车时这个念头越靠前。"""

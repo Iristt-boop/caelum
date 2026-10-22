@@ -136,6 +136,26 @@ NIGHT_BUDGET_CHOICES = (0, 1, 2)     # 她睡着：每晚随机 0~2 次（她定
 NIGHT_MIN_GAP = timedelta(hours=2)   # 两句自言自语之间至少隔 2 小时，别在她刚睡着时连说
 
 
+#: Resonance 各股的中文名（给开场白的「为什么现在想她」用，日志里还是英文 key）
+_DRIVE_CN = {
+    "longing": "想她", "concern": "担心她", "curiosity": "心里有件想跟她说的事",
+    "regret": "上次开口没开好", "dejection": "想帮没帮上", "playfulness": "想逗她",
+    "restlessness": "憋着话", "jealousy": "有点吃醋", "sulk": "有点委屈",
+}
+
+
+def _pressure_note(drives: list[dict]) -> str:
+    """开口压力推出来的这一次：心里最重的那几股和来由（设计稿 4.3）。
+
+    只是告诉他「为什么是现在」，说不说、说哪件还是他自己定 —— 所以末尾不加任何指令。"""
+    parts = []
+    for d in drives:
+        name = _DRIVE_CN.get(d.get("name", ""), d.get("name", ""))
+        because = "、".join(str(b) for b in (d.get("because") or [])[:2])
+        parts.append(f"{name}（{because}）" if because else name)
+    return ("这会儿你心里最重的是：" + "；".join(parts) + "。") if parts else ""
+
+
 def pick_night_budget() -> int:
     """今晚她睡着后最多说几句。单拎出来是为了测试能钉住（tests/conftest.py）"""
     return random.choice(NIGHT_BUDGET_CHOICES)
@@ -726,8 +746,12 @@ class AttentionService:
             # 存不住最坏是多说一两句，不该让这一轮挂掉
             logger.warning("惦记次数账没存住", exc_info=True)
 
-    def _think_budget_blocks(self, st: her_state.HerState, now: datetime) -> str | None:
-        """这次该不该挡。挡就返回原因（进日志），不挡返回 None。"""
+    def _think_budget_blocks(self, st: her_state.HerState, now: datetime,
+                             by_pressure: bool = False) -> str | None:
+        """这次该不该挡。挡就返回原因（进日志），不挡返回 None。
+
+        `by_pressure`：开口压力推出来的（2026-10-22 她定「不定次数」）—— 醒着时不吃一天 8 次的配额，
+        频率归 θ 管。她睡着时的自言自语额度照旧（那是「怎么说」的形式，不是次数闸）。"""
         b = self._think_budget(st, now)
         if st.posture == her_state.ASLEEP:
             if b.get("night_used", 0) >= b.get("night_budget", 0):
@@ -736,7 +760,7 @@ class AttentionService:
             if last and now - datetime.fromisoformat(last) < NIGHT_MIN_GAP:
                 return "她睡着了，离上一句自言自语不到 2 小时"
             return None
-        if b.get("awake", 0) >= AWAKE_DAILY_MAX:
+        if not by_pressure and b.get("awake", 0) >= AWAKE_DAILY_MAX:
             return f"今天醒着时已经主动想起她 {AWAKE_DAILY_MAX} 次了"
         return None
 
@@ -782,13 +806,16 @@ class AttentionService:
                         signal.payload.get("gap_h"))
             return False
 
+        pressure = (signal.payload or {}).get("pressure") if signal.source == "random" else None
         if signal.source == "random":
-            blocked = self._think_budget_blocks(st, now)
+            blocked = self._think_budget_blocks(st, now, by_pressure=pressure is not None)
             if blocked:
                 logger.info("Care：想起你了 → 这次不开口（%s）", blocked)
                 return False
 
         note = ""
+        if pressure is not None:
+            note = _pressure_note(signal.payload.get("drives") or [])
         if move == "arrive_home":
             since = signal.payload.get("away_since")
             note = "你刚发现她到家了" + (
