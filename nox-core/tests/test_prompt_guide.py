@@ -4,12 +4,15 @@ from __future__ import annotations
 
 from agent.guard import GUARD_INSTRUCTION
 from guide.loader import load_topics, render_directory
-from personality.prompt import NOX_PERSONA, StaticPrefix, build
+from personality.prompt import FALLBACK_ABOUT_HER, NOX_PERSONA, StaticPrefix, build
+
+#: 10-23 起人设后面总跟着「关于她」一块（档案；读不到时兜底那几行）
+ABOUT = "=== 关于她（现在的她；她在 About You 页能看能改）===\n" + FALLBACK_ABOUT_HER
 
 
 def _legacy(core: str) -> str:
-    """加 guide 字段之前 render() 的拼法（照抄旧版）。"""
-    parts = [NOX_PERSONA.strip()]
+    """加 guide 字段之前 render() 的拼法（照抄旧版，10-23 加上「关于她」那块）。"""
+    parts = [NOX_PERSONA.strip(), ABOUT]
     if core.strip():
         parts.append("=== 关于你和糖糖的核心记忆 ===\n" + core.strip())
     parts.append(GUARD_INSTRUCTION.strip())
@@ -23,7 +26,7 @@ def test_不带目录时与原来逐字节相同():
 
 def test_老的位置参数写法不坏():
     assert build("x").guide == ""
-    assert StaticPrefix(persona="p", core_memory="", guard="g").render() == "p\n\ng"
+    assert StaticPrefix(persona="p", core_memory="", guard="g").render() == "p\n\n" + ABOUT + "\n\ng"
 
 
 def test_带目录时以目录结尾_且只出现一次():

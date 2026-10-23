@@ -1134,6 +1134,22 @@ def _read_dream_log(data_dir: str, limit: int = 5) -> list[dict]:
     return out
 
 
+#: 档案前缀对一次的间隔。夜间整理 00:15 改完，最晚 03:15 前对上
+PROFILE_REFRESH_S = 3 * 3600
+
+
+async def _profile_refresh_loop(core: Any) -> None:
+    """每 3 小时让 core 对一次档案（`Nox.refresh_prefix`）。一轮炸了下轮照来；CancelledError 原样抛。"""
+    while True:
+        try:
+            await asyncio.sleep(PROFILE_REFRESH_S)
+            await asyncio.to_thread(core.refresh_prefix, "定时")
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001
+            logger.exception("定时对档案出错，3 小时后再来")
+
+
 def _build_dream(core: Any, meter: Any) -> dict | None:
     """Dream 的接线（夜间做梦）。关掉/缺件就 None。
 
@@ -1265,7 +1281,7 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
     #: 「关于她」档案（10-22，设计稿 2.1½）：她明说一件长期的事，当场改那一行。核心集，排在目标后面
     if getattr(core, "ob", None) is not None:
         from tools import profile as profile_tools
-        profile_tools.register_all(core.loop, core.ob)
+        profile_tools.register_all(core.loop, core.ob, on_change=getattr(core, "refresh_prefix", None))
 
     # 待确认单（2026-09-06）。**独立的库**，和 attention/world/topics 平级。
     #
@@ -1519,6 +1535,10 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
                 logger.info("Dream shadow 循环启动")
         except Exception:  # noqa: BLE001
             logger.exception("Dream 接线失败，这条线不跑")
+        # 「关于她」档案进了静态前缀（10-23）：夜里整理改了档案、或者哪次即时重建没成，
+        # 靠这个每 3 小时对一次。文本没变就什么都不动，缓存不冷
+        if callable(getattr(core, "refresh_prefix", None)):
+            tasks.append(asyncio.create_task(_profile_refresh_loop(core)))
         # 他自己的时间（V5，10-06）：一天 0~1 次。attention 没开（没有活动日志）就不起
         try:
             if getattr(attention, "activity_log", None) is not None:
@@ -3637,6 +3657,13 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
         if not d.get("ok"):
             #: 改不了是她能看懂的原因（「这一行已经在了」），原样回 409
             raise HTTPException(status_code=409, detail=d.get("error") or "没改成")
+        #: 档案在他的静态前缀里（10-23）：她改完，下一句他就该知道
+        refresh = getattr(core, "refresh_prefix", None)
+        if refresh is not None:
+            try:
+                await asyncio.to_thread(refresh, "她在页面上改了")
+            except Exception:  # noqa: BLE001
+                logger.warning("她改了档案，前缀没重建上（定时重建会补）", exc_info=True)
         return d
 
     def _creations():

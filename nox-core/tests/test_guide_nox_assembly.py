@@ -36,6 +36,11 @@ class _FakeOB:
     def core_principles(self):
         return SimpleNamespace(ok=False, text="", error="offline-test")
 
+    def profile_read(self):
+        import json as _json
+        return SimpleNamespace(ok=True, error=None, text=_json.dumps(
+            {"sections": [{"name": "基本", "lines": ["启动时就在 〔10-23〕"]}]}, ensure_ascii=False))
+
 
 @pytest.fixture(scope="module")
 def nox():
@@ -111,3 +116,41 @@ def test_own_day拿到梦的本子所在(nox):
 def test_目标那一行注册了_用的是2秒超时的client(nox):
     p = nox.context.get("goals")
     assert p is not None and p.bridge is not nox.bridge and p.bridge.timeout == 2.0
+
+
+# ---------------------------------------------------------------- 「关于她」档案进前缀（10-23）
+
+
+def test_档案进前缀_改了才重建_读不到不动(nox):
+    import json as _json
+    from types import SimpleNamespace as NS
+
+    class OB:
+        def __init__(self, lines):
+            self.lines, self.fail = lines, False
+
+        def profile_read(self):
+            if self.fail:
+                return NS(ok=False, text="", error="OB 睡了")
+            return NS(ok=True, text=_json.dumps({"sections": [{"name": "基本", "lines": self.lines}]}, ensure_ascii=False), error=None)
+
+    old_ob = nox.ob
+    try:
+        nox.ob = OB(["自由职业 〔10-20 她说〕"])
+        assert nox.refresh_prefix("测试") is True
+        assert "基本：\n- 自由职业\n" in nox.system_prompt + "\n", "来源标记不进前缀"
+        assert nox.router.system_prompt == nox.system_prompt, "Router 拿的得是新前缀"
+        assert nox.refresh_prefix("测试") is False, "没变就不动（缓存不冷）"
+        before = nox.system_prompt
+        nox.ob.fail = True
+        assert nox.refresh_prefix("测试") is False and nox.system_prompt == before, "读不到不许换成兜底"
+        nox.ob = OB(["自由职业", "在学西语"])
+        assert nox.refresh_prefix("测试") is True and "- 在学西语" in nox.system_prompt
+    finally:
+        nox.ob = old_ob
+        nox.refresh_prefix("测试收尾")
+
+
+def test_启动时档案就进了前缀(nox):
+    assert "=== 关于她" in nox.system_prompt and "- 启动时就在" in nox.system_prompt
+    assert "射手座，INFP，自由职业" not in nox.system_prompt, "读得到档案就不该用兜底那几行"

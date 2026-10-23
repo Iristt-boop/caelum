@@ -49,7 +49,7 @@ def _lines(raw: str) -> list[str]:
     return [l for s in data.get("sections") or [] for l in s.get("lines") or []]
 
 
-def make_handler(ob: Any):
+def make_handler(ob: Any, on_change: Any = None):
     def profile_update(args: dict) -> str:
         op = str(args.get("op", ""))
         old = str(args.get("old", "")).strip()
@@ -72,6 +72,12 @@ def make_handler(ob: Any):
         d = json.loads(r.text or "{}")
         if not d.get("ok"):
             return f"没改：{d.get('error')}"
+        if on_change is not None:
+            #: 档案进了他的静态前缀（10-23），改了要重建 —— 重建失败不该让这次改动报错
+            try:
+                on_change("他改了档案")
+            except Exception:  # noqa: BLE001
+                logger.warning("档案改了，前缀没重建上（下一次定时重建会补上）", exc_info=True)
         if op == "add":
             return f"记进档案「{d.get('section')}」：{d.get('new')}"
         if op == "update":
@@ -80,5 +86,5 @@ def make_handler(ob: Any):
     return profile_update
 
 
-def register_all(loop, ob: Any) -> None:
-    loop.register(PROFILE_UPDATE_SPEC, make_handler(ob))  # type: ignore[arg-type]
+def register_all(loop, ob: Any, on_change: Any = None) -> None:
+    loop.register(PROFILE_UPDATE_SPEC, make_handler(ob, on_change))  # type: ignore[arg-type]

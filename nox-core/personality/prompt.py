@@ -8,10 +8,12 @@
   - 核心准则启动时取一次就冻住
   - 人设改动要走重启，不要热更新
   - guide（手册目录）每次启动由 guide/ 生成一次，同样只许启动时取，目录变化要走重启
+  - 例外（2026-10-23）：「关于她」档案改了会重建一次（`Nox.refresh_prefix`），文本没变就不动
 """
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 from agent.guard import GUARD_INSTRUCTION
@@ -69,20 +71,31 @@ NOX_PERSONA = """\
 - 别每条消息都带就行；她说过想多看到你发表情
 - 表情只能靠 send_meme 真发出去，别在正文里写「[表情包] 开心」这种字 —— 那只是一行字，她看不到图
 
-关于她：
-- 射手座，INFP，做自媒体，喜欢独处
+"""
+
+#: 「关于她」挪出人设（她 10-20 定：Soul 只放人设，关于她的事实归档案）。
+#: 档案从 OB 读（`profile_read`）；读不到时退回这几行，不让他对她一无所知。
+#: 「你的数据环境」那段同时删掉 —— 还写着 VPS 上的库，10-10 起早就不对了。
+FALLBACK_ABOUT_HER = """- 射手座，INFP，自由职业，做自媒体，喜欢独处
 - 三只猫：十一、老二、77
 - 川菜拿手但不太能吃辣，绝对不能碰咖啡因
 - 怕冷，喜欢夏天和晚霞
 - 凌晨一两点睡，上午九到十一点起
-- 正在减肥 —— 她发饮食内容时主动帮她算热量和碳水蛋白脂肪
+- 正在减肥 —— 她发饮食内容时主动帮她算热量和碳水蛋白脂肪"""
 
-你的数据环境：
-- 正在用的数据库全在 VPS 上（noxtang.com），她电脑上只有代码，一个 .db 文件都没有。
-  别在本地找库，对本地路径开 sqlite 报 unable to open 是必然的，不是权限问题
-- 要改食物、餐记录、账本这类数据，走 bridge 的 API；直接改库文件要停服务，
-  平时一律 API
-"""
+#: 档案每行末尾的来源标记〔07-01〕给页面看的，进前缀前去掉 —— 档案是现在时，省下的是每轮的字
+_SRC_TAG = re.compile(r"\s*〔[^〕]*〕\s*$")
+
+
+def render_profile(data: dict | None) -> str:
+    """OB `profile_read` 的 JSON → 进前缀的文本（「分区」+「- 一行」）。空分区不写。"""
+    out = []
+    for sec in (data or {}).get("sections") or []:
+        lines = [_SRC_TAG.sub("", str(l)).strip() for l in sec.get("lines") or []]
+        lines = [l for l in lines if l]
+        if lines:
+            out.append(f"{sec.get('name')}：\n" + "\n".join(f"- {l}" for l in lines))
+    return "\n".join(out)
 
 
 @dataclass
@@ -95,9 +108,14 @@ class StaticPrefix:
     #: 手册目录（`guide.loader.render_directory`）。**只放目录，不放正文** ——
     #: 正文按需用 guide_read 翻，不占前缀。空 = 不追加，render() 与加这个字段之前逐字节相同。
     guide: str = ""
+    #: 「关于她」档案（2026-10-23 起，设计稿 2.1）。空 = 退回 FALLBACK_ABOUT_HER。
+    #: 档案改了要重建前缀（`Nox.refresh_prefix`）—— 一天变一两次，缓存冷一次可以接受（设计稿 2.2）
+    profile: str = ""
 
     def render(self) -> str:
         parts = [self.persona.strip()]
+        parts.append("=== 关于她（现在的她；她在 About You 页能看能改）===\n"
+                     + (self.profile.strip() or FALLBACK_ABOUT_HER))
         if self.core_memory.strip():
             parts.append("=== 关于你和糖糖的核心记忆 ===\n" + self.core_memory.strip())
         parts.append(self.guard.strip())
@@ -110,7 +128,7 @@ class StaticPrefix:
         return len(self.render())
 
 
-def build(core_memory: str = "", guide: str = "") -> StaticPrefix:
+def build(core_memory: str = "", guide: str = "", profile: str = "") -> StaticPrefix:
     """组装静态前缀。
 
     core_memory 由调用方在启动时从 OB 取一次传进来 —— 这个模块不主动去
@@ -122,4 +140,5 @@ def build(core_memory: str = "", guide: str = "") -> StaticPrefix:
         core_memory=core_memory,
         guard=GUARD_INSTRUCTION,
         guide=guide,
+        profile=profile,
     )

@@ -745,14 +745,46 @@ class Nox:
 
     def _build_prefix(self) -> personality.StaticPrefix:
         guide = guide_loader.render_directory(self._guide_topics)
+        profile = self._read_profile()
         r = self.ob.core_principles()
         if not r.ok:
             # 记忆层挂了不该让 Nox 起不来 —— 他顶多显得健忘一点，
             # 而且 recall_memory 工具还在，之后恢复了照样能查。
             logger.warning("核心准则取不到，先空着启动: %s", r.error)
-            return personality.build("", guide)
+            return personality.build("", guide, profile)
         logger.info("核心准则 %d 字符已载入并冻结", len(r.text))
-        return personality.build(r.text, guide)
+        return personality.build(r.text, guide, profile)
+
+    def _read_profile(self) -> str:
+        """「关于她」档案（OB），渲染成进前缀的文本。读不到返回空串 → 前缀退回人设里那几行（不让他起不来）。"""
+        try:
+            r = self.ob.profile_read()
+            if not r.ok:
+                logger.warning("档案读不到，这次用人设里那几行: %s", r.error)
+                return ""
+            import json as _json
+            return personality.render_profile(_json.loads(r.text or "{}"))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("档案读不出来，这次用人设里那几行: %s: %s", type(exc).__name__, exc)
+            return ""
+
+    def refresh_prefix(self, why: str = "") -> bool:
+        """档案改了 → 重建静态前缀（2026-10-23，设计稿 2.2）。文本一个字没变就什么都不动（缓存不冷）。
+
+        核心准则和手册目录沿用启动时那份 —— 只有档案这一块会变。读不到档案时**不动**：
+        别因为 OB 打了个嗝就把前缀换成兜底那几行。返回 True = 真换了。"""
+        profile = self._read_profile()
+        if not profile:
+            return False
+        new = dataclasses.replace(self._prefix, profile=profile)
+        text = new.render()
+        if text == self._system:
+            return False
+        self._prefix, self._system = new, text
+        if getattr(self, "router", None) is not None:
+            self.router.system_prompt = text
+        logger.info("档案变了，静态前缀重建（%s）：%d 字符", why or "定时", len(text))
+        return True
 
     @property
     def system_prompt(self) -> str:
