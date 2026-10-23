@@ -82,3 +82,10 @@ test("认不出的型号仍然按最贵的估，且会出声", () => {
   const def = serverSrc.match(/const DEFAULT_PRICE = \{\s*miss:\s*([\d.]+)/);
   assert.ok(def && +def[1] >= 20, "默认价该按贵的估，宁可高估不可低估");
 });
+
+test("DeepSeek 搜索按次算：一次 ¥0.005（10-23）", () => {
+  const block = serverSrc.split("const PRICING = {")[1].split("};")[0];
+  const m = block.match(/"deepseek-search":\s*\{\s*miss:\s*0,\s*hit:\s*0,\s*out:\s*(\d+)\s*\}/);
+  assert.ok(m, "PRICING 里没有 deepseek-search");
+  assert.equal(Number(m[1]) / 1e6, 0.005);
+});

@@ -74,3 +74,19 @@ def test_没有兴趣_退回老样子(monkeypatch, tmp_path):
     monkeypatch.setattr(scout, "fetch_world_hooks", lambda w, now: ([], 0))
     TopicPool(tmp_path / "t.db", adapter=None).run_cycle(NOW)
     assert len(seen) in (2, 3)
+
+
+def test_兴趣搜索先走DeepSeek_有结果就不碰Google新闻(monkeypatch, tmp_path):
+    seen = []
+    monkeypatch.setattr(scout, "fetch_direction", lambda cat: [])
+    monkeypatch.setattr(scout, "fetch_world_hooks", lambda w, now: ([], 0))
+    monkeypatch.setattr(scout, "ds_search", lambda q, days=7: [_cand(f"ds:{q}", "https://x/ds")])
+    monkeypatch.setattr(scout, "gnews", lambda q, when="3d": seen.append(q) or [])
+    picked = [{"query": "机械键盘", "category": "design", "why": "因为糖糖看上一把键盘"}]
+    pool = TopicPool(tmp_path / "t.db", adapter=FakeAdapter([]),
+                     interests=type("P", (), {"pick": lambda self, now: picked})())
+    pool.run_cycle(NOW)
+    assert seen == [], "DeepSeek 有结果就不再问 Google 新闻"
+    monkeypatch.setattr(scout, "ds_search", lambda q, days=7: None)
+    pool.run_cycle(NOW + timedelta(hours=6))
+    assert seen == ["机械键盘"], "DeepSeek 没配 / 失败才退回"

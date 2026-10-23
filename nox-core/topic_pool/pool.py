@@ -78,7 +78,9 @@ class TopicPool:
         # 2. 抓候选：她的兴趣 + 抽中的方向 + 世界钩子（不随机，有货就来）
         candidates: list[Candidate] = []
         for it in picked:
-            for c in scout.gnews(it["query"], when="7d"):
+            #: 10-23 起先走 DeepSeek（国内源、带日期），没配 / 失败退回 Google 新闻
+            got = scout.ds_search(it["query"], days=7)
+            for c in (got if got is not None else scout.gnews(it["query"], when="7d")):
                 c.category = it["category"]
                 #: 同世界钩子的记号：Filter 见了写进 why_this、同等质量优先留
                 c.summary = f"【{it['why']}】{c.summary}".strip()

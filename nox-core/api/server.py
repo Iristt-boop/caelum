@@ -783,6 +783,11 @@ def _build_attention(core: Nox, sessions: "Sessions", db: Store) -> AttentionSer
                     core.cfg.trends_url, name="trends",
                     timeout=getattr(core.cfg, "trends_timeout", 15.0),
                 )
+            #: 按她兴趣搜的那部分先走 DeepSeek 自家搜索（10-23，她点头的；同 web_search 的 key 和开关）
+            if getattr(core.cfg, "deepseek_search_key", ""):
+                from tools.search import make_deepseek_client as _ds_client
+                from topic_pool import scout as _scout
+                _scout.set_deepseek(_ds_client(core.cfg.deepseek_search_key))
             #: 搜什么跟着她走（10-23，设计稿第五节）：档案（前缀里那份）+ 她在跟的目标（bridge）
             from topic_pool.interests import Interests
 

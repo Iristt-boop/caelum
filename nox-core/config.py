@@ -371,6 +371,10 @@ class Config:
     # 每次都报错的工具：模型看见工具就会试，试一次错一次，比没有更糟。
     tavily_key: str = field(default_factory=lambda: _env("TAVILY_API_KEY", ""))
     tavily_timeout: float = 20.0
+    #: DeepSeek 自家搜索 / 读网页（10-23 起打头，Tavily 兜底）。和模型同一把 key；
+    #: `NOX_DEEPSEEK_SEARCH=off` 退回只用 Tavily
+    deepseek_search_key: str = field(default_factory=lambda: "" if _env("NOX_DEEPSEEK_SEARCH", "on").lower() == "off"
+                                     else _env("DEEPSEEK_API_KEY", ""))
 
     # ---- eryu（自部署网易云播放器，共听系统的播放层）----
     # 留空则不注册 eryu 工具 —— 搜歌/放歌/歌词

@@ -355,14 +355,17 @@ class Nox:
         # 联网搜索。他没有实时的世界知识，这是唯一的补法。
         # 没 key 就不注册 —— 给模型一个每次都报错的工具比没有更糟，
         # 它会一遍遍地试，然后每次都要跟她解释一次为什么没查成
-        if self.cfg.tavily_key:
+        #: 10-23 起 DeepSeek 打头、Tavily 兜底（tools/search.py 文件头）；两家有一家就注册
+        _ds_key = getattr(self.cfg, "deepseek_search_key", "")
+        if self.cfg.tavily_key or _ds_key:
             search_tools.register_all(
                 self.loop,
-                search_tools.make_client(self.cfg.tavily_key, self.cfg.tavily_timeout),
+                search_tools.make_client(self.cfg.tavily_key, self.cfg.tavily_timeout) if self.cfg.tavily_key else None,
+                search_tools.make_deepseek_client(_ds_key) if _ds_key else None,
             )
-            logger.info("联网搜索已注册（Tavily）")
+            logger.info("联网搜索已注册（%s）", " → ".join(n for n, k in (("DeepSeek", _ds_key), ("Tavily", self.cfg.tavily_key)) if k))
         else:
-            logger.info("未配置 TAVILY_API_KEY，跳过联网搜索")
+            logger.info("未配置 DEEPSEEK_API_KEY / TAVILY_API_KEY，跳过联网搜索")
 
         # 共读的页边笔记
         if self.cfg.reading_url:

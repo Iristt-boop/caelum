@@ -94,7 +94,12 @@ def _ts(value: str | None) -> datetime | None:
             return datetime.strptime(value, fmt).replace(tzinfo=timezone.utc)
         except ValueError:
             continue
-    return None
+    #: DeepSeek 搜索给的是 ISO 带时区（「2026-05-24T16:00:00+00:00」），上面那几种格式都接不住
+    try:
+        dt = datetime.fromisoformat(value)
+        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
 
 
 # ------------------------------------------------------------ 中文热榜（trends 桥）
@@ -266,6 +271,45 @@ def gnews(query: str, when: str = "3d") -> list[Candidate]:
             summary="",
             published_at=_ts(item.findtext("pubDate")),
         ))
+    return out
+
+
+#: DeepSeek 自家搜索（10-23）：按她兴趣搜的那部分走它 —— 国内源、带日期、中文原生；
+#: Google 新闻从家里直连国外偶尔抽风。没配就 None，pool 退回 gnews
+_DS: Any = None
+
+
+def set_deepseek(client: Any) -> None:
+    global _DS
+    _DS = client
+
+
+def ds_search(query: str, days: int = 7, n: int = 10) -> list[Candidate] | None:
+    """DeepSeek 搜一个词，只要最近 days 天的。返回 None = 没配 / 失败（调用方退回 gnews）。"""
+    if _DS is None:
+        return None
+    since = (datetime.now(timezone.utc) - timedelta(days=days)).date().isoformat()
+    res = _DS.post("/search", {"query": f"{query} after:{since}"[:128], "count": n})
+    if not res.ok:
+        logger.warning("DeepSeek 搜索失败 %r：%s（这个词退回 Google 新闻）", query, res.error)
+        return None
+    out: list[Candidate] = []
+    for r in (res.data or {}).get("results") or []:
+        url = str((r or {}).get("url") or "").strip()
+        title = str((r or {}).get("title") or "").strip()
+        if not url or not title:
+            continue
+        out.append(Candidate(
+            source_id=f"ds:{hashlib.sha1(url.encode()).hexdigest()[:16]}",
+            title=title, url=url, source="deepseek", category="",
+            summary=" ".join(str(r.get("snippet") or r.get("summary") or "").split())[:300],
+            published_at=_ts(r.get("date")),
+        ))
+    if out:
+        #: 按次收钱，记一笔（同 tools/search.py 的口径）
+        from agent import meter
+        from agent.llm import Usage
+        meter.record("topic-search", "deepseek-search", Usage(output_tokens=1))
     return out
 
 

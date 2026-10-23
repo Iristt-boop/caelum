@@ -5550,6 +5550,9 @@ app.post("/api/toy/set", (req, res) => {
 // ⚠️ DeepSeek 2026 年起有峰谷定价：北京时间 9-12 点、14-18 点翻倍，这里按平价算，
 // 所以白天的实际花费会比显示的高，看趋势够用，别当账单。
 const PRICING = {
+  // 2026-10-23：DeepSeek 自家搜索 / 读网页按次收钱（¥5 / 千次成功请求）。nox-core 每成功一次记
+  // model=deepseek-search、output_tokens=1 —— 这里按 ¥5000 / 百万「token」折成 ¥0.005 一次
+  "deepseek-search": { miss: 0, hit: 0, out: 5000 },
   "deepseek-v4-flash": { miss: 1, hit: 0.02, out: 2 },
   // vision 版文本与 flash 同价（图像单张 ≤384 tokens，按输入计，可忽略——官方口径）。
   // 🔴 2026-09-06：缺这条时落 DEFAULT_PRICE（Sonnet 估价），账单虚高约 20 倍

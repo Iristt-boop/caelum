@@ -154,3 +154,22 @@ def test_档案进前缀_改了才重建_读不到不动(nox):
 def test_启动时档案就进了前缀(nox):
     assert "=== 关于她" in nox.system_prompt and "- 启动时就在" in nox.system_prompt
     assert "射手座，INFP，自由职业" not in nox.system_prompt, "读得到档案就不该用兜底那几行"
+
+
+def test_有DeepSeek_key_搜索和读网页都登记了():
+    """10-23：搜索 DeepSeek 打头；只有它没有 Tavily 也要能搜（nox.py 原来只认 tavily_key）。"""
+    mp = pytest.MonkeyPatch()
+    src = Path(config_mod.__file__).read_text(encoding="utf-8")
+    for name in set(re.findall(r'_env(?:_int|_float)?\(\s*"([A-Z0-9_]+)"', src)):
+        if _SECRETISH.search(name):
+            mp.setenv(name, "")
+    mp.setattr(nox_mod, "OmbreBrain", _FakeOB)
+    try:
+        cfg = dataclasses.replace(
+            Config(), primary=LLMConfig(provider="openai_compat", model="m", api_key="k", base_url="http://127.0.0.1:9/v1"),
+            bridge_url="http://127.0.0.1:9", bridge_token="t", ob_url="http://127.0.0.1:9",
+            tavily_key="", deepseek_search_key="ds-test")
+        n = nox_mod.Nox(cfg)
+        assert "web_search" in n.loop.tools and "web_read" in n.loop.tools
+    finally:
+        mp.undo()
