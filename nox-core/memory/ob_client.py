@@ -347,6 +347,10 @@ class OmbreBrain:
         except Exception as exc:  # noqa: BLE001
             return MemoryResult(False, error=f"hold: {type(exc).__name__}: {exc}")
 
+    def nightly_follow_ups(self, day: str = "") -> MemoryResult:
+        """夜间整理认出来的「他自己要跟进的事」（10-23）。JSON 文本：{"day", "items": [...]}。"""
+        return self._call("nightly_follow_ups", {"day": day})
+
     # 「关于糖糖」档案（2026-10-22，设计稿 2.2 / 2.4）。OB 回的是 JSON 文本，这里不解析 —— 调用方自己 json.loads
     def profile_read(self) -> MemoryResult:
         return self._call("profile_read", {})

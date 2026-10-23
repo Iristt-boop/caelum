@@ -1144,6 +1144,11 @@ async def _profile_refresh_loop(core: Any) -> None:
         try:
             await asyncio.sleep(PROFILE_REFRESH_S)
             await asyncio.to_thread(core.refresh_prefix, "定时")
+            #: 顺手把夜里认出来的「我自己要跟进的事」建成目标（10-23）。同一晚只处理一次
+            if getattr(core, "bridge", None) is not None and getattr(core, "ob", None) is not None:
+                import goals_followups
+                await asyncio.to_thread(goals_followups.sync, core.ob, core.bridge,
+                                        os.path.dirname(str(core.cfg.db_path)))
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001
