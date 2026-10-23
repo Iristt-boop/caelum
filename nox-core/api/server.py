@@ -971,6 +971,10 @@ def _build_attention(core: Nox, sessions: "Sessions", db: Store) -> AttentionSer
         # 她睡着时他自言自语可以提一句夜里的梦（2026-09-23）。只读 JSONL，
         # 梦那条线本身照旧不推送、不占 Care 额度（dream.py 的边界不动）
         svc.dream_log_path = dream_loop._log_path(os.path.dirname(str(core.cfg.db_path)))
+        # 目标里「到点我去做点什么，再来告诉你」（10-23）：心跳里看一眼，到点放任务纸条
+        if core.bridge is not None:
+            from attention.goal_routines import GoalRoutines
+            svc.goal_routines = GoalRoutines(core.bridge, astore)
         # 想起开心的旧事（10-06）：记忆桶 + Gallery 收藏 + 一起听 / 看 / 读过的，「想逗她」的第二个来源。
         # 共活动的事实读 World Model，细节借上面共活动记账那几个 client
         svc.fond = FondSource(store=svc.store, buckets_dir=dream_loop.buckets_dir(), bridge=core.bridge,

@@ -306,3 +306,31 @@ def test_有记忆时_profile_update登记了(tmp_path, monkeypatch):
         assert "profile_update" in core.loop.registered
     finally:
         store.close()
+
+
+def test_到点的事_接上了_而且在叫醒之前看(tmp_path, monkeypatch):
+    """10-23：GoalRoutines 漏接 = 她立了「每天 9 点推新闻」永远不会发生；放纸条要在叫醒之前，不然要多等一跳。"""
+    from types import SimpleNamespace as NS
+    from api.server import Store, create_app
+    from attention.goal_routines import GoalRoutines
+    monkeypatch.setenv("NOX_ATTENTION", "1")
+    core = AppReadyCore(tmp_path)
+    core.bridge = object()
+    store = Store(tmp_path / "sessions.db")
+    try:
+        create_app(core, store)
+        svc = core.attention
+        assert isinstance(svc.goal_routines, GoalRoutines) and svc.goal_routines.bridge is core.bridge
+        order = []
+
+        class Rec:
+            def poll(self, now, book, sid):
+                order.append(("poll", sid))
+
+        svc.goal_routines = Rec()
+        svc.waker = lambda book, now: order.append(("wake", None))
+        svc._her_state_inputs = lambda: (NS(recent=lambda limit=1, clean_only=True: [NS(id="s-her")]), None)
+        svc.tick()
+        assert order[:2] == [("poll", "s-her"), ("wake", None)]
+    finally:
+        store.close()

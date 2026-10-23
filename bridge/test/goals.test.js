@@ -139,3 +139,22 @@ describe("他自己跟进的（owner=nox，10-23 她：最近的事是提醒他�
     assert.ok(!(await api(bridge.base, "/api/todo/list")).data.items.some((x) => x.text === "问问姨妈test"));
   });
 });
+
+describe("到点他去做的事（routine，10-23）", () => {
+  test("立的时候带上；时刻 / 星期规整；不合格 400 不悄悄存成没有", async () => {
+    const id = (await post("/api/goals", { title: "每天新闻test", routine: { at: "09:00", weekdays: "7,1,1,9", task: "搜今天的 AI 新闻挑一两条讲给她" } })).data.id;
+    const g = (await api(bridge.base, `/api/goals/${id}`)).data.item;
+    assert.deepEqual(g.routine, { at: "09:00", weekdays: "1,7", task: "搜今天的 AI 新闻挑一两条讲给她" });
+    assert.equal((await post("/api/goals", { title: "坏的test", routine: { at: "25:00", task: "x做事" } })).status, 400);
+  });
+
+  test("改 / 清掉", async () => {
+    const id = (await post("/api/goals", { title: "改routine test" })).data.id;
+    assert.equal((await api(bridge.base, `/api/goals/${id}`)).data.item.routine, null);
+    await api(bridge.base, `/api/goals/${id}`, { method: "PATCH", body: { routine: { at: "21:30", task: "看看这周新片" } } });
+    assert.deepEqual((await api(bridge.base, `/api/goals/${id}`)).data.item.routine, { at: "21:30", weekdays: "1,2,3,4,5,6,7", task: "看看这周新片" });
+    assert.equal((await api(bridge.base, `/api/goals/${id}`, { method: "PATCH", body: { routine: { at: "9点" } } })).status, 400);
+    await api(bridge.base, `/api/goals/${id}`, { method: "PATCH", body: { routine: null } });
+    assert.equal((await api(bridge.base, `/api/goals/${id}`)).data.item.routine, null);
+  });
+});

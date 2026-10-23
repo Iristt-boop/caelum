@@ -22,6 +22,17 @@ logger = logging.getLogger(__name__)
 
 CATEGORIES = ["健康", "关系", "财务", "事业", "兴趣", "效率", "其他"]
 
+_ROUTINE = {
+    "type": "object",
+    "description": "到点你要去做的事（她说「每天 9 点给我推新闻」「每周日帮我看看有什么新片」）",
+    "properties": {
+        "at": {"type": "string", "description": "几点，HH:MM（她那边的时间）"},
+        "weekdays": {"type": "string", "description": "哪几天，1=周一…7=周日，逗号隔开；每天就写 1,2,3,4,5,6,7"},
+        "task": {"type": "string", "description": "到点你去做什么、做完怎么跟她说，如「搜今天的 AI 新闻，挑一两条讲给她」"},
+    },
+    "required": ["at", "task"],
+}
+
 _TODO_ITEM = {
     "type": "object",
     "properties": {
@@ -51,7 +62,10 @@ GOAL_CREATE_SPEC = ToolSpec(
         "**owner=nox：你自己要记着跟进的事**（她 10-23 定）—— 她这阵子的状态需要你盯着："
         "「姨妈推迟 42 天了」「腰刚缓过来」「在等面试结果」。这种是提醒你的，不是提醒她的："
         "不落进她的 Todo，every_days 写你隔几天问她一声；事情了了用 goal_update done 收掉。"
-        "这类「最近的事」不要写进档案（profile_update 只放长期的）。"
+        "这类「最近的事」不要写进档案（profile_update 只放长期的）。\n"
+        "\n"
+        "**routine：到点你去做一件事，再来告诉她**（她 10-23 要的）——「每天 9 点给我推新闻」「每周日看看有什么新电影」。"
+        "到点你会被叫醒、拿着工具先把事做了，再跟她说。不是提醒她做事（那是 todos）。"
     ),
     parameters={
         "type": "object",
@@ -63,6 +77,7 @@ GOAL_CREATE_SPEC = ToolSpec(
             "todos": {"type": "array", "items": _TODO_ITEM, "description": "要落进她 Todo 的事，可以空（owner=nox 时不用）"},
             "owner": {"type": "string", "enum": ["her", "nox"], "description": "her=提醒她的（默认）；nox=你自己跟进的"},
             "every_days": {"type": "integer", "description": "owner=nox：隔几天跟进一次，默认 2"},
+            "routine": _ROUTINE,
         },
         "required": ["title", "origin"],
     },
@@ -77,16 +92,18 @@ GOAL_UPDATE_SPEC = ToolSpec(
         "· plan：改计划（给完整的新 plan）\n"
         "· add_todo：再往她 Todo 里落一件属于它的事（todo 同 goal_create 的 todos 里一项）\n"
         "· pause / resume / done：暂停 / 继续 / 完成\n"
+        "· routine：设 / 改到点你去做的事（给 routine）；清掉就给 routine={}\n"
         "她划掉属于目标的 Todo 时进展会自动记，不用再 log。要删目标让她在 Todo 页删（会问她连不连带那些 Todo）。"
     ),
     parameters={
         "type": "object",
         "properties": {
             "goal": {"type": "string", "description": "目标名里的几个字"},
-            "action": {"type": "string", "enum": ["log", "plan", "add_todo", "pause", "resume", "done"]},
+            "action": {"type": "string", "enum": ["log", "plan", "add_todo", "pause", "resume", "done", "routine"]},
             "text": {"type": "string"},
             "plan": {"type": "array", "items": {"type": "string"}},
             "todo": _TODO_ITEM,
+            "routine": _ROUTINE,
         },
         "required": ["goal", "action"],
     },
@@ -139,8 +156,12 @@ def make_handlers(bridge: BridgeClient) -> dict:
         }
         if mine:
             body.update(owner="nox", every_days=int(args.get("every_days") or 2))
+        if args.get("routine"):
+            body["routine"] = dict(args["routine"])
         r = bridge.post("/api/goals", body)
         if not r.ok or not (r.data or {}).get("id"):
+            if body.get("routine") and str(r.error).startswith("HTTP 400"):
+                return "到点的事格式不对：at 要 HH:MM，task 要写清做什么。改好再立一次。"
             raise RuntimeError(f"立目标失败: {r.error}")
         gid = r.data["id"]
         context.wrote("goals")
@@ -150,6 +171,9 @@ def make_handlers(bridge: BridgeClient) -> dict:
             return f"记下了，你自己跟进：{title} · 隔 {body['every_days']} 天问一声{skipped}。她在 Todo 页「我记着的」那栏看得到。"
         ok, bad = _add_todos(gid, list(args.get("todos") or []))
         out = f"立好了：{title}"
+        if body.get("routine"):
+            rt = body["routine"]
+            out += f" · 每到 {rt.get('at')} 你会去做：{rt.get('task')}"
         if args.get("plan"):
             out += f" · 计划 {len(args['plan'])} 步"
         if ok:
@@ -180,14 +204,22 @@ def make_handlers(bridge: BridgeClient) -> dict:
             body["plan"] = list(args.get("plan") or [])
             if not body["plan"]:
                 return "新计划是空的，没改。"
+        elif action == "routine":
+            rt = dict(args.get("routine") or {})
+            body["routine"] = rt or None
         elif action in ("pause", "resume", "done"):
             body["status"] = {"pause": "paused", "resume": "active", "done": "done"}[action]
         else:
             return f"不认识的 action：{action}"
         r = bridge.patch(f"/api/goals/{gid}", body)
         if not r.ok:
+            if action == "routine" and str(r.error).startswith("HTTP 400"):
+                return "到点的事格式不对：at 要 HH:MM，task 要写清做什么。"
             raise RuntimeError(f"改目标失败: {r.error}")
         context.wrote("goals")
+        if action == "routine":
+            rt = body["routine"]
+            return f"「{title}」：每到 {rt.get('at')} 你会去做 —— {rt.get('task')}。" if rt else f"「{title}」到点的事清掉了。"
         return {"plan": f"「{title}」的计划改好了", "pause": f"「{title}」先停一停",
                 "resume": f"「{title}」继续", "done": f"「{title}」完成了"}[action] + "。"
 

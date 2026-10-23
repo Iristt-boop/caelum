@@ -398,6 +398,17 @@ class AttentionService:
         """走一遍完整链路。返回这次的调度决定（含「不开口」）。"""
         now = now or datetime.now(timezone.utc)
 
+        # 0a. 目标里「到点我去做点什么」（10-23）：到点了就往唤醒本里放一张任务纸条，
+        #     下面那一步当场就会把他叫醒去做。读不到 bridge / 没有会话都是跳过，不连累心跳
+        routines = getattr(self, "goal_routines", None)
+        if routines is not None and self.waker is not None:
+            try:
+                sessions, _ = self._her_state_inputs()
+                recent = sessions.recent(limit=1, clean_only=True) if sessions is not None else []
+                routines.poll(now, self.wakeups, recent[0].id if recent else None)
+            except Exception:  # noqa: BLE001
+                logger.exception("看到点的事出错，这轮跳过")
+
         # 0. 到期的纸条先处理。
         #
         # 放在最前面是有意的：唤醒链是**她刚说过话**引出来的，比睡眠这类

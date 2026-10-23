@@ -463,6 +463,9 @@ db.run(`CREATE TABLE IF NOT EXISTS goals (
 //   every_days = 他隔几天跟进一次（只对 nox 的有意义）
 dbTry(`ALTER TABLE goals ADD COLUMN owner TEXT DEFAULT 'her'`)
 dbTry(`ALTER TABLE goals ADD COLUMN every_days INTEGER DEFAULT 0`)
+// 2026-10-23 她：「到点我去做点什么再来告诉你」—— 目标可以带一件到点他去做的事
+//   routine = JSON {"at": "09:00", "weekdays": "1,2,3,4,5,6,7", "task": "搜今天的 AI 新闻，挑一两条讲给她"}，空串 = 没有
+dbTry(`ALTER TABLE goals ADD COLUMN routine TEXT DEFAULT ''`)
 db.run(`CREATE TABLE IF NOT EXISTS goal_log (
   goal_id TEXT, at TEXT, kind TEXT, text TEXT
 )`);
@@ -4602,6 +4605,17 @@ function normPlan(plan) {
     .filter(p => p.step);
 }
 
+//: 到点他去做的事（10-23）。不合格返回 null（= 清掉）；合格返回规整后的对象
+function normRoutine(r) {
+  if (!r || typeof r !== "object") return null;
+  const at = /^([01]\d|2[0-3]):[0-5]\d$/.test(String(r.at || "")) ? String(r.at) : "";
+  const days = String(r.weekdays || "1,2,3,4,5,6,7").split(",").map((d) => d.trim())
+    .filter((d) => /^[1-7]$/.test(d));
+  const task = String(r.task || "").trim().slice(0, 200);
+  if (!at || !days.length || task.length < 2) return null;
+  return { at, weekdays: [...new Set(days)].sort().join(","), task };
+}
+
 //: 一条 Todo 这周应该做几次（给目标卡的「本周进展」）。随时 / 不在本周的一次性 = 0
 function plannedThisWeek(t, now) {
   const rep = t.repeat || (t.at ? "once" : "anytime");
@@ -4630,6 +4644,7 @@ function goalView(g, now) {
   return {
     id: g.id, title: g.title, category: g.category, origin: g.origin || "", plan, status: g.status,
     owner: g.owner === "nox" ? "nox" : "her", everyDays: g.every_days || 0,
+    routine: (() => { try { return normRoutine(JSON.parse(g.routine || "null")); } catch { return null; } })(),
     createdAt: g.created_at, updatedAt: g.updated_at, todos,
     week: { done: todos.reduce((n, t) => n + Math.min(t.doneThisWeek, t.plannedThisWeek || t.doneThisWeek), 0),
             planned: todos.reduce((n, t) => n + t.plannedThisWeek, 0) },
@@ -4653,24 +4668,27 @@ app.get("/api/goals/:id", (req, res) => {
 });
 
 app.post("/api/goals", (req, res) => {
-  const { title, category, origin, plan, owner, every_days } = req.body || {};
+  const { title, category, origin, plan, owner, every_days, routine } = req.body || {};
   const t = String(title || "").trim().slice(0, 40);
   if (!t) return res.status(400).json({ error: "title required" });
   const id = randomUUID();
   const nowIso = new Date().toISOString();
   const own = owner === "nox" ? "nox" : "her";
-  dbRun(`INSERT INTO goals (id, title, category, origin, plan, status, created_at, updated_at, owner, every_days)
-         VALUES (?,?,?,?,?,?,?,?,?,?)`,
+  const rt = normRoutine(routine);
+  if (routine && !rt) return res.status(400).json({ error: "routine 要 {at: HH:MM, weekdays: 1-7, task}" });
+  dbRun(`INSERT INTO goals (id, title, category, origin, plan, status, created_at, updated_at, owner, every_days, routine)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
         [id, t, GOAL_CATEGORIES.includes(category) ? category : "其他",
          String(origin || "").slice(0, 300), JSON.stringify(normPlan(plan)), "active", nowIso, nowIso,
-         own, own === "nox" ? Math.max(1, Math.min(30, parseInt(every_days) || 2)) : 0]);
+         own, own === "nox" ? Math.max(1, Math.min(30, parseInt(every_days) || 2)) : 0,
+         rt ? JSON.stringify(rt) : ""]);
   res.json({ ok: true, id });
 });
 
 app.patch("/api/goals/:id", (req, res) => {
   const g = dbAll("SELECT * FROM goals WHERE id = ?", [req.params.id])[0];
   if (!g || g.status === "deleted") return res.status(404).json({ error: "no such goal" });
-  const { title, category, plan, status } = req.body || {};
+  const { title, category, plan, status, routine } = req.body || {};
   const sets = [], vals = [];
   if (title !== undefined && String(title).trim()) { sets.push("title = ?"); vals.push(String(title).trim().slice(0, 40)); }
   if (category !== undefined && GOAL_CATEGORIES.includes(category)) { sets.push("category = ?"); vals.push(category); }
@@ -4680,6 +4698,12 @@ app.patch("/api/goals/:id", (req, res) => {
     sets.push("status = ?"); vals.push(status);
   }
   if (plan !== undefined) { sets.push("plan = ?"); vals.push(JSON.stringify(normPlan(plan))); }
+  if (routine !== undefined) {
+    //: null / "" = 清掉；给了但不合格 = 400（别悄悄存成没有）
+    const rt = routine ? normRoutine(routine) : null;
+    if (routine && !rt) return res.status(400).json({ error: "routine 要 {at: HH:MM, weekdays: 1-7, task}" });
+    sets.push("routine = ?"); vals.push(rt ? JSON.stringify(rt) : "");
+  }
   if (!sets.length) return res.status(400).json({ error: "nothing to change" });
   sets.push("updated_at = ?"); vals.push(new Date().toISOString());
   dbRun(`UPDATE goals SET ${sets.join(", ")} WHERE id = ?`, [...vals, g.id]);

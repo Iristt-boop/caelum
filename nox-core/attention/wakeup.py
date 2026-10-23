@@ -274,6 +274,18 @@ class WakeBook:
                     "任务" if kind == TASK else "", f"{clamp_minutes(after_min)} 分钟", why)
         return w
 
+    def add_routine(self, session_id: str, why: str, now: datetime | None = None) -> Wakeup:
+        """目标里「到点我去做件事」的那张纸条（10-23）：任务型、**马上就醒**、**不和别的纸条合并**。
+
+        不走 `add()`：那边同会话同类型会改期合并 —— 早上 9 点的「搜新闻」会把她昨晚
+        留的「到点关空调」整张盖掉（`add()` 文档里那个 08-18 的坑，换了个方向）。"""
+        now = now or _now()
+        w = Wakeup(session_id=session_id, why=why.strip(), wake_at=now,
+                   created_at=now, baseline=now, kind=TASK)
+        self._items[w.id] = w
+        logger.info("到点的事，留了张任务纸条：%s", why)
+        return w
+
     def rebase(self, session_id: str, at: datetime | None = None) -> bool:
         """turn 结束、消息真的落库之后，把基准线校准到现在。
 
