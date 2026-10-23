@@ -194,3 +194,34 @@ def test_他自己跟进的_到日子才推_按最近一笔算():
              "log": [{"at": "2026-10-21T20:00", "text": "问过了，好多了"}]}
     d = GoalNudge(FakeBridge([due, fresh]), _Store()).drive(NOW)
     assert d.goal_ids == ["n1"] and d.because == ["跟进·姨妈推迟：上次是 2 天前"]
+
+
+# ------------------------------------------------------------------ 她提到了（10-23）
+
+
+def test_她提到了_摊开计划和最近进展_没提就不摊():
+    goals = [{"title": "减脂", "owner": "her", "week": {"done": 1, "planned": 3},
+              "plan": [{"step": "定目标体重", "status": "done"}, {"step": "每周三次力量", "status": "doing"}],
+              "todos": [{"text": "力量训练", "when": "每周 3 次"}],
+              "log": [{"at": "2026-10-21T19:40", "text": "力量训练：做完了"}]},
+             {"title": "浇花", "owner": "her", "week": {}, "todos": [], "log": []}]
+    p = GoalsProvider(bridge=FakeBridge(goals))
+    out = p.render(p.get_state(Turn(text="今天的力量训练好累")))
+    assert "【她刚提到的「减脂」】还没做完的计划：每周三次力量；力量训练（每周 3 次）；最近：10-21 力量训练：做完了" in out
+    assert "她刚提到的「浇花」" not in out
+    quiet = p.render(p.get_state(Turn(text="在吗")))
+    assert "她刚提到" not in quiet and "【你在跟她的目标】" in quiet
+
+
+def test_提到是每轮现看_列表缓存着():
+    b = FakeBridge([{"title": "浇花", "owner": "her", "week": {}, "todos": [], "log": []}])
+    p = GoalsProvider(bridge=b)
+    p.get_state(Turn(text="在吗"))
+    n = len(b.calls)
+    assert "她刚提到的「浇花」】刚立，还没有进展" in p.render(p.get_state(Turn(text="浇花了吗")))
+    assert len(b.calls) == n, "列表走缓存，不为了看她提没提到多打一次 bridge"
+
+
+def test_单字不算提到():
+    from context.providers.goals import _mentioned
+    assert not _mentioned({"title": "练", "todos": []}, "练一下")

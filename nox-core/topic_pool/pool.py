@@ -48,10 +48,13 @@ class TopicPool:
     """池子本体。store 是必需的，world / adapter 缺了各自降级。"""
 
     def __init__(self, db_path: str | Path, world: Any = None,
-                 adapter: Any = None, trends_client: Any = None) -> None:
+                 adapter: Any = None, trends_client: Any = None,
+                 interests: Any = None) -> None:
         self.store = TopicStore(db_path)
         self.world = world
         self.adapter = adapter
+        #: 跟着她的兴趣搜（10-23，topic_pool/interests.py）。None = 退回老样子（随机 2~3 个固定方向）
+        self.interests = interests
         if trends_client is not None:
             scout.set_trends_client(trends_client)
 
@@ -60,12 +63,26 @@ class TopicPool:
     def run_cycle(self, now: datetime | None = None) -> dict:
         now = now or datetime.now(timezone.utc)
 
-        # 1. 抽方向（文档：每轮 2~3 个，随机，不重复）
-        k = random.choice((2, 2, 3))
+        # 1. 抽方向。有她的兴趣：她的 2 个 + 固定方向 1 个（留一小部分，免得只剩她已知的）；
+        #    没有（档案读不到、utility 没配）：老样子，固定方向随机 2~3 个
+        picked = []
+        if self.interests is not None:
+            try:
+                picked = self.interests.pick(now)
+            except Exception:  # noqa: BLE001
+                logger.exception("兴趣方向取不到，这轮退回固定方向")
+                picked = []
+        k = 1 if picked else random.choice((2, 2, 3))
         cats = random.sample(sorted(scout.DIRECTIONS), k)
 
-        # 2. 抓候选：抽中的方向 + 世界钩子（不随机，有货就来）
+        # 2. 抓候选：她的兴趣 + 抽中的方向 + 世界钩子（不随机，有货就来）
         candidates: list[Candidate] = []
+        for it in picked:
+            for c in scout.gnews(it["query"], when="7d"):
+                c.category = it["category"]
+                #: 同世界钩子的记号：Filter 见了写进 why_this、同等质量优先留
+                c.summary = f"【{it['why']}】{c.summary}".strip()
+                candidates.append(c)
         for cat in cats:
             candidates.extend(scout.fetch_direction(cat))
         hook_candidates, hooks = scout.fetch_world_hooks(self.world, now)
@@ -103,6 +120,7 @@ class TopicPool:
         expired = self.store.expire(now)
 
         return {
+            "interests": [it["query"] for it in picked],
             "directions": cats,
             "candidates": len(candidates),
             "new_candidates": len(fresh),

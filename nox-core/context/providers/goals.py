@@ -18,6 +18,12 @@ logger = logging.getLogger(__name__)
 MAX_GOALS = 3
 
 
+def _mentioned(goal: dict, text: str) -> bool:
+    """她这句话里有没有提到这个目标：目标名，或者它落进 Todo 的那几件事（≥2 个字才算，防单字乱撞）。"""
+    words = [str(goal.get("title") or "")] + [str(t.get("text") or "") for t in goal.get("todos") or []]
+    return any(len(w) >= 2 and w in text for w in words)
+
+
 class GoalsProvider(BaseContextProvider):
     name = "goals"
     section = "user"
@@ -27,6 +33,16 @@ class GoalsProvider(BaseContextProvider):
     def __init__(self, bridge: Any = None, **kw: Any) -> None:
         super().__init__(**kw)
         self.bridge = bridge
+
+    def get_state(self, turn: Turn | None = None, force_refresh: bool = False) -> dict[str, Any]:
+        """「她提到了」（10-23，设计稿 3.3 的第三种触发）：目标列表照旧缓存，**这一句话里提没提到**每轮现看。
+        不调模型 —— 照 OpenClaw 常驻意图，按目标名和它落进 Todo 的那几件事的字面对。"""
+        state = super().get_state(turn, force_refresh)
+        text = (turn.text if turn is not None else "") or ""
+        if not text or not state.get("items"):
+            return state
+        hit = [g for g in state["items"] if _mentioned(g, text)]
+        return {**state, "mentioned": hit[:MAX_GOALS]} if hit else state
 
     def _fetch(self, turn: Turn) -> dict[str, Any]:
         if self.bridge is None:
@@ -53,4 +69,16 @@ class GoalsProvider(BaseContextProvider):
             #: 他自己记着要跟进的（10-23）—— 提醒他的，不是提醒她的
             out.append("【你自己记着要跟进的】" + "、".join(
                 f"{g.get('title')}（隔 {g.get('everyDays') or 2} 天问一声）" for g in mine[:MAX_GOALS]))
+        for g in (state or {}).get("mentioned") or []:
+            #: 她这句提到了它 → 把计划和最近的进展摊开给他（只这一轮）
+            bits = []
+            plan = [p.get("step") for p in g.get("plan") or [] if p.get("status") != "done"]
+            if plan:
+                bits.append("还没做完的计划：" + "、".join(plan[:3]))
+            for t in (g.get("todos") or [])[:3]:
+                bits.append(f"{t.get('text')}（{t.get('when')}）")
+            last = (g.get("log") or [])[:2]
+            if last:
+                bits.append("最近：" + "；".join(f"{str(l.get('at'))[5:10]} {l.get('text')}" for l in last))
+            out.append(f"【她刚提到的「{g.get('title')}」】" + ("；".join(bits) or "刚立，还没有进展"))
         return "\n".join(out)

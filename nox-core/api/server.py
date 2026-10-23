@@ -783,9 +783,23 @@ def _build_attention(core: Nox, sessions: "Sessions", db: Store) -> AttentionSer
                     core.cfg.trends_url, name="trends",
                     timeout=getattr(core.cfg, "trends_timeout", 15.0),
                 )
+            #: 搜什么跟着她走（10-23，设计稿第五节）：档案（前缀里那份）+ 她在跟的目标（bridge）
+            from topic_pool.interests import Interests
+
+            def _her_interests() -> tuple[str, list[str]]:
+                prof = getattr(getattr(core, "_prefix", None), "profile", "") or ""
+                goals: list[str] = []
+                if core.bridge is not None:
+                    r = core.bridge.get("/api/goals")
+                    if r.ok:
+                        goals = [g.get("title", "") for g in (r.data or {}).get("items") or [] if g.get("owner") != "nox"]
+                return prof, goals
+
             topics_pool = TopicPool(
                 Path(core.cfg.db_path).parent / "topics.db",
                 world=world, adapter=_pool_adapter, trends_client=_trends_client,
+                interests=Interests(Path(core.cfg.db_path).parent / "interests.json", _pool_adapter, _her_interests)
+                if _pool_adapter is not None else None,
             )
             # 挂到 core 上：路由和 lifespan 从这儿拿（同 core.world 的理由）
             core.topics = topics_pool

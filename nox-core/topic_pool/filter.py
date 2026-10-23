@@ -49,7 +49,7 @@ _SYSTEM = """你在给一个两人小家的「话题池」做第一道筛选。�
 5. 每轮最多 3 条。
 6. category 只能选：ai / opensource / science / art / design / film / books / music / weird。
 7. 禁止编造：source_id 必须原样照抄候选里的 id，一条对不上都不要。
-8. summary 以【因为糖糖…】开头的候选是「世界钩子」——她正在读/在看的东西，
+8. summary 以【因为糖糖…】开头的候选是「世界钩子」——她正在读/在看的东西、她喜欢的、她在跟的目标，
    why_this 第一条写明这一点，同等质量下优先保留。
 
 输出 JSON 数组，每条形如：
