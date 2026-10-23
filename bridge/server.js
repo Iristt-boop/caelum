@@ -4110,15 +4110,26 @@ app.post("/api/nox/profile/edit", profileProxy);
 
 // 她看我屏幕（Nox 的电脑 v1.5，10-23）：Chat 顶上的胶囊 / 实时画面 / 喊停 / 小卡里每页的截图。原样转给 nox-core。
 // 图都是 JSON 里的 data URL —— <img src> 带不了 token，走 fetch 才过得了 /api 的鉴权
-async function deskProxy(req, res, path, method = "GET") {
+// v2（10-23）登录卡交回来的只有**密文**（她手机上用卡的一次性公钥加密的），这里原样转、不落库、不进日志。
+// 409（卡作废了 / 第一次见的站要先勾允许）、503（我的电脑没连上）是她看得懂的原因，原样回，不压成 502
+async function deskProxy(req, res, path, method = "GET", { body = false, timeout = 8000 } = {}) {
   try {
-    const r = await fetch(`${NOX_CORE_URL}/api/nox/desk${path}`, { method, signal: AbortSignal.timeout(8000) });
-    const body = await r.json().catch(() => null);
-    if (!r.ok || !body) {
-      return res.status(r.status === 404 ? 404 : 502).json({ ok: false, error: (body && body.detail) || `Core 回了 ${r.status}` });
+    const r = await fetch(`${NOX_CORE_URL}/api/nox/desk${path}`, {
+      method,
+      headers: body ? { "Content-Type": "application/json" } : undefined,
+      body: body ? JSON.stringify(req.body || {}) : undefined,
+      signal: AbortSignal.timeout(timeout),
+    });
+    const data = await r.json().catch(() => null);
+    if (!r.ok || !data) {
+      const detail = data && data.detail;
+      return res.status([404, 409, 503].includes(r.status) ? r.status : 502).json({
+        ok: false, error: (typeof detail === "string" && detail) || `Core 回了 ${r.status}`,
+      });
     }
-    res.json(body);
+    res.json(data);
   } catch (e) {
+    // ⚠️ 只记路径，不记请求体（那是她登录卡的密文）
     console.error(`[desk] ${method} ${path} 失败:`, e.message);
     res.status(502).json({ ok: false, error: e.message });
   }
@@ -4127,6 +4138,15 @@ app.get("/api/nox/desk/status", (req, res) => deskProxy(req, res, "/status"));
 app.get("/api/nox/desk/frame", (req, res) => deskProxy(req, res, "/frame"));
 app.post("/api/nox/desk/stop", (req, res) => deskProxy(req, res, "/stop", "POST"));
 app.get("/api/nox/desk/shot/:id", (req, res) => deskProxy(req, res, `/shot/${encodeURIComponent(req.params.id)}`));
+// v2 登录（10-23）：登录卡交密文 / 取消、登录着的站上的确认卡、登着哪些站 / 退出
+const deskId = (req) => encodeURIComponent(req.params.id);
+app.post("/api/nox/desk/login/:id", (req, res) => deskProxy(req, res, `/login/${deskId(req)}`, "POST", { body: true, timeout: 50000 }));
+app.post("/api/nox/desk/login/:id/cancel", (req, res) => deskProxy(req, res, `/login/${deskId(req)}/cancel`, "POST", { timeout: 15000 }));
+app.post("/api/nox/desk/action/:id/confirm", (req, res) => deskProxy(req, res, `/action/${deskId(req)}/confirm`, "POST", { timeout: 35000 }));
+app.post("/api/nox/desk/action/:id/cancel", (req, res) => deskProxy(req, res, `/action/${deskId(req)}/cancel`, "POST"));
+app.get("/api/nox/desk/sites", (req, res) => deskProxy(req, res, "/sites"));
+app.post("/api/nox/desk/sites/:site/logout", (req, res) =>
+  deskProxy(req, res, `/sites/${encodeURIComponent(req.params.site)}/logout`, "POST", { timeout: 20000 }));
 
 app.get("/api/nox/creations", creationsProxy("GET"));
 app.get("/api/nox/creations/:id", creationsProxy("GET"));

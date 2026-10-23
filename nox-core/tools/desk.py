@@ -33,6 +33,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import logging
 import re
 import secrets
@@ -42,7 +43,7 @@ from pathlib import Path
 from typing import Any
 
 from agent.llm import ToolSpec
-from tools import context
+from tools import context, desk_auth
 from tools.untrusted import ingest
 
 logger = logging.getLogger(__name__)
@@ -51,6 +52,7 @@ logger = logging.getLogger(__name__)
 _CAPABILITY = {
     "desk_open": "desk.open", "desk_read": "desk.read", "desk_click": "desk.click",
     "desk_type": "desk.type", "desk_scroll": "desk.scroll", "desk_back": "desk.back", "desk_look": "desk.look",
+    "desk_request_login": "desk.login_begin",
 }
 
 _WHOSE = (
@@ -154,7 +156,20 @@ LOOK_SPEC = ToolSpec(
     parameters={"type": "object", "properties": {}},
 )
 
-SPECS = (OPEN_SPEC, READ_SPEC, CLICK_SPEC, TYPE_SPEC, SCROLL_SPEC, BACK_SPEC, LOOK_SPEC)
+REQUEST_LOGIN_SPEC = ToolSpec(
+    side_effect="write",
+    name="desk_request_login",
+    description=(
+        "你电脑上现在这一页要登录（比如糖糖让你去她的 VPS 面板、淘宝看看）→ 调它，请糖糖自己在她那边填。"
+        "她的 Chat 里会弹一张登录卡，**账号密码由她填、你永远看不到**，你也别问她要、别自己往框里填。"
+        "不带参数：网站是哪个由浏览器地址栏决定，不是你说的。"
+        "\n她填完前这一页先别碰；结果会在你下一次用电脑时告诉你。登进去之后，在那个站上点按钮 / 填东西都要她点头（会给她发确认卡）。"
+        + _WHOSE
+    ),
+    parameters={"type": "object", "properties": {}},
+)
+
+SPECS = (OPEN_SPEC, READ_SPEC, CLICK_SPEC, TYPE_SPEC, SCROLL_SPEC, BACK_SPEC, LOOK_SPEC, REQUEST_LOGIN_SPEC)
 
 _UNREACHABLE = ("够不到我自己的电脑 —— 那条链路现在没连上。"
                 "可能是那台虚拟机没开、上面的程序没起，或者网不通，我这边分不出来。")
@@ -294,23 +309,65 @@ class DeskActivity:
             }
 
 
-def make_handlers(link: Any, vision_cfg: Any = None, activity: DeskActivity | None = None) -> dict[str, Any]:
+def make_handlers(link: Any, vision_cfg: Any = None, activity: DeskActivity | None = None,
+                  auth: Any = None) -> dict[str, Any]:
     def run(name: str, args: dict) -> str:
         if not link.is_ready:
             #: 只说看得到的那件事（computer.py 同一条纪律）：链路没连上，原因分不出来
             return _UNREACHABLE
+        #: 登录 / 确认卡的结果（他那一轮早结束了）：下一次用电脑时带在最前面
+        notes = auth.take_notes() if auth is not None else ""
+        if name == "desk_request_login":
+            return notes + _request_login()
         payload = _payload(name, args)
         if isinstance(payload, str):
-            return payload
+            return notes + payload
+        #: 🔴 登录着的站上要点 / 要填 → 不直接做，出确认卡（设计稿 5.2「登录之后」）
+        if auth is not None and name in ("desk_click", "desk_type"):
+            site = auth.signed_in_here()
+            if site:
+                return notes + _gate(name, payload, site)
         if activity is not None:
             stopped = activity.begin(name, str(args.get("doing") or ""))
             if stopped:
-                return stopped
+                return notes + stopped
         try:
-            return _act(name, payload)
+            return notes + _act(name, payload)
         finally:
             if activity is not None:
                 activity.end()
+
+    def _request_login() -> str:
+        if auth is None:
+            return "登录这条路还没接上。"
+        r = link.call("desk.login_begin", {}, 20.0)
+        if not r.ok:
+            return f"没发出去：{r.error}"
+        try:
+            view = auth.add_card(json.loads(r.text or "{}"))
+        except (ValueError, KeyError, TypeError) as exc:
+            logger.warning("登录卡的形状不对：%s", type(exc).__name__)
+            return "没发出去：我电脑那边回的登录卡形状不对。"
+        #: 🔴 给他的只有这一句：有哪些框、标签、公钥这些只进她的卡
+        logger.info("发了登录卡给她：%s（%s）", view["site"], view["origin"])
+        return (f"已经请糖糖在她那边登录 {view['site']}（她的 Chat 里会弹一张登录卡，她自己填）。"
+                "账号密码你看不到，也别问她要。她填完之前这一页先别碰；结果会在你下一次用电脑时告诉你，她也可能直接跟你说。")
+
+    def _gate(name: str, payload: dict, site: str) -> str:
+        d = link.call("desk.describe", {"ref": payload["ref"]}, 10.0)
+        if not d.ok:
+            return f"没做成：{d.error}"
+        try:
+            desc = json.loads(d.text or "{}")
+        except ValueError:
+            return "没做成：我电脑那边没说清这个编号是什么。"
+        if desk_auth.PAY_RX.search(str(desc.get("name") or "")):
+            return ("这是付款 / 下单一类的按钮 —— 这一类不碰，确认卡也不发（付款永远在她自己手机上）。"
+                    "跟糖糖说一声，让她自己弄。")
+        a = auth.add_action(name, payload, desc, site)
+        logger.info("登录态的站上要写：出确认卡 %s（%s）", a["id"], a["text"])
+        return (f"{site} 是糖糖登录着的网站，点按钮 / 填东西要她点头：已经给她发了确认卡（{a['text']}）。"
+                "她确认之后会替你做，结果在你下一次用电脑时告诉你。")
 
     def _act(name: str, payload: dict) -> str:
         #: 🔴 结果里都带页面内容 = 摄入外部内容（打在真要去读之前、早退之后 —— 同 computer_browse 的理由）
@@ -326,6 +383,8 @@ def make_handlers(link: Any, vision_cfg: Any = None, activity: DeskActivity | No
     def _note_page(text: str) -> None:
         """翻到新的一页 → 要一帧存起来，编号报进这一步（她那张小卡用）。只是展示，出错不影响他"""
         m = _PAGE_LINE.search(text[:600])
+        if m and auth is not None:
+            auth.saw(m.group(2))   # 现在在哪一页：登录态的站上写动作要不要出卡，看这个
         if activity is None or not m or not activity.is_new_page(m.group(2)):
             return
         title, url = m.group(1).strip() or m.group(2), m.group(2)
@@ -355,7 +414,8 @@ def make_handlers(link: Any, vision_cfg: Any = None, activity: DeskActivity | No
     return {spec.name: (lambda args, n=spec.name: run(n, args)) for spec in SPECS}
 
 
-def register_all(loop: Any, link: Any, vision_cfg: Any = None, activity: DeskActivity | None = None) -> None:
-    handlers = make_handlers(link, vision_cfg, activity)
+def register_all(loop: Any, link: Any, vision_cfg: Any = None, activity: DeskActivity | None = None,
+                 auth: Any = None) -> None:
+    handlers = make_handlers(link, vision_cfg, activity, auth)
     for spec in SPECS:
         loop.register(spec, handlers[spec.name])

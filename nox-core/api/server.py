@@ -1217,6 +1217,21 @@ def _build_dream(core: Any, meter: Any) -> dict | None:
         return None
 
 
+class DeskLoginSubmit(BaseModel):
+    """她在登录卡上点「登录」交回来的（我的电脑 v2，10-23）。
+
+    🔴 只有密文：她的手机用卡上的一次性公钥加密，Core 原样转给 desk-agent，解不开也不该解。
+    ⚠️ 放模块级：定义在 create_app 里面的话，`from __future__ import annotations` 让 FastAPI 认不出它是请求体，
+    当成查询参数、一律 422（10-23 测试抓到的）
+    """
+
+    epk: str = Field(max_length=200)
+    iv: str = Field(max_length=40)
+    ct: str = Field(max_length=8000)
+    #: 第一次见的站：她勾了「允许这个网站接收我的密码」
+    allow: bool = False
+
+
 def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
     started = datetime.now(timezone.utc)
 
@@ -1301,10 +1316,14 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
     _db = str(core.cfg.db_path)
     desk_activity = desk_tools.DeskActivity(None if _db == ":memory:" else Path(_db).parent / "desk-shots")
     core.desk_activity = desk_activity
+    #: v2（10-23）登录：她填表、我不经手 + 登录着的站上写动作出确认卡（tools/desk_auth.py）
+    from tools import desk_auth as desk_auth_mod
+    desk_auth = desk_auth_mod.DeskAuth(None if _db == ":memory:" else Path(_db).parent / "desk-login.json")
+    core.desk_auth = desk_auth
     #: v1（10-17）多了截屏兜底 desk_look —— 和 computer_read_image 同一个视觉取值函数（Slots 里换了下一张就生效）
     desk_tools.register_all(core.loop, desk_hand,
                             getattr(core, "vision_cfg", None) or getattr(core.cfg, "vision", None),
-                            desk_activity)
+                            desk_activity, desk_auth)
 
     #: 目标（10-22，设计稿第三节，她定「判断就立、事后能删」）：goal_create / goal_update，核心集（不进包 ——
     #: 她随口一句「我要减肥」就得接得住）。登记在这一串最后，前面的位置一个不动
@@ -2270,8 +2289,96 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
     #: ---- 她看我屏幕（v1.5，10-23）：bridge 原样转给手机 / OS ----
     @app.get("/api/nox/desk/status")
     async def desk_status() -> dict[str, Any]:
-        """Chat 顶上那颗胶囊：我在不在用电脑、在干嘛、翻了几页"""
-        return {"ok": True, "ready": desk_hand.is_ready, **desk_activity.status()}
+        """Chat 顶上那颗胶囊：我在不在用电脑、在干嘛、翻了几页；v2 起还带着等她填的登录卡 / 等她点头的确认卡"""
+        return {"ok": True, "ready": desk_hand.is_ready, **desk_activity.status(), **desk_auth.public()}
+
+    @app.post("/api/nox/desk/login/{cid}")
+    async def desk_login_submit(cid: str, body: DeskLoginSubmit) -> dict[str, Any]:
+        """她在登录卡上点了「登录」。卡对得上、第一次见的站她勾了允许，才把密文交给我的电脑去填"""
+        card = desk_auth.card(cid)
+        if card is None:
+            raise HTTPException(status_code=409, detail="这张登录卡已经作废了（过期了或者他换了页）。让他重新发一张。")
+        if not desk_auth.is_allowed(card["origin"]) and not body.allow:
+            raise HTTPException(status_code=409, detail="第一次在这个网站登录，要先勾选允许它接收你的密码。")
+        if not desk_hand.is_ready:
+            raise HTTPException(status_code=503, detail="我的电脑现在没连上")
+        if body.allow:
+            desk_auth.allow(card["origin"])
+        desk_auth.drop_card(cid)
+        r = await desk_hand.acall("desk.login_fill",
+                                  {"login_id": cid, "epk": body.epk, "iv": body.iv, "ct": body.ct}, 45.0)
+        if not r.ok:
+            desk_auth.note(f"糖糖在 {card['site']} 的登录卡上点了登录，但没填成：{r.error}")
+            return {"ok": False, "status": "failed", "message": r.error or "没填成"}
+        try:
+            res = json.loads(r.text or "{}")
+        except ValueError:
+            res = {"status": "failed", "message": "我的电脑回的结果看不懂"}
+        status, msg = res.get("status"), str(res.get("message") or "")
+        if status == "ok":
+            desk_auth.signed_in(card["site"], card["origin"])
+            desk_auth.note(f"糖糖帮你登上了 {card['site']}。在这个站上点按钮 / 填东西要她点头")
+        elif status == "more":
+            desk_auth.add_card(res.get("card") or {})
+            desk_auth.note(f"{card['site']} 还要一个验证码，又给糖糖发了一张卡")
+        else:
+            desk_auth.note(f"糖糖在 {card['site']} 没登进去：{msg}")
+        logger.info("登录卡 %s（%s）：%s", cid, card["site"], status)
+        return {"ok": status == "ok", "status": status, "message": msg}
+
+    @app.post("/api/nox/desk/login/{cid}/cancel")
+    async def desk_login_cancel(cid: str) -> dict[str, Any]:
+        card = desk_auth.card(cid)
+        desk_auth.drop_card(cid)
+        if desk_hand.is_ready:
+            await desk_hand.acall("desk.login_cancel", {"login_id": cid}, 10.0)
+        if card is not None:
+            desk_auth.note(f"糖糖没在 {card['site']} 登录（她取消了）")
+        return {"ok": True}
+
+    @app.post("/api/nox/desk/action/{aid}/confirm")
+    async def desk_action_confirm(aid: str) -> dict[str, Any]:
+        """她点头了：**这是登录着的站上唯一真的会点 / 会填的地方**（他的工具只出卡）。编号还得指着卡上那个东西"""
+        a = desk_auth.take_action(aid)
+        if a is None:
+            raise HTTPException(status_code=409, detail="这张确认卡已经作废了（过期了或者已经点过）。")
+        if not desk_hand.is_ready:
+            desk_auth.note(f"糖糖确认了「{a['text']}」，但我的电脑没连上，没做")
+            raise HTTPException(status_code=503, detail="我的电脑现在没连上")
+        cap = "desk.click" if a["kind"] == "desk_click" else "desk.type"
+        r = await desk_hand.acall(cap, {**a["args"], "expect": a["expect"]}, 30.0)
+        if not r.ok:
+            desk_auth.note(f"糖糖确认了「{a['text']}」，但没做成：{r.error}")
+            return {"ok": False, "message": r.error or "没做成"}
+        m = desk_tools._PAGE_LINE.search((r.text or "")[:600])
+        if m:
+            desk_auth.saw(m.group(2))
+        desk_auth.note(f"糖糖确认了，已经替你{a['text']}（现在的页面：{m.group(1) if m else '没认出来'}）")
+        logger.info("确认卡 %s 已做：%s", aid, a["text"])
+        return {"ok": True, "message": "做好了"}
+
+    @app.post("/api/nox/desk/action/{aid}/cancel")
+    async def desk_action_cancel(aid: str) -> dict[str, Any]:
+        a = desk_auth.take_action(aid)
+        if a is not None:
+            desk_auth.note(f"糖糖没让你{a['text']}（她点了算了）")
+        return {"ok": True}
+
+    @app.get("/api/nox/desk/sites")
+    async def desk_sites() -> dict[str, Any]:
+        """我登着哪些站（设置页那张列表）"""
+        return {"ok": True, "sites": desk_auth.sites()}
+
+    @app.post("/api/nox/desk/sites/{site}/logout")
+    async def desk_site_logout(site: str) -> dict[str, Any]:
+        if not desk_hand.is_ready:
+            raise HTTPException(status_code=503, detail="我的电脑现在没连上，退不了")
+        r = await desk_hand.acall("desk.logout", {"site": site}, 15.0)
+        if not r.ok:
+            return {"ok": False, "message": r.error or "没退成"}
+        desk_auth.signed_out(site)
+        desk_auth.note(f"糖糖让你退出了 {site}")
+        return {"ok": True}
 
     @app.get("/api/nox/desk/frame")
     async def desk_frame() -> dict[str, Any]:

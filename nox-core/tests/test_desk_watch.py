@@ -30,6 +30,9 @@ class _Browser:
     def __init__(self, slow=0.0):
         self.calls, self.slow, self.url = [], slow, ""
 
+    def scrub(self, text):
+        return text
+
     async def open(self, url):
         self.calls.append(url)
         await asyncio.sleep(self.slow)
