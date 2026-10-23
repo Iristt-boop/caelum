@@ -875,11 +875,16 @@ class LineDraftFilter:
     是草稿就整行吞掉，不是就原样放出去。中文开头的行照常一个字一个字地流，不受影响。
     """
 
-    def __init__(self, detectors: list) -> None:
+    def __init__(self, detectors: list, hold_alpha: bool = True) -> None:
         self._dets = list(detectors)
+        #: 英文开头的行也攒（语音草稿要看到行尾才判得出）。打电话时关掉 —— 那边英文就是正文，攒到行尾会让 TTS 晚开口
+        self._hold = "[<" if hold_alpha else "<"
+        self._alpha = hold_alpha
         self._buf = ""
         self._holding = False
         self._line_start = True
+        #: 刚吞掉一行草稿 / 标签：紧跟着的空行一起吞（不然她那边收到一串换行）
+        self._dropped = False
 
     def _is_draft(self, line: str) -> bool:
         return any(d(line) for d in self._dets)
@@ -890,13 +895,21 @@ class LineDraftFilter:
             if self._holding:
                 self._buf += ch
                 if ch == "\n":
-                    if not self._is_draft(self._buf[:-1]):
+                    if self._is_draft(self._buf[:-1]):
+                        self._dropped = True
+                    else:
                         out.append(self._buf)
+                        self._dropped = False
                     self._buf, self._holding, self._line_start = "", False, True
                 continue
-            if self._line_start and ch.isascii() and (ch.isalpha() or ch == "["):
+            if self._dropped and ch == "\n":
+                continue
+            #: 「<」开头也先攒住：写成文字的工具调用标签（<invoke …>，10-23）整行拦掉
+            if self._line_start and ch.isascii() and ((self._alpha and ch.isalpha()) or ch in self._hold):
                 self._holding, self._buf, self._line_start = True, ch, False
                 continue
+            if not ch.isspace():
+                self._dropped = False
             out.append(ch)
             if ch == "\n":
                 self._line_start = True
@@ -906,7 +919,7 @@ class LineDraftFilter:
 
     def flush(self) -> str:
         held = self._buf if self._holding and not self._is_draft(self._buf) else ""
-        self._buf, self._holding, self._line_start = "", False, True
+        self._buf, self._holding, self._line_start, self._dropped = "", False, True, False
         return held
 
 

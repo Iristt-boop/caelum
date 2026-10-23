@@ -61,6 +61,30 @@ class Artifact:
     action: str
 
 
+#: 工具调用的「格式」本身被当成字写进正文（10-23：她说「你用一下自己的小电脑」，那一轮没挂上 desk_*，
+#: deepseek-flash 就在正文里写了一串 <invoke name="caelum_map"> … —— 一次真调用都没有，她看到的是一屏标签）。
+#: 和上面按工具声明的契约不同：这是**任何工具**都可能漏出来的通用形状，所以不挂在某个工具上，loop 直接用。
+#: 只认行首的这几个标签名（function_calls / invoke / parameter / tool_call），正文里聊到尖括号不受影响
+_MARKUP_LINE = re.compile(r"^\s*</?(?:[a-z]+:)?(?:function_calls|invoke|parameter|tool_call)\b", re.I)
+
+
+def is_markup_line(line: str) -> bool:
+    return bool(_MARKUP_LINE.match(line or ""))
+
+
+def strip_markup(text: str | None) -> tuple[str | None, int]:
+    """剥掉写成文字的工具调用标签行，返回 (剥完的正文, 剥了几行)。剥完只剩空白就回 ""（调用方当没说出口处理）"""
+    if not text:
+        return text, 0
+    lines = text.split("\n")
+    keep = [ln for ln in lines if not is_markup_line(ln)]
+    n = len(lines) - len(keep)
+    if not n:
+        return text, 0
+    out = re.sub(r"\n{3,}", "\n\n", "\n".join(keep)).strip()
+    return out, n
+
+
 def _index(contracts: dict[str, OutputContract]) -> list[tuple[str, str]]:
     """(marker, 工具名)，长的在前 —— 短 marker 是长 marker 前缀时别被先咬走。"""
     pairs = [(m, name) for name, c in contracts.items() for m in c.markers]

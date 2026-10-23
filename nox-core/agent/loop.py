@@ -302,6 +302,9 @@ class AgentLoop:
             _accumulate(total, turn.usage)
             # 非流式一般不会有心里话（规矩只在聊天流里加），万一写了也别漏进主动消息和历史
             turn.text = strip_inner_voice(turn.text)
+            turn.text, leaked = contracts_mod.strip_markup(turn.text)
+            if leaked:
+                logger.warning("他把工具调用写成了文字（%d 行标签，非流式）—— 已剥，不进历史", leaked)
             ctx.llm_calls.append(_call_record(iterations, turn))
 
             if turn.stop_reason == "error":
@@ -478,7 +481,8 @@ class AgentLoop:
         #: 契约的整行判别器（语音草稿）—— 只在文字聊天里用，见 contracts.OutputContract.line_detector
         dets = (contracts_mod.line_detectors(self._contracts())
                 if split and _contracts_on() else [])
-        draft_filter = LineDraftFilter([d for _, d in dets]) if dets else None
+        #: 写成文字的工具调用标签（<invoke …>）任何时候都不许流到她那边 —— 打电话也一样（TTS 会念出来）
+        draft_filter = LineDraftFilter([d for _, d in dets] + [contracts_mod.is_markup_line], hold_alpha=bool(dets))
 
         def emit(raw: str) -> Iterator[StreamEvent]:
             if draft_filter is not None:
@@ -526,6 +530,7 @@ class AgentLoop:
         spoke = False   # 前面的调用已经对她说过话（见 SPOKEN_NOTE）
         delivered = False   # 前面已经有终结型工具（表情 / 语音…）成功发到她那边了
         empty_retried = False   # 「一个字都没说出口」已经重问过一次了
+        leak_retry = False   # 那次「没说出口」是因为把工具调用写成了文字（重问时多一句提醒）
 
         for iterations in range(1, self.max_iterations + 1):
             # 同非流式那条：只拦"开下一轮"，拦不住正在进行的那一次调用。
@@ -556,7 +561,8 @@ class AgentLoop:
             for ev in llm.stream(
                 view + messages[n_hist:], specs,
                 system=system,
-                dynamic_system=_with_spoken_note(dynamic_system, spoke, empty=empty_retried),
+                dynamic_system=_with_spoken_note(dynamic_system, spoke, empty=empty_retried,
+                                                 leaked=empty_retried and leak_retry),
                 depth=depth,
             ):
                 if ev.type == "text":
@@ -575,6 +581,12 @@ class AgentLoop:
                 turn = Turn(stop_reason="error", error="流意外结束，没有收到 done 事件")
             # 心里话只给她看，**不进历史**（她 10-06：「不记，只给你看」）—— 下面所有 append / _done 都读 turn.text
             turn.text = strip_inner_voice(turn.text)
+            turn.text, leaked = contracts_mod.strip_markup(turn.text)
+            if leaked:
+                #: 流里已经被 draft_filter 拦下了；这里剥的是要进历史的那份 —— 留着他下一轮就照着写
+                logger.warning("他把工具调用写成了文字（%d 行标签，真调了 %d 个）—— 已剥，不进历史",
+                               leaked, len(turn.tool_calls or []))
+                leak_retry = leak_retry or not (turn.text or "").strip()
             _accumulate(total, turn.usage)
             ctx.llm_calls.append(_call_record(iterations, turn))
 
@@ -600,6 +612,9 @@ class AgentLoop:
                     )
                     if not empty_retried:
                         empty_retried = True
+                        #: 重问前把过滤器里攒着的半行扔掉（多半是没换行的最后一行标签）——
+                        #: 不扔的话下一次调用的正文会接在它后面、被当成同一行一起吞掉（10-23 测出来的）
+                        draft_filter.flush()
                         continue
                 yield from drain()
                 messages.append(_assistant_message(turn))
@@ -1035,10 +1050,17 @@ EMPTY_NOTE = (
 )
 
 
-def _with_spoken_note(dynamic_system: str | None, spoke: bool, empty: bool = False) -> str | None:
+LEAK_NOTE = (
+    "【你刚才把工具调用写成了文字（<invoke …> 那种标签）】那样什么都没发生，她看不到也没执行。"
+    "要用工具就直接调用；这一轮手边没有你想用的那件，就跟她说一声现在用不了。"
+)
+
+
+def _with_spoken_note(dynamic_system: str | None, spoke: bool, empty: bool = False,
+                      leaked: bool = False) -> str | None:
     """这一轮里前面的模型调用已经对她说过话 → 动态块末尾加一条「别重说」；
-    上一次调用一个字都没说出口（在重问）→ 加一条「把话说出来」。"""
-    notes = [n for n, on in ((SPOKEN_NOTE, spoke), (EMPTY_NOTE, empty)) if on]
+    上一次调用一个字都没说出口（在重问）→ 加一条「把话说出来」；没说出口是因为把工具调用写成了字 → 再加一条。"""
+    notes = [n for n, on in ((SPOKEN_NOTE, spoke), (EMPTY_NOTE, empty), (LEAK_NOTE, leaked)) if on]
     if not notes:
         return dynamic_system
     return "\n\n".join([dynamic_system, *notes] if dynamic_system else notes)
