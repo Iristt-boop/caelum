@@ -32,10 +32,17 @@
 
 from __future__ import annotations
 
+import base64
 import logging
+import re
+import secrets
+import threading
+import time
+from pathlib import Path
 from typing import Any
 
 from agent.llm import ToolSpec
+from tools import context
 from tools.untrusted import ingest
 
 logger = logging.getLogger(__name__)
@@ -64,7 +71,12 @@ OPEN_SPEC = ToolSpec(
     ),
     parameters={
         "type": "object",
-        "properties": {"url": {"type": "string", "description": "网址，http 或 https"}},
+        "properties": {
+            "url": {"type": "string", "description": "网址，http 或 https"},
+            "doing": {"type": "string", "description": (
+                "你在干嘛，一句短话（6~14 字，像「在查 VPS 的价格」「在看底特律的新消息」）。"
+                "糖糖手机顶上会显示这句，她点开能看你的屏幕 —— 写给她看的，别写网址")},
+        },
         "required": ["url"],
     },
 )
@@ -179,7 +191,110 @@ def _split_image(text: str) -> tuple[str, str, str]:
     return head, media, b64.strip()
 
 
-def make_handlers(link: Any, vision_cfg: Any = None) -> dict[str, Any]:
+#: 结果开头那行「【标题】网址」（click / type / back 前面还多一行「点了 […]」）
+_PAGE_LINE = re.compile(r"【(.*?)】(https?://\S+)")
+_SHOT_ID = re.compile(r"^[0-9]{10}-[0-9a-f]{8}$")
+
+_STOPPED = ("糖糖刚才点了「让我停下」—— 现在别再用电脑了，这一步没做。"
+            "跟她说一声你停在哪、到目前看到了什么。")
+
+
+class DeskActivity:
+    """我在用自己电脑这件事，给她看的那一面（v1.5，10-23 她定）。
+
+    她手机 Chat 顶上的胶囊读 `status()`：我在用电脑就浮出来，写我「在干嘛」（desk_open 的 doing，
+    她要的是在干嘛、不要具体网址）；点开看实时画面（/api/nox/desk/frame），能喊停（`stop()`）。
+    每翻到一页存一张小截图，编号经 report_step 进这一步的工具记录 —— 聊天里那张「看了几页」的小卡就从那儿来。
+
+    只是展示 + 一个停止开关：不改他读到的任何东西（截图给她看，不给他看）。
+    """
+
+    #: 最后一步做完之后胶囊还挂多久（她来得及看见刚才发生了什么，WorkBanner 同一条理）
+    LIVE_S = 60
+    #: 隔这么久再用电脑 = 新的一段（「在干嘛」清掉、页数重数）
+    NEW_RUN_S = 600
+    #: 她喊停之后多久之内的 desk_* 一律不做
+    STOP_S = 120
+    #: 截图留多少张（最旧的先删）
+    KEEP_SHOTS = 400
+
+    def __init__(self, shot_dir: Path | None = None, clock: Any = time.time) -> None:
+        self.shot_dir = shot_dir
+        self._clock = clock
+        self._lock = threading.Lock()
+        self._busy = 0
+        self._started = 0.0
+        self._last = 0.0
+        self._doing = ""
+        self._pages: list[str] = []
+        self._stop_until = 0.0
+
+    def begin(self, name: str, doing: str = "") -> str | None:
+        """一步开始。她喊过停 → 回一句给他的话（这一步不做）"""
+        now = self._clock()
+        with self._lock:
+            if now < self._stop_until:
+                return _STOPPED
+            if not self._busy and now - self._last > self.NEW_RUN_S:
+                self._started, self._doing, self._pages = now, "", []
+            if doing.strip():
+                self._doing = " ".join(doing.split())[:24]
+            self._busy += 1
+            self._last = now
+            return None
+
+    def end(self) -> None:
+        with self._lock:
+            self._busy = max(0, self._busy - 1)
+            self._last = self._clock()
+
+    def is_new_page(self, url: str) -> bool:
+        with self._lock:
+            return not self._pages or self._pages[-1] != url
+
+    def add_page(self, url: str, image_b64: str) -> str | None:
+        """记下翻到的这一页，存截图，回截图编号（存不成就 None，页照记）"""
+        with self._lock:
+            self._pages.append(url)
+        if self.shot_dir is None or not image_b64:
+            return None
+        sid = f"{int(self._clock())}-{secrets.token_hex(4)}"
+        try:
+            self.shot_dir.mkdir(parents=True, exist_ok=True)
+            (self.shot_dir / f"{sid}.jpg").write_bytes(base64.b64decode(image_b64))
+            old = sorted(self.shot_dir.glob("*.jpg"))
+            for p in old[:max(0, len(old) - self.KEEP_SHOTS)]:
+                p.unlink(missing_ok=True)
+        except (OSError, ValueError) as exc:
+            logger.warning("存我电脑的截图失败（小卡上这一页没有缩略图）：%s", exc)
+            return None
+        return sid
+
+    def shot(self, sid: str) -> bytes | None:
+        if self.shot_dir is None or not _SHOT_ID.match(sid or ""):
+            return None
+        p = self.shot_dir / f"{sid}.jpg"
+        return p.read_bytes() if p.is_file() else None
+
+    def stop(self) -> None:
+        with self._lock:
+            self._stop_until = self._clock() + self.STOP_S
+
+    def status(self) -> dict[str, Any]:
+        now = self._clock()
+        with self._lock:
+            active = bool(self._busy) or (self._last > 0 and now - self._last < self.LIVE_S)
+            return {
+                "active": active,
+                "busy": bool(self._busy),
+                "doing": self._doing if active else "",
+                "pages": len(self._pages) if active else 0,
+                "since": self._started if active else None,
+                "stopped": now < self._stop_until,
+            }
+
+
+def make_handlers(link: Any, vision_cfg: Any = None, activity: DeskActivity | None = None) -> dict[str, Any]:
     def run(name: str, args: dict) -> str:
         if not link.is_ready:
             #: 只说看得到的那件事（computer.py 同一条纪律）：链路没连上，原因分不出来
@@ -187,6 +302,17 @@ def make_handlers(link: Any, vision_cfg: Any = None) -> dict[str, Any]:
         payload = _payload(name, args)
         if isinstance(payload, str):
             return payload
+        if activity is not None:
+            stopped = activity.begin(name, str(args.get("doing") or ""))
+            if stopped:
+                return stopped
+        try:
+            return _act(name, payload)
+        finally:
+            if activity is not None:
+                activity.end()
+
+    def _act(name: str, payload: dict) -> str:
         #: 🔴 结果里都带页面内容 = 摄入外部内容（打在真要去读之前、早退之后 —— 同 computer_browse 的理由）
         revoked = ingest.mark(name)
         result = link.call(_CAPABILITY[name], payload, 30.0)
@@ -194,7 +320,23 @@ def make_handlers(link: Any, vision_cfg: Any = None) -> dict[str, Any]:
             return f"没做成：{result.error}" + (revoked or "")
         if name == "desk_look":
             return _look(result.text or "") + (revoked or "")
+        _note_page(result.text or "")
         return (result.text or "（页面是空的）") + (revoked or "")
+
+    def _note_page(text: str) -> None:
+        """翻到新的一页 → 要一帧存起来，编号报进这一步（她那张小卡用）。只是展示，出错不影响他"""
+        m = _PAGE_LINE.search(text[:600])
+        if activity is None or not m or not activity.is_new_page(m.group(2)):
+            return
+        title, url = m.group(1).strip() or m.group(2), m.group(2)
+        frame = link.call("desk.frame", {}, 5.0)
+        b64 = _split_image(frame.text or "")[2] if frame.ok else ""
+        if not frame.ok:
+            logger.warning("要我电脑的一帧没要到（小卡上这页没图）：%s", frame.error)
+        sid = activity.add_page(url, b64)
+        ctx = context.current()
+        if ctx is not None:
+            ctx.report_step(title[:80], type="desk_page", url=url, shot=sid)
 
     def _look(text: str) -> str:
         """🔴 图必须在这儿拦下来换成描述 —— base64 原样交给他会撑爆上下文（computer_read_image 同理）"""
@@ -213,7 +355,7 @@ def make_handlers(link: Any, vision_cfg: Any = None) -> dict[str, Any]:
     return {spec.name: (lambda args, n=spec.name: run(n, args)) for spec in SPECS}
 
 
-def register_all(loop: Any, link: Any, vision_cfg: Any = None) -> None:
-    handlers = make_handlers(link, vision_cfg)
+def register_all(loop: Any, link: Any, vision_cfg: Any = None, activity: DeskActivity | None = None) -> None:
+    handlers = make_handlers(link, vision_cfg, activity)
     for spec in SPECS:
         loop.register(spec, handlers[spec.name])

@@ -4108,6 +4108,26 @@ async function profileProxy(req, res) {
 app.get("/api/nox/profile", profileProxy);
 app.post("/api/nox/profile/edit", profileProxy);
 
+// 她看我屏幕（Nox 的电脑 v1.5，10-23）：Chat 顶上的胶囊 / 实时画面 / 喊停 / 小卡里每页的截图。原样转给 nox-core。
+// 图都是 JSON 里的 data URL —— <img src> 带不了 token，走 fetch 才过得了 /api 的鉴权
+async function deskProxy(req, res, path, method = "GET") {
+  try {
+    const r = await fetch(`${NOX_CORE_URL}/api/nox/desk${path}`, { method, signal: AbortSignal.timeout(8000) });
+    const body = await r.json().catch(() => null);
+    if (!r.ok || !body) {
+      return res.status(r.status === 404 ? 404 : 502).json({ ok: false, error: (body && body.detail) || `Core 回了 ${r.status}` });
+    }
+    res.json(body);
+  } catch (e) {
+    console.error(`[desk] ${method} ${path} 失败:`, e.message);
+    res.status(502).json({ ok: false, error: e.message });
+  }
+}
+app.get("/api/nox/desk/status", (req, res) => deskProxy(req, res, "/status"));
+app.get("/api/nox/desk/frame", (req, res) => deskProxy(req, res, "/frame"));
+app.post("/api/nox/desk/stop", (req, res) => deskProxy(req, res, "/stop", "POST"));
+app.get("/api/nox/desk/shot/:id", (req, res) => deskProxy(req, res, `/shot/${encodeURIComponent(req.params.id)}`));
+
 app.get("/api/nox/creations", creationsProxy("GET"));
 app.get("/api/nox/creations/:id", creationsProxy("GET"));
 app.delete("/api/nox/creations/:id", creationsProxy("DELETE"));

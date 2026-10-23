@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import hmac
 import json
@@ -40,6 +41,9 @@ PART_CHARS = 6000
 #: 一页最多留多少字（再长的页只读前面这些）
 MAX_CHARS = 60000
 NAV_TIMEOUT_MS = 20000
+#: 给她看的帧：半尺寸（1280×900 → 640×450）、质量 55，一帧几十 KB，手机上每秒拉一张也不卡
+FRAME_SCALE = 0.5
+FRAME_QUALITY = 55
 
 
 def sign(secret: str, parts: list[str]) -> str:
@@ -111,6 +115,8 @@ class Browser:
         self._url = ""
         self._elements: list[dict[str, Any]] = []
         self._lock = asyncio.Lock()
+        #: 最近一帧（v1.5 她看我屏幕用）。动作做到一半时拿这张，不去抢正在导航的页面
+        self._frame = ""
 
     async def _ensure(self) -> Any:
         if self._page is not None and not self._page.is_closed():
@@ -142,6 +148,40 @@ class Browser:
             self._elements = await page.evaluate(COLLECT_JS, MAX_ELEMENTS)
         except Exception:  # noqa: BLE001
             self._elements = []
+        await self._grab()
+
+    async def _grab(self) -> str:
+        """截半尺寸的一帧存起来（给她看的，不给他看 —— 他看页面结构）。截不成留着上一帧"""
+        page = self._page
+        try:
+            cdp = await self._ctx.new_cdp_session(page)
+            try:
+                x, y = await page.evaluate("() => [scrollX, scrollY]")
+                vp = page.viewport_size or {"width": 1280, "height": 900}
+                shot = await cdp.send("Page.captureScreenshot", {
+                    "format": "jpeg", "quality": FRAME_QUALITY,
+                    "clip": {"x": x, "y": y, "width": vp["width"], "height": vp["height"], "scale": FRAME_SCALE}})
+            finally:
+                await cdp.detach()
+            self._frame = shot["data"]
+        except Exception as exc:  # noqa: BLE001 —— 截不成不耽误他干活，日志留一笔
+            log.warning("截帧失败：%s", (str(exc).splitlines() or [type(exc).__name__])[0][:200])
+            try:
+                raw = await page.screenshot(type="jpeg", quality=FRAME_QUALITY, full_page=False)
+                self._frame = base64.b64encode(raw).decode()
+            except Exception as exc2:  # noqa: BLE001
+                log.warning("整屏截图也失败：%s", (str(exc2).splitlines() or [type(exc2).__name__])[0][:200])
+        return self._frame
+
+    async def frame(self) -> str:
+        """她在看我屏幕：手上没活就现截一张；正在做动作（锁着）就回最近那张，不排队"""
+        if not self._url:
+            return "（还没打开任何页面）"
+        if not self._lock.locked():
+            async with self._lock:
+                if self._page is not None and not self._page.is_closed():
+                    await self._grab()
+        return f"【{self._title}】{self._url}\nIMAGE image/jpeg {self._frame}" if self._frame else "（还没有画面）"
 
     def _need_page(self) -> str | None:
         return None if self._url else "现在没有打开的页面，先用 desk_open 打开一个。"
@@ -247,7 +287,6 @@ class Browser:
             if (why := self._need_page()):
                 return why
             page = await self._ensure()
-            import base64
             raw = await page.screenshot(type="jpeg", quality=60, full_page=False)
             return f"【{await page.title()}】{page.url}\nIMAGE image/jpeg {base64.b64encode(raw).decode()}"
 
@@ -283,6 +322,7 @@ TOOLS = [
     {"name": "desk.scroll", "description": "上下翻一屏"},
     {"name": "desk.back", "description": "退回上一页"},
     {"name": "desk.look", "description": "截这一屏"},
+    {"name": "desk.frame", "description": "最近一帧（半尺寸，给她看我屏幕用）"},
 ]
 
 
@@ -311,6 +351,9 @@ async def handle(browser: Browser, msg: dict[str, Any]) -> dict[str, Any] | None
                 text = await browser.back()
             elif name == "desk.look":
                 text = await browser.look()
+            elif name == "desk.frame":
+                return {"jsonrpc": "2.0", "id": mid,
+                        "result": {"content": [{"type": "text", "text": await browser.frame()}]}}
             else:
                 return {"jsonrpc": "2.0", "id": mid, "error": {"code": -32601, "message": f"没有这件能力：{name}"}}
             log.info("%s 完成", name)
@@ -335,14 +378,23 @@ async def session(secret: str, browser: Browser) -> None:
         if not hmac.compare_digest(str(res.get("proof", "")), expect):
             raise ConnectionError("对面证明不了自己是 Nox Core，断开")
         log.info("链路建立：%s", URL)
+
+        async def reply(msg: dict[str, Any]) -> None:
+            out = await handle(browser, msg)
+            if out is not None:
+                await ws.send(json.dumps(out, ensure_ascii=False))
+
+        #: 每条请求各起一个任务（v1.5）：她要看一帧时，不用排在我一个 20 秒的导航后面。
+        #: 动作之间照旧靠 Browser._lock 一件一件来
+        pending: set[asyncio.Task] = set()
         async for raw in ws:
             try:
                 msg = json.loads(raw)
             except json.JSONDecodeError:
                 continue
-            out = await handle(browser, msg)
-            if out is not None:
-                await ws.send(json.dumps(out, ensure_ascii=False))
+            task = asyncio.create_task(reply(msg))
+            pending.add(task)
+            task.add_done_callback(pending.discard)
 
 
 async def main() -> None:

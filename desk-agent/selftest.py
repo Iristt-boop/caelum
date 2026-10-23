@@ -109,6 +109,28 @@ async def main() -> None:
     out = await b.look()
     check("\nIMAGE image/jpeg " in out and len(out) > 2000, "截屏回一行图")
 
+    # v1.5 她看我屏幕：半尺寸的帧；动作做到一半（锁着）也立刻回最近那张，不排队
+    import base64
+    import struct
+    out = await b.frame()
+    raw = base64.b64decode(out.rpartition("IMAGE image/jpeg ")[2])
+    i, w = 2, 0
+    while i < len(raw) - 9:   # 找 JPEG 的 SOF0/SOF2 段读宽
+        seg, ln = raw[i + 1], struct.unpack(">H", raw[i + 2:i + 4])[0]
+        if seg in (0xC0, 0xC2):
+            w = struct.unpack(">H", raw[i + 7:i + 9])[0]
+            break
+        i += 2 + ln
+    check(out.startswith("【") and 0 < w <= 700, f"帧是半尺寸（宽 {w}）")
+    await b._lock.acquire()
+    try:
+        got = await asyncio.wait_for(b.frame(), 2)
+        check("IMAGE image/jpeg " in got, "做动作时要帧：不排队，回最近那张")
+    except asyncio.TimeoutError:
+        check(False, "做动作时要帧：不排队，回最近那张")
+    finally:
+        b._lock.release()
+
     try:
         await b.open("file:///etc/passwd")
         check(False, "file:// 不开")

@@ -92,7 +92,8 @@ class ToolContext:
 
     def report_step(self, desc: str, *, status: str = "success",
                     raw_cmd: str | None = None, diff: str | None = None,
-                    url: str | None = None, type: str = "run_command") -> None:
+                    url: str | None = None, type: str = "run_command",
+                    shot: str | None = None) -> None:
         """上报一条工具内部子步骤（⌨️ run_command 那一层）。
 
         `desc` 是给人看的友好描述，平时只显示它；`raw_cmd` 是底层命令，
@@ -111,6 +112,9 @@ class ToolContext:
             entry["diff"] = diff
         if url:
             entry["url"] = url
+        if shot:
+            #: 我的电脑翻到的那一页的截图编号（v1.5，10-23）：聊天里那张小卡拿它去 /api/nox/desk/shot/<id>
+            entry["shot"] = shot
         try:
             self.pending_steps.append(entry)
         except Exception:  # noqa: BLE001

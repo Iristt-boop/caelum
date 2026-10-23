@@ -1297,9 +1297,14 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
     from tools import desk as desk_tools
     desk_hand = LocalLink(name="desk", secret_env="CAELUM_DESK_SECRET", whose="我的电脑")
     core.desk_hand = desk_hand
+    #: v1.5（10-23）她看我屏幕：Chat 顶上的胶囊 / 实时画面 / 喊停 / 每页一张小截图（见 DeskActivity）
+    _db = str(core.cfg.db_path)
+    desk_activity = desk_tools.DeskActivity(None if _db == ":memory:" else Path(_db).parent / "desk-shots")
+    core.desk_activity = desk_activity
     #: v1（10-17）多了截屏兜底 desk_look —— 和 computer_read_image 同一个视觉取值函数（Slots 里换了下一张就生效）
     desk_tools.register_all(core.loop, desk_hand,
-                            getattr(core, "vision_cfg", None) or getattr(core.cfg, "vision", None))
+                            getattr(core, "vision_cfg", None) or getattr(core.cfg, "vision", None),
+                            desk_activity)
 
     #: 目标（10-22，设计稿第三节，她定「判断就立、事后能删」）：goal_create / goal_update，核心集（不进包 ——
     #: 她随口一句「我要减肥」就得接得住）。登记在这一串最后，前面的位置一个不动
@@ -2261,6 +2266,42 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
         logger.info("Nox 的电脑已启用：ws /agent/desk")
     else:
         logger.info("没配 CAELUM_DESK_SECRET，Nox 的电脑不启用")
+
+    #: ---- 她看我屏幕（v1.5，10-23）：bridge 原样转给手机 / OS ----
+    @app.get("/api/nox/desk/status")
+    async def desk_status() -> dict[str, Any]:
+        """Chat 顶上那颗胶囊：我在不在用电脑、在干嘛、翻了几页"""
+        return {"ok": True, "ready": desk_hand.is_ready, **desk_activity.status()}
+
+    @app.get("/api/nox/desk/frame")
+    async def desk_frame() -> dict[str, Any]:
+        """实时画面（她拉起卡片后约每秒一张）。只回图，不进他的上下文"""
+        if not desk_hand.is_ready:
+            return {"ok": False, "error": "我的电脑现在没连上"}
+        r = await desk_hand.acall("desk.frame", {}, 5.0)
+        if not r.ok:
+            return {"ok": False, "error": r.error or "没要到画面"}
+        head, media, b64 = desk_tools._split_image(r.text or "")
+        if not b64:
+            return {"ok": False, "error": (head or "还没有画面").strip()}
+        m = desk_tools._PAGE_LINE.search(head)
+        return {"ok": True, "image": f"data:{media or 'image/jpeg'};base64,{b64}",
+                "title": m.group(1) if m else "", "url": m.group(2) if m else ""}
+
+    @app.post("/api/nox/desk/stop")
+    async def desk_stop() -> dict[str, Any]:
+        """她点了「让我停下」：之后两分钟里我的 desk_* 一律不做，回一句让我跟她交代停在哪"""
+        desk_activity.stop()
+        logger.info("糖糖让我停下用电脑")
+        return {"ok": True}
+
+    @app.get("/api/nox/desk/shot/{sid}")
+    async def desk_shot(sid: str) -> dict[str, Any]:
+        """小卡里某一页的截图（编号来自工具记录的 sub_commands[].shot）"""
+        raw = desk_activity.shot(sid)
+        if raw is None:
+            raise HTTPException(status_code=404, detail="没有这张")
+        return {"ok": True, "image": "data:image/jpeg;base64," + base64.b64encode(raw).decode()}
 
     @app.get("/debug/tasks")
     async def debug_tasks() -> dict:
