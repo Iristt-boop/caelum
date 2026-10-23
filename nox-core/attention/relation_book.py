@@ -194,12 +194,16 @@ class RelationBook:
 
     # ------------------------------------------------------------ 给他看
 
-    def describe(self, now: datetime, per_kind: int = 5) -> str:
-        """进他每轮动态块的那段。没有就空串（什么都不说）。"""
+    def describe(self, now: datetime, per_kind: int = 5,
+                 kinds: tuple[str, ...] = ("pact", "avoid", "care", "vibe")) -> str:
+        """进他每轮动态块的那段。没有就空串（什么都不说）。
+
+        10-23 起每轮只给 vibe：约定 / 别问 / 上心的**文字**归档案「我们之间」（进了静态前缀），
+        这里再给一遍就是两份（她 10-20：一份记忆不能散落各处）。"""
         lines = []
         heads = {"pact": "你们的约定", "avoid": "她说过别老问的（她自己提起照样接，别主动问）",
                  "care": "她要你上心的", "vibe": "你们这几天的气氛"}
-        for kind in ("pact", "avoid", "care", "vibe"):
+        for kind in kinds:
             got = self.active(now, kind)[:per_kind]
             if got:
                 lines.append(f"{heads[kind]}：" + "；".join(it.text for it in got))

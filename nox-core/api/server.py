@@ -1940,6 +1940,11 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
             try:
                 now = temporal_now()
                 known = [it.text for it in book.items(now)]
+                #: 档案「我们之间」里已有的也算知道了（10-23 起文字只在那一份），别再拿同一件事来问她
+                try:
+                    known += _us_lines()
+                except Exception:  # noqa: BLE001
+                    logger.warning("读「我们之间」失败，这轮去重只看账本", exc_info=True)
                 got = relation_detect.detect(utility, text, reply, known)
                 if got is None:
                     return
@@ -3122,10 +3127,47 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
             raise HTTPException(status_code=503, detail="关系账本没起来（attention 没开？），看日志")
         return book
 
+    # 10-23：约定 / 别问 / 上心的文字只留一份 —— 档案「我们之间」（她 10-20：一份记忆不能散落各处）。
+    # relation_book 照旧管三件事：气氛（三天淡掉）、待她点头的卡片、给开口判断用的话题（evaluator 的 avoid/care）。
+    # Between Us 页不用改：列表里生效的三类改从档案读，id 带 "p:" 前缀；Remove 它 = 档案撤掉那行。
+    _US_PREFIX = {"约定": "pact", "别问": "avoid", "上心": "care"}
+    _US_WORD = {v: k for k, v in _US_PREFIX.items()}
+
+    def _us_lines() -> list[str]:
+        ob = getattr(core, "ob", None)
+        if ob is None:
+            raise HTTPException(status_code=503, detail="记忆没接上，读不到「我们之间」")
+        r = ob.profile_read()
+        if not r.ok:
+            raise HTTPException(status_code=502, detail=f"读档案失败：{r.error}")
+        data = json.loads(r.text or "{}")
+        return next((list(s.get("lines") or []) for s in data.get("sections") or [] if s.get("name") == "我们之间"), [])
+
+    def _us_id(line: str) -> str:
+        import hashlib
+        return "p:" + hashlib.sha1(line.encode("utf-8")).hexdigest()[:12]
+
+    def _us_item(line: str) -> dict:
+        word, _, rest = line.partition("：")
+        kind = _US_PREFIX.get(word.strip())
+        return {"id": _us_id(line), "kind": kind or "pact", "text": (rest if kind else line).strip(),
+                "topic": "", "quote": "", "session_id": "", "status": "active",
+                "created_at": "", "decided_at": None, "expires_at": None, "source": "profile"}
+
+    def _profile_changed(why: str) -> None:
+        refresh = getattr(core, "refresh_prefix", None)
+        if refresh is not None:
+            try:
+                refresh(why)
+            except Exception:  # noqa: BLE001
+                logger.warning("「我们之间」改了，前缀没重建上（定时重建会补）", exc_info=True)
+
     @app.get("/api/nox/relation")
     def relation_list() -> dict:
-        """列表页：待确认 + 生效中（过期的气氛不算）。新的在前。"""
-        return {"ok": True, "items": [it.to_dict() for it in _relation_book().items(temporal_now())]}
+        """列表页：待确认 + 这几天的气氛（账本）+ 生效的约定 / 别问 / 上心（档案「我们之间」）。"""
+        book_items = [it.to_dict() for it in _relation_book().items(temporal_now())
+                      if it.status == "pending" or it.kind == "vibe"]
+        return {"ok": True, "items": book_items + [_us_item(l) for l in _us_lines()]}
 
     @app.get("/api/nox/relation/{item_id}")
     def relation_get(item_id: str) -> dict:
@@ -3140,12 +3182,34 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
         """confirm（Keep）/ reject（Not quite）/ remove（列表里删）。状态不对就 409，别装作成了。"""
         if action not in ("confirm", "reject", "remove"):
             raise HTTPException(status_code=400, detail="只认 confirm / reject / remove")
+        if item_id.startswith("p:"):
+            #: 档案里的那一行：只能撤（改在 About You 页）
+            if action != "remove":
+                raise HTTPException(status_code=409, detail="这一条已经记下了，只能删")
+            line = next((l for l in _us_lines() if _us_id(l) == item_id), None)
+            if line is None:
+                raise HTTPException(status_code=404, detail="没有这一条（可能刚被改过）")
+            r = core.ob.profile_edit("retire", old=line, why="她在 Between Us 里删的", source="her")
+            d = json.loads(r.text or "{}") if r.ok else {}
+            if not d.get("ok"):
+                raise HTTPException(status_code=409, detail=d.get("error") or f"没删成：{r.error}")
+            _profile_changed("她在 Between Us 里删了一条")
+            return {"ok": True, "item": {**_us_item(line), "status": "removed"}}
         book = _relation_book()
         if book.get(item_id) is None:
             raise HTTPException(status_code=404, detail="没有这一条")
         it = book.decide(item_id, action, temporal_now())
         if it is None:
             raise HTTPException(status_code=409, detail="这一条现在不能这么改（已经处理过了？）")
+        if action == "confirm" and it.kind in _US_WORD and getattr(core, "ob", None) is not None:
+            #: 她点了 Keep → 文字写进档案「我们之间」（唯一的一份）；账本那条留着给开口判断用话题
+            r = core.ob.profile_edit("add", section="我们之间", text=f"{_US_WORD[it.kind]}：{it.text}",
+                                     why=it.quote or "她点了 Keep", source="her")
+            d = json.loads(r.text or "{}") if r.ok else {}
+            if d.get("ok"):
+                _profile_changed("她点了 Keep")
+            elif "已经在了" not in str(d.get("error")):
+                logger.warning("Keep 了，但没写进档案（Between Us 列表里会看不到这条）：%s", d.get("error") or r.error)
         return {"ok": True, "item": it.to_dict()}
 
     # ---- 他自己的时间（V5，10-06）：His Day 页 / OS NoxDay 读这里 ----

@@ -13,6 +13,7 @@ import logging
 from typing import Any
 
 from context.base import BaseContextProvider, Turn
+from temporal import now as temporal_now
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +35,10 @@ class RelationProvider(BaseContextProvider):
         if book is None:
             return {"text": ""}
         try:
-            return {"text": book.describe(turn.now)}
+            # nox.py 拼上下文时 Turn 不带 now（同 TimeProvider 的 `turn.now or now_cst()`）。
+            # 10-10~10-18 没兜这一下，每轮都在 None 上炸、这段静默缺席（journalctl 800+ 条）
+            #: 只给气氛（10-23）：约定 / 别问 / 上心在档案「我们之间」里，静态前缀已经有了
+            return {"text": book.describe(turn.now or temporal_now(), kinds=("vibe",))}
         except Exception as exc:  # noqa: BLE001
             logger.warning("读关系账本失败，这轮不给他这段：%s", exc)
             return {"text": ""}

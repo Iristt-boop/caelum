@@ -160,11 +160,15 @@ def test_识别_话题不在词表里就留空_调挂了不抛():
 
 
 def test_他每轮看得到_没有就一个字都不占(book):
+    """10-23 起每轮只给气氛：约定 / 别问 / 上心的文字在档案「我们之间」（静态前缀），这里再给就是两份。"""
     p = RelationProvider(attention_ref=lambda: SimpleNamespace(relation_book=book))
-    assert p.render(p._fetch(CtxTurn(text="在吗"))) == ""
+    assert p.render(p._fetch(CtxTurn(text="在吗", now=NOW))) == ""
     book.decide(_p(book, kind="pact", topic="", text="吵架不过夜").id, "confirm", NOW)
-    out = p.render(p._fetch(CtxTurn(text="在吗")))
-    assert "【你们之间的事】" in out and "吵架不过夜" in out
+    assert p.render(p._fetch(CtxTurn(text="在吗", now=NOW))) == "", "约定不在这儿给了"
+    book.propose(kind="vibe", text="刚和好，还有点黏", now=NOW)
+    out = p.render(p._fetch(CtxTurn(text="在吗", now=NOW)))
+    assert "【你们之间的事】" in out and "刚和好" in out and "吵架不过夜" not in out
+    assert p.render(p._fetch(CtxTurn(text="在吗", now=None))) is not None, "线上 Turn.now 是 None，不许炸"
     assert RelationProvider(attention_ref=lambda: None).render(
         RelationProvider(attention_ref=lambda: None)._fetch(CtxTurn(text="x"))) == ""
 
@@ -200,7 +204,33 @@ def live(monkeypatch, tmp_path):
     nox.loop = _Loop()
     reply = _j(kind="avoid", text="她不喜欢我老问她吃没吃饭", topic="饮食", quote="别老问我吃没吃饭", confidence=0.9)
     nox.router = SimpleNamespace(light_adapter=_Ad(reply))
+    nox.ob = _ProfileOB(["约定：1 是暗号"])
     return TestClient(create_app(nox, Store(tmp_path / "sessions.db"))), nox
+
+
+class _ProfileOB:
+    """档案「我们之间」那一节（10-23 起约定 / 别问 / 上心的文字只在这儿）。照 OB profile_store：一字不差才撤得动。"""
+
+    def __init__(self, lines):
+        self.lines, self.edits = list(lines), []
+
+    def profile_read(self):
+        import json as _j2
+        return SimpleNamespace(ok=True, error=None, text=_j2.dumps(
+            {"sections": [{"name": "基本", "lines": ["自由职业"]}, {"name": "我们之间", "lines": self.lines}]}, ensure_ascii=False))
+
+    def profile_edit(self, op, **kw):
+        import json as _j2
+        self.edits.append({"op": op, **kw})
+        if op == "add":
+            if kw["text"] in self.lines:
+                return SimpleNamespace(ok=True, text=_j2.dumps({"ok": False, "error": "这一行已经在了"}, ensure_ascii=False))
+            self.lines.append(kw["text"])
+        elif op == "retire":
+            if kw["old"] not in self.lines:
+                return SimpleNamespace(ok=True, text=_j2.dumps({"ok": False, "error": "没找到"}, ensure_ascii=False))
+            self.lines.remove(kw["old"])
+        return SimpleNamespace(ok=True, text=_j2.dumps({"ok": True, "op": op}, ensure_ascii=False))
 
 
 def _cards(nox):
@@ -225,10 +255,24 @@ def test_她说了_出卡片_Keep之后列表里是生效的(live):
     assert path == "/api/relation/card" and body["session_id"] == "s-relation"
     iid = body["item"]["id"]
     items = c.get("/api/nox/relation").json()["items"]
-    assert [(x["id"], x["status"]) for x in items] == [(iid, "pending")]
+    assert [(x["id"], x["status"]) for x in items][0] == (iid, "pending")
+    #: 档案里早就有的那条也在列表里（文字只在档案一份）
+    assert [(x["kind"], x["text"], x["status"]) for x in items if x["id"].startswith("p:")] == [("pact", "1 是暗号", "active")]
 
     assert c.post(f"/api/nox/relation/{iid}/confirm").json()["item"]["status"] == "active"
     assert c.get(f"/api/nox/relation/{iid}").json()["item"]["status"] == "active"
+    #: Keep 了 → 写进档案「我们之间」；列表里它从档案那份出现，账本那条不再重复列
+    assert nox.ob.edits[-1] == {"op": "add", "section": "我们之间", "text": "别问：她不喜欢我老问她吃没吃饭",
+                                "why": "别老问我吃没吃饭", "source": "her"}
+    items = c.get("/api/nox/relation").json()["items"]
+    assert iid not in [x["id"] for x in items]
+    us = [x for x in items if x["id"].startswith("p:")]
+    assert [(x["kind"], x["text"]) for x in us] == [("pact", "1 是暗号"), ("avoid", "她不喜欢我老问她吃没吃饭")]
+    #: 在 Between Us 里删档案那条 = 档案撤掉那行
+    r = c.post(f"/api/nox/relation/{us[0]['id']}/remove")
+    assert r.status_code == 200 and nox.ob.edits[-1]["op"] == "retire" and nox.ob.edits[-1]["old"] == "约定：1 是暗号"
+    assert c.post(f"/api/nox/relation/{us[1]['id']}/confirm").status_code == 409, "档案里的只能删"
+    assert c.post(f"/api/nox/relation/{us[0]['id']}/remove").status_code == 404, "撤过了就没了"
     assert c.post(f"/api/nox/relation/{iid}/reject").status_code == 409, "已经 Keep 了，不能再说不对"
     assert c.post(f"/api/nox/relation/{iid}/fly").status_code == 400
     assert c.get("/api/nox/relation/nope").status_code == 404
