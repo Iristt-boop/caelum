@@ -89,3 +89,19 @@ def test_她那句话挂得上我电脑那包():
     for t in ("你用一下自己的小电脑我看看", "用你电脑查查", "你的小电脑呢", "打开你的电脑给我看"):
         assert "desk_open" in toolpacks.select(names, texts=[t])[0], t
     assert "desk_open" not in toolpacks.select(names, texts=["我电脑卡了"])[0], "她自己的电脑不挂我的"
+
+
+def test_红线_库里那条写坏的_给模型看的历史里没有标签_库里原样():
+    """10-23 那条已经进了她的聊天记录（她看到过，留着）；但发给模型的那份不能有标签，不然他照着写"""
+    from agent.llm import Message
+    from context import openers
+    bad = Message(role="assistant", text=LEAKED)
+    half = Message(role="assistant", text="等我一下。\n" + LEAKED)
+    h = [Message(role="user", text="你用一下自己的小电脑我看看"), bad, Message(role="user", text="嗯？"), half]
+    v = openers.model_view(h)
+    assert all("invoke" not in (m.text or "") for m in v)
+    assert v[1].text and "标签" in v[1].text, "剥空了留一句交代，不留空消息"
+    assert v[3].text == "等我一下。"
+    assert h[1].text == LEAKED, "库里那条不动"
+    clean = [Message(role="user", text="在吗"), Message(role="assistant", text="在")]
+    assert openers.model_view(clean) is clean

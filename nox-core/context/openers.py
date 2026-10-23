@@ -106,13 +106,33 @@ def opener_line(text: str) -> str:
 
 
 def model_view(history: list[Message]) -> list[Message]:
-    """发给模型的那份历史：开场白换成一行，其余原样（同一个对象，不复制）。"""
-    if not enabled() or not history:
+    """发给模型的那份历史：开场白换成一行；他以前写坏的那种（工具调用写成了标签）剥掉标签；其余原样（同一个对象，不复制）。"""
+    if not history:
         return history
+    openers = enabled()
     out = []
+    changed = False
     for m in history:
-        if m.role == "user" and m.text and is_opener(m.text):
+        if openers and m.role == "user" and m.text and is_opener(m.text):
             out.append(Message(role="user", text=opener_line(m.text), images=m.images))
+            changed = True
+        elif m.role == "assistant" and m.text and _has_markup(m.text):
+            out.append(_unleak(m))
+            changed = True
         else:
             out.append(m)
-    return out
+    return out if changed else history
+
+
+def _has_markup(text: str) -> bool:
+    from agent.contracts import is_markup_line
+    return any(is_markup_line(ln) for ln in text.split("\n"))
+
+
+def _unleak(m: Message) -> Message:
+    """10-23：他在正文里写了一串工具调用标签（库里那条留着 —— 是她看到过的记录）。
+    给模型看的那份剥掉标签，不然他下一轮照着写（10-10 伪输出放大的同一条路）；剥空了留一句交代，不留空消息"""
+    from agent.contracts import strip_markup
+    text, _ = strip_markup(m.text)
+    return Message(role="assistant", text=text or "（这一条我把工具调用写成了一串标签，她只看到标签，什么也没做成）",
+                   tool_calls=m.tool_calls)
