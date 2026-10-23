@@ -38,12 +38,19 @@ class GoalsProvider(BaseContextProvider):
 
     def render(self, state: dict[str, Any]) -> str:
         items = (state or {}).get("items") or []
-        if not items:
-            return ""
-        parts = []
-        for g in items[:MAX_GOALS]:
-            w = g.get("week") or {}
-            prog = f"（这周 {w.get('done', 0)}/{w['planned']}）" if w.get("planned") else ""
-            parts.append(f"{g.get('title')}{prog}")
-        more = f" 等 {len(items)} 个" if len(items) > MAX_GOALS else ""
-        return "【你在跟她的目标】" + "、".join(parts) + more
+        hers = [g for g in items if g.get("owner") != "nox"]
+        mine = [g for g in items if g.get("owner") == "nox"]
+        out = []
+        if hers:
+            parts = []
+            for g in hers[:MAX_GOALS]:
+                w = g.get("week") or {}
+                prog = f"（这周 {w.get('done', 0)}/{w['planned']}）" if w.get("planned") else ""
+                parts.append(f"{g.get('title')}{prog}")
+            more = f" 等 {len(hers)} 个" if len(hers) > MAX_GOALS else ""
+            out.append("【你在跟她的目标】" + "、".join(parts) + more)
+        if mine:
+            #: 他自己记着要跟进的（10-23）—— 提醒他的，不是提醒她的
+            out.append("【你自己记着要跟进的】" + "、".join(
+                f"{g.get('title')}（隔 {g.get('everyDays') or 2} 天问一声）" for g in mine[:MAX_GOALS]))
+        return "\n".join(out)

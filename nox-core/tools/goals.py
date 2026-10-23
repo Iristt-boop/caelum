@@ -46,7 +46,12 @@ GOAL_CREATE_SPEC = ToolSpec(
         "plan 写几步（第一步通常是把目标定具体）。要她定期去做的事放进 todos —— "
         "它们会落进她的 Todo 具体日子里，带着这个目标的标记；她划掉一条，目标自动记一笔进展。\n"
         "例：减脂 → todos=[{text:\"力量训练\", repeat:\"weekly\", weekdays:\"1,3,5\", at:\"19:00\"}]\n"
-        "立完跟她说一声立了什么、落进了哪几天的 Todo。"
+        "立完跟她说一声立了什么、落进了哪几天的 Todo。\n"
+        "\n"
+        "**owner=nox：你自己要记着跟进的事**（她 10-23 定）—— 她这阵子的状态需要你盯着："
+        "「姨妈推迟 42 天了」「腰刚缓过来」「在等面试结果」。这种是提醒你的，不是提醒她的："
+        "不落进她的 Todo，every_days 写你隔几天问她一声；事情了了用 goal_update done 收掉。"
+        "这类「最近的事」不要写进档案（profile_update 只放长期的）。"
     ),
     parameters={
         "type": "object",
@@ -55,7 +60,9 @@ GOAL_CREATE_SPEC = ToolSpec(
             "category": {"type": "string", "enum": CATEGORIES},
             "origin": {"type": "string", "description": "她的原话（立项的依据）"},
             "plan": {"type": "array", "items": {"type": "string"}, "description": "几步计划"},
-            "todos": {"type": "array", "items": _TODO_ITEM, "description": "要落进她 Todo 的事，可以空"},
+            "todos": {"type": "array", "items": _TODO_ITEM, "description": "要落进她 Todo 的事，可以空（owner=nox 时不用）"},
+            "owner": {"type": "string", "enum": ["her", "nox"], "description": "her=提醒她的（默认）；nox=你自己跟进的"},
+            "every_days": {"type": "integer", "description": "owner=nox：隔几天跟进一次，默认 2"},
         },
         "required": ["title", "origin"],
     },
@@ -125,14 +132,22 @@ def make_handlers(bridge: BridgeClient) -> dict:
         title = str(args.get("title", "")).strip()
         if not title:
             return "没给目标名，没立。"
-        r = bridge.post("/api/goals", {
+        mine = args.get("owner") == "nox"
+        body: dict[str, Any] = {
             "title": title, "category": args.get("category") or "其他",
             "origin": str(args.get("origin", "")), "plan": list(args.get("plan") or []),
-        })
+        }
+        if mine:
+            body.update(owner="nox", every_days=int(args.get("every_days") or 2))
+        r = bridge.post("/api/goals", body)
         if not r.ok or not (r.data or {}).get("id"):
             raise RuntimeError(f"立目标失败: {r.error}")
         gid = r.data["id"]
         context.wrote("goals")
+        if mine:
+            #: 他自己跟进的不落她的 Todo（bridge 也会拒）—— 给了 todos 就照实说没落
+            skipped = "（这是你自己跟进的，没往她 Todo 里放）" if args.get("todos") else ""
+            return f"记下了，你自己跟进：{title} · 隔 {body['every_days']} 天问一声{skipped}。她在 Todo 页「我记着的」那栏看得到。"
         ok, bad = _add_todos(gid, list(args.get("todos") or []))
         out = f"立好了：{title}"
         if args.get("plan"):

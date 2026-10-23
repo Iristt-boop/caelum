@@ -50,6 +50,16 @@ def behind(todo: dict, weekday: int, today: str) -> int:
     return 0
 
 
+def days_since(goal: dict, today: str) -> int | None:
+    """离这个目标上次有动静过了几天（按她的日期算）。最近一笔进展；没有就按立的那天。"""
+    last = next((str(l.get("at") or "")[:10] for l in goal.get("log") or [] if l.get("at")), "") \
+        or str(goal.get("createdAt") or "")[:10]
+    try:
+        return (datetime.fromisoformat(today) - datetime.fromisoformat(last)).days
+    except ValueError:
+        return None
+
+
 class GoalNudge:
     def __init__(self, bridge: Any, store: Any) -> None:
         self.bridge = bridge
@@ -90,6 +100,13 @@ class GoalNudge:
         for g in data.get("items") or []:
             until = muted.get(g.get("id"))
             if until and datetime.fromisoformat(until) > now:
+                continue
+            if g.get("owner") == "nox":
+                #: 他自己跟进的（10-23）：离上次动静（最近一笔进展，没有就是立的那天）够 every_days 天了
+                gap = days_since(g, today)
+                if gap is not None and gap >= int(g.get("everyDays") or 2):
+                    ids.append(g["id"])
+                    because.append(f"跟进·{g.get('title')}：上次是 {gap} 天前")
                 continue
             lag = [(t.get("text"), behind(t, weekday, today)) for t in g.get("todos") or []]
             lag = [(text, n) for text, n in lag if n > 0]

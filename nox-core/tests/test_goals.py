@@ -161,3 +161,36 @@ def test_压力里带上目标那一股_推着开口后冷却():
     assert 165 <= i <= 177
     assert fired[0].payload["drives"][0]["name"] == "goal"
     assert "g1" in store.d[goal_nudge.STATE_KEY]["muted"]
+
+
+# ------------------------------------------------------------------ 他自己跟进的（10-23）
+
+
+def test_立他自己跟进的_不落Todo_带隔几天():
+    b = FakeBridge()
+    out = goal_tools.make_handlers(b)["goal_create"]({
+        "title": "姨妈推迟", "origin": "已经 42 天没来", "owner": "nox", "every_days": 2,
+        "todos": [{"text": "去医院"}]})
+    assert ("POST", "/api/goals", {"title": "姨妈推迟", "category": "其他", "origin": "已经 42 天没来",
+                                   "plan": [], "owner": "nox", "every_days": 2}) in b.calls
+    assert not any(c[1] == "/api/today" for c in b.calls), "他自己跟进的不往她 Todo 里放"
+    assert "我记着的" in out and "没往她 Todo 里放" in out
+
+
+def test_上下文分开写_她的目标和他自己跟进的():
+    p = GoalsProvider(bridge=FakeBridge([
+        {"title": "减脂", "owner": "her", "week": {"done": 1, "planned": 3}},
+        {"title": "姨妈推迟", "owner": "nox", "everyDays": 2}]))
+    assert p.render(p._fetch(Turn(text="x"))) == \
+        "【你在跟她的目标】减脂（这周 1/3）\n【你自己记着要跟进的】姨妈推迟（隔 2 天问一声）"
+    only_mine = GoalsProvider(bridge=FakeBridge([{"title": "姨妈推迟", "owner": "nox", "everyDays": 3}]))
+    assert only_mine.render(only_mine._fetch(Turn(text="x"))) == "【你自己记着要跟进的】姨妈推迟（隔 3 天问一声）"
+
+
+def test_他自己跟进的_到日子才推_按最近一笔算():
+    # FakeBridge 的今天是 2026-10-22
+    due = {"id": "n1", "title": "姨妈推迟", "owner": "nox", "everyDays": 2, "createdAt": "2026-10-20T03:00:00Z", "log": []}
+    fresh = {"id": "n2", "title": "腰", "owner": "nox", "everyDays": 2, "createdAt": "2026-10-10T03:00:00Z",
+             "log": [{"at": "2026-10-21T20:00", "text": "问过了，好多了"}]}
+    d = GoalNudge(FakeBridge([due, fresh]), _Store()).drive(NOW)
+    assert d.goal_ids == ["n1"] and d.because == ["跟进·姨妈推迟：上次是 2 天前"]

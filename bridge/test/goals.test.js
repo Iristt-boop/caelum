@@ -117,3 +117,25 @@ describe("改 / 记 / 删", () => {
     assert.ok(!(await api(bridge.base, "/api/todo/list")).data.items.some(x => x.id === t.data.id));
   });
 });
+
+describe("他自己跟进的（owner=nox，10-23 她：最近的事是提醒他的，不是提醒她的）", () => {
+  test("立的时候分得清是谁的；他的默认隔 2 天，夹在 1~30", async () => {
+    const mine = (await post("/api/goals", { title: "跟进test", owner: "nox", origin: "姨妈推迟了" })).data.id;
+    const odd = (await post("/api/goals", { title: "跟进2test", owner: "nox", every_days: 99 })).data.id;
+    const hers = await makeGoal();
+    const all = (await api(bridge.base, "/api/goals")).data.items;
+    const by = Object.fromEntries(all.map((g) => [g.id, g]));
+    assert.equal(by[mine].owner, "nox");
+    assert.equal(by[mine].everyDays, 2);
+    assert.equal(by[odd].everyDays, 30);
+    assert.equal(by[hers].owner, "her");
+    assert.equal(by[hers].everyDays, 0);
+  });
+
+  test("他的跟进不落进她的 Todo", async () => {
+    const mine = (await post("/api/goals", { title: "跟进3test", owner: "nox" })).data.id;
+    const r = await post("/api/today", { text: "问问姨妈test", goal_id: mine });
+    assert.equal(r.status, 400);
+    assert.ok(!(await api(bridge.base, "/api/todo/list")).data.items.some((x) => x.text === "问问姨妈test"));
+  });
+});

@@ -458,6 +458,11 @@ db.run(`CREATE TABLE IF NOT EXISTS goals (
   created_at TEXT, updated_at TEXT
 )`);
 //   kind = progress（推进了）| done（划掉了一条属于它的 Todo）| note（他记的）| plan（改了计划）
+// 2026-10-23 她：「最近的事应该是他自己提醒自己的……在 todo 把你提醒自己的事和提醒我的事分开」——
+//   owner = her（提醒她的：拆出来的事落进她的 Todo）| nox（他记着、他自己跟进的：姨妈推迟了要隔两天问一声）
+//   every_days = 他隔几天跟进一次（只对 nox 的有意义）
+dbTry(`ALTER TABLE goals ADD COLUMN owner TEXT DEFAULT 'her'`)
+dbTry(`ALTER TABLE goals ADD COLUMN every_days INTEGER DEFAULT 0`)
 db.run(`CREATE TABLE IF NOT EXISTS goal_log (
   goal_id TEXT, at TEXT, kind TEXT, text TEXT
 )`);
@@ -4526,8 +4531,11 @@ app.post("/api/today", (req, res) => {
   if (!text) return res.status(400).json({ error: "text required" });
   //: 属于哪个目标（10-22）。给了个不存在 / 已删的目标就 400 —— 不落一条挂在空气上的 Todo
   const goalId = String(goal_id || "").trim();
-  if (goalId && !dbAll("SELECT 1 FROM goals WHERE id=? AND status != 'deleted'", [goalId]).length) {
-    return res.status(400).json({ error: "no such goal" });
+  if (goalId) {
+    const g = dbAll("SELECT owner FROM goals WHERE id=? AND status != 'deleted'", [goalId])[0];
+    if (!g) return res.status(400).json({ error: "no such goal" });
+    //: 他自己跟进的事不落进她的 Todo（10-23）—— 那是提醒他的，不是提醒她的
+    if (g.owner === "nox") return res.status(400).json({ error: "这是他自己跟进的事，不落进她的 Todo" });
   }
   const id = randomUUID();
   // 指定日期时把 created_at 锚到那天（比如在"明天"页加的计划就落在明天）
@@ -4621,6 +4629,7 @@ function goalView(g, now) {
   try { plan = normPlan(JSON.parse(g.plan || "[]")); } catch { plan = []; }
   return {
     id: g.id, title: g.title, category: g.category, origin: g.origin || "", plan, status: g.status,
+    owner: g.owner === "nox" ? "nox" : "her", everyDays: g.every_days || 0,
     createdAt: g.created_at, updatedAt: g.updated_at, todos,
     week: { done: todos.reduce((n, t) => n + Math.min(t.doneThisWeek, t.plannedThisWeek || t.doneThisWeek), 0),
             planned: todos.reduce((n, t) => n + t.plannedThisWeek, 0) },
@@ -4644,15 +4653,17 @@ app.get("/api/goals/:id", (req, res) => {
 });
 
 app.post("/api/goals", (req, res) => {
-  const { title, category, origin, plan } = req.body || {};
+  const { title, category, origin, plan, owner, every_days } = req.body || {};
   const t = String(title || "").trim().slice(0, 40);
   if (!t) return res.status(400).json({ error: "title required" });
   const id = randomUUID();
   const nowIso = new Date().toISOString();
-  dbRun(`INSERT INTO goals (id, title, category, origin, plan, status, created_at, updated_at)
-         VALUES (?,?,?,?,?,?,?,?)`,
+  const own = owner === "nox" ? "nox" : "her";
+  dbRun(`INSERT INTO goals (id, title, category, origin, plan, status, created_at, updated_at, owner, every_days)
+         VALUES (?,?,?,?,?,?,?,?,?,?)`,
         [id, t, GOAL_CATEGORIES.includes(category) ? category : "其他",
-         String(origin || "").slice(0, 300), JSON.stringify(normPlan(plan)), "active", nowIso, nowIso]);
+         String(origin || "").slice(0, 300), JSON.stringify(normPlan(plan)), "active", nowIso, nowIso,
+         own, own === "nox" ? Math.max(1, Math.min(30, parseInt(every_days) || 2)) : 0]);
   res.json({ ok: true, id });
 });
 
