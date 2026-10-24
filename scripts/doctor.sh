@@ -239,13 +239,15 @@ else warn "bridge 库超过 24 小时没写入？"; fi
 # ── 4) 会过期的东西 ──────────────────────────────
 echo "-- 会过期的 --"
 age_days() { echo $(( (NOW - $(stat -c %Y "$1" 2>/dev/null || echo NOW)) / 86400 )); }
-NC_ENV=/root/co-listening/.netease_cred
-if [ -f "$NC_ENV" ]; then
-  d=$(age_days "$NC_ENV")
-  if [ "$d" -gt 45 ]; then note "网易云凭据文件已 $d 天没更新——cookie 大概率过期，点歌会哑（重新扫码提取）"
-  elif [ "$d" -gt 30 ]; then note "网易云凭据 $d 天了，留意过期"
-  else good "网易云凭据 $d 天前更新过"; fi
-else warn "找不到 $NC_ENV"; fi
+# 网易云登录：真探 account/get（2026-10-24 起换掉年龄猜测——cookie 死不
+# 死只有网易云说了算；探活/推送/扫码链接统一在 /root/cookie-watch.sh）
+NC_STATE=$(/root/cookie-watch.sh --state 2>/dev/null)
+case "$NC_STATE" in
+  alive) good "网易云登录活着（真探过 account/get）" ;;
+  dead*) warn "网易云登录已失效——点歌会哑；cookie-watch 会推扫码链接" ;;
+  risk*) note "网易云回风控文案（${NC_STATE#risk}）—— like_song 同款，不是过期" ;;
+  *) note "网易云登录探不动：${NC_STATE:-没跑起来}" ;;
+esac
 WATCH_COOKIES=/root/watch/cookies.txt
 [ -f "$WATCH_COOKIES" ] && good "B站 cookies 存在（$(( $(age_days "$WATCH_COOKIES") )) 天前更新）" \
                         || warn "B站 cookies 不存在，共影拉流可能被拦"
