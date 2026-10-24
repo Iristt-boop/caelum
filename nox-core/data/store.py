@@ -9,11 +9,14 @@ Nox 就不记得刚才说过什么。这一层就是为了解决这件事。
    一个会话一行、把 history 序列化成一坨 JSON 更省事，但那样每次追加
    一句话都要重写整段，而且没法按轮数分页取。按行存，加一句就 INSERT 一行。
 
-2. **只存对话内容，不存工具调用的中间过程。**
-   tool_calls / tool_results 那些是给模型看的中间态，重启后重放没有意义
-   （工具结果早就过期了 —— 三小时前查的灯的状态，现在不作数）。
-   恢复会话时只带 user / assistant 的正文，让他知道"聊过什么"，
-   而不是假装那些工具调用刚刚发生过。
+2. **行只按对话内容存；工具调用记成那一行的附注（2026-10-24 改）。**
+   原来工具调用一律不存（「结果早就过期了」）。代价 10-23 才看清：每次重启 / 跨天 / 缓存过期
+   从库里重读，他眼前一百多条历史里**一次真工具调用都没有**，事情全是嘴上说的 —— 模型照着前文学，
+   轮到它动手就「用嘴说」，把调用写成 <desk_open><url>… 这种字（同一个模型在 DSH / Codex 里不这样，
+   那边历史里留着结构化的调用）。她 10-24 定：要留；**压缩之后不需要工具细节**。
+   所以：行数和以前一模一样（水位、锚点、条数比对都不受影响），只在每一行上多一列 `tools` ——
+   「这一行之后紧跟着做过的工具」：名字、参数、结果开头一小段。读回来时还原成真的 tool_calls /
+   tool_results，结果前标明「之前的结果」（不假装刚刚发生）。压缩只看正文，摘要里没有工具细节。
 
 3. **不做异步。**
    SQLite 的写入是毫秒级，包一层 async 只会引入复杂度。FastAPI 的同步
@@ -30,8 +33,9 @@ import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
-from agent.llm import Message
+from agent.llm import Message, ToolCall, ToolResult
 from context.timeline import with_dates
 from context.token_budget import tail_within_budget
 
@@ -45,6 +49,81 @@ _DAY_STAMP_RE = re.compile(r"^（\d{1,2}月\d{1,2}日 [^）\n]*）\n")
 def norm_text(text: str | None) -> str:
     """比对用的正文：去日期戳、去首尾空白。"""
     return _DAY_STAMP_RE.sub("", text or "").strip()
+
+
+# ---------------------------------------------------------------- 工具附注（2026-10-24，见文件开头第 2 条）
+#: 附注里每件工具留多少：参数里每个值、结果开头 —— 够他看出「我那时真的动了手、大概得到了什么」就行
+_STEP_ARG_CHARS = 200
+_STEP_RESULT_CHARS = 200
+#: 读回来的结果前面这一句：别把三小时前的灯的状态当成现在的
+STALE_PREFIX = "（之前那次的结果，现在可能已经变了）"
+
+
+def _short(v: Any, n: int) -> Any:
+    if isinstance(v, str):
+        return v if len(v) <= n else v[:n] + "…"
+    if isinstance(v, (dict, list)):
+        s = json.dumps(v, ensure_ascii=False)
+        return v if len(s) <= n else s[:n] + "…"
+    return v
+
+
+def tool_steps_after(history: list[Message]) -> dict[int, list[dict]]:
+    """history 里每一条**会落库的**消息（有正文的 user / assistant）后面紧跟着做过的工具。
+
+    返回 {id(那条消息): [{name, args, result, error}, …]}。一条带正文又带调用的 assistant，调用记在它自己名下；
+    没正文的纯调用记在它前面最近那条有正文的消息名下（那条之前什么都没有就丢掉 —— 落不了库）。
+    """
+    out: dict[int, list[dict]] = {}
+    anchor: Message | None = None
+    open_calls: dict[str, dict] = {}
+    for m in history:
+        if m.role in ("user", "assistant") and m.text and m.text.strip():
+            anchor = m
+        if m.role == "assistant" and m.tool_calls and anchor is not None:
+            bucket = out.setdefault(id(anchor), [])
+            for c in m.tool_calls:
+                step = {"name": c.name,
+                        "args": {k: _short(v, _STEP_ARG_CHARS) for k, v in (c.arguments or {}).items()},
+                        "result": "", "error": False}
+                bucket.append(step)
+                open_calls[c.id] = step
+        elif m.role == "tool_results":
+            for r in m.tool_results:
+                step = open_calls.pop(r.call_id, None)
+                if step is not None:
+                    step["result"] = _short(r.content or "", _STEP_RESULT_CHARS)
+                    step["error"] = bool(r.is_error)
+    return out
+
+
+def _with_tools(rows: list[Any], dated: list[Message]) -> list[Message]:
+    """读回来的正文后面，把那一行的工具附注还原成真的 tool_calls / tool_results（结果标明是之前的）"""
+    out: list[Message] = []
+    for r, m in zip(rows, dated):
+        out.append(m)
+        raw = r["tools"] if "tools" in r.keys() else None
+        if not raw:
+            continue
+        try:
+            steps = [s for s in json.loads(raw) if isinstance(s, dict) and s.get("name")]
+        except (ValueError, TypeError):
+            logger.warning("消息 seq=%s 的工具附注读不了，当没有", r["seq"] if "seq" in r.keys() else "?")
+            continue
+        if not steps:
+            continue
+        calls = [ToolCall(id=f"hist-{r['seq']}-{j}", name=str(s["name"]), arguments=dict(s.get("args") or {}))
+                 for j, s in enumerate(steps)]
+        results = Message(role="tool_results", tool_results=[
+            ToolResult(call_id=c.id, content=STALE_PREFIX + (str(s.get("result") or "") or "（没有结果）"),
+                       is_error=bool(s.get("error")))
+            for c, s in zip(calls, steps)])
+        if m.role == "assistant" and not m.tool_calls:
+            m.tool_calls = calls
+        else:
+            out.append(Message(role="assistant", text=None, tool_calls=calls))
+        out.append(results)
+    return out
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS sessions (
@@ -122,6 +201,10 @@ class Store:
             if "summary_upto" not in cols:
                 self._conn.execute(
                     "ALTER TABLE sessions ADD COLUMN summary_upto INTEGER DEFAULT 0")
+            #: 这一行后面紧跟着做过的工具（2026-10-24，见 tool_steps_after）。老库补列，旧行是 NULL = 没有
+            mcols = {r["name"] for r in self._conn.execute("PRAGMA table_info(messages)")}
+            if "tools" not in mcols:
+                self._conn.execute("ALTER TABLE messages ADD COLUMN tools TEXT")
             # WAL 让读写不互相阻塞；对单机小服务是纯赚
             self._conn.execute("PRAGMA journal_mode=WAL")
             self._conn.execute("PRAGMA foreign_keys=ON")
@@ -130,14 +213,15 @@ class Store:
 
     # ------------------------------------------------------------ 写
 
-    def append(self, session_id: str, messages: list[Message]) -> int:
+    def append(self, session_id: str, messages: list[Message], steps: dict[int, list[dict]] | None = None) -> int:
         """把一轮新增的消息追加进去，返回实际写入条数。
 
         只写有正文的 user / assistant 消息（理由见文件开头第 2 条）。
         首次写入时自动从第一条 user 消息提取标题。
         """
+        steps = steps or {}
         rows = [
-            (m.role, m.text)
+            (m.role, m.text, json.dumps(steps[id(m)], ensure_ascii=False) if steps.get(id(m)) else None)
             for m in messages
             if m.role in ("user", "assistant") and m.text and m.text.strip()
         ]
@@ -158,9 +242,9 @@ class Store:
                 (session_id, now, now),
             )
             self._conn.executemany(
-                "INSERT INTO messages(session_id, seq, role, text, created_at) "
-                "VALUES(?, ?, ?, ?, ?)",
-                [(session_id, seq + i, role, text, now) for i, (role, text) in enumerate(rows)],
+                "INSERT INTO messages(session_id, seq, role, text, created_at, tools) "
+                "VALUES(?, ?, ?, ?, ?, ?)",
+                [(session_id, seq + i, role, text, now, tools) for i, (role, text, tools) in enumerate(rows)],
             )
             self._conn.commit()
         # 新会话自动补标题（在锁外调，_ensure_title 自己拿锁）
@@ -188,11 +272,13 @@ class Store:
         ]
         if not pending:
             return 0
+        #: 每一行后面紧跟着做过的工具（10-24）：跟着行一起落库，行数不变
+        steps = tool_steps_after(history)
 
         # 库里最后一条已存消息（role, text）。新会话没有，全量写。
         last = self._last_text(session_id)
         if last is None:
-            n = self.append(session_id, pending)
+            n = self.append(session_id, pending, steps)
             if n > 0:
                 self._ensure_title(session_id)
             return n
@@ -212,10 +298,12 @@ class Store:
         for k in range(len(pending) - last_user, 0, -1):
             want = pairs[ctx_from:last_user + k]
             if self.recent_tail(session_id, len(want)) == want:
+                #: 这一轮已经落库的那 k 行：工具附注补上（一轮分两次落库时，第一次那几行还没有后面的工具）
+                self._set_tail_tools(session_id, [steps.get(id(m)) for m in pending[last_user:last_user + k]])
                 fresh = pending[last_user + k:]
                 if not fresh:
                     return 0
-                n = self.append(session_id, fresh)
+                n = self.append(session_id, fresh, steps)
                 if n > 0:
                     self._ensure_title(session_id)
                 return n
@@ -228,6 +316,9 @@ class Store:
             if m.role == last_role and norm_text(m.text) == norm_text(last_text):
                 idx = i
                 break
+        if idx >= 0:
+            #: 锚点就是库里最后一行：它后面的工具可能在上次落库之后才做完（先说「等我一下」再去开网页），附注刷新一下
+            self._set_tail_tools(session_id, [steps.get(id(pending[idx]))])
         if idx < 0:
             # 🔴 2026-10-10：这「理论上不该发生」其实天天发生，而且是成批重写的源头。
             # 一轮对话拿着开头的快照跑十几秒，期间主动消息 / [SKIP] 从另一条路先落了库，
@@ -251,7 +342,7 @@ class Store:
         if idx < 0:
             logger.warning(
                 "sync: 会话 %s 找不到锚点（%s），按全量追加处理", session_id[:8], last_text[:20])
-            n = self.append(session_id, pending)
+            n = self.append(session_id, pending, steps)
             if n > 0:
                 self._ensure_title(session_id)
             return n
@@ -259,10 +350,25 @@ class Store:
         fresh = pending[idx + 1:]
         if not fresh:
             return 0
-        n = self.append(session_id, fresh)
+        n = self.append(session_id, fresh, steps)
         if n > 0:
             self._ensure_title(session_id)
         return n
+
+    def _set_tail_tools(self, session_id: str, steps: list[list[dict] | None]) -> None:
+        """库里最后 len(steps) 行（正序对应）补上工具附注；None / 空的不动"""
+        if not any(steps):
+            return
+        with self._lock:
+            seqs = [r["seq"] for r in self._conn.execute(
+                "SELECT seq FROM messages WHERE session_id = ? AND role IN ('user', 'assistant') "
+                "ORDER BY seq DESC LIMIT ?", (session_id, len(steps))).fetchall()][::-1]
+            if len(seqs) != len(steps):
+                return
+            self._conn.executemany(
+                "UPDATE messages SET tools = ? WHERE session_id = ? AND seq = ?",
+                [(json.dumps(st, ensure_ascii=False), session_id, sq) for sq, st in zip(seqs, steps) if st])
+            self._conn.commit()
 
     def recent_tail(self, session_id: str, n: int) -> list[tuple[str, str]]:
         """库里该会话最后 n 条 (role, 去空白的 text)，按时间正序。Sessions 判断缓存是否过期用。"""
@@ -461,7 +567,7 @@ class Store:
         """
         with self._lock:
             rows = self._conn.execute(
-                "SELECT role, text, created_at FROM messages WHERE session_id = ? ORDER BY seq",
+                "SELECT seq, role, text, created_at, tools FROM messages WHERE session_id = ? ORDER BY seq",
                 (session_id,),
             ).fetchall()
             summary = self._conn.execute(
@@ -476,7 +582,8 @@ class Store:
                 logger.warning("会话 %s 水位之后有 %d 条，超过安全上限 %d token，只带最近 %d 条"
                                "（压缩是不是一直没成？）", session_id[:8], len(rows), cap_tokens, keep)
                 rows = rows[-keep:] if keep else []
-        dated = with_dates((r["role"], r["text"], r["created_at"]) for r in rows)
+        #: 水位之后的原文带回工具附注（她 10-24：压缩之后的不需要 —— 水位之前那段只活在摘要里）
+        dated = _with_tools(rows, with_dates((r["role"], r["text"], r["created_at"]) for r in rows))
         summary_text = summary["summary"] if summary else None
         if summary_text:
             from context.compactor import SUMMARY_HEADER
