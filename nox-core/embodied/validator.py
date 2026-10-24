@@ -18,6 +18,11 @@ env_temp（2026-10-11 起）：World Model 里一直没有 weather / home 状态
   · 还是拿不到 → 有 deny_when 的设备**先问**，不放行（糖糖 10-11 定）；
     她这句话本身就是在要（「开电热毯」「好冷」「开吧」）→ 放行，她说的就是证据
   · 每次拦截 / 警告 / 先问都写日志
+
+embodied v0.2（2026-10-24，三个房间装了米家温湿度计）：
+  · `attention/sources/indoor_climate.py` 每 10 分钟把读数写进 World Model（`indoor_climate`）
+  · 设备档案有 `room` 的，先看**那个房间的实测**（阈值 `indoor_temp_above`）；
+    读数超过 INDOOR_STALE_MAX_S 就当不知道，退回上面那条（World 天气 → 预报 → 先问）
 """
 
 from __future__ import annotations
@@ -50,6 +55,13 @@ logger = logging.getLogger(__name__)
 #: 三小时内的气温还算数，再旧就当不知道
 WEATHER_STALE_MAX_S = 3 * 3600
 
+#: 室内读数能用多久。哨兵 10 分钟写一次，连着两三次没写进来（HA / 小米云断了）
+#: 就不该再拿它当「现在」—— 屋里温度半小时能变不少（开了空调）
+INDOOR_STALE_MAX_S = 30 * 60
+
+#: World Model 里室内温湿度的事实类型（哨兵写、闸门读，两边共用这一个名字）
+INDOOR_TYPE = "indoor_climate"
+
 #: 温度不知道时，她这句话算不算「她在要」。她说的就是证据（同 requires 的话语证据）
 ENV_UNKNOWN_EVIDENCE = r"电热毯|冷|暖和|开吧|开一下|要开|帮我开|打开"
 
@@ -81,7 +93,8 @@ def world_snapshot(world_ref: Any = None, weather_ref: Any = None) -> dict[str, 
     （presence 用默认"在家"会让他半夜放心开灯；温度用默认 25 会
     放过夏天开电热毯）。unknown 的语义由规则自己决定怎么保守。
     """
-    snap: dict[str, Any] = {"env_temp": None, "env_source": None, "presence": None}
+    snap: dict[str, Any] = {"env_temp": None, "env_source": None, "presence": None,
+                            "indoor": {}}
     _fill_from_world(snap, world_ref)
     if snap["env_temp"] is not None:
         snap["env_source"] = "world"
@@ -112,6 +125,10 @@ def _fill_from_world(snap: dict[str, Any], world_ref: Any) -> None:
     except Exception:  # noqa: BLE001
         pass
     try:
+        snap["indoor"] = _indoor_rooms(w.get_state(INDOOR_TYPE))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("行动闸门：读室内温湿度失败，按不知道算：%s", exc)
+    try:
         st = w.get_state("home")
         if st is not None and getattr(st, "status", "") == "fresh":
             value = st.value or {}
@@ -120,6 +137,31 @@ def _fill_from_world(snap: dict[str, Any], world_ref: Any) -> None:
                 snap["presence"] = "away" if p == "not_home" else p
     except Exception:  # noqa: BLE001
         pass
+
+
+def _indoor_rooms(st: Any) -> dict[str, dict[str, float]]:
+    """World Model 里的室内读数 → {房间: {temp, humidity}}。太旧 / 没有 → {}。
+
+    新旧自己算，不看 State.status：World Model 的默认 TTL 是 36 小时，
+    对「屋里现在几度」太宽了。
+    """
+    from datetime import datetime, timezone
+    if st is None or getattr(st, "status", "") == "unknown":
+        return {}
+    at = getattr(st, "observed_at", None)
+    if at is None:
+        return {}
+    if at.tzinfo is None:
+        at = at.replace(tzinfo=timezone.utc)
+    if (datetime.now(timezone.utc) - at).total_seconds() > INDOOR_STALE_MAX_S:
+        return {}
+    rooms = (st.value or {}).get("rooms") or {}
+    out: dict[str, dict[str, float]] = {}
+    for room, vals in rooms.items():
+        t = (vals or {}).get("temp")
+        if isinstance(t, (int, float)):
+            out[room] = {k: float(v) for k, v in vals.items() if isinstance(v, (int, float))}
+    return out
 
 
 def _ready_evidence(user_text: str, item: str) -> bool:
@@ -208,22 +250,32 @@ def _decide(entity_id: str, action: str, world: dict[str, Any],
                 f"好了我就开。",
         )
 
-    # ---- 4. environment_conflict（电热毯：env_temp 已知且超限）----
+    # ---- 4. environment_conflict（电热毯：温度已知且超限）----
     deny_when = model.get("deny_when") or {}
     threshold = deny_when.get("env_temp_above")
+    # v0.2：设备所在房间有新鲜的实测 → 用它和室内阈值；没有才退回户外那条
+    room = model.get("room")
+    indoor = (world.get("indoor") or {}).get(room) if room else None
+    if indoor is not None and deny_when.get("indoor_temp_above") is not None:
+        env_temp = indoor["temp"]
+        threshold = deny_when["indoor_temp_above"]
+        facts.update(env_temp=env_temp, env_source=f"indoor:{room}",
+                     humidity=indoor.get("humidity"))
     if threshold is not None and env_temp is None and not re.search(ENV_UNKNOWN_EVIDENCE, user_text or ""):
         # 不知道现在多少度，她这句也没在要 —— 先问，不默认执行（Unknown 原则，糖糖 10-11）
         name = model.get("name", entity_id)
         return GateResult(
             allow=False, reason=UNKNOWN_ENVIRONMENT, facts=facts,
-            human=f"现在拿不到温度（天气预报没取到），{name}开不开我判断不了，先没动。",
+            human=f"现在拿不到温度（温度计和天气预报都没取到），{name}开不开我判断不了，先没动。",
             ask=f"现在冷吗？要开{name}吗？",
         )
     if threshold is not None and env_temp is not None and env_temp > threshold:
+        src = facts.get("env_source")
+        where = (f"{room}室内（温度计实测）" if src and src.startswith("indoor:")
+                 else "户外（天气预报）" if src == "forecast" else "环境")
         return GateResult(
             allow=False, reason=ENVIRONMENT_CONFLICT, facts=facts,
-            human=(f"现在{'户外（天气预报）' if world.get('env_source') == 'forecast' else '环境'}"
-                   f"温度 {env_temp:g}°C，{model.get('name', entity_id)}"
+            human=(f"现在{where}温度 {env_temp:g}°C，{model.get('name', entity_id)}"
                    f"开着只会更热——这个动作和当下条件是冲突的。"),
             alternative=model.get("alternative", ""),
         )

@@ -188,7 +188,7 @@ Validator 只给**机器可读的 alternative**（如 `cooling_possible`）和�
 | 版本 | 内容 | 状态 |
 |---|---|---|
 | **v0.1（现在）** | Device Model 十设备硬编码 + Validator 规则链 + user_text 就绪证据；env_temp 来自天气缓存（室外近似） | ✅ 已上线 |
-| v0.2 | 室内温湿度进 World Model，env_temp 切读室内实测 | 等硬件 |
+| v0.2 | 室内温湿度进 World Model，env_temp 切读室内实测 | ✅ 2026-10-24（见第 8 节） |
 | v0.3 | DEVICE_MODEL 外置 `devices.yaml`，新设备自动草稿 | 设备变多时 |
 | v0.4+ | 新 Perception Source（摄像头/机器人）+ 新 executor；独立 Planner | 远期 |
 
@@ -237,3 +237,22 @@ Validator 只给**机器可读的 alternative**（如 `cooling_possible`）和�
 - [x] 测试 17 条 + 变异三连全红（deny_when / unknown / 域白名单）
 - [x] 部署：8 文件走 deploy-vps.sh，指纹 93e784c 已记录（/root/DEPLOY_INFO/nox-core.summary）
 - [x] 顺带落地排期 3.5（forbidden_domain）；全量回归 1913 passed
+
+---
+
+## 8. v0.2 交付记录（2026-10-24）
+
+她在主卧 / 客厅 / 电竞房各装了一个米家温湿度计（`miaomiaoce.sensor_ht.t2`），接进米家。
+
+- **HA 里一开始看不到**：xiaomi_miot（云端模式）只在集成加载时拉设备列表，新设备要**重载集成**才出现
+  （设置 › 设备与服务 › Xiaomi Miot › 重新加载；或 `POST /api/config/config_entries/entry/<id>/reload`）。
+- **写**：`attention/sources/indoor_climate.py` 挂在 Care 快循环上，自己节流到 10 分钟读一次，
+  `world.observe("ha", "indoor_climate", {"rooms": {"主卧": {"temp", "humidity"}, ...}})`。
+  读到 unavailable / 非数字的房间这次不写，不拿旧值顶。房间 → 传感器在 `device_model.ROOM_SENSORS`。
+- **读**：`world_snapshot()` 多一个 `indoor`；超过 30 分钟（`INDOOR_STALE_MAX_S`）的读数当不知道。
+  设备档案有 `room` 的（现在只有电热毯 = 主卧），先用那个房间的实测和 `indoor_temp_above`；
+  没有就退回原来那条（World 天气 → 户外预报 → 先问）。拒绝时说「主卧室内（温度计实测）X°C」。
+- **阈值**：室内和户外分开。室内暂沿用 26，`NOX_BLANKET_INDOOR_MAX_C` 改，不动代码。
+- **测试**：`tests/test_embodied.py` +7（含「哨兵写 → 真 WorldModel → 闸门拒」端到端）；
+  变异四个全红（不用室内 / 不判新旧 / 不节流 / unavailable 当 0 度），`scratch/mutate_v02.py`。
+- 没做：温湿度还没进他的【家里】上下文（他被问「家里几度」答不上来，要的话改 ha-mcp 的 `hass_snapshot`）。

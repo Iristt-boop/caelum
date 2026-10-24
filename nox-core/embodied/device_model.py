@@ -10,6 +10,35 @@ Unknown 原则的另一种形状。
 
 from __future__ import annotations
 
+import logging
+import os
+
+logger = logging.getLogger(__name__)
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        logger.warning("%s=%r 不是数字，按默认 %s 算", name, raw, default)
+        return default
+
+
+#: 三个房间的米家温湿度计（miaomiaoce.sensor_ht.t2，2026-10-24 接进 HA）。
+#: embodied v0.2：闸门判断 A 类设备时读**它所在房间的实测**，不是户外预报。
+#: 房间名要和 DEVICE_MODEL 里的 `room` 对得上
+ROOM_SENSORS: dict[str, dict[str, str]] = {
+    "主卧": {"temp": "sensor.miaomiaoce_t2_066f_temperature",
+             "humidity": "sensor.miaomiaoce_t2_066f_relative_humidity"},
+    "客厅": {"temp": "sensor.miaomiaoce_t2_d829_temperature",
+             "humidity": "sensor.miaomiaoce_t2_d829_relative_humidity"},
+    "电竞房": {"temp": "sensor.miaomiaoce_t2_467c_temperature",
+               "humidity": "sensor.miaomiaoce_t2_467c_relative_humidity"},
+}
+
 #: 不许 Nox 设状态的域前缀（排期 3.5）。automation 是家里的自动化规则，
 #: sensor 是只读事实 —— 设它们的状态等于污染数据或改掉别人的行为。
 FORBIDDEN_PREFIXES: tuple[str, ...] = (
@@ -25,7 +54,11 @@ DEVICE_MODEL: dict[str, dict] = {
         "name": "主卧电热毯",
         "category": "heating",
         "effect": "temperature_up",
-        "deny_when": {"env_temp_above": 26},
+        "room": "主卧",
+        # 户外（预报）和室内（实测）是两个数，阈值分开（v0.2 启动卡「已知约束」）。
+        # 室内阈值先沿用 26，等她定了改 NOX_BLANKET_INDOOR_MAX_C，不改代码
+        "deny_when": {"env_temp_above": 26,
+                      "indoor_temp_above": _env_float("NOX_BLANKET_INDOOR_MAX_C", 26)},
         "alternative": "cooling_possible",   # 夏天想暖 → 该往制冷走
     },
     "fan.dmaker_p5c_6d3e_fan": {

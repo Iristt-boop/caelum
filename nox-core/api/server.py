@@ -854,6 +854,14 @@ def _build_attention(core: Nox, sessions: "Sessions", db: Store) -> AttentionSer
                 astore,
                 entity=os.getenv("NOX_HA_PERSON", "person.nox"),
             ))
+            # 室内温湿度（embodied v0.2，10-24）：只往 World Model 写事实，闸门读
+            from attention.sources.indoor_climate import IndoorClimateSource
+            fast_sources.append(IndoorClimateSource(
+                RestClient(base=ha_url,
+                           headers={"Authorization": f"Bearer {ha_token}"},
+                           timeout=8.0),
+                world,
+            ))
         else:
             logger.info("没配 HA（NOX_HA_API_URL/TOKEN），出门追问这条线不跑")
 

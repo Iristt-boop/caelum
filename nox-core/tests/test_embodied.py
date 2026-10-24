@@ -165,7 +165,116 @@ def test_world_snapshot_容错():
     def _boom():
         raise RuntimeError("world 炸了")
     snap = world_snapshot(_boom)
-    assert snap == {"env_temp": None, "env_source": None, "presence": None}
+    assert snap == {"env_temp": None, "env_source": None, "presence": None, "indoor": {}}
+
+
+# ---------------------------------------------------------------- v0.2 室内实测
+
+
+def _indoor(room_temp, outdoor=None):
+    return {"env_temp": outdoor, "env_source": "forecast" if outdoor is not None else None,
+            "presence": "home", "indoor": {"主卧": {"temp": room_temp, "humidity": 60.0}}}
+
+
+def test_主卧实测28_户外15_拒且说是室内():
+    """v0.2 验收判据：拒的时候引用的是**室内实测温度**。"""
+    g = gate(BLANKET, "on", _indoor(28, outdoor=15), user_text="我想暖一下")
+    assert not g.allow and g.reason == "environment_conflict"
+    assert "28" in g.human and "主卧室内" in g.human, g.human
+    assert g.facts["env_source"] == "indoor:主卧"
+
+
+def test_主卧实测20_户外30_放行():
+    """户外热不代表屋里热：有实测就信实测。"""
+    assert gate(BLANKET, "on", _indoor(20, outdoor=30), user_text="睡了").allow
+
+
+def test_其他房间有读数_主卧没有_退回预报():
+    w = {"env_temp": 30, "env_source": "forecast", "presence": "home",
+         "indoor": {"客厅": {"temp": 18}}}
+    g = gate(BLANKET, "on", w, user_text="睡了")
+    assert not g.allow and "户外" in g.human
+
+
+class _FakeHA:
+    """假的 HA RestClient：entity_id → state 字符串。"""
+
+    def __init__(self, states):
+        self.states = states
+        self.calls = 0
+
+    def get(self, path):
+        from tools.http import RestResult
+        self.calls += 1
+        eid = path.rsplit("/", 1)[-1]
+        if eid not in self.states:
+            return RestResult(False, error="HTTP 404")
+        return RestResult(True, {"entity_id": eid, "state": self.states[eid]})
+
+
+def _ha_states(bedroom="28.5", living="19.0", gaming="unavailable"):
+    from embodied.device_model import ROOM_SENSORS as S
+    return {S["主卧"]["temp"]: bedroom, S["主卧"]["humidity"]: "66.0",
+            S["客厅"]["temp"]: living, S["客厅"]["humidity"]: "60.0",
+            S["电竞房"]["temp"]: gaming, S["电竞房"]["humidity"]: "unavailable"}
+
+
+def test_哨兵写进World_闸门从World读到_端到端(tmp_path):
+    """从使用方断言（verify-from-the-consumer-side）：哨兵写 → 真 WorldModel → 闸门拒。"""
+    from datetime import datetime, timezone
+
+    from attention.sources.indoor_climate import IndoorClimateSource
+    from world_model.model import WorldModel
+    world = WorldModel(tmp_path / "world.db")
+    src = IndoorClimateSource(_FakeHA(_ha_states()), world)
+    assert src.poll(datetime.now(timezone.utc)) == []
+
+    snap = world_snapshot(lambda: world)
+    assert snap["indoor"]["主卧"] == {"temp": 28.5, "humidity": 66.0}
+    assert "电竞房" not in snap["indoor"], "unavailable 不许写成数"
+    g = gate(BLANKET, "on", snap, user_text="睡了")
+    assert not g.allow and "28.5" in g.human
+
+
+def test_哨兵十分钟节流(tmp_path):
+    from datetime import datetime, timedelta, timezone
+
+    from attention.sources.indoor_climate import IndoorClimateSource
+    from world_model.model import WorldModel
+    ha = _FakeHA(_ha_states())
+    src = IndoorClimateSource(ha, WorldModel(tmp_path / "world.db"))
+    t0 = datetime.now(timezone.utc)
+    src.poll(t0)
+    n = ha.calls
+    src.poll(t0 + timedelta(minutes=1))
+    assert ha.calls == n, "一分钟一跳，不许每跳都打 HA"
+    src.poll(t0 + timedelta(minutes=10))
+    assert ha.calls > n
+
+
+def test_室内读数太旧_当不知道(tmp_path):
+    """哨兵 40 分钟前写的 → 闸门不认，退回预报 / 先问。"""
+    from datetime import datetime, timedelta, timezone
+
+    from attention.sources.indoor_climate import IndoorClimateSource
+    from world_model.model import WorldModel
+    world = WorldModel(tmp_path / "world.db")
+    IndoorClimateSource(_FakeHA(_ha_states()), world).poll(
+        datetime.now(timezone.utc) - timedelta(minutes=40))
+    snap = world_snapshot(lambda: world)
+    assert snap["indoor"] == {}
+    g = gate(BLANKET, "on", snap, user_text="睡了")
+    assert g.reason == "unknown_environment"
+
+
+def test_一个房间都读不到_不写(tmp_path):
+    from datetime import datetime, timezone
+
+    from attention.sources.indoor_climate import IndoorClimateSource
+    from world_model.model import WorldModel
+    world = WorldModel(tmp_path / "world.db")
+    IndoorClimateSource(_FakeHA({}), world).poll(datetime.now(timezone.utc))
+    assert world.get_state("indoor_climate").status == "unknown"
 
 
 # ---------------------------------------------------------------- stackchan
