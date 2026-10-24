@@ -74,7 +74,8 @@ DEVICE_MODEL: dict[str, dict] = {
     "climate.lumi_mcn02_d7b8_air_conditioner": {
         "name": "客厅空调", "category": "hvac",
     },
-    "switch.gun_tong_xi_yi_ji_kai_guan_zhuang_tai": {
+    # HA 里是 kai_guan_**ji**_zhuang_tai。原来少写了 ji，闸门对真实体一直 not_in_model（10-24 修）
+    "switch.gun_tong_xi_yi_ji_kai_guan_ji_zhuang_tai": {
         "name": "滚筒洗衣机", "category": "appliance",
     },
     # ---- C 类：在场/时间型（只警告不拦 —— 半夜她醒了开灯是合理的，

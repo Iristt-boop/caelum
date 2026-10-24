@@ -128,6 +128,18 @@ def test_模型里确实有十一个设备():
     assert len(DEVICE_MODEL) == 11
 
 
+def test_ha_mcp清单里能控的设备_闸门都有档案():
+    """ha-mcp 的 DEVICES 是他看到的设备清单，DEVICE_MODEL 是闸门的档案 —— 两边名字对不上，
+    他能看到却永远 not_in_model 开不了（洗衣机 09-19 ~ 10-24 就是这样）。
+    ⚠️ 这条只管两边一致；两边一起写错要靠对着真 HA 核（smoke_ha.py）。"""
+    import re
+    src = (Path(__file__).resolve().parents[2] / "ha-mcp" / "main.py").read_text(encoding="utf-8")
+    ctrl = set(re.findall(r'"((?:switch|light|climate|fan|media_player)\.[a-z0-9_]+)"', src))
+    assert ctrl, "没从 ha-mcp/main.py 里解析出设备 —— 清单格式变了，改这条测试"
+    missing = sorted(e for e in ctrl if e not in DEVICE_MODEL)
+    assert not missing, f"ha-mcp 里有、闸门没档案：{missing}"
+
+
 # ---------------------------------------------------------------- quiet hours
 
 
