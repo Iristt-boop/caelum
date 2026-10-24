@@ -46,6 +46,18 @@ _TODO_ITEM = {
     "required": ["text"],
 }
 
+_LESSON = {
+    "type": "object",
+    "description": ("学习目标配一条小课堂（她 10-24 定：学习目标是目标，小课堂是推进它的方式）。"
+                    "她要长期学的（英语）给 cadence=daily：每天备一张、找合适的时候讲给她；"
+                    "不是学习类的目标不要给"),
+    "properties": {
+        "cadence": {"type": "string", "enum": ["daily"], "description": "daily=每天一张"},
+        "level": {"type": "string", "description": "她现在在哪，如「四级过了，口语生疏，想能看懂美剧」—— 照她说的写"},
+        "stop": {"type": "boolean", "description": "goal_update 用：true=这条小课堂停掉（目标本身不动）"},
+    },
+}
+
 GOAL_CREATE_SPEC = ToolSpec(
     side_effect="write",
     name="goal_create",
@@ -65,7 +77,10 @@ GOAL_CREATE_SPEC = ToolSpec(
         "这类「最近的事」不要写进档案（profile_update 只放长期的）。\n"
         "\n"
         "**routine：到点你去做一件事，再来告诉她**（她 10-23 要的）——「每天 9 点给我推新闻」「每周日看看有什么新电影」。"
-        "到点你会被叫醒、拿着工具先把事做了，再跟她说。不是提醒她做事（那是 todos）。"
+        "到点你会被叫醒、拿着工具先把事做了，再跟她说。不是提醒她做事（那是 todos）。\n"
+        "\n"
+        "**lesson：学习目标的小课堂**（她 10-24 定）——「我想把英语捡起来」→ lesson={cadence:\"daily\", level:她现在的水平}。"
+        "每天会给你备一张小课，你找合适的时候讲给她；讲过的你这边都记着。"
     ),
     parameters={
         "type": "object",
@@ -78,6 +93,7 @@ GOAL_CREATE_SPEC = ToolSpec(
             "owner": {"type": "string", "enum": ["her", "nox"], "description": "her=提醒她的（默认）；nox=你自己跟进的"},
             "every_days": {"type": "integer", "description": "owner=nox：隔几天跟进一次，默认 2"},
             "routine": _ROUTINE,
+            "lesson": _LESSON,
         },
         "required": ["title", "origin"],
     },
@@ -93,17 +109,19 @@ GOAL_UPDATE_SPEC = ToolSpec(
         "· add_todo：再往她 Todo 里落一件属于它的事（todo 同 goal_create 的 todos 里一项）\n"
         "· pause / resume / done：暂停 / 继续 / 完成\n"
         "· routine：设 / 改到点你去做的事（给 routine）；清掉就给 routine={}\n"
+        "· lesson：给学习目标配 / 改小课堂（给 lesson：level 改她现在的水平；stop=true 停掉小课堂）\n"
         "她划掉属于目标的 Todo 时进展会自动记，不用再 log。要删目标让她在 Todo 页删（会问她连不连带那些 Todo）。"
     ),
     parameters={
         "type": "object",
         "properties": {
             "goal": {"type": "string", "description": "目标名里的几个字"},
-            "action": {"type": "string", "enum": ["log", "plan", "add_todo", "pause", "resume", "done", "routine"]},
+            "action": {"type": "string", "enum": ["log", "plan", "add_todo", "pause", "resume", "done", "routine", "lesson"]},
             "text": {"type": "string"},
             "plan": {"type": "array", "items": {"type": "string"}},
             "todo": _TODO_ITEM,
             "routine": _ROUTINE,
+            "lesson": _LESSON,
         },
         "required": ["goal", "action"],
     },
@@ -120,7 +138,26 @@ def _todo_body(t: dict, goal_id: str) -> dict:
     return body
 
 
-def make_handlers(bridge: BridgeClient) -> dict:
+def make_handlers(bridge: BridgeClient, lessons: Any = None) -> dict:
+    """`lessons`：lessons.store.LessonStore；None（NOX_LESSONS=off）时 lesson 参数照实说没配上。"""
+
+    def _set_lesson(gid: str, title: str, spec: dict) -> str:
+        if lessons is None:
+            return "（小课堂这会儿没开，没配上）"
+        cur = lessons.get_line(gid)
+        if spec.get("stop"):
+            if cur is None:
+                return "（它本来就没配小课堂）"
+            lessons.upsert_line(gid, title, cadence=cur["cadence"], active=False)
+            return "小课堂停了，讲过的还记着"
+        cadence = str(spec.get("cadence") or (cur or {}).get("cadence") or "daily")
+        level = str(spec["level"]).strip() if spec.get("level") else None
+        try:
+            lessons.upsert_line(gid, title, cadence=cadence, level=level, active=True)
+        except ValueError as e:
+            return f"（小课堂没配上：{e}）"
+        return "小课堂配好了：每天备一张，找合适的时候讲给她" + (f"（她现在：{level}）" if level else "")
+
     def _find(keyword: str) -> dict | None:
         r = bridge.get("/api/goals", {"status": "all"})
         if not r.ok:
@@ -171,6 +208,8 @@ def make_handlers(bridge: BridgeClient) -> dict:
             return f"记下了，你自己跟进：{title} · 隔 {body['every_days']} 天问一声{skipped}。她在 Todo 页「我记着的」那栏看得到。"
         ok, bad = _add_todos(gid, list(args.get("todos") or []))
         out = f"立好了：{title}"
+        if isinstance(args.get("lesson"), dict) and args["lesson"]:
+            out += " · " + _set_lesson(gid, title, args["lesson"])
         if body.get("routine"):
             rt = body["routine"]
             out += f" · 每到 {rt.get('at')} 你会去做：{rt.get('task')}"
@@ -196,6 +235,11 @@ def make_handlers(bridge: BridgeClient) -> dict:
                 raise RuntimeError(f"记进展失败: {r.error}")
             context.wrote("goals")
             return f"「{title}」记了一笔：{text}"
+        if action == "lesson":
+            spec = args.get("lesson")
+            if not isinstance(spec, dict) or not spec:
+                return "没给 lesson，没改。"
+            return f"「{title}」" + _set_lesson(gid, str(title), spec) + "。"
         if action == "add_todo":
             ok, bad = _add_todos(gid, [args.get("todo") or {}])
             return f"「{title}」往 Todo 里落了：{'、'.join(ok)}" if ok else "没落进去。"
@@ -226,7 +270,7 @@ def make_handlers(bridge: BridgeClient) -> dict:
     return {"goal_create": goal_create, "goal_update": goal_update}
 
 
-def register_all(loop, bridge: BridgeClient) -> None:
-    handlers = make_handlers(bridge)
+def register_all(loop, bridge: BridgeClient, lessons: Any = None) -> None:
+    handlers = make_handlers(bridge, lessons)
     for spec in (GOAL_CREATE_SPEC, GOAL_UPDATE_SPEC):
         loop.register(spec, handlers[spec.name])  # type: ignore[arg-type]

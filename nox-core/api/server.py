@@ -832,8 +832,26 @@ def _build_attention(core: Nox, sessions: "Sessions", db: Store) -> AttentionSer
         # 一天 8 次配额。`NOX_PRESSURE=off` 退回计时器。drives_ref 等 svc 建完回填
         from attention.sources import pressure as _pressure
         from attention.goal_nudge import GoalNudge
+        # 小课堂并入目标层（10-24，她定「交给开口压力」）：今天的课备好了还没讲 → 压力多一股。
+        # 生成走 utility（单独记账 lesson-card，同旧小课堂 daily-card）。NOX_LESSONS=off 退回旧小课堂
+        _lesson_drive = None
+        import lessons as _lessons
+        # 压力关了就没人问这股 → 新小课堂也不建，下面旧的照常（不然一天一张都没有）
+        if _lessons.enabled() and _pressure.enabled() and core.bridge is not None:
+            try:
+                from attention.lesson_drive import LessonDrive
+                _lesson_utility = None
+                _lesson_cfg = getattr(core.cfg, "utility", None)
+                if _lesson_cfg is not None and getattr(_lesson_cfg, "usable", False):
+                    from agent.adapters import make_adapter as _make_lesson_adapter
+                    _lesson_utility = meter.tag(_shared_utility(core) or _make_lesson_adapter(_lesson_cfg), "lesson-card")
+                _lesson_drive = LessonDrive(_lessons.store_for(core.cfg.db_path), core.bridge, db,
+                                            utility=_lesson_utility)
+            except Exception:  # noqa: BLE001
+                logger.exception("小课堂（目标层）装配失败，这条线不跑")
         _thinking = (_pressure.PressureSource(astore, db, rhythm=rhythm,
-                                              goals=GoalNudge(core.bridge, astore) if core.bridge else None)
+                                              goals=GoalNudge(core.bridge, astore) if core.bridge else None,
+                                              lessons=_lesson_drive)
                      if _pressure.enabled()
                      else ThinkingSource(astore, db, rhythm=rhythm))
         logger.info("惦记：%s", "开口压力（θ=%.1f）" % _pressure.theta() if _pressure.enabled()
@@ -927,7 +945,10 @@ def _build_attention(core: Nox, sessions: "Sessions", db: Store) -> AttentionSer
         # 生成走 utility flash（≈0.005 元/天）。**单独建 adapter** ——
         # 上面那个 _pool_adapter 贴着 topic-filter 的账，不能蹭
         card_source = None
-        if not getattr(core.cfg, "daily_card_disabled", False):
+        # 10-24 起小课堂并进目标层（上面开口压力那一股）。两套同时开 = 一天两张，所以新的开着旧的就不建
+        if _lesson_drive is not None:
+            logger.info("小课堂走目标层（学习目标 + 开口压力），旧的星期几小课堂不建")
+        elif not getattr(core.cfg, "daily_card_disabled", False):
             try:
                 from attention.sources.daily_card import DailyCardSource
                 _card_utility = None
@@ -1337,7 +1358,9 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
     #: 她随口一句「我要减肥」就得接得住）。登记在这一串最后，前面的位置一个不动
     if getattr(core, "bridge", None) is not None:
         from tools import goals as goal_tools
-        goal_tools.register_all(core.loop, core.bridge)
+        import lessons as _lessons
+        goal_tools.register_all(core.loop, core.bridge,
+                                _lessons.store_for(core.cfg.db_path) if _lessons.enabled() else None)
     #: 「关于她」档案（10-22，设计稿 2.1½）：她明说一件长期的事，当场改那一行。核心集，排在目标后面
     if getattr(core, "ob", None) is not None:
         from tools import profile as profile_tools

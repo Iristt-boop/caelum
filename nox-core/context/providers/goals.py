@@ -30,14 +30,30 @@ class GoalsProvider(BaseContextProvider):
     #: 写路径登记 `context.wrote("goals")`，所以可以缓存久一点
     ttl = timedelta(minutes=30)
 
-    def __init__(self, bridge: Any = None, **kw: Any) -> None:
+    def __init__(self, bridge: Any = None, lessons: Any = None, **kw: Any) -> None:
         super().__init__(**kw)
         self.bridge = bridge
+        #: lessons.store.LessonStore（10-24 小课堂并入目标层）：今天备好还没讲的卡每轮现读
+        self.lessons = lessons
+
+    def _pending_lessons(self) -> list[dict]:
+        if self.lessons is None:
+            return []
+        try:
+            from temporal import today
+            return list(self.lessons.pending(today().isoformat()))
+        except Exception:  # noqa: BLE001
+            logger.warning("读不到今天的小课堂，这一轮不带", exc_info=True)
+            return []
 
     def get_state(self, turn: Turn | None = None, force_refresh: bool = False) -> dict[str, Any]:
         """「她提到了」（10-23，设计稿 3.3 的第三种触发）：目标列表照旧缓存，**这一句话里提没提到**每轮现看。
-        不调模型 —— 照 OpenClaw 常驻意图，按目标名和它落进 Todo 的那几件事的字面对。"""
+        不调模型 —— 照 OpenClaw 常驻意图，按目标名和它落进 Todo 的那几件事的字面对。
+        今天的小课堂（10-24）也每轮现读：讲完那一刻就该从这里消失，不能等 30 分钟缓存。"""
         state = super().get_state(turn, force_refresh)
+        lessons = self._pending_lessons()
+        if lessons:
+            state = {**state, "lessons": lessons}
         text = (turn.text if turn is not None else "") or ""
         if not text or not state.get("items"):
             return state
@@ -81,4 +97,8 @@ class GoalsProvider(BaseContextProvider):
             if last:
                 bits.append("最近：" + "；".join(f"{str(l.get('at'))[5:10]} {l.get('text')}" for l in last))
             out.append(f"【她刚提到的「{g.get('title')}」】" + ("；".join(bits) or "刚立，还没有进展"))
+        for c in (state or {}).get("lessons") or []:
+            #: 今天备好还没讲的（10-24）。讲没讲按「你回的话里有没有要点」算 —— 所以要点要原样说出来
+            out.append(f"【今天的小课堂，还没讲】「{c.get('title')}」{c.get('body')}"
+                       f"（要点 {c.get('key')}）—— 聊着合适就自然讲给她，要点原样说出来；她正忙 / 正难过就先别")
         return "\n".join(out)

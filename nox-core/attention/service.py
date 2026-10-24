@@ -142,6 +142,7 @@ _DRIVE_CN = {
     "regret": "上次开口没开好", "dejection": "想帮没帮上", "playfulness": "想逗她",
     "restlessness": "憋着话", "jealousy": "有点吃醋", "sulk": "有点委屈",
     "goal": "她的目标该推进了",
+    "lesson": "今天的小课堂备好了，还没讲给她",
 }
 
 

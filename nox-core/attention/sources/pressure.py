@@ -65,7 +65,7 @@ class PressureSource:
 
     def __init__(self, store: Any, sessions_store: Any, rhythm: Any = None,
                  drives_ref: Callable[[datetime], dict] | None = None,
-                 goals: Any = None) -> None:
+                 goals: Any = None, lessons: Any = None) -> None:
         self.store = store
         #: 她状态读法从叫 "random" 的快源上拿会话库（service._her_state_inputs）
         self.sessions = sessions_store
@@ -74,6 +74,8 @@ class PressureSource:
         self.drives_ref = drives_ref
         #: 目标那一股（attention/goal_nudge.py，10-22）：属于目标的事这周落后了 → 多一股「该推进了」
         self.goals = goals
+        #: 小课堂那一股（attention/lesson_drive.py，10-24）：今天的卡备好了还没讲
+        self.lessons = lessons
         self.value = 0.0
         self._last_tick: datetime | None = None
         self._last_her: datetime | None = None
@@ -95,6 +97,9 @@ class PressureSource:
         goal = self._goal_drive(now)
         if goal is not None:
             drives["goal"] = goal
+        lesson = self._lesson_drive(now)
+        if lesson is not None:
+            drives["lesson"] = lesson
         s = sum(float(getattr(d, "intensity", 0.0) or 0.0) for d in drives.values())
         pace = self._pace(now)
         self.value += step.total_seconds() / 3600 * (BASE + s) * pace
@@ -117,6 +122,11 @@ class PressureSource:
                 self.goals.fired(list(goal.goal_ids), now)
             except Exception:  # noqa: BLE001
                 logger.warning("目标冷却没记上（最坏是 24 小时内多推一次）", exc_info=True)
+        if lesson is not None and any(d is lesson for d in top):
+            try:
+                self.lessons.fired(now)
+            except Exception:  # noqa: BLE001
+                logger.warning("小课堂「推过了」没记上（最坏是一小时内多推一次）", exc_info=True)
         self._save()
         return [CareSignal(
             source=self.name,
@@ -144,6 +154,15 @@ class PressureSource:
             return self.goals.drive(now)
         except Exception:  # noqa: BLE001
             logger.warning("目标那一股算不出来，这一分钟不算它", exc_info=True)
+            return None
+
+    def _lesson_drive(self, now: datetime) -> Any:
+        if self.lessons is None:
+            return None
+        try:
+            return self.lessons.drive(now)
+        except Exception:  # noqa: BLE001
+            logger.warning("小课堂那一股算不出来，这一分钟不算它", exc_info=True)
             return None
 
     def _pace(self, now: datetime) -> float:
