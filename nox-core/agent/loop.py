@@ -34,6 +34,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
@@ -49,6 +50,7 @@ from agent.llm import (
     Depth,
     InnerVoiceFilter,
     LineDraftFilter,
+    TagBlockFilter,
     LLMAdapter,
     Message,
     MoodTagFilter,
@@ -59,6 +61,7 @@ from agent.llm import (
     Turn,
     Usage,
     strip_inner_voice,
+    strip_tag_blocks,
 )
 
 logger = logging.getLogger(__name__)
@@ -206,9 +209,6 @@ class AgentLoop:
                 "拿不准就往重了标 —— 标轻了模型能直接碰，标重了只是多一次确认。"
             )
         self.tools[spec.name] = Tool(spec=spec, handler=handler)
-        #: 写成文字的工具调用（10-24：<desk_open> / <url> / <zh> 这种）靠名字认 —— 工具名和参数名都记下
-        props = ((spec.parameters or {}).get("properties") or {}) if isinstance(spec.parameters, dict) else {}
-        contracts_mod.learn_names([spec.name, *props.keys()])
 
     def run(
         self,
@@ -305,9 +305,9 @@ class AgentLoop:
             _accumulate(total, turn.usage)
             # 非流式一般不会有心里话（规矩只在聊天流里加），万一写了也别漏进主动消息和历史
             turn.text = strip_inner_voice(turn.text)
-            turn.text, leaked = contracts_mod.strip_markup(turn.text)
-            if leaked:
-                logger.warning("他把工具调用写成了文字（%d 行标签，非流式）—— 已剥，不进历史", leaked)
+            #: 同一台成对标签状态机（她 10-24）：剥掉、分清「调了没删」和「只写没调」（非流式这边只剥 + 记日志）
+            turn.text, blocks = strip_tag_blocks(turn.text)
+            self._classify_blocks(blocks, {c.name for c in turn.tool_calls})
             ctx.llm_calls.append(_call_record(iterations, turn))
 
             if turn.stop_reason == "error":
@@ -484,32 +484,42 @@ class AgentLoop:
         #: 契约的整行判别器（语音草稿）—— 只在文字聊天里用，见 contracts.OutputContract.line_detector
         dets = (contracts_mod.line_detectors(self._contracts())
                 if split and _contracts_on() else [])
-        #: 写成文字的工具调用标签（<invoke …>）任何时候都不许流到她那边 —— 打电话也一样（TTS 会念出来）
-        draft_filter = LineDraftFilter([d for _, d in dets] + [contracts_mod.is_markup_line], hold_alpha=bool(dets))
+        draft_filter = LineDraftFilter([d for _, d in dets]) if dets else None
+        #: 🔴 成对标签的状态机（她 10-24 定，agent/llm.py TagBlockFilter）：<xxx> 进块吞、</xxx> 出块整块丢、块外原样。
+        #: 排在情绪过滤后面（<mood>…</mood> 归它管），打电话也过（TTS 不能念标签）。每次模型调用一台：
+        #: 一次调用里落单的开标签在这次调用结束时收尾，不吞下一次调用的话
+        tagf = [TagBlockFilter()]
+
+        def to_split(safe: str) -> Iterator[StreamEvent]:
+            safe = tagf[0].feed(safe) if safe else safe
+            if not safe:
+                return
+            if splitter is None:
+                yield StreamEvent("text", text=safe)
+                return
+            for kind, content in splitter.feed(safe):
+                yield StreamEvent(kind, text=content)  # type: ignore[arg-type]
 
         def emit(raw: str) -> Iterator[StreamEvent]:
             if draft_filter is not None:
                 raw = draft_filter.feed(raw)
                 if not raw:
                     return
-            safe = mood_filter.feed(raw)
-            if not safe:
-                return
-            if splitter is None:
-                yield StreamEvent("text", text=safe)
-                return
-            for kind, content in splitter.feed(safe):
-                yield StreamEvent(kind, text=content)  # type: ignore[arg-type]
+            yield from to_split(mood_filter.feed(raw))
 
         def emit_raw(raw: str) -> Iterator[StreamEvent]:
-            safe = mood_filter.feed(raw)
-            if not safe:
-                return
-            if splitter is None:
-                yield StreamEvent("text", text=safe)
-                return
-            for kind, content in splitter.feed(safe):
-                yield StreamEvent(kind, text=content)  # type: ignore[arg-type]
+            yield from to_split(mood_filter.feed(raw))
+
+        def close_tags() -> Iterator[StreamEvent]:
+            """这一次模型调用说完了：状态机收尾（落单的开标签只丢它、后面的字放回来），换一台新的"""
+            rest = tagf[0].flush()
+            tagf[0] = TagBlockFilter()
+            if rest:
+                if splitter is None:
+                    yield StreamEvent("text", text=rest)
+                else:
+                    for kind, content in splitter.feed(rest):
+                        yield StreamEvent(kind, text=content)  # type: ignore[arg-type]
 
         def drain() -> Iterator[StreamEvent]:
             if draft_filter is not None:
@@ -517,13 +527,8 @@ class AgentLoop:
                 if held:
                     for ev in emit_raw(held):
                         yield ev
-            tail = mood_filter.flush()
-            if tail:
-                if splitter is None:
-                    yield StreamEvent("text", text=tail)
-                else:
-                    for kind, content in splitter.feed(tail):
-                        yield StreamEvent(kind, text=content)  # type: ignore[arg-type]
+            yield from to_split(mood_filter.flush())
+            yield from close_tags()
             if splitter is not None:
                 rest = splitter.flush()
                 if rest:
@@ -533,7 +538,10 @@ class AgentLoop:
         spoke = False   # 前面的调用已经对她说过话（见 SPOKEN_NOTE）
         delivered = False   # 前面已经有终结型工具（表情 / 语音…）成功发到她那边了
         empty_retried = False   # 「一个字都没说出口」已经重问过一次了
-        leak_retry = False   # 那次「没说出口」是因为把工具调用写成了文字（重问时多一句提醒）
+        #: 「只写没调」（她 10-24：和「调了没删」是两个病）：这一轮已经提醒过一次了 / 下一次调用要带的提醒
+        leak_nudged = False
+        leak_names = ""
+        called_turn: set[str] = set()
 
         for iterations in range(1, self.max_iterations + 1):
             # 同非流式那条：只拦"开下一轮"，拦不住正在进行的那一次调用。
@@ -564,8 +572,8 @@ class AgentLoop:
             for ev in llm.stream(
                 view + messages[n_hist:], specs,
                 system=system,
-                dynamic_system=_with_spoken_note(dynamic_system, spoke, empty=empty_retried,
-                                                 leaked=empty_retried and leak_retry),
+                dynamic_system=_with_spoken_note(dynamic_system, spoke, empty=empty_retried and not leak_names,
+                                                 leaked=leak_names),
                 depth=depth,
             ):
                 if ev.type == "text":
@@ -584,12 +592,12 @@ class AgentLoop:
                 turn = Turn(stop_reason="error", error="流意外结束，没有收到 done 事件")
             # 心里话只给她看，**不进历史**（她 10-06：「不记，只给你看」）—— 下面所有 append / _done 都读 turn.text
             turn.text = strip_inner_voice(turn.text)
-            turn.text, leaked = contracts_mod.strip_markup(turn.text)
-            if leaked:
-                #: 流里已经被 draft_filter 拦下了；这里剥的是要进历史的那份 —— 留着他下一轮就照着写
-                logger.warning("他把工具调用写成了文字（%d 行标签，真调了 %d 个）—— 已剥，不进历史",
-                               leaked, len(turn.tool_calls or []))
-                leak_retry = leak_retry or not (turn.text or "").strip()
+            #: 收尾的最终清理：和流里同一台状态机过整段（她 10-24：不能只在 chunk 边界上扫）——
+            #: 进历史的这份和她看到的那份一样
+            turn.text, blocks = strip_tag_blocks(turn.text)
+            leak_names = ""
+            called_turn |= {c.name for c in turn.tool_calls}
+            written_only = self._classify_blocks(blocks, called_turn)
             _accumulate(total, turn.usage)
             ctx.llm_calls.append(_call_record(iterations, turn))
 
@@ -603,6 +611,21 @@ class AgentLoop:
                 yield _done(outcome, turn.text, iterations, total, messages, turn.error)
                 return
 
+            if (turn.stop_reason == "end_turn" or not turn.tool_calls) and written_only and not leak_nudged:
+                # 🔴「只写没调」：他把要做的事写成了标签、一次都没真调（她 10-24：和「调了没删」分开治）。
+                # 标签已经剥了；这一轮不收尾，带着「你写的 X 没执行，要做就真调」再问他一次（只问一次）
+                leak_nudged = True
+                leak_names = "、".join(sorted(written_only))
+                logger.warning("只写没调｜第 %d 次调用把 %s 写成了文字、没真调 —— 剥掉，提醒他真调一次",
+                               iterations, leak_names)
+                if (turn.text or "").strip():
+                    messages.append(_assistant_message(turn))
+                    spoke = True
+                yield from close_tags()
+                if draft_filter is not None:
+                    draft_filter.flush()
+                continue
+
             if turn.stop_reason == "end_turn" or not turn.tool_calls:
                 if not (turn.text or "").strip() and not spoke and not delivered:
                     # 🔴 一整轮一个字都没对她说出口（10-18 两次：模型 token 全花在想上，正文是空的）。
@@ -615,9 +638,10 @@ class AgentLoop:
                     )
                     if not empty_retried:
                         empty_retried = True
-                        #: 重问前把过滤器里攒着的半行扔掉（多半是没换行的最后一行标签）——
-                        #: 不扔的话下一次调用的正文会接在它后面、被当成同一行一起吞掉（10-23 测出来的）
-                        draft_filter.flush()
+                        #: 重问前把过滤器里攒着的扔掉 —— 不扔的话下一次调用的正文会接在它后面一起被吞（10-23 测出来的）
+                        if draft_filter is not None:
+                            draft_filter.flush()
+                        tagf[0] = TagBlockFilter()
                         continue
                 yield from drain()
                 messages.append(_assistant_message(turn))
@@ -632,6 +656,11 @@ class AgentLoop:
                 held = draft_filter.flush()
                 if held:
                     yield from emit_raw(held + "\n")
+            yield from close_tags()
+            if written_only:
+                #: 这一次调用真调了别的，但还有写成文字、没调的那几件：下一次调用提醒他
+                leak_names = "、".join(sorted(written_only))
+                logger.warning("只写没调｜第 %d 次调用除了真调的，还把 %s 写成了文字", iterations, leak_names)
             # 🔴 一件一件跑，每件前后各发一帧 —— **不要写回列表推导**。
             # 推导式会把这一批工具整个跑完才回到调用方，中间没有任何输出：
             # 语音通话那边就是十几秒的死寂，她分不清他在干活还是卡死了。
@@ -743,6 +772,29 @@ class AgentLoop:
 
         tracker.record(outcome, call.name)
         return outcome
+
+    def _classify_blocks(self, blocks: list[Any], called: set[str]) -> set[str]:
+        """状态机丢掉的块里，哪些是他的工具（她 10-24：两个病分开治）：
+
+          调了没删  这件这一轮真调过，正文里又写了一遍 → 剥掉就完，记一笔
+          只写没调  写成了标签、一次都没真调 → 回给调用方，那边带着提醒让他真调一次
+
+        块名就是工具名（<desk_open>…），或者是 <invoke name="desk_open"> 这种：名字在 name 属性里。
+        块名不是工具的（<zh> 这种参数、不认识的）不算，剥掉就完。
+        """
+        written: set[str] = set()
+        for b in blocks:
+            name = b.name if b.name in self.tools else None
+            if name is None:
+                m = re.search(r'\bname\s*=\s*"([^"]+)"', b.raw[:200])
+                name = m.group(1) if m and m.group(1) in self.tools else None
+            if name:
+                written.add(name)
+        if written & called:
+            logger.info("调了没删｜%s 真调过，正文里又写了一遍标签 —— 已剥", "、".join(sorted(written & called)))
+        if blocks and not written:
+            logger.info("剥了 %d 块标签（%s）", len(blocks), "、".join(sorted({b.name for b in blocks}))[:120])
+        return written - called
 
     def _contracts(self) -> dict[str, contracts_mod.OutputContract]:
         """这一轮注册的工具里，声明了交互契约的那些（工具名 → 契约）。"""
@@ -1054,16 +1106,20 @@ EMPTY_NOTE = (
 
 
 LEAK_NOTE = (
-    "【你刚才把工具调用写成了文字（<invoke …> 那种标签）】那样什么都没发生，她看不到也没执行。"
+    "【你刚才把工具调用写成了文字（标签）】那样什么都没发生：她看不到，也没执行。"
     "要用工具就直接调用；这一轮手边没有你想用的那件，就跟她说一声现在用不了。"
 )
 
 
+def _leak_note(names: str) -> str:
+    return LEAK_NOTE + (f"写成了文字、没执行的是：{names}。" if names else "")
+
+
 def _with_spoken_note(dynamic_system: str | None, spoke: bool, empty: bool = False,
-                      leaked: bool = False) -> str | None:
+                      leaked: str = "") -> str | None:
     """这一轮里前面的模型调用已经对她说过话 → 动态块末尾加一条「别重说」；
-    上一次调用一个字都没说出口（在重问）→ 加一条「把话说出来」；没说出口是因为把工具调用写成了字 → 再加一条。"""
-    notes = [n for n, on in ((SPOKEN_NOTE, spoke), (EMPTY_NOTE, empty), (LEAK_NOTE, leaked)) if on]
+    上一次调用一个字都没说出口（在重问）→ 加一条「把话说出来」；把工具写成了字没调（leaked = 哪几件）→ 再加一条。"""
+    notes = [n for n, on in ((SPOKEN_NOTE, spoke), (EMPTY_NOTE, empty), (_leak_note(leaked), bool(leaked))) if on]
     if not notes:
         return dynamic_system
     return "\n\n".join([dynamic_system, *notes] if dynamic_system else notes)

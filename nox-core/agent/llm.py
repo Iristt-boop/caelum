@@ -867,6 +867,191 @@ class MoodTagFilter:
         return "".join(parts)
 
 
+# ---------------------------------------------------------------- 成对标签的状态机（2026-10-24，她定）
+#: 她 10-24：「你现在加一个漏一个，是因为你在用黑名单对付一个有语法的东西。」
+#: 写成文字的工具调用每次换个样子（<invoke…> / <desk_open><url>… / <zh>…</zh></send_voice_message>）——
+#: 不再认名字，认语法：遇到 <xxx> 进块、开始吞；遇到配对的 </xxx> 出块、整块丢掉；块外原样输出。
+#: 以后加十个、二十个工具，只要标签成对就自动覆盖。
+#:
+#: 刻意的例外（都是「别吞她能读到的话」）：
+#:   · 代码里不动：``` 围起来的、`单反引号` 里的
+#:   · 排版标签只摘标签不丢字：<b>重要</b> → 重要
+#:   · 单个的 <br> / <hr> / <img …> 只丢它自己
+#:   · 不成标签的照常放：<3、a < b、<=
+#:   · 只有开标签、到结尾都没等到闭标签：只丢这个标签，后面的字放回来再过一遍（不让一个落单的开标签吞掉后半段）
+#:   · 只有闭标签（开标签丢了，她 10-24 截图那种）：丢这个闭标签
+#: 🔴 同一台机器既在流里一个字一个字过，也在收尾时对全文过一遍：怎么切块都得到一样的结果（测试钉着），
+#: 所以她看到的、bridge 存的、进他历史的是同一份。
+_TAG_NAME_RE = r"[^\W\d][\w.:-]*"
+_OPEN_TAG_RE = re.compile(r"<(" + _TAG_NAME_RE + r")((?:\s+[^<>\n]*?)?)\s*(/?)>\Z")
+_CLOSE_TAG_RE = re.compile(r"</\s*(" + _TAG_NAME_RE + r")\s*>\Z")
+_UNWRAP_TAGS = {"b", "i", "u", "s", "em", "strong", "code", "a", "span", "small", "sub", "sup", "mark", "del", "ins",
+                "kbd", "q", "big", "tt"}
+_VOID_TAGS = {"br", "hr", "img", "wbr"}
+#: 一个标签最长这么多字（再长就不是标签了，原样放）
+_TAG_MAX = 300
+
+
+@dataclass
+class TagBlock:
+    """被丢掉的一块（给 loop 分辨「调了没删」和「只写没调」用）"""
+
+    name: str
+    raw: str
+    closed: bool
+
+
+class TagBlockFilter:
+    """见上面那段。feed 一块回能放出去的字；flush 收尾（落单的开标签在这里处理）；blocks 是丢掉了哪些"""
+
+    def __init__(self) -> None:
+        self.blocks: list[TagBlock] = []
+        self._tag = ""            # 正在攒的「<…」
+        self._block: list[Any] | None = None    # [名字, 层数, 原文, 开标签原文]
+        self._ticks = 0           # 连着的反引号
+        self._fence = False
+        self._inline = False
+        self._last = ""           # 放出去的最后一个字（判断「行首」）
+        self._eat_nl = False      # 刚丢了一块：紧跟着的空行一起吞（只在行首时吞，不把前后两句粘一起）
+
+    def _emit(self, out: list[str], text: str) -> None:
+        if text:
+            out.append(text)
+            self._last = text[-1]
+            self._eat_nl = False
+
+    def _dropped(self) -> None:
+        self._eat_nl = True
+
+    def _is_tag_start(self, ch: str) -> bool:
+        return ch == "/" or ch.isalpha() or ch == "_"
+
+    def feed(self, chunk: str) -> str:
+        out: list[str] = []
+        for ch in chunk:
+            self._step(ch, out)
+        return "".join(out)
+
+    def _step(self, ch: str, out: list[str]) -> None:
+        # ---- 正在攒一个可能的标签 ----
+        if self._tag:
+            if len(self._tag) == 1 and not self._is_tag_start(ch):
+                self._literal(self._tag, out)
+                self._tag = ""
+            elif ch == ">":
+                self._tag += ch
+                tag, self._tag = self._tag, ""
+                self._on_tag(tag, out)
+                return
+            elif ch in "<\n" or len(self._tag) >= _TAG_MAX:
+                self._literal(self._tag, out)
+                self._tag = ""
+            else:
+                self._tag += ch
+                return
+        # ---- 块里：只认同名的开 / 闭标签（算层数），其余全攒着 ----
+        if self._block is not None:
+            if ch == "<":
+                self._tag = ch
+            else:
+                self._block[2] += ch
+            return
+        # ---- 块外 ----
+        if ch == "`":
+            self._ticks += 1
+            self._emit(out, ch)
+            return
+        self._end_ticks()
+        if ch == "\n":
+            self._inline = False
+            if self._eat_nl and self._last in ("", "\n"):
+                return
+        if ch == "<" and not (self._fence or self._inline):
+            self._tag = ch
+            return
+        self._emit(out, ch)
+
+    def _end_ticks(self) -> None:
+        if not self._ticks:
+            return
+        if self._ticks >= 3:
+            self._fence = not self._fence
+        elif not self._fence:
+            self._inline = not self._inline
+        self._ticks = 0
+
+    def _literal(self, text: str, out: list[str]) -> None:
+        """攒的那段不是标签：块里就归进块，块外就原样放"""
+        if self._block is not None:
+            self._block[2] += text
+        else:
+            self._emit(out, text)
+
+    def _on_tag(self, tag: str, out: list[str]) -> None:
+        close = _CLOSE_TAG_RE.match(tag)
+        opn = None if close else _OPEN_TAG_RE.match(tag)
+        if self._block is not None:
+            name = self._block[0]
+            if close and close.group(1).lower() == name:
+                self._block[1] -= 1
+                if self._block[1] == 0:
+                    self.blocks.append(TagBlock(name, self._block[3] + self._block[2] + tag, True))
+                    self._block = None
+                    self._dropped()
+                    return
+            elif opn and opn.group(1).lower() == name and not opn.group(3):
+                self._block[1] += 1
+            self._block[2] += tag
+            return
+        if close:
+            #: 只有闭标签（开标签丢了）：丢这个闭标签。排版标签的闭标签一样丢（开标签已经摘掉了）
+            if close.group(1).lower() not in _UNWRAP_TAGS | _VOID_TAGS:
+                self.blocks.append(TagBlock(close.group(1).lower(), tag, False))
+                self._dropped()
+            return
+        if not opn:
+            self._emit(out, tag)
+            return
+        name = opn.group(1).lower()
+        if name in _UNWRAP_TAGS or name in _VOID_TAGS:
+            return
+        if opn.group(3):          # <xxx …/> 自己就是一整块
+            self.blocks.append(TagBlock(name, tag, True))
+            self._dropped()
+            return
+        self._block = [name, 1, "", tag]
+
+    def flush(self) -> str:
+        out: list[str] = []
+        if self._tag:
+            self._literal(self._tag, out)
+            self._tag = ""
+        self._end_ticks()
+        if self._block is not None:
+            #: 落单的开标签：只丢它，后面攒着的字放回来再过一遍（里面完整的块照样丢）
+            name, _, body, opener = self._block
+            self._block = None
+            self.blocks.append(TagBlock(name, opener, False))
+            inner = TagBlockFilter()
+            inner._fence, inner._inline = self._fence, self._inline
+            inner._last, inner._eat_nl = self._last, True
+            self._emit(out, inner.feed(body) + inner.flush())
+            self.blocks.extend(inner.blocks)
+        return "".join(out)
+
+
+def strip_tag_blocks(text: str | None) -> tuple[str | None, list[TagBlock]]:
+    """整段过一遍同一台状态机（收尾的最终清理）。剥完只剩空白就回 ""（调用方当没说出口处理）"""
+    if not text:
+        return text, []
+    f = TagBlockFilter()
+    out = f.feed(text) + f.flush()
+    if out == text:
+        return text, []
+    #: 排版标签摘掉了也算变了（<b>重要</b> → 重要），所以比的是输出，不是有没有丢块
+    return re.sub(r"\n{3,}", "\n\n", out).strip(), f.blocks
+
+
 class LineDraftFilter:
     """流式里按**整行**拦交互契约的伪输出（只在文字聊天里用，见 contracts.OutputContract.line_detector）。
 
@@ -878,7 +1063,7 @@ class LineDraftFilter:
     def __init__(self, detectors: list, hold_alpha: bool = True) -> None:
         self._dets = list(detectors)
         #: 英文开头的行也攒（语音草稿要看到行尾才判得出）。打电话时关掉 —— 那边英文就是正文，攒到行尾会让 TTS 晚开口
-        self._hold = "[<" if hold_alpha else "<"
+        self._hold = "["  # 标签（<…>）归后面那台成对标签状态机，这里不攒
         self._alpha = hold_alpha
         self._buf = ""
         self._holding = False

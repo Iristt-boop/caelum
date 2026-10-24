@@ -125,14 +125,15 @@ def model_view(history: list[Message]) -> list[Message]:
 
 
 def _has_markup(text: str) -> bool:
-    from agent.contracts import is_markup_line
-    return any(is_markup_line(ln) for ln in text.split("\n"))
+    #: 同一台成对标签状态机（她 10-24）：剥完和原文不一样 = 里面有写成文字的标签
+    from agent.llm import strip_tag_blocks
+    return strip_tag_blocks(text)[0] != text
 
 
 def _unleak(m: Message) -> Message:
     """10-23：他在正文里写了一串工具调用标签（库里那条留着 —— 是她看到过的记录）。
     给模型看的那份剥掉标签，不然他下一轮照着写（10-10 伪输出放大的同一条路）；剥空了留一句交代，不留空消息"""
-    from agent.contracts import strip_markup
-    text, _ = strip_markup(m.text)
+    from agent.llm import strip_tag_blocks
+    text, _ = strip_tag_blocks(m.text)
     return Message(role="assistant", text=text or "（这一条我把工具调用写成了一串标签，她只看到标签，什么也没做成）",
                    tool_calls=m.tool_calls)
