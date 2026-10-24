@@ -3843,6 +3843,19 @@ app.get("/api/nox/topics", async (req, res) => {
   }
 });
 
+// 讲过的小课堂（10-24，小课堂并入目标层 2.7）：Goals 页 Long-term「在学的」。数据在 Core 的 lessons.db，纯透传
+app.get("/api/nox/lessons", async (req, res) => {
+  try {
+    const r = await fetch(`${NOX_CORE_URL}/api/nox/lessons`, {
+      signal: AbortSignal.timeout(8000),
+    });
+    res.status(r.status).json(await r.json());
+  } catch (e) {
+    console.warn("[goals] 小课堂透传失败:", e.message);
+    res.status(502).json({ ok: false, error: `core 不可达: ${e.message}` });
+  }
+});
+
 app.get("/api/nox/dreams", async (req, res) => {
   try {
     const limit = Math.min(Math.max(parseInt(req.query.limit) || 5, 1), 30);

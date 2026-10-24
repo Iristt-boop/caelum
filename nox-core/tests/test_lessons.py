@@ -274,3 +274,33 @@ def test_上下文带今天没讲的卡_讲了马上消失(store):
     assert "今天的小课堂" in text and "used to" in text
     store.mark_told(store.card_on("g1", d)["id"], GEN)
     assert "今天的小课堂" not in p.render(p.get_state(None))   # 列表缓存 30 分钟，卡每轮现读
+
+
+# ------------------------------------------------------------------ Goals 页的只读接口
+
+
+def test_接口只给讲过的卡_新的在前_带她回没回(tmp_path):
+    from fastapi.testclient import TestClient
+
+    import lessons
+    from api.server import create_app
+    from data.store import Store
+    from tests.test_api import FakeNox
+
+    nox = FakeNox()
+    nox.cfg.db_path = str(tmp_path / "nox.db")
+    st = lessons.store_for(nox.cfg.db_path)
+    st.upsert_line("g1", "英语", cadence="daily", level="四级")
+    for d, key in (("2026-10-22", "would"), ("2026-10-23", "used to"), ("2026-10-24", "account for")):
+        st.add_card("g1", d, _card(key=key), GEN)
+    a = st.card_on("g1", "2026-10-22")["id"]
+    b = st.card_on("g1", "2026-10-23")["id"]
+    st.mark_told(a, GEN)
+    st.mark_told(b, GEN)
+    st.set_reply(b, "I used to swim")
+    st.expire_through("2026-10-23")        # 24 号那张还没讲 → 不给（别先剧透）
+    body = TestClient(create_app(nox, Store(tmp_path / "sessions.db"))).get("/api/nox/lessons").json()
+    line = body["lines"][0]
+    assert line["title"] == "英语"
+    assert [c["key"] for c in line["cards"]] == ["used to", "would"]
+    assert [c["replied"] for c in line["cards"]] == [True, False]

@@ -4065,6 +4065,27 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
             raise HTTPException(status_code=503, detail="话题池没启用")
         return {"ok": True, "items": pool.topics_for_ui()}
 
+    @app.get("/api/nox/lessons")
+    def nox_lessons(limit: int = 200) -> dict:
+        """讲过的小课堂（10-24，设计稿 2.7）：Goals 页「在学的」那一组，只读。
+
+        每条课程线带它讲过的卡（told，新的在前）。没讲成作废的、今天还没讲的都不给 ——
+        页面上只放讲过的，还没讲的别先剧透。`replied`：讲完 30 分钟内她回没回（回的是别的也算）。
+        """
+        import lessons as _lessons
+        if not _lessons.enabled():
+            return {"ok": True, "enabled": False, "lines": []}
+        st = _lessons.store_for(core.cfg.db_path)
+        n = max(1, min(int(limit or 200), 500))
+        out = []
+        for line in st.lines():
+            cards = [{"id": c["id"], "date": c["date"], "title": c["title"], "key": c["key"],
+                      "body": c["body"], "hook": c.get("hook") or "", "reply": c.get("reply") or "",
+                      "replied": bool(c.get("reply"))} for c in st.recent(line["goal_id"], n)]
+            out.append({"goal_id": line["goal_id"], "title": line["title"], "cadence": line["cadence"],
+                        "level": line.get("level") or "", "next": line.get("next") or [], "cards": cards})
+        return {"ok": True, "enabled": True, "lines": out}
+
     @app.get("/api/nox/dreams")
     def nox_dreams(limit: int = 5) -> dict:
         """他夜里做的梦 —— Dream shadow 的 JSONL，只读投影（2026-09-19 接给 World）。
