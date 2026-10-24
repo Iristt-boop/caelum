@@ -78,9 +78,9 @@ VERDICT=$(probe)
 [ "$STATE_ONLY" = 1 ] && { echo "$VERDICT"; exit 0; }
 
 # ── 2) 推送（照 caelum-watch：token 绝不进 argv，curl -K 读配置）────
-push() {  # $1=标题 $2=正文
+push() {  # $1=标题 $2=正文 $3=可选：点击通知直接打开的链接（须 noxtang.com）
   if [ "$DRY" = 1 ]; then
-    log "DRY: 会推 → [$1] $2"
+    log "DRY: 会推 → [$1] $2${3:+ （点击打开 $3）}"
     return 0
   fi
   command -v python3 >/dev/null 2>&1 || { log "🔴 没有 python3，拼不出推送内容"; return 1; }
@@ -93,9 +93,13 @@ push() {  # $1=标题 $2=正文
   trap "rm -f '$cfg' '$body'" RETURN
   python3 -c '
 import json, sys
-sys.stdout.buffer.write(
-    json.dumps({"title": sys.argv[1], "body": sys.argv[2]}, ensure_ascii=False).encode("utf-8")
-)' "$1" "$2" > "$body"
+d = {"title": sys.argv[1], "body": sys.argv[2]}
+# data.url 让通知点击直接开链接（SW 2026-10-24 起支持；之前点了只进 App，
+# 正文里的链接没处落）
+if len(sys.argv) > 3 and sys.argv[3]:
+    d["data"] = {"type": "url", "url": sys.argv[3]}
+sys.stdout.buffer.write(json.dumps(d, ensure_ascii=False).encode("utf-8"))
+' "$1" "$2" "${3:-}" > "$body"
   [ -s "$body" ] || { log "🔴 推送内容是空的，不发了"; return 1; }
   {
     echo "url = \"$BRIDGE/api/push/send\""
@@ -155,7 +159,7 @@ case "$VERDICT" in
     # --dry 不许留副作用：记账只在真推成功后落（dry 复读会吞掉真推送）
     rc=0
     push "该给 Nox 续音乐登录了" "网易云 cookie 过期了（它 7~30 天就失效一次，没法自动续）。点开扫一下就好，扫完我自己会闭嘴：
-$LINK" || rc=1
+$LINK" "$LINK" || rc=1
     [ "$DRY" = 0 ] && [ "$rc" = 0 ] && : > "$FLAG"
     ;;
   risk*)
