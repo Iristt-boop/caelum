@@ -32,6 +32,7 @@ T7 的哨兵扫整个 `moments/`，本模块的测试也直接读源码文本。
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -69,6 +70,12 @@ _RULES = (
     "5. **只写你真的知道的。** 上面「因为」和「她说过」里有什么，你才能写什么；"
     "没给你的具体细节——几点、几小时、多少次、她做了什么——**一个都不许编**。"
     "没有具体的事可写，就写你此刻的感觉，那也是真的。",
+
+    #: 10-24 她：「我自己发帖会聊到它们」（共读 / 共影）—— 素材给了，用不用他自己定；用了就挂一张引用卡
+    "6. **想起一起读的书、一起看的电影，可以写。** 下面「最近一起读的、看的」是真的；想到了就写一句"
+    "（某个画面、某句话、看完那一刻的感觉），没想到就别硬扯。**写的就是其中某一个**的话，"
+    "正文最后单起一行写「关于：编号」（比如「关于：2」），程序会把那本书 / 那部电影挂在这条下面；"
+    "不是在写它们就别写这一行。",
 )
 
 #: 系统提示词。🔴 只此一份 —— 五条约束从 `_RULES` 拼进来
@@ -115,12 +122,48 @@ def _background(drives: Mapping[str, float],
     return "\n".join(lines) or "没什么起伏"
 
 
+#: 正文最后那行「关于：编号」（第 6 条）
+_ABOUT_RE = re.compile(r"\n?[ \t]*关于[:：]\s*(\d{1,2})\s*$")
+
+
+def split_about(text: str) -> tuple[str, int | None]:
+    """正文 + 最后那行「关于：N」→ (去掉那一行的正文, N)。没写就是 (原文, None)"""
+    m = _ABOUT_RE.search(text or "")
+    if not m:
+        return text, None
+    return text[:m.start()].rstrip(), int(m.group(1))
+
+
+def material(bridge: Any) -> list[dict]:
+    """最近两周一起读的、看的（bridge /api/moments/material）。拿不到就是空 —— 少一块素材不该让他发不了帖"""
+    try:
+        r = bridge.get("/api/moments/material")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("发帖素材没拿到：%s: %s", type(exc).__name__, exc)
+        return []
+    if not r.ok or not isinstance(r.data, dict):
+        logger.warning("发帖素材没拿到：%s", getattr(r, "error", ""))
+        return []
+    return [x for x in (r.data.get("items") or []) if isinstance(x, dict) and isinstance(x.get("ref"), dict)][:5]
+
+
+def _material_block(items: Sequence[Mapping]) -> str:
+    lines = []
+    for i, it in enumerate(items, 1):
+        ref = it.get("ref") or {}
+        kind = "一起读的书" if ref.get("type") == "book" else "一起看的电影"
+        hint = _clip(it.get("hint") or "")
+        lines.append(f"{i}. {kind}《{ref.get('title', '')}》" + (f" —— {hint}" if hint else ""))
+    return "\n".join(lines) or "（这两周没有一起读的、一起看的）"
+
+
 def build_prompt(
     drives: Mapping[str, float],
     recent: Sequence[str],
     impulse_why: str,
     clock: str = "",
     context: Mapping[str, Mapping] | None = None,
+    material: Sequence[Mapping] | None = None,
 ) -> tuple[str, str]:
     """拼出 (system, user)。抽出来是为了能单独测（照抄 speaker 的 `build_prompt`）。
 
@@ -147,6 +190,10 @@ def build_prompt(
         "\n"
         "## 最近发过的\n"
         f"{listed or '（还没发过）'}\n"
+        "\n"
+        #: 10-24：一起读的、看的。空的也要在场（形状每次一样）
+        "## 最近一起读的、看的\n"
+        f"{_material_block(material or [])}\n"
         "\n"
         "## 现在几点\n"
         f"{clock or '（不知道现在几点）'}\n"
@@ -182,6 +229,7 @@ def generate(
     impulse_why: str,
     clock: str = "",
     context: Mapping[str, Mapping] | None = None,
+    material: Sequence[Mapping] | None = None,
 ) -> str | None:
     """生成一条正文。**拿不到就是 None**，不编、不退而求其次。
 
@@ -200,7 +248,7 @@ def generate(
         logger.info("没有可用的 utility 模型，这轮不发帖")
         return None
 
-    system, user = build_prompt(drives, recent, impulse_why, clock, context=context)
+    system, user = build_prompt(drives, recent, impulse_why, clock, context=context, material=material)
 
     def _attempt() -> tuple[str | None, str]:
         """一次生成尝试，返回 (正文, 失败原因)。正文 None = 这次没成。"""
@@ -230,7 +278,8 @@ def generate(
             return None, f"stop_reason={turn.stop_reason} error={turn.error}"
 
         text = _clean(turn.text)
-        if len(text) > MAX_CHARS:
+        #: 「关于：N」那一行不算字数（它不是正文，程序会拿掉）
+        if len(split_about(text)[0]) > MAX_CHARS:
             #: 🔴 不截断：截断会在句子中间断掉，而且是一次静默的内容篡改。
             logger.warning("发帖正文 %d 字，超过上限 %d", len(text), MAX_CHARS)
             return None, f"超长 {len(text)}/{MAX_CHARS}"
@@ -249,7 +298,7 @@ def generate(
     return None
 
 
-def post(bridge: Any, body: str, drive: str, impulse_why: str) -> str | None:
+def post(bridge: Any, body: str, drive: str, impulse_why: str, about: Mapping | None = None) -> str | None:
     """把一条正文落到 bridge，返回 bridge 给的 id（**拿不到就是 None**）。
 
     这个 id 是这条记录和真实那条帖之间**唯一的缝**（`record.py` 的原话）：
@@ -270,6 +319,12 @@ def post(bridge: Any, body: str, drive: str, impulse_why: str) -> str | None:
         "impulse_why": impulse_why,
         "mood": "",
     }
+    if about and isinstance(about.get("ref"), Mapping):
+        #: 写的是一起读的书 / 一起看的电影（第 6 条「关于：N」）：挂引用卡；那一条自带的图（书签卡 / 海报）一起带上
+        payload["ref"] = dict(about["ref"])
+        img = str(about.get("image") or "")
+        if img.startswith("/uploads/"):
+            payload["images"] = [img]
     try:
         r = bridge.post("/api/diary", payload)
     except Exception as exc:  # noqa: BLE001

@@ -393,11 +393,11 @@ def _fake_writer(monkeypatch, *, body: str | None = "今天风挺大，窗户没
     calls: dict[str, list] = {"generate": [], "post": []}
 
     def fake_generate(adapter_ref, drives, recent, impulse_why, clock="",
-                      context=None):
+                      context=None, material=None):
         calls["generate"].append({"impulse_why": impulse_why, "context": context})
         return body
 
-    def fake_post(bridge, text, drive, impulse_why):
+    def fake_post(bridge, text, drive, impulse_why, about=None):
         calls["post"].append({"drive": drive, "impulse_why": impulse_why})
         return post_id
 

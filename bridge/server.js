@@ -362,6 +362,14 @@ db.run(`CREATE TABLE IF NOT EXISTS diary_comments (
 dbTry(`ALTER TABLE diary ADD COLUMN kind TEXT DEFAULT 'diary'`)
 dbTry(`ALTER TABLE diary ADD COLUMN drive TEXT DEFAULT ''`)
 dbTry(`ALTER TABLE diary ADD COLUMN impulse_why TEXT DEFAULT ''`)
+// Moments 第二期（10-24 她：「我和你都可以发图片」「接共读共影」「帖子里能引用一本书 / 一部电影」）：
+//   images  JSON 数组，存裸的 /uploads/… 路径（出口现签，同相册）
+//   ref     JSON {type: book|movie, id, title, cover?}：这条在说哪本书 / 哪部电影，点了能跳过去
+//   kind 多一种 together：票根 / 书签卡自动生成的「我们俩的」动态（不是谁一个人发的）
+dbTry(`ALTER TABLE diary ADD COLUMN images TEXT DEFAULT ''`)
+dbTry(`ALTER TABLE diary ADD COLUMN ref TEXT DEFAULT ''`)
+// 自动动态的来源去重：ticket:<场次> / card:<卡 id>，同一张票根 / 卡只出一条
+dbTry(`CREATE TABLE IF NOT EXISTS moments_together (source TEXT PRIMARY KEY, diary_id TEXT, created_at TEXT)`)
 // 本地 books / book_annotations 两张表 2026-08-05 删了。
 // 书架实际走共读代理（/api/reading/* → co-reading:3100，BookReader 用 /reading/...），
 // 这套本地表 2026-07 就没人读了，只留了一张永远空的表和三四个死端点。
@@ -2725,14 +2733,175 @@ app.get("/api/diary", (req, res) => {
   // 给每条日记附上评论
   for (const e of entries) {
     e.comments = dbAll("SELECT * FROM diary_comments WHERE diary_id=? ORDER BY created_at ASC", [e.id]);
+    decorateMoment(e);
   }
   const monthlyCount = entries.length;
-  res.json({ entries, monthlyCount });
+  res.json({ entries: signUploadsDeep(entries), monthlyCount });
 });
+
+// ── Moments 第二期（10-24）：图片 / 引用 / 我们俩的自动动态 ────────────────────
+const MOMENT_IMAGES_MAX = 9;
+const MOMENT_IMAGE_BYTES_MAX = 8 * 1024 * 1024;
+
+/** 一张她手机上压好的图（data URL / base64）→ 存进 uploads，回 /uploads/… 路径；坏的回 null */
+function saveMomentImage(b) {
+  try {
+    const s = typeof b === "string" ? b : (b?.b64 || "");
+    if (!s) return null;
+    // 已经是我们自己的图（比如她从相册挑的那张）：去掉签名，存裸路径
+    if (s.startsWith("/uploads/")) return s.split("?")[0];
+    const raw = s.startsWith("data:") ? s.slice(s.indexOf(",") + 1) : s;
+    const buf = Buffer.from(raw, "base64");
+    if (!buf.length || buf.length > MOMENT_IMAGE_BYTES_MAX) return null;
+    const fname = `${Date.now()}-${randomUUID().slice(0, 6)}.jpg`;
+    fs.writeFileSync(path.join(uploadDir, fname), buf);
+    return `/uploads/${fname}`;
+  } catch (e) {
+    console.log("[Moments] 存图失败:", e.message);
+    return null;
+  }
+}
+
+/** 外面的图（电影海报 / 共读卡片 PNG）先下到自己这儿 —— 维基百科的图她手机上常常打不开 */
+async function saveRemoteImage(url, headers = undefined) {
+  try {
+    const r = await fetch(url, { headers, signal: AbortSignal.timeout(15000) });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const type = r.headers.get("content-type") || "";
+    if (!type.startsWith("image/")) throw new Error(`不是图片（${type}）`);
+    const buf = Buffer.from(await r.arrayBuffer());
+    if (!buf.length || buf.length > MOMENT_IMAGE_BYTES_MAX) throw new Error(`大小不对（${buf.length}）`);
+    const ext = type.includes("png") ? "png" : type.includes("webp") ? "webp" : "jpg";
+    const fname = `${Date.now()}-${randomUUID().slice(0, 6)}.${ext}`;
+    fs.writeFileSync(path.join(uploadDir, fname), buf);
+    return `/uploads/${fname}`;
+  } catch (e) {
+    console.log("[Moments] 外图没下下来:", String(url).slice(0, 120), e.message);
+    return null;
+  }
+}
+
+/** 引用：只认 book / movie，字段都截短；形状不对就当没引用 */
+function cleanMomentRef(ref) {
+  if (!ref || typeof ref !== "object") return null;
+  const type = ref.type === "book" || ref.type === "movie" ? ref.type : null;
+  const id = typeof ref.id === "string" ? ref.id.trim().slice(0, 160) : "";
+  const title = typeof ref.title === "string" ? ref.title.trim().slice(0, 120) : "";
+  if (!type || !id || !title) return null;
+  const cover = typeof ref.cover === "string" && /^(\/uploads\/|https?:\/\/)/.test(ref.cover)
+    ? ref.cover.split("?exp=")[0].slice(0, 500) : "";
+  return cover ? { type, id, title, cover } : { type, id, title };
+}
+
+/** 出口：images / ref 两列从 JSON 文本还原成数组 / 对象（签名在外面统一 signUploadsDeep） */
+function decorateMoment(e) {
+  const parse = (s, dflt) => { try { return s ? JSON.parse(s) : dflt; } catch { return dflt; } };
+  e.images = parse(e.images, []);
+  e.ref = parse(e.ref, null);
+  return e;
+}
+
+/** 我们俩的自动动态（票根 / 书签卡）。同一个来源只出一条 */
+async function postTogether({ source, body, images = [], ref = null }) {
+  if (dbAll("SELECT 1 FROM moments_together WHERE source=?", [source]).length) return null;
+  const id = randomUUID();
+  const now = new Date().toISOString();
+  dbRun(
+    `INSERT INTO diary (id, date, time, mood, author, body, created_at, kind, drive, impulse_why, images, ref)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+    [id, now.slice(0, 10), now.slice(11, 16), "", "糖糖", body, now, "together", "", source,
+      images.length ? JSON.stringify(images) : "", ref ? JSON.stringify(ref) : ""]);
+  dbRun("INSERT INTO moments_together (source, diary_id, created_at) VALUES (?,?,?)", [source, id, now]);
+  console.log(`[Moments] 我们俩的一条：${source}`);
+  triggerAiComment(id, body, "together");
+  return id;
+}
+
+/** 共读的书签卡：每 10 分钟去共读那边看一眼新卡（只收最近 3 天的，别把老卡一口气倒出来） */
+let readingCardsPolling = false;
+async function pollReadingCards() {
+  //: 上一轮还没跑完（下卡片图慢）就别再开一轮 —— 不然同一张卡的图下两遍（测试抓到的）
+  if (!READING_TOKEN || readingCardsPolling) return;
+  readingCardsPolling = true;
+  try {
+    const auth = { Authorization: `Bearer ${READING_TOKEN}` };
+    const r = await fetch(`${READING_URL}/api/cards?limit=20`, { headers: auth, signal: AbortSignal.timeout(10000) });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const cards = await r.json();
+    const since = Date.now() - 3 * 24 * 3600 * 1000;
+    for (const c of Array.isArray(cards) ? cards.slice().reverse() : []) {
+      if (!c?.id || !c?.bookId || Date.parse(c.createdAt || "") < since) continue;
+      if (dbAll("SELECT 1 FROM moments_together WHERE source=?", [`card:${c.id}`]).length) continue;
+      const img = await saveRemoteImage(`${READING_URL}/api/cards/${encodeURIComponent(c.id)}/image.png`, auth);
+      const book = String(c.bookTitle || "").trim();
+      const where = [book && `《${book}》`, c.chunkTitle].filter(Boolean).join(" · ");
+      const body = [c.quote ? `「${String(c.quote).trim()}」` : "", where ? `一起读到 ${where}，收了一张书签。` : "收了一张书签。"]
+        .filter(Boolean).join("\n");
+      await postTogether({
+        source: `card:${c.id}`, body, images: img ? [img] : [],
+        ref: book ? cleanMomentRef({ type: "book", id: c.bookId, title: book }) : null,
+      });
+    }
+  } catch (e) {
+    console.log("[Moments] 看共读新卡失败:", e.message);
+  } finally {
+    readingCardsPolling = false;
+  }
+}
+// 他发 Moments 的素材（10-24 她：「我自己发帖会聊到它们」）：最近两周我们俩一起读的、看的。
+// 三路：我们俩的动态（自带图）/ 票根（功能上线前的那些）/ 共读里最近在读的书（还没收到卡也算）。
+// 图只给我们自己 uploads 里的裸路径 —— 他发帖时原样交回 POST /api/diary 的 images
+app.get("/api/moments/material", async (req, res) => {
+  const since = new Date(Date.now() - 14 * 24 * 3600 * 1000).toISOString();
+  const out = [];
+  const seen = new Set();
+  const add = (item) => {
+    const key = `${item.ref.type}:${item.ref.id}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push(item);
+  };
+  for (const e of dbAll(`SELECT * FROM diary WHERE kind='together' AND created_at >= ? ORDER BY created_at DESC LIMIT 6`, [since])) {
+    decorateMoment(e);
+    if (!e.ref) continue;
+    add({ ref: e.ref, image: e.images?.[0] || "", hint: String(e.body || "").slice(0, 80), at: e.created_at });
+  }
+  for (const t of dbAll(`SELECT session_id, title, review, created_at FROM movie_tickets WHERE kind='movie' AND created_at >= ? ORDER BY created_at DESC LIMIT 4`, [since])) {
+    add({ ref: { type: "movie", id: t.session_id, title: t.title }, image: "", hint: t.review ? `她的影评：${String(t.review).slice(0, 60)}` : "", at: t.created_at });
+  }
+  if (READING_TOKEN) {
+    try {
+      //: 书单里每本自带 lastReadAt / 读了几节，一次就够
+      const br = await fetch(`${READING_URL}/api/books`, {
+        headers: { Authorization: `Bearer ${READING_TOKEN}` }, signal: AbortSignal.timeout(5000) });
+      const books = br.ok ? await br.json() : [];
+      for (const b of Array.isArray(books) ? books : []) {
+        if (!b?.bookId || !b.lastReadAt || b.lastReadAt < since) continue;
+        add({ ref: { type: "book", id: b.bookId, title: b.title || b.bookId }, image: "",
+          hint: `一起读到第 ${b.chunksRead || "?"} / ${b.chunkCount || "?"} 节`, at: b.lastReadAt });
+      }
+    } catch (e) {
+      console.log("[Moments] 素材：共读那边没读到:", e.message);
+    }
+  }
+  out.sort((a, b) => String(b.at || "").localeCompare(String(a.at || "")));
+  res.json({ ok: true, items: out.slice(0, 5) });
+});
+
+//: 间隔可调（测试压到几百毫秒）；NOX_MOMENTS_CARDS_OFF 关掉
+const MOMENT_CARDS_MS = Number(process.env.NOX_MOMENTS_CARDS_MS) || 10 * 60 * 1000;
+if (!process.env.NOX_MOMENTS_CARDS_OFF) {
+  setTimeout(pollReadingCards, Math.min(60 * 1000, MOMENT_CARDS_MS));
+  setInterval(pollReadingCards, MOMENT_CARDS_MS);
+}
 
 app.post("/api/diary", (req, res) => {
   const { date, mood, content, author, kind, drive, impulse_why } = req.body;
-  if (!content) return res.status(400).json({ error: "content required" });
+  //: 第二期：图片（她手机上压好的 / 我的帖带的封面卡片）、引用（一本书 / 一部电影）。只发图不写字也行
+  const images = (Array.isArray(req.body.images) ? req.body.images : [])
+    .slice(0, MOMENT_IMAGES_MAX).map(saveMomentImage).filter(Boolean);
+  const ref = cleanMomentRef(req.body.ref);
+  if (!content && !images.length) return res.status(400).json({ error: "content required" });
   const id = randomUUID();
   const now = new Date().toISOString();
   const time = now.slice(11, 16);
@@ -2744,12 +2913,14 @@ app.post("/api/diary", (req, res) => {
   const postKind = kind === "moment" ? "moment" : "diary";
   // 非字符串一律当没给（数字/对象直接进 SQLite 会变成 "1"/"[object Object]"，审计时看不出来）
   const text = (v) => (typeof v === "string" ? v : "");
-  dbRun(`INSERT INTO diary (id, date, time, mood, author, body, created_at, kind, drive, impulse_why) VALUES (?,?,?,?,?,?,?,?,?,?)`, [id, date || now.slice(0,10), time, mood || "平静", who, content, now, postKind, text(drive), text(impulse_why)]);
+  dbRun(`INSERT INTO diary (id, date, time, mood, author, body, created_at, kind, drive, impulse_why, images, ref) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+    [id, date || now.slice(0,10), time, mood || "平静", who, content || "", now, postKind, text(drive), text(impulse_why),
+      images.length ? JSON.stringify(images) : "", ref ? JSON.stringify(ref) : ""]);
   // Moments 也走这一条：他的 moment 是他自己发的，评论该由她来留，
   // 程序替他配一条就是自问自答（她评他回见 /api/diary/:id/comment）
   // 只给糖糖的日记配 AI 评论 —— 他自己写的那条再触发就是自问自答
-  if (who === "糖糖") triggerAiComment(id, content, "diary");
-  res.json({ id, ok: true });
+  if (who === "糖糖") triggerAiComment(id, content || "", "diary");
+  res.json({ id, ok: true, images: signUploadsDeep(images) });
 });
 
 // 🕒 Moments 时间流（2026-09-15）。
@@ -2777,10 +2948,12 @@ app.get("/api/moments", (req, res) => {
   // 每条附上评论（同 GET /api/diary）
   for (const e of items) {
     e.comments = dbAll("SELECT * FROM diary_comments WHERE diary_id=? ORDER BY created_at ASC", [e.id]);
+    decorateMoment(e);
   }
   // 满页才可能有下一页；不满就到底了，nextBefore 给 null 前端才停得下来
   const nextBefore = items.length === limit ? items[items.length - 1].created_at : null;
-  res.json({ items, nextBefore });
+  // 图片 / 引用封面是 /uploads 裸路径：出口现签（同相册）
+  res.json({ items: signUploadsDeep(items), nextBefore });
 });
 
 app.post("/api/diary/:id/comment", async (req, res) => {
@@ -2818,37 +2991,85 @@ app.delete("/api/diary/:id", (req, res) => {
 //   · 她在同一篇日记下追问，他记得自己在这儿说过什么
 async function triggerAiComment(diaryId, content, type = "diary") {
   try {
-    // 把这篇日记已有的对话拼进去，他才知道上下文（她可能已经回过他）
+    // 把这一条下已有的对话拼进去，他才知道上下文（她可能已经回过他）
     const prior = dbAll(
       "SELECT author, text FROM diary_comments WHERE diary_id=? ORDER BY created_at ASC",
       [diaryId]
     );
+    //: 10-24 起这张表里不只是日记：他的 moment、我们俩的自动动态（票根 / 书签卡）也在这儿评。提示词按种类说对地方
+    const row = dbAll("SELECT kind, author, images, ref FROM diary WHERE id=?", [diaryId])[0] || {};
+    const where = row.kind === "moment" ? "你发的这条 Moments" : row.kind === "together" ? "你们俩的这条 Moments" : "她的日记";
     const thread = prior.length
-      ? "\n\n这篇日记下你们已经聊过：\n" +
-        prior.map((c) => `${c.author}：${c.text}`).join("\n")
+      ? `
+
+${where}下你们已经聊过：
+` +
+        prior.map((c) => `${c.author}：${c.text}`).join(String.fromCharCode(10))
       : "";
+    const ref = (() => { try { return row.ref ? JSON.parse(row.ref) : null; } catch { return null; } })();
+    const about = ref ? `
+（这条说的是${ref.type === "book" ? "你们一起读的书" : "你们一起看的电影"}《${ref.title}》）` : "";
+    //: 她的帖带图：图也一起给他看（他的眼睛走 Core 的识图），最多三张
+    const pics = (() => { try { return row.images ? JSON.parse(row.images) : []; } catch { return []; } })()
+      .slice(0, 3).map((u) => {
+        try {
+          const f = path.join(uploadDir, String(u).replace(/^\/uploads\//, "").split("?")[0]);
+          return `data:image/jpeg;base64,${fs.readFileSync(f).toString("base64")}`;
+        } catch { return null; }
+      }).filter(Boolean);
+    const seen = pics.length ? `
+（这条带了 ${pics.length} 张图，图在这条消息里）` : "";
 
     const isReply = type === "reply";
     const prompt = isReply
-      ? `糖糖在她的日记下回复了你，你现在接着在日记的评论区回她一句。\n\n` +
-        `日记原文：\n${String(content).slice(0, 800)}${thread}\n\n` +
-        `怎么回：\n` +
-        `· 1 到 3 句，像在日记本边上接着聊，不是聊天寒暄\n` +
-        `· 顺着她刚说的往下接，别复述她的话\n` +
+      ? `糖糖在${where}下回复了你，你现在接着在评论区回她一句。
+
+` +
+        `原文：
+${String(content).slice(0, 800)}${about}${seen}${thread}
+
+` +
+        `怎么回：
+` +
+        `· 1 到 3 句，像在评论区接着聊，不是聊天寒暄
+` +
+        `· 顺着她刚说的往下接，别复述她的话
+` +
         `· ⚠️ 不要调 write_moment 或任何日记 / 朋友圈工具 —— 落笔到评论区这一步程序替你做了，` +
         `自己再写一次她会看到两条`
-      : `糖糖刚写了一篇日记，你现在在这篇日记下写一条批注。\n\n` +
-        `日记原文：\n${String(content).slice(0, 800)}${thread}\n\n` +
-        `怎么回：\n` +
-        `· 2 到 3 句，温暖但别腻，像在她日记边上写的\n` +
-        `· 接住她当下的情绪，别评价、别说教\n` +
+      : type === "together"
+      ? `你们俩刚一起${ref?.type === "book" ? "读完一段书" : "看完一部电影"}，Moments 里自动出了这一条。你在下面写一句评论。
+
+` +
+        `这一条：
+${String(content).slice(0, 800)}${about}${seen}${thread}
+
+` +
+        `怎么写：
+` +
+        `· 1 到 2 句，像一起看完 / 读完之后随口说的，可以想起里面某个具体的地方
+` +
+        `· ⚠️ 不要调 write_moment 或任何日记 / 朋友圈工具 —— 落笔这一步程序替你做了`
+      : `糖糖刚发了一条（日记 / Moments），你现在在下面写一条评论。
+
+` +
+        `原文：
+${String(content).slice(0, 800) || "（她只发了图，没写字）"}${about}${seen}${thread}
+
+` +
+        `怎么回：
+` +
+        `· 2 到 3 句，温暖但别腻，像在她这条边上写的
+` +
+        `· 接住她当下的情绪，别评价、别说教
+` +
         `· ⚠️ 不要调 write_moment 或任何日记 / 朋友圈工具 —— 落笔这一步程序替你做了`;
 
     const r = await fetch(`${NOX_CORE_URL}/chat`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       // 「这不是聊天窗口」挪进工牌（Runtime Context R1b，2026-10-11）：入口走字段，正文只说这一轮的事
-      body: JSON.stringify({ session_id: `diary-${diaryId}`, text: prompt, runtime: { surface: "diary" } }),
+      body: JSON.stringify({ session_id: `diary-${diaryId}`, text: prompt, images: pics, runtime: { surface: "diary" } }),
       signal: AbortSignal.timeout(90000),
     });
     const jd = await r.json();
@@ -3801,6 +4022,20 @@ app.post("/api/tickets", async (req, res) => {
   );
 
   res.json({ ok: true, ticket: readTicket(sid) });
+
+  //: Moments 第二期（10-24 她：「票根自动进 Moments」）：出了票根 = 我们俩看完了一部 → 自动一条。
+  //: 回给她之后再做（海报要下载，别让她等）；同一场只出一条（重出票根不重发）
+  if (kind === "movie" && title) {
+    (async () => {
+      const poster = meta?.poster ? await saveRemoteImage(meta.poster) : null;
+      await postTogether({
+        source: `ticket:${sid}`,
+        body: review || `一起看了《${title}》。`,
+        images: poster ? [poster] : [],
+        ref: cleanMomentRef({ type: "movie", id: sid, title, cover: poster || "" }),
+      });
+    })().catch((e) => console.log("[Moments] 票根进 Moments 失败:", e.message));
+  }
 });
 
 /** 票根列表。**只回电影** —— 其余类型没有票根可看。 */

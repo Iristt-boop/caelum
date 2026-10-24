@@ -159,7 +159,7 @@ def _fake_writer(monkeypatch, *, body: str | None = "今天风挺大，窗户没
     calls: dict[str, list] = {"generate": [], "post": []}
 
     def fake_generate(adapter_ref, drives, recent, impulse_why, clock="",
-                      context=None):
+                      context=None, material=None):
         calls["generate"].append({
             "adapter_ref": adapter_ref, "drives": dict(drives),
             "recent": list(recent), "impulse_why": impulse_why, "clock": clock,
@@ -169,10 +169,10 @@ def _fake_writer(monkeypatch, *, body: str | None = "今天风挺大，窗户没
             raise RuntimeError("模型炸了")
         return body
 
-    def fake_post(bridge, text, drive, impulse_why):
+    def fake_post(bridge, text, drive, impulse_why, about=None):
         calls["post"].append({
             "bridge": bridge, "text": text, "drive": drive,
-            "impulse_why": impulse_why,
+            "impulse_why": impulse_why, "about": about,
         })
         if boom_at == "post":
             raise RuntimeError("bridge 炸了")
@@ -1051,3 +1051,43 @@ def test_shadow不记欠账_不写任何状态(monkeypatch):
     rig = Rig(monkeypatch, mode="shadow", body=None)
     rig.run()
     assert rig.store.writes == []
+
+
+# ---------------------------------------------------------------- 10-24：一起读的、看的（第 6 条）
+MOVIE = {"ref": {"type": "movie", "id": "w1", "title": "绵羊侦探团"}, "image": "/uploads/poster.jpg", "hint": "她的影评"}
+
+
+class MaterialBridge(FakeBridge):
+    def get(self, path, params=None):
+        if path == "/api/moments/material":
+            self.gets.append({"path": path, "params": params})
+            return SimpleNamespace(ok=True, data={"items": [MOVIE]}, error=None)
+        return super().get(path, params)
+
+
+def test_写了关于1_拿掉那一行_发帖挂上那部电影(monkeypatch):
+    rig = Rig(monkeypatch, body="看完那场还在想那只羊。" + chr(10) + "关于：1")
+    rig.bridge = MaterialBridge()
+    rig.run()
+    post = rig.calls["post"][0]
+    assert post["text"] == "看完那场还在想那只羊。", "那一行不进正文"
+    assert post["about"] == MOVIE
+
+
+def test_关于的编号越界_不挂引用_照样发(monkeypatch, caplog):
+    rig = Rig(monkeypatch, body="今天风挺大。" + chr(10) + "关于：3")
+    rig.bridge = MaterialBridge()
+    rig.run()
+    post = rig.calls["post"][0]
+    assert post["text"] == "今天风挺大。" and post["about"] is None
+
+
+def test_writer_post_带上引用和那一条的图_外链图不带():
+    b = FakeBridge()
+    writer.post(b, "想那只羊", "longing", "why", MOVIE)
+    body = b.posts[0]["body"]
+    assert body["ref"] == MOVIE["ref"] and body["images"] == ["/uploads/poster.jpg"]
+    writer.post(b, "想那本书", "longing", "why", {"ref": {"type": "book", "id": "z", "title": "Z"}, "image": "https://x/y.jpg"})
+    assert "images" not in b.posts[1]["body"], "只带我们自己 uploads 里的图"
+    writer.post(b, "没写关于", "longing", "why")
+    assert "ref" not in b.posts[2]["body"]

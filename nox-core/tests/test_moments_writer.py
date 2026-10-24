@@ -135,7 +135,7 @@ def test_all_five_rules_are_in_the_system_prompt():
     system, _user = writer.build_prompt({"longing": 0.4}, [], "想留一条痕迹",
                                         "9月15日 周一 晚上21:30")
 
-    assert len(_RULES) == 5, "空集 / 半集不是通过"
+    assert len(_RULES) == 6, "空集 / 半集不是通过（10-24 起六条：第 6 条一起读的书 / 看的电影）"
     for rule in _RULES:
         assert rule in system, f"这条约束没进 system：{rule!r}"
     #: 单钉一次这个措辞：它是整件事的边界（设计文档第四节第 1 条）
@@ -357,7 +357,7 @@ def test_the_fifth_rule_forbids_inventing_details():
     system, _user = writer.build_prompt({"longing": 0.4}, [], "想留一条痕迹",
                                         "9月18日 周五 凌晨00:18")
 
-    assert len(_RULES) == 5
+    assert len(_RULES) == 6
     assert "一个都不许编" in system
 
 
@@ -441,6 +441,10 @@ def test_an_overlong_body_is_not_posted_but_the_exact_limit_is(caplog):
     exact_adapter = FakeAdapter("好" * MAX_CHARS)
     assert writer.generate(
         exact_adapter, {"longing": 0.4}, [], "想留一条痕迹") == "好" * MAX_CHARS
+
+    #: 10-24：最后那行「关于：N」不算正文字数 —— 正文刚好到上限、再带一行「关于」也得发得出去
+    about = "好" * MAX_CHARS + chr(10) + "关于：1"
+    assert writer.generate(FakeAdapter(about), {"longing": 0.4}, [], "想留一条痕迹") == about
 
 
 def test_an_empty_body_leaves_a_trace(caplog):
@@ -657,3 +661,20 @@ def test_generate_two_failures_stay_none():
     adapter = DeadAdapter()
     assert writer.generate(adapter, {"longing": 0.4}, [], "测试") is None
     assert adapter.calls == 2
+
+
+def test_第6条_一起读的看的_可以写_写了要标关于():
+    """10-24 她：「我自己发帖会聊到它们」。素材给了用不用他定；用了要标「关于：编号」，程序才能挂引用卡"""
+    assert "关于：编号" in _RULES[5] and "别硬扯" in _RULES[5]
+    _system, user = writer.build_prompt({"longing": 0.4}, [], "想留一条", "晚上",
+                                        material=[{"ref": {"type": "movie", "id": "w1", "title": "绵羊侦探团"},
+                                                   "hint": "她的影评：一群羊破案"}])
+    assert "1. 一起看的电影《绵羊侦探团》 —— 她的影评：一群羊破案" in user
+    _system, empty = writer.build_prompt({"longing": 0.4}, [], "想留一条", "晚上")
+    assert "## 最近一起读的、看的" in empty and "这两周没有一起读的" in empty, "空的也要在场（形状每次一样）"
+
+
+def test_关于那一行_拿掉_记下编号_不算字数():
+    assert writer.split_about("看完那场还在想那只羊。" + chr(10) + "关于：2") == ("看完那场还在想那只羊。", 2)
+    assert writer.split_about("今天风很大。") == ("今天风很大。", None)
+    assert writer.split_about("关于这件事我想了很久。") == ("关于这件事我想了很久。", None), "正文里的「关于」不算"

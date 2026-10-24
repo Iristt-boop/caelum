@@ -437,6 +437,9 @@ def post_tick(*, mode: str, store: Any, attention: Any, sessions: Any,
             ),
         ))
 
+    #: 生成时他写的是哪一个素材（「关于：N」）—— 发帖时挂引用卡用
+    chosen: dict[str, Any] = {}
+
     def _generate_body() -> str | None:
         """生成一条正文。**绝不让异常往外冒**（跑在后台线程里）。
 
@@ -448,11 +451,22 @@ def post_tick(*, mode: str, store: Any, attention: Any, sessions: Any,
         context = _read_drive_context(attention, now)
         try:
             recent = writer.recent_posts(bridge)
-            return writer.generate(adapter_ref, signals.drives, recent, imp.why,
-                                   clock, context=context)
+            #: 10-24：最近一起读的、看的（素材，用不用他定）
+            mat = writer.material(bridge)
+            raw = writer.generate(adapter_ref, signals.drives, recent, imp.why,
+                                  clock, context=context, material=mat)
         except Exception as exc:  # noqa: BLE001
             logger.warning("发帖生成炸了：%s: %s", type(exc).__name__, exc)
             return None
+        if raw is None:
+            return None
+        #: 最后那行「关于：N」：拿掉，记下他写的是哪一个（发帖时挂引用卡 + 那一条的图）。编号越界就当没写
+        body, n = writer.split_about(raw)
+        if n is not None and 1 <= n <= len(mat):
+            chosen["about"] = mat[n - 1]
+        elif n is not None:
+            logger.warning("发帖写了「关于：%d」，可素材只有 %d 条 —— 不挂引用", n, len(mat))
+        return body
 
     #: ⑦ shadow：算了、也想发，**故意不落帖**。骰子照样掷（不然 shadow 记下来的
     #: 分布不是他真正会发的分布），正文也照真生成 —— 糖糖的验收标准有一半是
@@ -501,7 +515,7 @@ def post_tick(*, mode: str, store: Any, attention: Any, sessions: Any,
     try:
         #: 一次采样两处同用（帖子的 drive 和账本的 drive 必须一致，见 _sample_mood）
         mood = _sample_mood(signals.drives)
-        post_id = writer.post(bridge, body, mood, imp.why)
+        post_id = writer.post(bridge, body, mood, imp.why, chosen.get("about"))
     except Exception as exc:  # noqa: BLE001
         logger.warning("发帖落库炸了：%s: %s", type(exc).__name__, exc)
         post_id = None
