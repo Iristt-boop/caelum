@@ -61,6 +61,8 @@ def test_light_path_forces_minimal():
 @pytest.mark.parametrize("text", [
     "把灯关了", "空调开到26度", "风扇还开着吗", "电热毯打开",
     "客厅几度", "我回来了", "要睡了", "蒸蛋器帮我开一下",
+    # 10-24 装了温湿度计
+    "电竞房湿度多少", "家里干不干", "主卧冷不冷",
 ])
 def test_home_words_pull_home(text):
     assert "home" in classify_context(text), text

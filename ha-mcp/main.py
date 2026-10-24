@@ -38,7 +38,24 @@ DEVICES = {
     "洗衣机 洗涤阶段": "sensor.gun_tong_xi_yi_ji_xi_di_jie_duan",
     "洗衣机 剩余时间(分)": "sensor.gun_tong_xi_yi_ji_dang_qian_sheng_yu_yu_yue_shi_jian_fen_zhong",
     "洗衣机 门锁": "binary_sensor.gun_tong_xi_yi_ji_men_suo_zhuang_tai",
+    # 三个房间的米家温湿度计（2026-10-24）。只读 —— 他问「家里几度」「干不干」答得上来。
+    # 闸门用的同一组实体在 nox-core/embodied/device_model.py 的 ROOM_SENSORS，改这里记得一起改
+    "主卧 温度": "sensor.miaomiaoce_t2_066f_temperature",
+    "主卧 湿度": "sensor.miaomiaoce_t2_066f_relative_humidity",
+    "客厅 温度": "sensor.miaomiaoce_t2_d829_temperature",
+    "客厅 湿度": "sensor.miaomiaoce_t2_d829_relative_humidity",
+    "电竞房 温度": "sensor.miaomiaoce_t2_467c_temperature",
+    "电竞房 湿度": "sensor.miaomiaoce_t2_467c_relative_humidity",
 }
+
+def _unit(d: dict) -> str:
+    """传感器的单位。「主卧 温度：21.8」光一个数他分不清是温度还是湿度 —— 带上 °C / %。
+    unavailable / unknown 不带（「unavailable°C」比没单位更糟）。"""
+    u = (d.get("attributes") or {}).get("unit_of_measurement")
+    if not u or d.get("state") in ("unavailable", "unknown", None):
+        return ""
+    return u
+
 
 def _h():
     return {"Authorization": f"Bearer {HA_TOKEN}", "Content-Type": "application/json"}
@@ -88,6 +105,8 @@ async def hass_get_state(entity_id: str) -> str:
                 b = a.get("brightness")
                 if b is not None:
                     extra = f"，亮度{round(int(b) / 255 * 100)}%"
+            elif entity_id.startswith("sensor."):
+                extra = _unit(d)
             return f"{a.get('friendly_name', entity_id)} 当前：{d.get('state')}{extra}"
         except Exception as e:
             return f"HA 连接失败: {e}"
@@ -128,6 +147,8 @@ async def hass_snapshot() -> str:
                 b = a.get("brightness")
                 if b is not None:
                     extra = f"（亮度 {round(int(b) / 255 * 100)}%）"
+            elif eid.startswith("sensor."):
+                extra = _unit(d)
             return f"- {name}：{st}{extra}"
         except Exception as e:
             return f"- {name}：查不到（{type(e).__name__}）"

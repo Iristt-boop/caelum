@@ -201,6 +201,22 @@ def test_主卧实测20_户外30_放行():
     assert gate(BLANKET, "on", _indoor(20, outdoor=30), user_text="睡了").allow
 
 
+def test_室内阈值是她定的22度():
+    """她 10-24：主卧实测超过 22 就不开电热毯。"""
+    assert gate(BLANKET, "on", _indoor(21.8), user_text="睡了").allow
+    g = gate(BLANKET, "on", _indoor(22.5), user_text="睡了")
+    assert not g.allow and "22.5" in g.human
+
+
+def test_温湿度计_ha_mcp清单和闸门是同一组实体():
+    """ROOM_SENSORS（闸门读）和 ha-mcp DEVICES（他看到的）各写了一份，换了温度计只改一边就会对不上。"""
+    from embodied.device_model import ROOM_SENSORS
+    src = (Path(__file__).resolve().parents[2] / "ha-mcp" / "main.py").read_text(encoding="utf-8")
+    for room, eids in ROOM_SENSORS.items():
+        for eid in eids.values():
+            assert f'"{eid}"' in src, f"{room} 的 {eid} 不在 ha-mcp 清单里"
+
+
 def test_其他房间有读数_主卧没有_退回预报():
     w = {"env_temp": 30, "env_source": "forecast", "presence": "home",
          "indoor": {"客厅": {"temp": 18}}}

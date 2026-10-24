@@ -56,9 +56,9 @@ DEVICE_MODEL: dict[str, dict] = {
         "effect": "temperature_up",
         "room": "主卧",
         # 户外（预报）和室内（实测）是两个数，阈值分开（v0.2 启动卡「已知约束」）。
-        # 室内阈值先沿用 26，等她定了改 NOX_BLANKET_INDOOR_MAX_C，不改代码
+        # 室内阈值 22°C：她 10-24 定的（主卧实测超过 22 就不开）。临时调用 NOX_BLANKET_INDOOR_MAX_C
         "deny_when": {"env_temp_above": 26,
-                      "indoor_temp_above": _env_float("NOX_BLANKET_INDOOR_MAX_C", 26)},
+                      "indoor_temp_above": _env_float("NOX_BLANKET_INDOOR_MAX_C", 22)},
         "alternative": "cooling_possible",   # 夏天想暖 → 该往制冷走
     },
     "fan.dmaker_p5c_6d3e_fan": {
