@@ -206,6 +206,9 @@ class AgentLoop:
                 "拿不准就往重了标 —— 标轻了模型能直接碰，标重了只是多一次确认。"
             )
         self.tools[spec.name] = Tool(spec=spec, handler=handler)
+        #: 写成文字的工具调用（10-24：<desk_open> / <url> / <zh> 这种）靠名字认 —— 工具名和参数名都记下
+        props = ((spec.parameters or {}).get("properties") or {}) if isinstance(spec.parameters, dict) else {}
+        contracts_mod.learn_names([spec.name, *props.keys()])
 
     def run(
         self,

@@ -64,12 +64,35 @@ class Artifact:
 #: 工具调用的「格式」本身被当成字写进正文（10-23：她说「你用一下自己的小电脑」，那一轮没挂上 desk_*，
 #: deepseek-flash 就在正文里写了一串 <invoke name="caelum_map"> … —— 一次真调用都没有，她看到的是一屏标签）。
 #: 和上面按工具声明的契约不同：这是**任何工具**都可能漏出来的通用形状，所以不挂在某个工具上，loop 直接用。
-#: 只认行首的这几个标签名（function_calls / invoke / parameter / tool_call），正文里聊到尖括号不受影响
-_MARKUP_LINE = re.compile(r"^\s*</?(?:[a-z]+:)?(?:function_calls|invoke|parameter|tool_call)\b", re.I)
+#: 10-24 又换了个样子：拿**工具名 / 参数名当标签**（<desk_open> / <url>…</url> / <zh>…</zh> / </send_voice_message>）。
+#: 所以认的是：行首一个标签，标签名是通用的那几个，或者是**他的某件工具 / 某个参数的名字**（loop 登记工具时 learn_names）。
+#: 只看行首、只认这些名字 —— 正文里聊到尖括号、别的标签（心里话 / 情绪那些另有过滤）不受影响
+_TAG_AT_START = re.compile(r"^\s*</?\s*(?:[a-z]+:)?([A-Za-z_][\w-]*)\s*(?:[\s/][^>]*)?>", re.I)
+_GENERIC = {"function_calls", "invoke", "parameter", "tool_call", "tool_use", "tool", "arguments", "args"}
+_NAMES: set[str] = set()
+
+
+def learn_names(names: Any) -> None:
+    """loop 登记的工具名和它们的参数名（全量，不只这一轮递给他的 —— 没递给他的那件他也会照着写）"""
+    _NAMES.update(str(n).lower() for n in names if n)
+
+
+#: 🔴 永远不当成工具标签：情绪 / 心里话那些标签各有自己的过滤（agent/llm.py MOOD_XML_NAMES / INNER_ALIASES），
+#: 哪件工具碰巧有个叫 mood / memory 的参数，也不能让这一行连正文一起被吞掉
+_NEVER = {"mood", "心情", "心里", "内心", "心里话", "心", "mind", "memo", "memory", "think", "thinking", "thought", "inner",
+          #: 常见的 HTML 标签也不算：有工具真有个叫 b 的参数（全量测试抓到的），<b>加粗</b> 开头的一行不能被吞
+          "b", "i", "u", "s", "a", "p", "em", "strong", "br", "hr", "code", "pre", "span", "div", "li", "ul", "ol",
+          "h1", "h2", "h3", "h4", "h5", "h6", "img", "table", "tr", "td", "th", "small", "sub", "sup", "mark", "del",
+          "ins", "blockquote", "details", "summary", "kbd", "q", "html", "body", "head", "title", "link"}
 
 
 def is_markup_line(line: str) -> bool:
-    return bool(_MARKUP_LINE.match(line or ""))
+    m = _TAG_AT_START.match(line or "")
+    if not m:
+        return False
+    name = m.group(1).lower()
+    #: 单个字母的名字也不认（x / n 这种参数名太像正常写法）
+    return len(name) >= 2 and name not in _NEVER and (name in _GENERIC or name in _NAMES)
 
 
 def strip_markup(text: str | None) -> tuple[str | None, int]:
