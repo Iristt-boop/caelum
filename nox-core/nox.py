@@ -36,6 +36,8 @@ from context.providers import (
 from guide import loader as guide_loader
 from guide import tools as guide_tools
 from guide import wiring as guide_wiring
+import skills as skills_mod
+from skills import render as skills_render
 from memory import tools as memory_tools
 from memory.archiver import ArchiveResult, Archiver
 from memory.ob_client import OmbreBrain
@@ -734,6 +736,9 @@ class Nox:
             topics=self._guide_topics,
             deps=guide_wiring.make_deps(self),
         )
+        # 装着的做法（Skills，10-25）。库在这里开，每轮 _dynamic 读；skill_read 工具在
+        # api/server.py 那一串最后登记（往后排，前面的工具位置一个不动）
+        self.skills = skills_mod.store_for(self.cfg.db_path) if skills_mod.enabled() else None
 
         # 归档器。摘要走 utility 模型（便宜那个），不占主线的钱和缓存。
         # 归档摘要也进账本（memory-archive）：对账时它是被点名的盲区之一
@@ -1116,6 +1121,11 @@ class Nox:
         span = self._session_span(session_started)
         if span:
             parts.append(span)
+        # 装着的做法（Skills，10-25 设计稿第三节）：她这句对上了哪个就把那篇递进来。
+        # 他主动开口那轮拿 recall 去对，不拿整段系统提示（理由见 skills/render.py 开头）
+        block = self._skills_block(text if recall is None else recall)
+        if block:
+            parts.append(block)
         # 上一轮他说卡发了但没发。**当面点破**，否则他会照着自己的
         # 历史继续只说不做（见 __init__ 里 card_debt 那段）
         if session_id in self.card_debt:
@@ -1126,6 +1136,22 @@ class Nox:
                 "**必须真的调用工具**——只写字不调用等于骗她。"
             )
         return "\n\n".join(parts)
+
+    def _skills_block(self, text: str) -> str:
+        """skill 那一段。读库失败这一轮不带、留痕，不挡回话（读不到做法 ≠ 不能说话）。"""
+        store = getattr(self, "skills", None)
+        if store is None or not skills_mod.enabled():
+            return ""
+        try:
+            on = store.all(enabled_only=True)
+            hits = skills_render.match(on, text)
+            for sk in hits:
+                store.record(sk["name"], "hit")
+                logger.info("skill_hit name=%s", sk["name"])
+            return skills_render.render_block(on, hits)
+        except Exception:  # noqa: BLE001
+            logger.warning("读不到装着的做法，这一轮不带", exc_info=True)
+            return ""
 
     def _register_home(self, ha_client: McpClient) -> None:
         """家居工具 + 行动闸门的两个事实来源。单拎出来是为了能测接线（10-11：闸门的温度源三周没接上）。"""

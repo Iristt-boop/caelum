@@ -1246,6 +1246,18 @@ def _build_dream(core: Any, meter: Any) -> dict | None:
         return None
 
 
+class SkillInstall(BaseModel):
+    """装一个做法 / 给同名的换一版（Skills，10-25）。`text` 是整份 SKILL.md。放模块级的理由同 DeskLoginSubmit。"""
+
+    text: str = Field(max_length=40000)
+    source: str = Field(default="", max_length=500)
+    origin: str = "her"
+
+
+class SkillPatch(BaseModel):
+    enabled: bool
+
+
 class DeskLoginSubmit(BaseModel):
     """她在登录卡上点「登录」交回来的（我的电脑 v2，10-23）。
 
@@ -1365,6 +1377,10 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
     if getattr(core, "ob", None) is not None:
         from tools import profile as profile_tools
         profile_tools.register_all(core.loop, core.ob, on_change=getattr(core, "refresh_prefix", None))
+    #: 装着的做法（Skills，10-25 设计稿第四节）：skill_read 只读。登记在这一串最后，前面的位置一个不动
+    if getattr(core, "skills", None) is not None:
+        from skills import tools as skill_tools
+        skill_tools.register_all(core.loop, core.skills)
 
     # 待确认单（2026-09-06）。**独立的库**，和 attention/world/topics 平级。
     #
@@ -4085,6 +4101,51 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
             out.append({"goal_id": line["goal_id"], "title": line["title"], "cadence": line["cadence"],
                         "level": line.get("level") or "", "next": line.get("next") or [], "cards": cards})
         return {"ok": True, "enabled": True, "lines": out}
+
+    # ---- 装着的做法（Skills，10-25 设计稿）。P1 只有接口，页面是 P2（OS Studio › Skills）
+    def _skills_store():
+        st = getattr(core, "skills", None)
+        if st is None:
+            raise HTTPException(status_code=503, detail="Skills 没开（NOX_SKILLS=off）")
+        return st
+
+    def _skill_out(sk: dict, uses: dict) -> dict:
+        u = uses.get(sk["name"], {})
+        return {"name": sk["name"], "description": sk["description"], "triggers": sk["triggers"],
+                "body": sk["body"], "origin": sk["origin"], "source": sk.get("source") or "",
+                "enabled": sk["enabled"], "version": sk["version"], "updated_at": sk["updated_at"],
+                "hits_7d": u.get("hit", 0), "reads_7d": u.get("read", 0)}
+
+    @app.get("/api/nox/skills")
+    def nox_skills() -> dict:
+        st = _skills_store()
+        uses = st.uses_since(7)
+        return {"ok": True, "items": [_skill_out(sk, uses) for sk in st.all()]}
+
+    @app.get("/api/nox/skills/{name}")
+    def nox_skill(name: str) -> dict:
+        st = _skills_store()
+        sk = st.get(name)
+        if sk is None:
+            raise HTTPException(status_code=404, detail=f"没有叫「{name}」的做法")
+        return {"ok": True, "item": {**_skill_out(sk, st.uses_since(7)), "raw": sk["raw"]},
+                "history": st.history(name)}
+
+    @app.post("/api/nox/skills")
+    def nox_skill_install(body: SkillInstall) -> dict:
+        from skills.parse import SkillError
+        st = _skills_store()
+        try:
+            sk, status = st.install(body.text, origin=body.origin, source=body.source)
+        except (SkillError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=f"装不上：{exc}") from None
+        return {"ok": True, "status": status, "item": _skill_out(sk, st.uses_since(7))}
+
+    @app.patch("/api/nox/skills/{name}")
+    def nox_skill_patch(name: str, body: SkillPatch) -> dict:
+        if not _skills_store().set_enabled(name, body.enabled):
+            raise HTTPException(status_code=404, detail=f"没有叫「{name}」的做法")
+        return {"ok": True}
 
     @app.get("/api/nox/dreams")
     def nox_dreams(limit: int = 5) -> dict:

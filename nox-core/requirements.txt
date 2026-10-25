@@ -14,6 +14,9 @@ fastapi>=0.115.0
 uvicorn[standard]>=0.32.0
 pydantic>=2.9.0
 
+# Skills：读 SKILL.md 的文件头（Claude 的 skill 常用多行 description）。原先是 uvicorn[standard] 顺带装的，明写出来
+pyyaml>=6.0
+
 # 测试
 pytest>=8.0.0
 pytest-asyncio>=0.24.0

@@ -3895,6 +3895,26 @@ function liveWatch() {
   return age <= WATCH_STALE_MS ? row : null;
 }
 
+// 装着的做法（Skills，10-25 设计稿）：数据在 Core 的 skills.db，纯透传。页面是 OS Studio › Skills（P2）
+async function skillsProxy(req, res, path, method = "GET") {
+  try {
+    const init = { method, signal: AbortSignal.timeout(8000) };
+    if (method !== "GET") {
+      init.headers = { "Content-Type": "application/json" };
+      init.body = JSON.stringify(req.body || {});
+    }
+    const r = await fetch(`${NOX_CORE_URL}/api/nox/skills${path}`, init);
+    res.status(r.status).json(await r.json());
+  } catch (e) {
+    console.warn(`[skills] 透传失败 ${method} ${path}:`, e.message);
+    res.status(502).json({ ok: false, error: `core 不可达: ${e.message}` });
+  }
+}
+app.get("/api/nox/skills", (req, res) => skillsProxy(req, res, ""));
+app.post("/api/nox/skills", (req, res) => skillsProxy(req, res, "", "POST"));
+app.get("/api/nox/skills/:name", (req, res) => skillsProxy(req, res, `/${encodeURIComponent(req.params.name)}`));
+app.patch("/api/nox/skills/:name", (req, res) => skillsProxy(req, res, `/${encodeURIComponent(req.params.name)}`, "PATCH"));
+
 // 播放器的心跳。state: playing | paused | ended
 app.post("/api/watch/state", (req, res) => {
   const b = req.body || {};

@@ -40,6 +40,9 @@ class _Stub:
     def _session_span(self, started) -> str:
         return ""
 
+    def _skills_block(self, text: str) -> str:
+        return ""
+
 
 def test_dynamic把recall放进Turn():
     stub = _Stub()
