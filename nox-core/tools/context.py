@@ -215,6 +215,16 @@ class ToolContext:
             "type": "config", "proposal_id": proposal_id, "card": card, **meta,
         })
 
+    def attach_skill(self, proposal_id: str, card: dict[str, Any], **meta: Any) -> None:
+        """标记「这张装做法的提议卡要发到聊天里」（Skills P3，2026-10-25）。
+
+        和改配置的卡同一个纪律：**此时什么都没装**，她点「装上」走
+        /api/nox/skills/proposals/{id}/confirm，模型够不到。卡上是名字、一句话和理由，全文她点开看。
+        """
+        self.attachments.append({
+            "type": "skill", "proposal_id": proposal_id, "card": card, **meta,
+        })
+
     def attach_meme(self, tag: str, **meta: Any) -> None:
         """标记「这个表情要发到聊天里」。
 

@@ -4122,6 +4122,41 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
         uses = st.uses_since(7)
         return {"ok": True, "items": [_skill_out(sk, uses) for sk in st.all()]}
 
+    # ---- 他提议、她点头（Skills P3）。🔴 写在 /skills/{name} 前面：不然「proposals」被当成一个做法的名字
+    def _proposal_out(p: dict) -> dict:
+        keep = ("id", "name", "action", "raw", "base_version", "description", "triggers", "body",
+                "reason", "source", "status", "result", "created_at", "decided_at")
+        return {"ok": True, **{k: p.get(k) for k in keep}}
+
+    @app.get("/api/nox/skills/proposals")
+    def nox_skill_proposals() -> dict:
+        """还在等她点头的（Skills 页「Waiting」那一块）。"""
+        return {"ok": True, "items": [_proposal_out(p) for p in _skills_store().proposals()]}
+
+    @app.get("/api/nox/skills/proposals/{pid}")
+    def nox_skill_proposal(pid: str) -> dict:
+        p = _skills_store().proposal(pid)
+        if p is None:
+            raise HTTPException(status_code=404, detail="没有这张卡")
+        return _proposal_out(p)
+
+    @app.post("/api/nox/skills/proposals/{pid}/confirm")
+    def nox_skill_proposal_confirm(pid: str) -> dict:
+        """她在卡上点了「装上」—— **这是他提议的做法唯一真装上的地方**（他的工具只出卡）。"""
+        from skills.store import ProposalError
+        try:
+            return _proposal_out(_skills_store().apply_proposal(pid))
+        except ProposalError as exc:
+            raise HTTPException(status_code=exc.status, detail=str(exc)) from None
+
+    @app.post("/api/nox/skills/proposals/{pid}/reject")
+    def nox_skill_proposal_reject(pid: str) -> dict:
+        from skills.store import ProposalError
+        try:
+            return _proposal_out(_skills_store().reject_proposal(pid))
+        except ProposalError as exc:
+            raise HTTPException(status_code=exc.status, detail=str(exc)) from None
+
     @app.get("/api/nox/skills/{name}")
     def nox_skill(name: str) -> dict:
         st = _skills_store()

@@ -158,7 +158,8 @@ def test_接口_装_列_看一个_开关_装不上说为什么(tmp_path):
     seen = []
     nox.loop.register = lambda spec, handler: seen.append(spec.name)
     c = TestClient(create_app(nox, Store(tmp_path / "sessions.db")))
-    assert seen[-1] == "skill_read" and "desk_request_login" in seen, "skill_read 登记在 server.py 那一串最后"
+    assert seen[-2:] == ["skill_read", "skill_propose"] and "desk_request_login" in seen, \
+        "skill_read / skill_propose 登记在 server.py 那一串最后"
 
     r = c.post("/api/nox/skills", json={"text": md(), "source": "https://example.test/x"}).json()
     assert r["status"] == "created" and r["item"]["origin"] == "her" and r["item"]["source"].endswith("/x")
@@ -176,6 +177,132 @@ def test_接口_装_列_看一个_开关_装不上说为什么(tmp_path):
     assert nox.skills.get("xhs-topics")["enabled"] is False
     assert c.patch("/api/nox/skills/nope", json={"enabled": True}).status_code == 404
     assert c.get("/api/nox/skills/nope").status_code == 404
+    nox.skills.close()
+
+
+# ---------------------------------------------------------------- 他提议、她点头（P3）
+
+
+def _propose(store, sid="s-1", **kw):
+    from tools import context as tool_context
+
+    args = {"name": "movie-after-talk", "description": "看完电影：聊什么", "when": "看完了, 电影",
+            "body": "1. 先问她最喜欢哪一幕", "reason": "她说以后都这么聊", **kw}
+    with tool_context.scope() as ctx:
+        ctx.session_id = sid
+        out = skill_tools.propose(store, args, sid)
+        return out, ctx.attachments
+
+
+def test_红线_只出卡什么都不装_她点了装上才装成来源nox(store):
+    out, atts = _propose(store)
+    assert "她点了「装上」才生效" in out
+    assert [a["type"] for a in atts] == ["skill"]
+    card = atts[0]["card"]
+    assert card == {"action": "install", "name": "movie-after-talk", "description": "看完电影：聊什么",
+                    "reason": "她说以后都这么聊", "source": ""}
+    assert store.get("movie-after-talk") is None, "出卡时就装上了 —— 越过了她"
+    pid = atts[0]["proposal_id"]
+    assert [p["id"] for p in store.proposals()] == [pid]
+    p = store.apply_proposal(pid)
+    assert p["status"] == "applied" and "v1" in p["result"]
+    sk = store.get("movie-after-talk")
+    assert sk["origin"] == "nox" and sk["triggers"] == ["看完了", "电影"] and "最喜欢哪一幕" in sk["body"]
+    assert store.proposals() == []
+    with pytest.raises(Exception, match="处理过了") as e:
+        store.apply_proposal(pid)
+    assert e.value.status == 409 and len(store.history("movie-after-talk")) == 1, "点两下装了两次"
+
+
+def test_描述里有冒号_拼出来的文件头不坏():
+    raw = skill_tools.compose({"name": "a-b", "description": "注意：别剧透 | 也别 # 打分", "when": "电影", "body": "x"})
+    sk = parse(raw)
+    assert sk.description == "注意：别剧透 | 也别 # 打分" and sk.when == ("电影",)
+
+
+def test_不成立的当场挡回去_不出卡(store):
+    from skills.store import MAX_PENDING
+
+    def refused(match, **kw):
+        with pytest.raises(RuntimeError, match=match):
+            _propose(store, **kw)
+
+    refused("格式不对", name="Bad_Name")
+    refused("格式不对", name="proposals")
+    refused("reason", reason="  ")
+    store.install(md(), origin="her")
+    refused("没什么可改", name="xhs-topics", description="想选题时用", when="选题, 拍什么", body="1. 先问她发哪边")
+    _propose(store)
+    refused("已经有一张卡在等", body="换个写法")
+    for i in range(MAX_PENDING - 1):
+        _propose(store, name=f"extra-{i}")
+    refused("先等她看完", name="one-more")
+    assert len(store.proposals()) == MAX_PENDING
+
+
+def test_测试会话不许出卡(store, monkeypatch):
+    from config import test_sid_prefixes
+
+    with pytest.raises(RuntimeError, match="测试会话"):
+        _propose(store, sid=test_sid_prefixes()[0] + "x")
+    assert store.proposals() == []
+
+
+def test_她没要_和_提议后被改过的那张不装(store):
+    _, atts = _propose(store)
+    pid = atts[0]["proposal_id"]
+    assert store.reject_proposal(pid)["status"] == "rejected"
+    assert store.get("movie-after-talk") is None
+    with pytest.raises(Exception, match="处理过了"):
+        store.apply_proposal(pid)
+
+    store.install(md(), origin="her")
+    _, atts = _propose(store, name="xhs-topics", description="想选题时用", body="他的新写法")
+    pid = atts[0]["proposal_id"]
+    assert atts[0]["card"]["action"] == "update"
+    store.install(md(body="她自己又改了一版"), origin="her")
+    with pytest.raises(Exception, match="被改过了"):
+        store.apply_proposal(pid)
+    p = store.proposal(pid)
+    assert p["status"] == "failed" and "被改过了" in p["result"]
+    assert store.get("xhs-topics")["body"] == "她自己又改了一版", "照旧版提的覆盖了她的新版"
+
+
+def test_哨兵_工具文件碰不到真装的东西():
+    src = Path(skill_tools.__file__).read_text(encoding="utf-8")
+    code = re.sub(r'"""[\s\S]*?"""', "", src)
+    code = "\n".join(line.split("#", 1)[0] for line in code.splitlines())
+    for bad in ("install(", "apply_proposal", "set_enabled", "_claim", "_finish", "_conn"):
+        assert bad not in code, f"skills/tools.py 里出现了 {bad} —— 他的工具能自己装了"
+
+
+def test_接口_待确认列表不被当成做法名_装上_不要(tmp_path):
+    from fastapi.testclient import TestClient
+
+    from api.server import create_app
+    from data.store import Store
+    from tests.test_api import FakeNox
+
+    nox = FakeNox()
+    nox.skills = SkillStore(tmp_path / "skills.db")
+    c = TestClient(create_app(nox, Store(tmp_path / "sessions.db")))
+    _, a1 = _propose(nox.skills)
+    _, a2 = _propose(nox.skills, name="second-one")
+    p1, p2 = a1[0]["proposal_id"], a2[0]["proposal_id"]
+
+    r = c.get("/api/nox/skills/proposals")
+    assert r.status_code == 200 and [i["id"] for i in r.json()["items"]] == [p1, p2], "proposals 被 /{name} 吞了"
+    one = c.get(f"/api/nox/skills/proposals/{p1}").json()
+    assert one["status"] == "proposed" and one["body"] == "1. 先问她最喜欢哪一幕" and one["reason"]
+    assert c.get("/api/nox/skills/proposals/nope").status_code == 404
+
+    assert c.post(f"/api/nox/skills/proposals/{p1}/confirm").json()["status"] == "applied"
+    assert nox.skills.get("movie-after-talk")["origin"] == "nox"
+    again = c.post(f"/api/nox/skills/proposals/{p1}/confirm")
+    assert again.status_code == 409 and "处理过了" in again.json()["detail"]
+    assert c.post(f"/api/nox/skills/proposals/{p2}/reject").json()["status"] == "rejected"
+    assert nox.skills.get("second-one") is None
+    assert c.get("/api/nox/skills/proposals").json()["items"] == []
     nox.skills.close()
 
 

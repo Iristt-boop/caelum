@@ -54,7 +54,32 @@ CREATE TABLE IF NOT EXISTS uses (
     at    TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_uses_name ON uses(name, at);
+CREATE TABLE IF NOT EXISTS proposals (
+    id          TEXT PRIMARY KEY,
+    name        TEXT NOT NULL,
+    action      TEXT NOT NULL,
+    raw         TEXT NOT NULL,
+    base_version INTEGER,
+    reason      TEXT NOT NULL DEFAULT '',
+    source      TEXT DEFAULT '',
+    status      TEXT NOT NULL,
+    result      TEXT NOT NULL DEFAULT '',
+    session_id  TEXT NOT NULL DEFAULT '',
+    created_at  TEXT NOT NULL,
+    decided_at  TEXT
+);
 """
+
+#: 他提议（P3，10-25）：proposed → applied / rejected / failed。和配置提议同一套状态（settings_store/proposals.py）
+PROPOSED, APPLYING, APPLIED, REJECTED, FAILED = "proposed", "applying", "applied", "rejected", "failed"
+#: 同时等她点头的最多几张 —— 他别一口气塞一堆卡给她
+MAX_PENDING = 3
+
+
+class ProposalError(ValueError):
+    def __init__(self, msg: str, status: int = 400) -> None:
+        super().__init__(msg)
+        self.status = status
 
 
 def _iso(dt: datetime | None = None) -> str:
@@ -143,6 +168,98 @@ class SkillStore:
     def close(self) -> None:
         with self._lock:
             self._conn.close()
+
+    # ------------------------------------------------------------ 他提议、她点头（P3）
+
+    def propose(self, raw: str, *, reason: str, source: str = "", session_id: str = "") -> dict[str, Any]:
+        """**只写一条提议**，什么都不装。不成立就抛 ProposalError（话是给他看的：告诉他哪里不对）。
+
+        - 格式不对 → 原因原样给他
+        - 和装着的那版一字不差 → 没什么可提的
+        - 同名已经有一张在等她 → 别重复出卡
+        - 等她点头的已经有 MAX_PENDING 张 → 先等她
+        """
+        from skills.parse import SkillError
+        try:
+            sk = parse(raw)
+        except SkillError as exc:
+            raise ProposalError(f"这份做法格式不对：{exc}") from None
+        raw = raw.replace("\r\n", "\n").strip() + "\n"
+        cur = self.get(sk.name)
+        if cur is not None and cur["raw"] == raw:
+            raise ProposalError(f"「{sk.name}」现在就是这样，没什么可改的")
+        import uuid
+        pid = uuid.uuid4().hex[:12]
+        with self._lock:  # 查「在等的」和写入同一把锁：同时两轮提议也不会越过上限
+            pending = self._conn.execute("SELECT name FROM proposals WHERE status = ?", (PROPOSED,)).fetchall()
+            if any(r["name"] == sk.name for r in pending):
+                raise ProposalError(f"「{sk.name}」已经有一张卡在等她点头了，等她看过再说")
+            if len(pending) >= MAX_PENDING:
+                raise ProposalError(f"已经有 {len(pending)} 张做法的卡在等她了，先等她看完，别一下塞太多")
+            self._conn.execute(
+                "INSERT INTO proposals(id, name, action, raw, base_version, reason, source, status, session_id, created_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?)",
+                (pid, sk.name, "update" if cur else "install", raw, cur["version"] if cur else None,
+                 reason.strip()[:300], source.strip()[:500], PROPOSED, session_id, _iso()))
+            self._conn.commit()
+        logger.info("skill 提议 %s name=%s action=%s", pid, sk.name, "update" if cur else "install")
+        return self.proposal(pid)
+
+    def proposal(self, pid: str) -> dict[str, Any] | None:
+        with self._lock:
+            r = self._conn.execute("SELECT * FROM proposals WHERE id = ?", (pid,)).fetchone()
+        if r is None:
+            return None
+        d = dict(r)
+        sk = parse(d["raw"])
+        d.update(description=sk.description, triggers=list(sk.when), body=sk.body)
+        return d
+
+    def proposals(self, status: str = PROPOSED) -> list[dict[str, Any]]:
+        with self._lock:
+            ids = [r["id"] for r in self._conn.execute(
+                "SELECT id FROM proposals WHERE status = ? ORDER BY created_at", (status,)).fetchall()]
+        return [p for p in (self.proposal(i) for i in ids) if p]
+
+    def _claim(self, pid: str, to: str) -> dict[str, Any]:
+        """proposed → to。不是 proposed 就 409 —— 点两下不会装两次。"""
+        with self._lock:
+            n = self._conn.execute("UPDATE proposals SET status = ?, decided_at = ? WHERE id = ? AND status = ?",
+                                   (to, _iso(), pid, PROPOSED)).rowcount
+            self._conn.commit()
+        p = self.proposal(pid)
+        if p is None:
+            raise ProposalError("没有这张卡", status=404)
+        if not n:
+            raise ProposalError(f"这张卡已经处理过了（{p['status']}）", status=409)
+        return p
+
+    def _finish(self, pid: str, status: str, result: str) -> None:
+        with self._lock:
+            self._conn.execute("UPDATE proposals SET status = ?, result = ? WHERE id = ?", (status, result[:500], pid))
+            self._conn.commit()
+
+    def reject_proposal(self, pid: str) -> dict[str, Any]:
+        self._claim(pid, REJECTED)
+        logger.info("skill 提议 %s 她没要", pid)
+        return self.proposal(pid)
+
+    def apply_proposal(self, pid: str) -> dict[str, Any]:
+        """**只许确认端点调**（她在卡上点了「装上」）。装成来源 nox，结果写回提议。"""
+        p = self._claim(pid, APPLYING)
+        try:
+            cur = self.get(p["name"])
+            if p["action"] == "update" and (cur is None or cur["version"] != p["base_version"]):
+                raise ProposalError("这个做法在他提议之后被改过了，这张卡是照旧的那版提的，不装了，让他照新的再提")
+            sk, _ = self.install(p["raw"], origin="nox", source=p.get("source") or "")
+            result = f"装上了（v{sk['version']}），下一句起他就照着做"
+        except Exception as exc:  # noqa: BLE001 —— 失败写回提议，卡上如实给她看
+            self._finish(pid, FAILED, str(exc))
+            logger.warning("skill 提议 %s 没装成：%s", pid, exc)
+            raise ProposalError(str(exc), status=getattr(exc, "status", 400)) from None
+        self._finish(pid, APPLIED, result)
+        logger.info("skill 提议 %s 她点了装上 name=%s", pid, p["name"])
+        return self.proposal(pid)
 
     # ------------------------------------------------------------ 用量
 

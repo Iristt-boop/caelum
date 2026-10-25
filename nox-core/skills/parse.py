@@ -20,6 +20,8 @@ from dataclasses import dataclass
 import yaml
 
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
+#: /api/nox/skills/proposals 是提议的接口，叫这个名字的 skill 会被它挡住
+RESERVED = frozenset({"proposals"})
 #: 正文上限。每轮命中时整篇递进去的门槛另算（render.INLINE_MAX），这里只防贴进来一本书
 BODY_MAX = 20000
 DESC_MAX = 1024
@@ -72,6 +74,8 @@ def parse(text: str) -> Skill:
     name = str(head.get("name") or "").strip()
     if not NAME_RE.match(name):
         raise SkillError(f"name「{name}」只许小写字母、数字和 -，64 个字以内")
+    if name in RESERVED:
+        raise SkillError(f"name 不能叫「{name}」（接口里占用了），换一个")
     desc = " ".join(str(head.get("description") or "").split())
     if not desc:
         raise SkillError("缺 description（一句话说它做什么、什么时候用）")

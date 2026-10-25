@@ -1651,6 +1651,13 @@ async function coreMode(req, res, requestId) {
             res.write(`data: ${JSON.stringify({ type: "config", ...config })}\n\n`);
             keepAttachment({ config });
             console.log(`[Bridge] Core 发改配置提议卡 ${config.proposalId}`);
+          } else if (ev.kind === "skill" && ev.proposal_id) {
+            // 装做法的提议卡（Skills P3，10-25）。此时**什么都没装** ——
+            // 她在卡上点「装上」走 /api/nox/skills/proposals/:id/confirm。状态是活的，前端现查（同 config 卡）
+            const skill = { proposalId: String(ev.proposal_id), card: ev.card || {} };
+            res.write(`data: ${JSON.stringify({ type: "skill", ...skill })}\n\n`);
+            keepAttachment({ skill });
+            console.log(`[Bridge] Core 发装做法提议卡 ${skill.proposalId}`);
           }
         } else if (ev.type === "tool_start" || ev.type === "tool_end") {
           // 他动手的实时进度（2026-09-07）。原样透传，**不落库** ——
@@ -3912,6 +3919,11 @@ async function skillsProxy(req, res, path, method = "GET") {
 }
 app.get("/api/nox/skills", (req, res) => skillsProxy(req, res, ""));
 app.post("/api/nox/skills", (req, res) => skillsProxy(req, res, "", "POST"));
+// 他提议的卡（P3）。🔴 写在 /:name 前面：不然 proposals 被当成一个做法的名字
+app.get("/api/nox/skills/proposals", (req, res) => skillsProxy(req, res, "/proposals"));
+app.get("/api/nox/skills/proposals/:id", (req, res) => skillsProxy(req, res, `/proposals/${encodeURIComponent(req.params.id)}`));
+app.post("/api/nox/skills/proposals/:id/:what(confirm|reject)", (req, res) =>
+  skillsProxy(req, res, `/proposals/${encodeURIComponent(req.params.id)}/${req.params.what}`, "POST"));
 app.get("/api/nox/skills/:name", (req, res) => skillsProxy(req, res, `/${encodeURIComponent(req.params.name)}`));
 app.patch("/api/nox/skills/:name", (req, res) => skillsProxy(req, res, `/${encodeURIComponent(req.params.name)}`, "PATCH"));
 
