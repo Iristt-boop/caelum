@@ -50,8 +50,8 @@ SWITCH_SPEC = ToolSpec(
     side_effect="write",
     name="ha_switch",
     description=(
-        "开关设备：风扇、风扇摆风、电热毯、电视、**蒸蛋器**。"
-        "⚠️ 空调用 ha_set_climate，灯用 ha_set_light —— 别用这个。\n"
+        "开关设备：风扇、风扇摆风、电热毯、电视、暖风机摆风、**蒸蛋器**。"
+        "⚠️ 空调和暖风机用 ha_set_climate，灯用 ha_set_light —— 别用这个。\n"
         "蒸蛋器：糖糖早上做早饭用的，她说「蒸蛋器」「煮蛋」「做早饭」都是指它。"
         "**开了之后 10 分钟 Home Assistant 会自动断电**，你不用记着关，"
         "也别提醒她关 —— 那是加热设备的安全兜底，已经在 HA 里配好了。"
@@ -73,7 +73,9 @@ CLIMATE_SPEC = ToolSpec(
         "控制空调。家里有三台（主卧 / 客厅 / 电竞房），"
         "**糖糖只说「开空调」没说房间时，先问她哪一间，不要自己挑一台**。"
         "mode 可选 off/auto/cool/heat/dry/fan_only；temperature 16-30。"
-        "可以只给模式、只给温度，或者两个都给。"
+        "可以只给模式、只给温度，或者两个都给。\n"
+        "衣帽间的**暖风机**也用这个：开是 mode=heat，关是 mode=off；"
+        "它只有 off/auto/heat 三种模式，温度只能 22-28。"
     ),
     parameters={
         "type": "object",

@@ -30,6 +30,11 @@ DEVICES = {
     "主卧 空调": "climate.lumi_mcn02_d2c3_air_conditioner",
     "客厅 空调": "climate.lumi_mcn02_d7b8_air_conditioner",
     "主卧 床头灯": "light.yeelink_mbulb3_0170_light",
+    # 米家暖风机（xiaomi.heater.ma8，2026-10-26 接进 HA，HA 里放在衣帽间）。
+    # 它是 climate：模式只有 off / auto / heat，温度 22-28；自带温度计贴着机身，开着时偏高，别当室温
+    "衣帽间 暖风机": "climate.xiaomi_ma8_5534_heater",
+    "衣帽间 暖风机摆风": "switch.xiaomi_ma8_5534_horizontal_swing",
+    "衣帽间 暖风机温度(机身)": "sensor.xiaomi_ma8_5534_temperature",
     # 滚筒洗衣机（海尔，2026-09-19 经 banto6/haier 集成入 HA）。
     # 它在 HA 里有 120+ 个实体，只挑常用的四个 —— 全进清单是给模型的噪音
     # ⚠️ HA 里是 kai_guan_**ji**_zhuang_tai（开关机状态）。09-19 写成了 kai_guan_zhuang_tai，
@@ -195,8 +200,8 @@ async def hass_set_light(entity_id: str, state: str = "on", brightness: int = 0)
 
 @mcp.tool()
 async def hass_set_state(entity_id: str, state: str) -> str:
-    """开关设备（风扇/风扇摆风/电热毯/电视）。state 填 on(开) 或 off(关)。
-    ⚠️空调用 hass_set_climate，灯用 hass_set_light（能调亮度）。"""
+    """开关设备（风扇/风扇摆风/电热毯/电视/暖风机摆风）。state 填 on(开) 或 off(关)。
+    ⚠️空调和暖风机用 hass_set_climate，灯用 hass_set_light（能调亮度）。"""
     on = state.lower() in ("on", "开", "true", "1", "打开")
     domain = entity_id.split(".")[0]
     service = "turn_on" if on else "turn_off"
@@ -212,7 +217,8 @@ async def hass_set_state(entity_id: str, state: str) -> str:
 
 @mcp.tool()
 async def hass_set_climate(entity_id: str, mode: str = "", temperature: int = 0) -> str:
-    """控制空调。mode 可选：off(关) auto(自动) cool(制冷) heat(制热) dry(除湿) fan_only(送风)；temperature 目标温度16-30整数。可只给模式、只给温度或都给。"""
+    """控制空调和暖风机。mode 可选：off(关) auto(自动) cool(制冷) heat(制热) dry(除湿) fan_only(送风)；temperature 目标温度16-30整数。可只给模式、只给温度或都给。
+    ⚠️暖风机只有 off / auto / heat 三种模式，温度只能 22-28。"""
     done = []
     names = {"off": "关", "auto": "自动", "cool": "制冷", "heat": "制热", "dry": "除湿", "fan_only": "送风"}
     async with httpx.AsyncClient() as c:

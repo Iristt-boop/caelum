@@ -61,6 +61,16 @@ DEVICE_MODEL: dict[str, dict] = {
                       "indoor_temp_above": _env_float("NOX_BLANKET_INDOOR_MAX_C", 22)},
         "alternative": "cooling_possible",   # 夏天想暖 → 该往制冷走
     },
+    # 米家暖风机（2026-10-26 接进 HA，放在衣帽间）。和电热毯同一类事故面：反季节开加热。
+    # 衣帽间没有温度计（机身自带的那个贴着出风口，开着就偏高，不能当室温）→ 只用户外那条 26°C
+    "climate.xiaomi_ma8_5534_heater": {
+        "name": "衣帽间暖风机",
+        "category": "heating",
+        "effect": "temperature_up",
+        "room": "衣帽间",
+        "deny_when": {"env_temp_above": 26},
+        "alternative": "cooling_possible",
+    },
     "fan.dmaker_p5c_6d3e_fan": {
         "name": "主卧风扇",
         "category": "cooling",
@@ -90,6 +100,10 @@ DEVICE_MODEL: dict[str, dict] = {
     "switch.dmaker_p5c_6d3e_horizontal_swing": {
         "name": "主卧风扇摆风", "category": "accessory",
         "parent": "fan.dmaker_p5c_6d3e_fan",
+    },
+    "switch.xiaomi_ma8_5534_horizontal_swing": {
+        "name": "衣帽间暖风机摆风", "category": "accessory",
+        "parent": "climate.xiaomi_ma8_5534_heater",
     },
     # ---- B 类：物理负载型（requires unknown → ask）----
     "switch.cuco_v3_7680_switch": {

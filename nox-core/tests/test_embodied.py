@@ -120,12 +120,30 @@ def test_未收录设备_降权限不是放行():
     assert "什么" in g.ask, "降权限的出口是问她，不是默默拒绝"
 
 
-def test_模型里确实有十一个设备():
+def test_模型里确实有十三个设备():
     """清单 12 行里 automation 故意不入表（forbidden_domain）。
     家里真加了设备 → 给它补语义并改这个数；数量变了说不清原因就是误删。
     2026-09-19 9→10：滚筒洗衣机（海尔，banto6/haier 集成接入）。
-    2026-09-24 10→11：stackchan（他的身体，category=robot）。"""
-    assert len(DEVICE_MODEL) == 11
+    2026-09-24 10→11：stackchan（他的身体，category=robot）。
+    2026-10-26 11→13：衣帽间暖风机 + 它的摆风。"""
+    assert len(DEVICE_MODEL) == 13
+
+
+# ---------------------------------------------------------------- 暖风机（10-26）
+
+HEATER = "climate.xiaomi_ma8_5534_heater"
+
+
+def test_暖风机_热天制热_拒且给替代():
+    """和电热毯同一类事故：反季节开加热。走 ha_set_climate，action 是 mode。"""
+    g = gate(HEATER, "heat", _world(temp=30), user_text="")
+    assert not g.allow and g.reason == "environment_conflict"
+    assert "30" in g.human and g.alternative == "cooling_possible"
+
+
+def test_暖风机_冷天制热放行_关永远放行():
+    assert gate(HEATER, "heat", _world(temp=12), user_text="").allow
+    assert gate(HEATER, "off", _world(temp=35)).allow
 
 
 def test_ha_mcp清单里能控的设备_闸门都有档案():
