@@ -17,6 +17,7 @@
 ## 她在睡不算冷落（G8）
 
 他夜里 1-9 点说的、她没回的 —— 不进账（她在睡）。她回了的照常记。
+他叫她去睡 / 让她别回、她没回的也不进账（10-26，`not_evidence`）。
 
 ## 判定只看她回他那句话
 
@@ -50,8 +51,12 @@ HEALTH_RE = re.compile(
 )
 #: 他这句里有热量数字、而且她前面不久刚说过话（多半是发了吃的）→ 是她要他算的，不算念叨。
 #: 规矩里写了模型还是会把它判成念叨（10-19 验尺子：「给你算清楚：香锅 220 卡/100g」），所以不靠模型
-CALORIE_RE = re.compile(r"\d+\s*(?:卡|千卡|kcal|大卡)", re.I)
+#: 🔧 10-26 她看 shadow：他算热量常写中文数字（「一包七十卡」「还剩七百多卡」），只认阿拉伯数字漏了一半
+CALORIE_RE = re.compile(r"(?:\d+|[零一二两三四五六七八九十百千万]+)多?\s*(?:卡|千卡|kcal|大卡)", re.I)
 ASKED_WINDOW = timedelta(minutes=15)
+#: 他叫她去睡 / 让她别回（「睡吧，我守着」「接着睡，我不吵你」「你先睡，明早讲给你」），她没回 = 照做了或者睡着了，
+#: 不是冷落。🔧 10-26 她看 shadow：主动开口里睡眠「没理」有一半是这种。「早点睡吧」是念叨，不算在内
+SENT_TO_SLEEP_RE = re.compile(r"(?<!早点)睡吧|接着睡|先睡|好好睡|安心睡|多睡|回笼觉|晚安|不吵你|不用回|明早再?[看讲说聊]|醒了再")
 #: 她的下一句多久之内才算「接这句」
 REPLY_WINDOW = timedelta(minutes=60)
 #: 一天最多送多少条去归类（一次调用）。超了只取前面的 —— 一天念叨几十次本身就是问题，那时候先看日志
@@ -206,6 +211,18 @@ def _asleep_hours(at: datetime) -> bool:
     return 1 <= to_local(at).hour < 9
 
 
+def not_evidence(ctx: dict[str, Any]) -> bool:
+    """按账本里存下的那一行就能判的「不算证据」（10-26 她看 shadow 后修的两处尺子）。
+
+    记账时用，读账时（`care_patterns`）也用 —— 以前按旧尺子记下的那些不改库，读的时候剔掉。
+      · 叫她去睡 / 让她别回，她没回：照做了或者睡着了
+      · 聊天里（不是主动开口）他这句带热量数字：她发了吃的、要他算的。主动开口报热量的照算"""
+    his = ctx.get("his") or ""
+    if ctx.get("reception") == "没理" and SENT_TO_SLEEP_RE.search(his):
+        return True
+    return not ctx.get("proactive") and bool(CALORIE_RE.search(his))
+
+
 def review_day(store: Any, sessions: Any, adapter: Any, day_start: datetime, day_end: datetime) -> int | None:
     """回看一天：挑 → 归类 → 记账。返回新记了几条；None = 这一天没做成（下次再试）。幂等（source_event 去重）。"""
     rows = sessions.messages_between(day_start.astimezone(timezone.utc).isoformat(),
@@ -223,10 +240,13 @@ def review_day(store: Any, sessions: Any, adapter: Any, day_start: datetime, day
         key = f"health_care:{g['sid']}:{g['at']}"
         if key in seen:
             continue
+        ctx = {"topic": g["topic"], "style": g["style"], "reception": g["reception"],
+               "proactive": g["proactive"], "his": g["his"][:120], "hers": (g["hers"] or "")[:80]}
+        if not_evidence({**ctx, "his": g["his"]}):
+            continue
         store.append_experience(
             at=g["at"], kind=KIND_HEALTH_CARE,
-            context={"topic": g["topic"], "style": g["style"], "reception": g["reception"],
-                     "proactive": g["proactive"], "his": g["his"][:120], "hers": (g["hers"] or "")[:80]},
+            context=ctx,
             outcome=RECEPTION_SCORE[g["reception"]], attributed_to="user",
             recorded_at=datetime.now(timezone.utc).isoformat(), source_event=key,
         )

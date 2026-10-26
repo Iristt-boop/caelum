@@ -12,10 +12,12 @@
 
 （架构设计 v1.3 第 5.3 节）
 
-## 这一轮是硬编码的种子，不学习
+## 种子是写死的，健康类从 10-26 起会往下学
 
-M5 的 Feedback Collector 上线之后，`care_topics` 的权重和 `trust_level`
-才会真正开始动。在那之前这里就是一份**写死的画像**。
+`care_topics` 的种子是一份**写死的画像**。Growth Loop P2（10-26 她看过 shadow 定的）
+往上乘一个学出来的系数：睡眠 / 饮食 / 身体被念叨时她接不住，就往下调，**只许往下、最多降一半**
+（`growth/care_patterns.weight_for`）。她在关系账本里亲口说过的「上心」「别问」不经学习。
+`trust_level` 还没人动。
 
 种子不用猜 —— `CLAUDE.md` 里已经写着了：
 凌晨 1-2 点入睡、9-11 点起、平均 7.2 小时、深睡偏少、正在减肥。
@@ -65,6 +67,18 @@ class RelationshipState:
     #: 她在聊天卡片上点了 Keep，下一次评估就生效，不用重启
     book: Any = None
 
+    #: Growth Loop P2（10-26）：topic → 学出来的系数（≤ 1.0），None = 不动。server 装配时挂上，每次现算
+    learned: Any = None
+
+    def _learned(self, topic: str) -> float | None:
+        if self.learned is None:
+            return None
+        try:
+            return self.learned(topic)
+        except Exception:  # noqa: BLE001
+            logger.warning("读学出来的关心权重失败，这次按写死的种子算", exc_info=True)
+            return None
+
     def _from_book(self, which: str) -> set[str]:
         if self.book is None:
             return set()
@@ -85,7 +99,10 @@ class RelationshipState:
             return 0.0
         if topic in self._from_book("care_topics"):
             return 1.0
-        return self.care_topics.get(topic, 0.5)
+        seed = self.care_topics.get(topic, 0.5)
+        k = self._learned(topic)
+        #: 🔴 只许往下（做法 A）：系数大于 1 也不让它把种子抬上去
+        return seed * min(1.0, k) if k is not None else seed
 
     def is_avoided(self, topic: str) -> bool:
         return topic in self.avoid_topics or topic in self._from_book("avoid_topics")

@@ -1017,6 +1017,8 @@ def _build_attention(core: Nox, sessions: "Sessions", db: Store) -> AttentionSer
         # 评估器现读（别问 → 权重 0，上心 → 1.0）；RelationProvider 经 core.attention 读给他
         svc.relation_book = RelationBook(svc.store)
         svc.engine.evaluator.relationship.book = svc.relation_book
+        # Growth Loop P2（10-26 她看过 shadow 定的）：健康类关心权重往下学，从经历账本现算
+        svc.engine.evaluator.relationship.learned = lambda topic: care_patterns.weight_for(svc.store, topic)
         # 他自己的时间（V5，10-06）的活动日志。循环在 lifespan 里起（见 _own_time_loop）
         svc.activity_log = own_time.ActivityLog(svc.store)
 
@@ -2677,7 +2679,7 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
         now_utc = datetime.now(timezone.utc)
         rows = attention.store.list_experiences(KIND_PROACTIVE_REPLY)
         p1 = growth_patterns.receptive(rows, now_utc)
-        #: 10-19 起：P1 生效；P2 念叨耐受度 + P3-健康 说法偏好 shadow（`growth/care_patterns.py`）
+        #: 10-19 起 P1 生效；10-26 起 P2 念叨耐受度生效，P3-健康 说法偏好仍 shadow（`growth/care_patterns.py`）
         care = attention.store.list_experiences(KIND_HEALTH_CARE)
         tol = care_patterns.tolerance(care, now_utc)
         sty = care_patterns.styles(care, now_utc)
@@ -2687,6 +2689,7 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
             "ledger_rows": len(rows),
             "p1": [p1[b].to_dict() for b in growth_patterns.BUCKET_ORDER if b in p1],
             "care_rows": len(care),
+            "p2_live": care_patterns.p2_live(),
             "p2": [p.to_dict() for p in tol.values()],
             "p3_health": [s.to_dict() for s in sty.values()],
             "p3_hints": [h for h in (care_patterns.style_hint(sty, t) for t in tol) if h],

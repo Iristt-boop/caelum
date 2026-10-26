@@ -18,9 +18,14 @@
 同一个话题里按说法（报数据 / 只担心 / 落进生活 / 其他）分开算，相对这个话题的整体。
 两种以上说法学成、而且差得够多，才说一句「她更吃哪种」—— 将来写进动态块（P3 原则：**不进 prompt**）。
 
-## shadow 期间什么都不动
+## 10-26 她看过 shadow：P2 生效，P3-健康 接着 shadow
 
-`shadow_lines()` 只产出日志行；`care_topics` 和动态块一个字都不变。她看过一周再生效。
+P2 经 `weight_for()` 乘进 `RelationshipState.care_weight()`（只乘写死的种子；她在关系账本里说过「上心」的、
+「别问」的都不经学习）。`NOX_GROWTH_P2=shadow` 退回只看不动（每次现读）。
+P3-健康 仍然只进日志：说法之间的比较被「主动开口 vs 聊天里」混住了（报数据的多是主动开口、本来就容易没回），
+学出来的那句「光说担心更接得住」和她定的规矩正相反。动态块一个字都不变。
+
+以前按旧尺子记下的证据不改库，读的时候按 `care_review.not_evidence` 剔掉。
 """
 
 from __future__ import annotations
@@ -29,7 +34,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
-from growth.care_review import STYLES, TOPICS
+from growth.care_review import KIND_HEALTH_CARE, STYLES, TOPICS, not_evidence
 from temporal import to_local
 
 HALF_LIFE_DAYS = 14.0
@@ -88,7 +93,7 @@ def _evidence(rows: list[dict[str, Any]], now: datetime) -> list[tuple[dict[str,
     out = []
     for r in rows:
         ctx = r.get("context") or {}
-        if ctx.get("topic") not in TOPICS:
+        if ctx.get("topic") not in TOPICS or not_evidence(ctx):
             continue
         at = datetime.fromisoformat(r["at"])
         if at.tzinfo is None:
@@ -147,17 +152,36 @@ def style_hint(got: dict[tuple[str, str], StyleReception], topic: str) -> str | 
             f"{STYLE_WORDS[worst.style]}的，她多半带过或者嫌烦。")
 
 
+def p2_live() -> bool:
+    """P2 生效没有（10-26 她看过 shadow 定的）。`NOX_GROWTH_P2=shadow` 退回只看不动（每次现读）。"""
+    import os
+    return os.getenv("NOX_GROWTH_P2", "on").strip().lower() not in ("shadow", "off", "0", "false")
+
+
+def weight_for(store: Any, topic: str) -> float | None:
+    """这个健康话题学出来的关心权重（乘在写死的种子上）。没开 / 不是健康类 / 没学成 → None（不动）。"""
+    if not p2_live() or topic not in TOPICS:
+        return None
+    p = tolerance(store.list_experiences(KIND_HEALTH_CARE), datetime.now(timezone.utc)).get(topic)
+    return p.weight if p is not None and p.effective else None
+
+
 def shadow_lines(rows: list[dict[str, Any]], now: datetime) -> list[str]:
-    """shadow 日志：如果生效，关心权重本来会是多少、动态块本来会多哪句。什么都不改。"""
+    """每天回看完写的日志：P2 关心权重用了多少（没开就写本来会是多少）、P3 动态块本来会多哪句。什么都不改。"""
     lines = []
     tol = tolerance(rows, now)
     sty = styles(rows, now)
+    live = p2_live()
     for t in TOPICS:
         if t in tol:
             p = tol[t]
             state = "生效" if p.effective else f"候选（{p.n} 条 / {p.days} 天）"
-            lines.append(f"P2 shadow：{t} {state}｜耐受 {p.tolerance:.2f} → 关心权重本来会是 {p.weight:.2f}"
-                         f"{'（现在 1.0）' if p.effective else '（不动）'}")
+            if live:
+                lines.append(f"P2 生效：{t} {state}｜耐受 {p.tolerance:.2f} → 关心权重 "
+                             f"{f'×{p.weight:.2f}' if p.effective else '不动'}")
+            else:
+                lines.append(f"P2 shadow：{t} {state}｜耐受 {p.tolerance:.2f} → 关心权重本来会是 {p.weight:.2f}"
+                             f"{'（现在 1.0）' if p.effective else '（不动）'}")
         hint = style_hint(sty, t)
         if hint:
             lines.append(f"P3 shadow：{t}｜动态块本来会多一句：{hint}")
