@@ -7,6 +7,12 @@
    也不会绕出去（国内模型 / 豆包 / 阿里绕一圈只会更慢，还多一个会挂的依赖）。
    节点连接参数在 /root/.reality-client.json（600），从节点的 x-ui 库取的，**不进仓库**。
 
+🔴 10-26：东京那台的 IP 16:58 被墙（国外能连、国内全端口不通），腾讯不让再换 IP。
+   有 /root/.egress-airport.json（600，她 Clash 订阅里的日本 IEPL 专线，ss）时改走它：
+   几条组成一个池，xray 每分钟探一次，挑延迟最低的活节点；**全挂了退回直连**
+   （推送 / ElevenLabs / GitHub 直连都通，只有 Claude / GPT 会 403 —— 明确报错好过整条出口一起断）。
+   删掉这个文件再生成一次，就回到 Reality。
+
 用法（N150 上）：python3 n150-egress-config.py > /etc/xray-egress/config.json
 """
 
@@ -42,6 +48,10 @@ MUST_DIRECT = [
 ]
 
 p = json.loads(Path("/root/.reality-client.json").read_text())
+AIRPORT = Path("/root/.egress-airport.json")
+pool = json.loads(AIRPORT.read_text(encoding="utf-8")) if AIRPORT.exists() else []
+#: 规则里「走节点」写成什么：有池走 balancer，没有就是原来的 Reality 出口
+to_node = {"balancerTag": "pool"} if pool else {"outboundTag": "node"}
 
 config = {
     "log": {"loglevel": "warning"},
@@ -69,18 +79,33 @@ config = {
             },
         },
         {"tag": "block", "protocol": "blackhole"},
+        *({"tag": n["tag"], "protocol": "shadowsocks",
+           "settings": {"servers": [{"address": n["server"], "port": n["port"],
+                                     "method": n["method"], "password": n["password"]}]}}
+          for n in pool),
     ],
     "routing": {
         # IPIfNonMatch：域名规则都没命中时，解析出 IP 再按 geoip 判（国内 IP 直连）
         "domainStrategy": "IPIfNonMatch",
         "rules": [
-            {"type": "field", "domain": MUST_PROXY, "outboundTag": "node"},
+            {"type": "field", "domain": MUST_PROXY, **to_node},
             {"type": "field", "domain": MUST_DIRECT, "outboundTag": "direct"},
             {"type": "field", "ip": ["geoip:private", "geoip:cn"], "outboundTag": "direct"},
-            {"type": "field", "domain": ["geosite:geolocation-!cn"], "outboundTag": "node"},
+            {"type": "field", "domain": ["geosite:geolocation-!cn"], **to_node},
             # 都没命中的一律直连 —— 第一个 outbound 就是 direct，这条写出来是为了读的人放心
             {"type": "field", "network": "tcp,udp", "outboundTag": "direct"},
         ],
     },
 }
+if pool:
+    tags = [n["tag"] for n in pool]
+    config["routing"]["balancers"] = [{
+        "tag": "pool", "selector": tags,
+        "strategy": {"type": "leastPing"}, "fallbackTag": "direct",
+    }]
+    # 每分钟从每条节点探一次；探不通的节点 leastPing 不会挑
+    config["observatory"] = {
+        "subjectSelector": tags, "probeURL": "https://www.google.com/generate_204",
+        "probeInterval": "60s", "enableConcurrency": True,
+    }
 print(json.dumps(config, indent=2, ensure_ascii=False))
