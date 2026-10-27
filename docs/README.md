@@ -46,7 +46,8 @@
 
 ## docs/ 其他
 
-`LOGGING.md`（写代码前读）、`Nox设备系统-完整文档.md`、`RESTART-STATE.md`、`舵机固件施工图.md`
+`LOGGING.md`（写代码前读）、`Nox设备系统-完整文档.md`、`RESTART-STATE.md`、`舵机固件施工图.md`、
+`Nox-开关糖糖电脑-说明-2026-10-27.md`（pc_status / pc_power 怎么用、怎么运作、踩过的坑）
 
 ## archive/
 
