@@ -410,6 +410,15 @@ class AttentionService:
             except Exception:  # noqa: BLE001
                 logger.exception("看到点的事出错，这轮跳过")
 
+        # 0b. 交给她电脑上 Claude Code 的活（10-27）：收尾了放一张任务纸条，下面那步就把他叫醒去告诉她。
+        #     电脑关着 / ssh 不通都是跳过，不连累心跳（两分钟最多问一次，见 tools/pc_tasks.py）
+        pc_tasks = getattr(self, "pc_tasks", None)
+        if pc_tasks is not None and self.waker is not None:
+            try:
+                pc_tasks.poll(self.wakeups)
+            except Exception:  # noqa: BLE001
+                logger.exception("看电脑上的活出错，这轮跳过")
+
         # 0. 到期的纸条先处理。
         #
         # 放在最前面是有意的：唤醒链是**她刚说过话**引出来的，比睡眠这类

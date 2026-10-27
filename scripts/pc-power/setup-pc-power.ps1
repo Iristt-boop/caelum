@@ -32,15 +32,27 @@ if (-not (Test-Path "$env:ProgramFiles\OpenSSH\sshd.exe")) {
 Set-Service sshd -StartupType Automatic
 Start-Service sshd   # 第一次启动会生成 sshd_config 和主机钥匙
 
-Write-Host '[2/5] 放关机脚本...'
-New-Item -ItemType Directory -Force 'C:\ProgramData\nox' | Out-Null
-Copy-Item "$here\nox-pc-power.ps1" 'C:\ProgramData\nox\pc-power.ps1' -Force
+Write-Host '[2/5] 放关机脚本和转活脚本...'
+$nox = 'C:\ProgramData\nox'
+New-Item -ItemType Directory -Force $nox, "$nox\jobs", 'D:\nox-jobs' | Out-Null
+Copy-Item "$here\nox-pc-power.ps1" "$nox\pc-power.ps1" -Force
+Copy-Item "$here\nox-relay.ps1" "$nox\relay.ps1" -Force
+Copy-Item "$here\nox-runner.ps1" "$nox\runner.ps1" -Force
+# 钥匙强制跑的脚本是以管理员身份跑的 —— 只许管理员改（不然普通权限的程序改一行就提权了）；
+# jobs 是 runner（以她的普通身份跑）写进度的地方，给她改的权限
+$me = "$env:USERDOMAIN\$env:USERNAME"
+icacls $nox /inheritance:r /grant '*S-1-5-32-544:(OI)(CI)F' /grant '*S-1-5-18:(OI)(CI)F' /grant "${me}:(OI)(CI)RX" | Out-Null
+icacls "$nox\jobs" /grant "${me}:(OI)(CI)M" | Out-Null
 
-Write-Host '[3/5] 放钥匙（只能从 N150 来、只能跑关机脚本）...'
+Write-Host '[3/5] 放钥匙（只能从 N150 来、各自只能跑自己那个脚本）...'
 $cmd = 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\ProgramData\nox\pc-power.ps1'
 $line = "restrict,from=`"$n150`",command=`"$cmd`" $pub"
+#: 第二把：转活给电脑上的 Claude Code（10-27），只能跑 relay.ps1（start / status / list / cancel）
+$relayPub = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHoX8wJWDSNbQyzJyzVWhXOY8zNKLKck9xptpK12H2+E nox-n150-pc-relay'
+$relayCmd = 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\ProgramData\nox\relay.ps1'
+$relayLine = "restrict,from=`"$n150`",command=`"$relayCmd`" $relayPub"
 $ak = 'C:\ProgramData\ssh\administrators_authorized_keys'
-Set-Content -Path $ak -Value $line -Encoding Ascii
+Set-Content -Path $ak -Value @($line, $relayLine) -Encoding Ascii
 # sshd 要求这份文件只有 管理员组 + SYSTEM 能碰，不然整份忽略（用 SID，中文系统组名不一样）
 icacls $ak /inheritance:r /grant '*S-1-5-32-544:F' /grant '*S-1-5-18:F' | Out-Null
 

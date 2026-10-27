@@ -1009,6 +1009,8 @@ def _build_attention(core: Nox, sessions: "Sessions", db: Store) -> AttentionSer
         if core.bridge is not None:
             from attention.goal_routines import GoalRoutines
             svc.goal_routines = GoalRoutines(core.bridge, astore)
+        # 交给电脑上 Claude Code 的活（10-27）：心跳里问一眼，收尾了放任务纸条
+        svc.pc_tasks = getattr(core, "pc_tasks", None)
         # 想起开心的旧事（10-06）：记忆桶 + Gallery 收藏 + 一起听 / 看 / 读过的，「想逗她」的第二个来源。
         # 共活动的事实读 World Model，细节借上面共活动记账那几个 client
         svc.fond = FondSource(store=svc.store, buckets_dir=dream_loop.buckets_dir(), bridge=core.bridge,
@@ -1389,6 +1391,13 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
     if _pc is not None:
         pc_power_tools.register_all(core.loop, _pc)
         logger.info("电脑开关工具已注册（pc_status / pc_power）")
+        #: 把活转给电脑上的 Claude Code（10-27）：pc_task_start / check / cancel。挂到 core 上是给
+        #: _build_attention 的心跳用 —— 做完了放纸条、他自己开口。排在 pc_power 后面
+        from tools import pc_tasks as pc_task_tools
+        core.pc_tasks = pc_task_tools.PcTasks(
+            _pc, (Path(core.cfg.db_path).parent if _db != ":memory:" else Path("/tmp")) / "pc-tasks.json")
+        pc_task_tools.register_all(core.loop, core.pc_tasks)
+        logger.info("转活工具已注册（pc_task_start / pc_task_check / pc_task_cancel）")
 
     # 待确认单（2026-09-06）。**独立的库**，和 attention/world/topics 平级。
     #
