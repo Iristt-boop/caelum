@@ -1383,6 +1383,12 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
     if getattr(core, "skills", None) is not None:
         from skills import tools as skill_tools
         skill_tools.register_all(core.loop, core.skills)
+    #: 开关她的电脑（10-27）：pc_status / pc_power。没配 NOX_PC_MAC 就不登记。登记在这一串最后，前面的位置一个不动
+    from tools import pc_power as pc_power_tools
+    _pc = pc_power_tools.from_env()
+    if _pc is not None:
+        pc_power_tools.register_all(core.loop, _pc)
+        logger.info("电脑开关工具已注册（pc_status / pc_power）")
 
     # 待确认单（2026-09-06）。**独立的库**，和 attention/world/topics 平级。
     #
