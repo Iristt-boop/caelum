@@ -143,7 +143,10 @@ def test_做完了才放纸条_只放一次(env):
     clock.t += timedelta(minutes=2)
     assert t.poll(book) == [jid]
     sid, why = book.notes[0]
-    assert sid == "s1" and "加好了" in why and "上线得她亲口说" in why and "做完了" in why
+    assert sid == "s1" and "加好了" in why and "上线得她亲口说" in why
+    # 结论写死在第一句 + 告诉她去哪看（10-27 第一个真活他说成「差不多了吧」、也没说在哪）
+    assert why.splitlines()[0].endswith("**已经做完了**（不是「差不多」，是做完了、提交了）。")
+    assert f"nox/{jid}" in why and "还没合进主线" in why
     clock.t += timedelta(minutes=3)
     assert t.poll(book) == [] and len(book.notes) == 1      # 不重复叫醒
 
@@ -170,6 +173,7 @@ def test_没做成也要告诉她(env):
     book = Book()
     assert t.poll(book) == [jid]
     assert "没做成" in book.notes[0][1] and "60 分钟" in book.notes[0][1]
+    assert "**没做成**" in book.notes[0][1].splitlines()[0] and "还没合进主线" not in book.notes[0][1]
 
 
 def test_看进度带上总结(env):
@@ -212,3 +216,45 @@ def test_声明():
     assert pc_tasks.START_SPEC.side_effect == "write" and pc_tasks.START_SPEC.confirm_via
     assert pc_tasks.CHECK_SPEC.side_effect == "read"
     assert set(pc_tasks.START_SPEC.parameters["properties"]["repo"]["enum"]) == {"caelum", "nox-app"}
+
+
+# ---------- 接线：60 秒的快循环里收尾就当场叫醒他（10-27 第一个真活晚了十分钟才被发现） ----------
+
+def _attention(tmp_path):
+    from attention.relationship import RelationshipState
+    from attention.service import AttentionService
+    from attention.store import AttentionStore
+
+    class Provider:
+        def get_state(self, turn=None, force_refresh=False):
+            return {"has_data": False}
+
+    store = AttentionStore(tmp_path / "attn.db")
+    woke = []
+    svc = AttentionService(store, Provider(), RelationshipState(), fast_sources=[],
+                           waker=lambda book, now: woke.append(now))
+    return svc, store, woke
+
+
+def test_快循环_活收尾了当场叫唤醒链(tmp_path):
+    svc, store, woke = _attention(tmp_path)
+
+    class Done:
+        def poll(self, book): return ["1027-2217-36a2"]
+
+    svc.pc_tasks = Done()
+    svc.care_tick(datetime(2026, 10, 27, 14, 28, tzinfo=timezone.utc))
+    assert len(woke) == 1, "活收尾了，快循环没当场叫唤醒链（又得等 15 分钟的 tick）"
+    store.close()
+
+
+def test_快循环_没收尾不叫(tmp_path):
+    svc, store, woke = _attention(tmp_path)
+
+    class Running:
+        def poll(self, book): return []
+
+    svc.pc_tasks = Running()
+    svc.care_tick(datetime(2026, 10, 27, 14, 28, tzinfo=timezone.utc))
+    assert woke == []
+    store.close()

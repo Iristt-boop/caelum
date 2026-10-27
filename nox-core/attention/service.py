@@ -382,6 +382,8 @@ class AttentionService:
         #: 真正有信息的那几行才不会被淹掉
         self._last_line = ""
 
+        #: 唤醒链两条线都会叫（tick + care_tick 里电脑上的活收尾时），串起来跑，别同一张纸条醒两次
+        self._wake_lock = threading.Lock()
         #: 落盘连续失败了几次（审计 2.4）。0 = 上一次是成功的。
         #: 一次抖动和"一直写不进去"在日志里分不出来，这个数分得出来。
         self._persist_fails = 0
@@ -410,15 +412,6 @@ class AttentionService:
             except Exception:  # noqa: BLE001
                 logger.exception("看到点的事出错，这轮跳过")
 
-        # 0b. 交给她电脑上 Claude Code 的活（10-27）：收尾了放一张任务纸条，下面那步就把他叫醒去告诉她。
-        #     电脑关着 / ssh 不通都是跳过，不连累心跳（两分钟最多问一次，见 tools/pc_tasks.py）
-        pc_tasks = getattr(self, "pc_tasks", None)
-        if pc_tasks is not None and self.waker is not None:
-            try:
-                pc_tasks.poll(self.wakeups)
-            except Exception:  # noqa: BLE001
-                logger.exception("看电脑上的活出错，这轮跳过")
-
         # 0. 到期的纸条先处理。
         #
         # 放在最前面是有意的：唤醒链是**她刚说过话**引出来的，比睡眠这类
@@ -426,7 +419,8 @@ class AttentionService:
         # 那条通道，两者不会互相挤掉。
         if self.waker is not None:
             try:
-                self.waker(self.wakeups, now)
+                with self._wake_lock:   # care_tick 也会叫唤醒链（电脑上的活收尾时），两条线别撞上
+                    self.waker(self.wakeups, now)
             except Exception:  # noqa: BLE001
                 # 纸条这条线出问题不该带塌整个 tick —— 睡眠关心还得照跑
                 logger.exception("跑唤醒链出错，这轮跳过")
@@ -617,6 +611,18 @@ class AttentionService:
                 self.care.submit_all(self.card_source.poll(now))
             except Exception:  # noqa: BLE001
                 logger.exception("知识小课堂源出错，这轮跳过")
+
+        # 交给她电脑上 Claude Code 的活（10-27）：收尾了放一张任务纸条，**当场**叫唤醒链 ——
+        # 不等 15 分钟的 tick（第一个真活 22:27 做完、22:37 才被发现，她等了十分钟来问）。
+        # 两分钟最多问一次电脑（tools/pc_tasks.py），电脑关着 / ssh 不通都是跳过
+        pc_tasks = getattr(self, "pc_tasks", None)
+        if pc_tasks is not None and self.waker is not None:
+            try:
+                if pc_tasks.poll(self.wakeups):
+                    with self._wake_lock:
+                        self.waker(self.wakeups, now)
+            except Exception:  # noqa: BLE001
+                logger.exception("看电脑上的活出错，这轮跳过")
 
         out = self.care.run(now)
         for o in out:

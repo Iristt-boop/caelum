@@ -244,9 +244,22 @@ def describe(d: dict) -> str:
 
 def wake_note(job: dict, d: dict) -> str:
     """醒来的他只看得到这张纸条 —— 写清楚是什么活、结果如何、下一步归谁。"""
-    return (f"【电脑上的活·{job['id']}】你交给她电脑上 Claude Code 的活收尾了。她当时交代的：{job.get('task', '')[:200]}\n"
-            f"{describe(d)}\n"
-            "用你自己的话告诉她结果（别贴代码、别念提交号）；没做成就如实说卡在哪。"
+    state = (d.get("state") or {}).get("state")
+    r = d.get("result") or {}
+    # 🔴 结论写在第一句、写死：10-27 第一个真活明明 done，他开口说成「写得差不多了吧，你去翻一眼」——
+    #    纸条里只有「收尾了」，他就自己猜了个程度。也要告诉她去哪看（她电脑上的 worktree）
+    verdict = {
+        "done": "**已经做完了**（不是「差不多」，是做完了、提交了）",
+        "failed": "**没做成**",
+        "cancelled": "**被掐掉了**（她或你让停的）",
+    }.get(state, f"状态是 {state}")
+    where = (f"改动在她电脑上的 {r.get('worktree') or 'D:/nox-jobs/' + job['id']}（分支 {r.get('branch') or 'nox/' + job['id']}），"
+             "还没合进主线、也没上线。") if state == "done" else ""
+    return (f"【电脑上的活·{job['id']}】你交给她电脑上 Claude Code 的活{verdict}。\n"
+            f"她当时交代的：{job.get('task', '')[:200]}\n"
+            f"{describe(d)}\n{where}\n"
+            "现在告诉她：先说结论（做完了 / 没做成），再用你自己的话说做了什么、去哪看；别贴代码、别念提交号，"
+            "别用「差不多」「应该」这种猜的口气 —— 结果就在上面。没做成就如实说卡在哪。"
             "要上线得她亲口说，别替她决定。")
 
 
