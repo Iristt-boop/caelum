@@ -84,12 +84,39 @@ $task
     ) -join ','
     $mcp = "$jd\no-mcp.json"
     [IO.File]::WriteAllText($mcp, '{"mcpServers":{}}', $utf8)
-
     # 干净的环境：别从 ssh / 计划任务那头带进来什么 ANTHROPIC_*，以她 settings.json 为准
     Get-ChildItem env: | Where-Object { $_.Name -match '^(ANTHROPIC_|CLAUDE_?CODE|CLAUDECODE)' } |
         ForEach-Object { Remove-Item "env:$($_.Name)" }
 
-    $cargs = "/c `"`"$claude`" -p --output-format json --permission-mode acceptEdits --max-turns 120 " +
+    # 用哪个模型（她 10-27 定）：**先用 GLM**（她 settings.json 里配的智谱 glm-5.3-flash，她有订阅），
+    # 节点稳定了再把 $USE_SUBSCRIPTION 改成 $true 换回订阅 Sonnet。下面那条路 10-27 已经铺好、只差稳定的节点：
+    #   - 只在这里用 --settings 把她 settings 里指向智谱的 env 盖成空，她平时命令行的设置不动
+    #   - 凭据：`claude setup-token` 的长期 token，她自己用 save-claude-token.ps1 存（`claude auth login` 在这儿用不上）
+    #   - 订阅走 Anthropic，国内 IP 直连一律 403，命令行又不认 Windows 系统代理 → 显式指到她的 Clash（7897）
+    $USE_SUBSCRIPTION = $false
+    $modelArgs = ''
+    if ($USE_SUBSCRIPTION) {
+        $ovr = "$jd\use-subscription.json"
+        $blank = @{}
+        foreach ($k in 'ANTHROPIC_BASE_URL', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_API_KEY', 'ANTHROPIC_MODEL',
+                       'ANTHROPIC_DEFAULT_OPUS_MODEL', 'ANTHROPIC_DEFAULT_OPUS_MODEL_NAME',
+                       'ANTHROPIC_DEFAULT_SONNET_MODEL', 'ANTHROPIC_DEFAULT_SONNET_MODEL_NAME',
+                       'ANTHROPIC_DEFAULT_HAIKU_MODEL', 'ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME') { $blank[$k] = '' }
+        [IO.File]::WriteAllText($ovr, (@{ env = $blank } | ConvertTo-Json -Compress), $utf8)
+        $tok = Join-Path $env:USERPROFILE '.nox\claude-token'
+        if (-not (Test-Path $tok)) { throw "没有订阅 token（$tok）：要糖糖跑一次 claude setup-token + save-claude-token.ps1" }
+        $env:CLAUDE_CODE_OAUTH_TOKEN = (Get-Content $tok -Raw).Trim()   # 内容不打日志、不进 state / result
+        $proxyPort = 7897
+        $probe = New-Object Net.Sockets.TcpClient
+        try { $probe.Connect('127.0.0.1', $proxyPort) } catch { }
+        $up = $probe.Connected; $probe.Close()
+        if (-not $up) { throw "电脑上的 Clash 没开（127.0.0.1:$proxyPort 连不上），订阅连不出去。多半是刚开机、她还没登录 Windows" }
+        $env:HTTPS_PROXY = "http://127.0.0.1:$proxyPort"; $env:HTTP_PROXY = $env:HTTPS_PROXY
+        $env:NO_PROXY = 'localhost,127.0.0.1'
+        $modelArgs = "--model sonnet --settings `"$ovr`" "
+    }
+
+    $cargs = "/c `"`"$claude`" -p $modelArgs--output-format json --permission-mode acceptEdits --max-turns 120 " +
         "--strict-mcp-config --mcp-config `"$mcp`" --allowedTools `"$allowed`" --disallowedTools `"$denied`" " +
         "< `"$jd\prompt.txt`" > `"$jd\claude.json`" 2> `"$jd\claude.err`"`""
     $proc = Start-Process cmd.exe -ArgumentList $cargs -WorkingDirectory $wt -WindowStyle Hidden -PassThru
@@ -108,6 +135,8 @@ $task
         summary = if ($out) { $out.result } else { (Get-Content "$jd\claude.err" -Raw -ErrorAction SilentlyContinue) }
         is_error = if ($out) { [bool]$out.is_error } else { $true }
         turns = if ($out) { $out.num_turns } else { $null }
+        # 实际跑的是哪个模型（以回包为准，不以参数为准）
+        models = if ($out -and $out.modelUsage) { @($out.modelUsage.PSObject.Properties.Name) } else { @() }
         commits = $commits; diffstat = "$stat"; uncommitted = $dirty
         branch = $branch; worktree = $wt
     }
