@@ -59,7 +59,9 @@ try {
         throw '它的改动和主线后来的提交冲突了，没合。要上电脑看'
     }
     $head = (git -C $wt rev-parse HEAD).Trim()
-    $changes = @(git -C $wt diff --name-status --no-renames "$master..$head" | ForEach-Object {
+    # 🔴 core.quotepath=false：不然中文文件名被 git 转成 "docs/Nox-\345..." 带引号的样子，
+    #    认不出是 docs/，被当成「要她上电脑弄」（10-29 第一次上线，他就这么跟她说了）
+    $changes = @(git -C $wt -c core.quotepath=false diff --name-status --no-renames "$master..$head" | ForEach-Object {
         $p = $_ -split "`t"; [pscustomobject]@{ status = $p[0]; path = $p[1] } })
     if ($changes.Count -eq 0) { throw '分支上没有改动，没什么可上线的' }
 

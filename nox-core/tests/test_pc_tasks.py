@@ -246,7 +246,7 @@ def test_快循环_活收尾了当场叫唤醒链(tmp_path):
     svc, store, woke = _attention(tmp_path)
 
     class Done:
-        def poll(self, book): return ["1027-2217-36a2"]
+        def poll(self, book, at=None): return ["1027-2217-36a2"]
 
     svc.pc_tasks = Done()
     svc.care_tick(datetime(2026, 10, 27, 14, 28, tzinfo=timezone.utc))
@@ -258,7 +258,7 @@ def test_快循环_没收尾不叫(tmp_path):
     svc, store, woke = _attention(tmp_path)
 
     class Running:
-        def poll(self, book): return []
+        def poll(self, book, at=None): return []
 
     svc.pc_tasks = Running()
     svc.care_tick(datetime(2026, 10, 27, 14, 28, tzinfo=timezone.utc))
@@ -406,3 +406,31 @@ def test_上线卡_工具层看这一轮的原话(env):
     with tool_context.bind(ctx):
         _handlers(t)["pc_task_ship"]({"id": jid})
     assert ctx.attachments == [], "唤醒链那一轮也出了上线卡"
+
+
+def test_快循环_纸条当轮就到期_不等大心跳(tmp_path):
+    """10-29 实测：poll 问完电脑晚了一秒，纸条 wake_at 比这一轮的 now 晚，当轮不到期，晚了快 5 分钟才说。"""
+    from attention.relationship import RelationshipState
+    from attention.service import AttentionService
+    from attention.store import AttentionStore
+
+    class Provider:
+        def get_state(self, turn=None, force_refresh=False):
+            return {"has_data": False}
+
+    tick_now = datetime(2026, 10, 29, 3, 16, 4, tzinfo=timezone.utc)
+    clock = Clock()
+    clock.t = tick_now + timedelta(seconds=1)          # 问电脑花了一秒
+    ssh = FakeSsh()
+    t = PcTasks(FakePc(), tmp_path / "j.json", run=ssh, now=clock)
+    t.start("写个文档", "caelum", "s1", "做吧")
+    jid = ssh.calls[-1][0].split()[1]
+    ssh.states[jid] = DONE(jid)
+    store = AttentionStore(tmp_path / "attn.db")
+    seen = []
+    svc = AttentionService(store, Provider(), RelationshipState(), fast_sources=[],
+                           waker=lambda book, now: seen.append(len(book.due(now))))
+    svc.pc_tasks = t
+    svc.care_tick(tick_now)
+    assert seen == [1], "纸条放了，但叫 waker 时还没到期（要等下一次大心跳）"
+    store.close()

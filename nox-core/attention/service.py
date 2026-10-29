@@ -618,7 +618,7 @@ class AttentionService:
         pc_tasks = getattr(self, "pc_tasks", None)
         if pc_tasks is not None and self.waker is not None:
             try:
-                if pc_tasks.poll(self.wakeups):
+                if pc_tasks.poll(self.wakeups, now):
                     with self._wake_lock:
                         self.waker(self.wakeups, now)
             except Exception:  # noqa: BLE001

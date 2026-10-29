@@ -199,9 +199,14 @@ class PcTasks:
 
     # ---------- 心跳里调：做完了就放纸条 ----------
 
-    def poll(self, book: Any) -> list[str]:
-        """没通知过的活挨个问一遍；收尾了就往唤醒本放一张任务纸条。两分钟最多问一次。"""
+    def poll(self, book: Any, at: datetime | None = None) -> list[str]:
+        """没通知过的活挨个问一遍；收尾了就往唤醒本放一张任务纸条。两分钟最多问一次。
+
+        `at`：纸条的到期时间用调用方那一轮的「现在」。🔴 10-29 实测：纸条用 poll 自己的时钟（问完电脑、
+        晚了一秒），快循环紧接着拿这一轮开头的 now 叫 waker —— `wake_at <= now` 不成立，纸条当轮不到期，
+        等 15 分钟的大心跳才说（晚了快 5 分钟）。"""
         now = self.now()
+        stamp = at or now
         if self._last_poll and now - self._last_poll < POLL_EVERY:
             return []
         self._last_poll = now
@@ -223,7 +228,7 @@ class PcTasks:
                     state = (d.get("state") or {}).get("state")
                     if state in FINAL:
                         if j.get("session_id"):
-                            book.add_routine(j["session_id"], wake_note(j, d), now)
+                            book.add_routine(j["session_id"], wake_note(j, d), stamp)
                         j["notified"] = True
                         j["state"] = state
                         told.append(j["id"])
@@ -234,7 +239,7 @@ class PcTasks:
                     j["ship"].update(status=sh["state"], step=sh.get("step"), error=sh.get("error"),
                                      deployed=sh.get("deployed") or [], manual=sh.get("manual") or [])
                     if j.get("session_id"):
-                        book.add_routine(j["session_id"], ship_note(j, sh), now)
+                        book.add_routine(j["session_id"], ship_note(j, sh), stamp)
                     told.append(j["id"])
             if told:
                 self._save(jobs)
