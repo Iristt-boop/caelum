@@ -160,6 +160,34 @@ case "$SVC" in
 esac
 log "[2] 验证通过"
 
+# ── [2b] 她在说话就先别重启（2026-10-29 补）──────────────────────────
+# 10-10 两次重启掐断她正在收的回复、整轮不落库（记忆 dont-restart-while-she-talks）。
+# nox-core / bridge 换代 = 重启聊天链路：等会话库最后一条消息过去 3 分钟再翻软链，
+# 最多等 60 分钟；等不到就原样退出（新目录留着，正在跑的那份没动过）。
+case "$SVC" in
+  nox-core|bridge)
+    for i in $(seq 1 120); do
+      idle=$(python3 -c "
+import sqlite3, datetime
+c = sqlite3.connect('file:/root/nox-core/data/sessions.db?mode=ro', uri=True)
+t = datetime.datetime.fromisoformat(c.execute('select max(created_at) from messages').fetchone()[0])
+print(int((datetime.datetime.now(datetime.timezone.utc) - t).total_seconds()))" 2>/dev/null || echo -1)
+      if [ "$idle" -lt 0 ]; then
+        log "❌ [2b] 读不到会话库，判断不了她在不在说话 —— 不翻软链"
+        exit 1
+      fi
+      [ "$idle" -ge 180 ] && break
+      if [ "$i" = 120 ]; then
+        log "❌ [2b] 等了 60 分钟她一直在说话 —— 不翻软链（$NEW 留着，下次换个版本号重发）"
+        exit 1
+      fi
+      [ "$i" = 1 ] && log "[2b] 她 ${idle}s 前还在说话，等她安静 3 分钟…"
+      sleep 30
+    done
+    log "[2b] 已安静 ${idle}s"
+    ;;
+esac
+
 # ── [3] 翻软链（这一步才"生效"）────────────────────────────────────
 PREV=""
 [ -L "$LINK" ] && PREV=$(readlink "$LINK")
@@ -200,7 +228,10 @@ fi
   echo "path      : $NEW"
   echo "deployed  : $(date '+%F %T')"
 } > "$REL_ROOT/CURRENT"
-log "[5] 已记账到 $REL_ROOT/CURRENT"
+# caelum-restore.sh 读的是 /root/<服务>/CURRENT（只有一行 tag）——
+# 10-29 才发现这里一直只写 releases 下那份，那边的 CURRENT 停在手工换代的 10-15 / 10-10
+echo "$TAG" > "$(dirname "$LINK")/CURRENT"
+log "[5] 已记账到 $REL_ROOT/CURRENT 和 $(dirname "$LINK")/CURRENT"
 
 # 只保留最近 $KEEP 份（永不删当前指向的那份）
 n=0

@@ -22,7 +22,9 @@
 param(
   [Parameter(Position = 0)][string]$Service,
   [Parameter(Position = 1)][string]$Commit = "HEAD",
-  [switch]$Status
+  [switch]$Status,
+  #: 工作区里有别人没提交的改动时不再问（它们本来就不会进 release）
+  [switch]$Yes
 )
 
 $ErrorActionPreference = "Stop"
@@ -32,6 +34,8 @@ $ErrorActionPreference = "Stop"
 # —— 于是远端日志里的中文全变乱码，「详见上面的日志」这句话就成了废话。
 # （2026-09-13：正是它让第 [4] 步的成功判定一直失效，见那里的注释。）
 try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding $false } catch { }
+# 下面会调 python scripts/ship.py：让它也吐 UTF-8，不然中文按 GBK 出来又是乱码
+$env:PYTHONIOENCODING = "utf-8"
 
 $Key  = "C:\Users\14372\.ssh\id_ed25519"
 # 🔴 **认名字，不认 IP**（2026-09-15 改）。
@@ -134,8 +138,10 @@ try {
     Write-Host "⚠️  $Sub 在 $Sha 之后还有未提交的改动，**它们不会被部署**：" -ForegroundColor Yellow
     $dirty | ForEach-Object { Write-Host "      $_" -ForegroundColor DarkYellow }
     Write-Host "    （版本化部署的前提就是「先 commit 再部署」）" -ForegroundColor DarkGray
-    $ans = Read-Host "    继续部署 $Sha 吗？(y/N)"
-    if ($ans -ne "y") { Write-Host "已取消。" ; exit 1 }
+    if (-not $Yes) {
+      $ans = Read-Host "    继续部署 $Sha 吗？(y/N)"
+      if ($ans -ne "y") { Write-Host "已取消。" ; exit 1 }
+    }
   }
 
   $Tag = "$(Get-Date -Format 'yyyy-MM-dd')-$Sha"
@@ -159,8 +165,10 @@ try {
   Write-Host "[2] 已上传到 /tmp/release-$Service.tar"
 
   # ── [3] 远端：远端脚本要在位 ─────────────────────────────────
-  scp @SshOpts -q (Join-Path $PSScriptRoot "deploy-remote.sh") "${Vps}:/root/deploy-remote.sh"
-  if ($LASTEXITCODE -ne 0) { throw "上传 deploy-remote.sh 失败" }
+  # 2026-10-29：走 ship.py 发（只发提交过的那份、对清单），不再从工作区 scp ——
+  # 工作区那份可能是 CRLF / 没提交，而且绕过 ship 的 cp 第二天晨检会报「改了」
+  python (Join-Path $PSScriptRoot "ship.py") scripts scripts/deploy-remote.sh
+  if ($LASTEXITCODE -ne 0) { throw "发 deploy-remote.sh 失败（ship.py 退出码 $LASTEXITCODE）" }
 
   # ── [4] 远端执行 ─────────────────────────────────────────────
   $out = Invoke-Remote "bash /root/deploy-remote.sh '$Service' '$Tag' '/tmp/release-$Service.tar'"
@@ -180,5 +188,10 @@ try {
   }
 
   Write-Host "✅ $Service 部署完成：$Tag" -ForegroundColor Green
+
+  # ── [5] 部署清单跟着换代（2026-10-29）───────────────────────────
+  # 整个目录换了，/root/deployed/<服务>.json 里的 sha1 全过期 —— 不重建，第二天晨检全红
+  python (Join-Path $PSScriptRoot "ship.py") --baseline $Service --force
+  if ($LASTEXITCODE -ne 0) { Write-Host "⚠️ 清单重建失败：手动跑 python scripts/ship.py --baseline $Service --force" -ForegroundColor Yellow }
 }
 finally { Pop-Location }
