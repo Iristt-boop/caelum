@@ -9,14 +9,17 @@ key 不进普通备份，那换机 / 恢复 / 搬家时 key 怎么过去？—�
   · 头：`{"v":1,"kdf":"scrypt","n":…,"r":…,"p":…,"salt":b64,"nonce":b64}` —— KDF 参数写进文件，以后升级参数旧包照样能开
   · 密钥：`hashlib.scrypt(口令, salt)` → 32 字节 → AES-256-GCM
   · **MAGIC + 头整个当 AAD**：改头里任何一个字节（比如把 n 调小想省力破解）tag 就对不上
-  · 明文 JSON：providers / models / slots / keys / exported_at / source_host
+  · 明文 JSON：providers / models / slots / keys / exported_at / source_host / choices
+  · `choices`（10-29 加）：她自己的选择 —— 槽位（slot_choices）、声音链、聊天主模型、思考开关。
+    旧包没有这一栏，照样能导（只是不带选择）；新包给旧代码，多出来的这栏被忽略
 
 ## 不变量（每条都有测试，交付前故意改坏过）
 
   · 口令不对 / 文件被改：**同一句话**，对外不区分（不给猜的人提示）
   · 包里扫不到任何明文 key；预览里扫不到任何 key（只有「有没有带 key」的布尔）
   · 导入只写**她自己加的**厂商 / 型号（`source='user'` / `origin!='seed'`）和 key；代码自带的种子行由代码管，不覆盖
-  · **槽位这一期不导入**：P3 之前没有「她设的槽位」能和启动时的种子刷新共存（同一个主键，下次启动会撞）。包里照带，P3 接上
+  · `slots`（种子槽位表）仍然不导：它每次启动由代码重灌。她的槽位选择在 `choices.slots`（slot_choices 表，不和种子撞），
+    10-29 起导入：型号按「厂商 + 型号名」对上、这边能用才收，对不上的一条条列在预览里，不猜
   · 这个模块**不许被工具表引用**（他只能提议，不能导出 / 导入；`tests/test_config_keys_migrate.py` 的哨兵）
 """
 
@@ -31,8 +34,12 @@ import struct
 from datetime import datetime, timezone
 from typing import Any
 
+import logging
+
 from settings_store.keys import KeyStore
 from settings_store.store import SettingsStore, _now
+
+_log = logging.getLogger("settings_store.migrate")
 
 MAGIC = b"CAELUMCFG\x00"
 VERSION = 1
@@ -76,7 +83,43 @@ def check_passphrase(p1: str, p2: str) -> str:
 # ------------------------------------------------------------------ 导出
 
 
-def collect(store: SettingsStore, keys: KeyStore) -> dict[str, Any]:
+#: 预览里给她看的名字
+SLOT_LABELS = {"chat.utility": "杂活", "vision": "看图", "video": "视频", "image": "画图"}
+
+
+def _model_by_short(store: SettingsStore, short: str | None) -> dict[str, Any] | None:
+    if not short:
+        return None
+    return next((m for m in store.models() if m["short_name"] == short), None)
+
+
+def collect_choices(store: SettingsStore, prefs: dict[str, Any] | None = None) -> dict[str, Any]:
+    """她自己的选择（R-4 补，10-29）。`prefs` 由 server 递进来：{"chat_model": 短名 | None, "thinking": bool | None}
+    —— 那两样存在 attention.db，这个模块不碰别的库。"""
+    from settings_store import voice
+
+    with store._lock:
+        rows = store._conn.execute("SELECT slot, provider_id, model_name FROM slot_choices ORDER BY slot").fetchall()
+    saved = {n: voice._saved(store, n) for n in voice.DEFAULTS}
+    out: dict[str, Any] = {
+        "slots": [{"slot": r["slot"], "provider_id": r["provider_id"], "model_name": r["model_name"]} for r in rows],
+        "voice": {n: e for n, e in saved.items() if e is not None},
+        "chat_model": None,
+        "thinking": None,
+    }
+    prefs = prefs or {}
+    key = prefs.get("chat_model")
+    if key:
+        m = _model_by_short(store, key)
+        # 型号名跟着走：短名在新机器上可能让给别人了（导入时短名被占会清空）
+        out["chat_model"] = {"key": key, "provider_id": m["provider_id"] if m else None,
+                             "model_name": m["model_name"] if m else None}
+    if prefs.get("thinking") is not None:
+        out["thinking"] = bool(prefs["thinking"])
+    return out
+
+
+def collect(store: SettingsStore, keys: KeyStore, prefs: dict[str, Any] | None = None) -> dict[str, Any]:
     slots = []
     for s in store.slots():
         resolved = []
@@ -97,6 +140,7 @@ def collect(store: SettingsStore, keys: KeyStore) -> dict[str, Any]:
                    for m in store.models()],
         "slots": slots,
         "keys": keys.export_all(),
+        "choices": collect_choices(store, prefs),
     }
 
 
@@ -112,8 +156,9 @@ def seal(payload: dict[str, Any], passphrase: str) -> bytes:
     return MAGIC + struct.pack(">H", len(header)) + header + ct
 
 
-def export_package(store: SettingsStore, keys: KeyStore, passphrase: str) -> bytes:
-    return seal(collect(store, keys), passphrase)
+def export_package(store: SettingsStore, keys: KeyStore, passphrase: str,
+                   prefs: dict[str, Any] | None = None) -> bytes:
+    return seal(collect(store, keys, prefs), passphrase)
 
 
 # ------------------------------------------------------------------ 打开 / 预览 / 导入
@@ -180,11 +225,72 @@ def preview(store: SettingsStore, data: dict[str, Any]) -> dict[str, Any]:
         "keys": len([pid for pid in keys if pid in here or any(
             p["id"] == pid and _is_user_provider(p) for p in data.get("providers") or [])]),
         "slots": {"in_package": len(data.get("slots") or []), "importable": False,
-                  "note": "槽位要等「槽位可改」（P3）那一期才能导；这次只导厂商、型号和 key"},
+                  "note": "" if "choices" in data else "这个包是旧版导出的，没带你的选择（槽位 / 声音 / 聊天模型 / 思考）"},
+        "choices": [{"what": c["what"], "value": c["value"], "action": c["action"], "ok": c["ok"]}
+                    for c in plan_choices(store, data)],
     }
 
 
-def apply_package(store: SettingsStore, keys: KeyStore, data: dict[str, Any]) -> dict[str, Any]:
+def _model_after_import(store: SettingsStore, data: dict[str, Any], provider_id: str | None,
+                        model_name: str | None) -> bool:
+    """这个型号导完以后这边有没有：这边本来就有，或者包里带着、而且会被导进来（她加的、厂商这边有 / 跟着导）。"""
+    if not provider_id or not model_name:
+        return False
+    if any(m["provider_id"] == provider_id and m["model_name"] == model_name and m["enabled"]
+           for m in store.models()):
+        return True
+    here = {p["id"] for p in store.providers()}
+    incoming_p = {p["id"] for p in data.get("providers") or [] if _is_user_provider(p)}
+    return any(m["provider_id"] == provider_id and m["model_name"] == model_name and _is_user_model(m)
+               and (provider_id in here or provider_id in incoming_p) for m in data.get("models") or [])
+
+
+def plan_choices(store: SettingsStore, data: dict[str, Any]) -> list[dict[str, Any]]:
+    """包里她的选择，逐条说会不会收。**预览和导入用同一份判断**，免得预览说收、导入没收。"""
+    from settings_store import voice
+
+    ch = data.get("choices") or {}
+    out: list[dict[str, Any]] = []
+    for s in ch.get("slots") or []:
+        slot, pid, name = s.get("slot"), s.get("provider_id"), s.get("model_name")
+        what = SLOT_LABELS.get(slot)
+        if what is None:
+            out.append({"kind": "slot", "key": slot, "what": str(slot), "value": f"{pid} / {name}",
+                        "ok": False, "action": "跳过（这边没有这个位置）"})
+            continue
+        ok = _model_after_import(store, data, pid, name)
+        out.append({"kind": "slot", "key": slot, "what": what, "value": f"{pid} / {name}", "ok": ok,
+                    "target": (pid, name),
+                    "action": "会换成这个" if ok else "跳过（这边没有这个型号，留服务器默认）"})
+    for name, engines in sorted((ch.get("voice") or {}).items()):
+        label = voice.LABELS.get(name)
+        engines = [str(e) for e in engines or []]
+        known = [e for e in engines if e in voice.ENGINE_IDS]
+        if label is None:
+            out.append({"kind": "voice", "key": name, "what": str(name), "value": " → ".join(engines),
+                        "ok": False, "action": "跳过（这边没有这条声音链）"})
+        elif not known:
+            out.append({"kind": "voice", "key": name, "what": label, "value": " → ".join(engines),
+                        "ok": False, "action": "跳过（这几家这边都没接）"})
+        else:
+            dropped = [e for e in engines if e not in known]
+            out.append({"kind": "voice", "key": name, "what": label, "value": " → ".join(known), "ok": True,
+                        "engines": known,
+                        "action": "会换成这个" + (f"（{'、'.join(dropped)} 这边没接，去掉）" if dropped else "")})
+    cm = ch.get("chat_model")
+    if cm:
+        pid, name, key = cm.get("provider_id"), cm.get("model_name"), cm.get("key")
+        ok = _model_after_import(store, data, pid, name)
+        out.append({"kind": "chat_model", "key": "chat_model", "what": "聊天模型",
+                    "value": f"{pid} / {name}" if pid else str(key), "ok": ok, "target": (pid, name),
+                    "action": "会换成这个" if ok else "跳过（这边没有这个型号，用默认主模型）"})
+    if ch.get("thinking") is not None:
+        out.append({"kind": "thinking", "key": "thinking", "what": "思考", "value": "开" if ch["thinking"] else "关",
+                    "ok": True, "on": bool(ch["thinking"]), "action": "会设成这样"})
+    return out
+
+
+def apply_package(store: SettingsStore, keys: KeyStore, data: dict[str, Any], prefs: Any = None) -> dict[str, Any]:
     """写入。种子行不碰；她加的厂商 / 型号覆盖或新增；key 只给这边存在的厂商。"""
     now = _now()
     user_providers = [p for p in data.get("providers") or [] if _is_user_provider(p)]
@@ -222,4 +328,46 @@ def apply_package(store: SettingsStore, keys: KeyStore, data: dict[str, Any]) ->
     incoming = {pid: k for pid, k in (data.get("keys") or {}).items() if pid in known and k}
     if incoming:
         keys.set_many(incoming)
-    return {"providers": len(user_providers), "models": n_models, "keys": len(incoming), "slots": 0}
+    applied, skipped = apply_choices(store, data, prefs, keys)
+    return {"providers": len(user_providers), "models": n_models, "keys": len(incoming), "slots": 0,
+            "choices": applied, "skipped": skipped}
+
+
+def apply_choices(store: SettingsStore, data: dict[str, Any], prefs: Any = None,
+                  keys: Any = None) -> tuple[int, list[str]]:
+    """厂商 / 型号 / key 写完之后再收她的选择（型号得先在）。`prefs` 是 core：有 set_chat_model / set_thinking。
+    返回（收了几条，跳过的「哪一项」）。每条都走各自原来的写入口，「换回去」照样能用。"""
+    from settings_store import slots, voice
+
+    applied, skipped = 0, []
+    for c in plan_choices(store, data):
+        if not c["ok"]:
+            skipped.append(c["what"])
+            continue
+        try:
+            if c["kind"] == "slot":
+                # 和她在 Slots 里点选同一道门：能力对、没停用、那一家有 key（key 上面刚导进来）
+                pid, name = c["target"]
+                if not any(o["provider_id"] == pid and o["model_name"] == name
+                           for o in slots.options(store, keys, c["key"])):
+                    skipped.append(c["what"])
+                    continue
+                slots._write(store, c["key"], (pid, name), reason="迁移包导入")
+            elif c["kind"] == "voice":
+                voice.set_chain(store, c["key"], c["engines"])
+            elif c["kind"] == "chat_model":
+                m = next((m for m in store.models()
+                          if (m["provider_id"], m["model_name"]) == tuple(c["target"])), None)
+                if prefs is None or m is None or not m["short_name"] or not prefs.set_chat_model(m["short_name"]):
+                    skipped.append(c["what"])
+                    continue
+            elif c["kind"] == "thinking":
+                if prefs is None or not prefs.set_thinking(c["on"]):
+                    skipped.append(c["what"])
+                    continue
+        except Exception:  # noqa: BLE001 —— 一条收不进不该让整包回滚（厂商 / key 已经写了），但要说出来
+            _log.warning("迁移包里的选择 %s 没收进来", c["what"], exc_info=True)
+            skipped.append(c["what"])
+            continue
+        applied += 1
+    return applied, skipped

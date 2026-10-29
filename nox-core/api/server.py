@@ -3770,12 +3770,20 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
         _config_limit("migrate", 5)
         try:
             pw = migrate.check_passphrase(req.passphrase, req.passphrase2)
-            blob = migrate.export_package(_config_store(), _config_keys(), pw)
+            blob = migrate.export_package(_config_store(), _config_keys(), pw, prefs=_config_prefs())
         except migrate.MigrationError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from None
         logger.info("配置审计：她导出了一份迁移包（%d 字节）", len(blob))
         return {"ok": True, "filename": f"caelum-{temporal_now():%Y%m%d-%H%M}.caelumcfg",
                 "file_b64": base64.b64encode(blob).decode("ascii")}
+
+    def _config_prefs() -> dict:
+        """她在 attention.db 里的两样选择，交给迁移包一起带走（R-4 补，10-29）。读不到就不带，不挡导出。"""
+        try:
+            return {"chat_model": core.chat_model_key(), "thinking": bool(core.thinking_on())}
+        except Exception:  # noqa: BLE001
+            logger.warning("读不出聊天模型 / 思考开关，这次迁移包不带它们", exc_info=True)
+            return {}
 
     def _open_upload(req: ConfigImportRequest) -> dict:
         from settings_store import migrate
@@ -3797,14 +3805,16 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
 
     @app.post("/api/nox/config/import")
     def nox_config_import(req: ConfigImportRequest) -> dict:
-        """她看过预览、点了确认才调。导入的厂商一律「未测」；槽位这一期不导。"""
-        from settings_store import migrate, profile
+        """她看过预览、点了确认才调。导入的厂商一律「未测」；她的选择（槽位 / 声音 / 聊天模型 / 思考）对得上才收。"""
+        from settings_store import migrate, profile, slots
         _config_limit("migrate", 5)
         data = _open_upload(req)
-        result = migrate.apply_package(_config_store(), _config_keys(), data)
+        result = migrate.apply_package(_config_store(), _config_keys(), data, prefs=core)
         profile.refresh(core)
-        logger.info("配置审计：她导入了迁移包（%d 家厂商 / %d 个型号 / %d 把 key）",
-                    result["providers"], result["models"], result["keys"])
+        slots.apply(core)                       # 杂活换线路要换代理里那个 adapter，和她在 Slots 里点选一样
+        logger.info("配置审计：她导入了迁移包（%d 家厂商 / %d 个型号 / %d 把 key / %d 项选择，跳过 %s）",
+                    result["providers"], result["models"], result["keys"], result["choices"],
+                    "、".join(result["skipped"]) or "无")
         return {"ok": True, **result}
 
     @app.get("/api/nox/tools")

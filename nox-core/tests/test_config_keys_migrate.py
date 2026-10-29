@@ -180,7 +180,7 @@ def test_红线_往返_换一台机器导进去_key和她加的东西都在(monk
     ks2 = KeyStore(tmp_path / "b" / FILENAME)
     data = migrate.open_package(blob, PASS)
     result = migrate.apply_package(s2, ks2, data)
-    assert result == {"providers": 1, "models": 1, "keys": 2, "slots": 0}
+    assert result == {"providers": 1, "models": 1, "keys": 2, "slots": 0, "choices": 0, "skipped": []}
     assert ks2.get("deepseek") == FRONT and ks2.get("relay") == "KEY-MARK-RELAY-000"
     assert s2.provider("relay")["source"] == "user"
     m = next(x for x in s2.models() if x["model_name"] == "gemini-3")
