@@ -47,6 +47,10 @@ TTL: dict[str, timedelta] = {
     "watching_session": timedelta(hours=2),
     # 「昨晚一起听的那首」过一天就成回忆了
     "listening_together": timedelta(hours=36),
+    # ---- 她在他面前（stackchan 人脸识别，2026-09-24）----
+    # 「她在面前」是个此刻的状态：tracker 心跳每分钟一次，几分钟没
+    # 心跳就该当「不知道」，绝不能拿 36 小时前的旧闻说「她就坐在旁边」
+    "she_is_present": timedelta(minutes=10),
 }
 
 

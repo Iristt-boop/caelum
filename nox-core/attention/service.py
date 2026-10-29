@@ -721,7 +721,9 @@ class AttentionService:
             return self._speak_time_wake(signal.payload["event"], now)
         if signal.source == "todo":
             return self._chase_todo(signal, thread, now)
-        if signal.source in ("random", "location"):
+        if signal.source in ("random", "location", "stackchan"):
+            # stackchan（2026-09-24）：她坐到他面前了。走同一条「先读
+            # 她的状态再说话」的路 —— 他看得见她，开口该像当面说话
             return self._think_of_her(signal, thread, now)
         if signal.source == "topic":
             return self._speak_topic(signal, thread, now)
