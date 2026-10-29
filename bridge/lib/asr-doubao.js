@@ -66,7 +66,11 @@ export function configFrame() {
       enable_punc: true,
       enable_itn: true,
       show_utterances: true,
-      result_type: "single",
+      // 🔴 full 不是 single（2026-10-29）：single 下 text 只有「当前这一句」，
+      //   end_window_size 200ms 一停就断句 → 她说两句，定稿只剩后一句
+      //   （实测「今天晚上我们吃什么呀？我有点饿了。」→「我有点饿了。」）。
+      //   会话本来就一轮一建（server.js），full = 这一轮她说的全部。
+      result_type: "full",
       end_window_size: 200,
       reqid: crypto.randomUUID(),
       workflow: "audio_in,resample,partition,vad,fe,decode,itn,nlu_punctuate",
