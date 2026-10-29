@@ -18,6 +18,8 @@
   python scripts/ship.py --baseline nox-core      # 给现在的线上建清单（只登记和 git 一致的文件）
   python scripts/ship.py --result <id>            # 看一次等安静的部署有没有做完
   加 --dry-run 只检查不动线上。
+  --force：发文件时接管「线上有、清单没登记、git 历史里也找不到」的那份（旧的进备份）；
+           清单记过的文件对不上，--force 也照样停。--baseline 时是重建清单。
 """
 from __future__ import annotations
 
@@ -45,11 +47,14 @@ SERVICES: dict[str, dict] = {
                    health="http://127.0.0.1:3003/api/health", quiet=True, scan=True),
     "ombre-brain": dict(root="/root/ombre-brain", repo="Ombre-Brain", prefix="", units=["ombre-brain"],
                         quiet=True, scan=True, exclude_dirs=["buckets", "profile"]),
-    "co-reading": dict(root="/root/co-reading-mcp", repo=".", prefix="co-reading", units=["co-reading"], scan=True),
+    "co-reading": dict(root="/root/co-reading-mcp", repo=".", prefix="co-reading", units=["co-reading"], scan=True,
+                       exclude_dirs=["data"]),  # 她导的书、卡片都在 data/
     "co-watching": dict(root="/root/co-watching/code", repo=".", prefix="co-watching", units=["co-watching"], scan=True),
-    "co-listening": dict(root="/root/co-listening", repo="co-listening", prefix="", units=["co-listening"], scan=True),
+    "co-listening": dict(root="/root/co-listening", repo="co-listening", prefix="", units=["co-listening"], scan=True,
+                         exclude_dirs=["data"]),  # 歌单是运行数据
     "stackchan": dict(root="/root/stackchan-mcp", repo="stackchan-mcp", prefix="",
-                      units=["stackchan-gateway", "stackchan-tracker"], scan=True),
+                      units=["stackchan-gateway", "stackchan-tracker"], scan=True,
+                      exclude_dirs=["tracker/enroll_src"]),  # 认脸照片
     "touch-mcp": dict(root="/root/touch-mcp/code", repo=".", prefix="touch-mcp", units=["touch-mcp"], scan=True),
     "touch-server": dict(root="/root/touch-server/code", repo=".", prefix="fsr402-touch-server",
                          units=["touch-server"], scan=True),
@@ -180,7 +185,7 @@ def now_iso() -> str:
 
 # ---------------------------------------------------------------- 发
 
-def ship(name: str, paths: list[str], restart: bool, dry: bool, wait_s: int) -> int:
+def ship(name: str, paths: list[str], restart: bool, dry: bool, wait_s: int, force: bool = False) -> int:
     svc = SERVICES[name]
     ensure_helper()
     manifest, manifest_sha = load_manifest(name)
@@ -214,7 +219,10 @@ def ship(name: str, paths: list[str], restart: bool, dry: bool, wait_s: int) -> 
                 raise Stop(f"{rel}：线上和清单记的不一样（上次发的是 {ent['commit']}）—— 有人绕过 ship 改过，先对清楚")
         elif h is not None:
             hist = history_shas(svc["repo"], in_repo)
-            if h["sha1_lf"] not in hist:
+            if h["sha1_lf"] not in hist and force:
+                # 只放过「从没进过清单」的文件（baseline 记进 ignore 的那种）；清单对不上照样停
+                print(f"  ! {rel} 线上这份不在 git 历史里，--force 接管（旧的进备份）")
+            elif h["sha1_lf"] not in hist:
                 raise Stop(f"{rel}：线上这份不在 git 历史里（也不在清单里）—— 线上有没提交的改动，先补提交")
         todo.append((in_repo, rel, content, commit, mode))
 
@@ -382,7 +390,7 @@ def main(argv: list[str]) -> int:
         if len(args) < 2 or args[0] not in SERVICES:
             print(__doc__)
             return 2
-        return ship(args[0], args[1:], restart, dry, wait_s=480)
+        return ship(args[0], args[1:], restart, dry, wait_s=480, force=force)
     except Stop as e:
         print(f"停：{e}")
         return 4
