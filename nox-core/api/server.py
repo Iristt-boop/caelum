@@ -87,7 +87,7 @@ from tools.local_link import LocalLink, read_secret
 from tools import computer as computer_tools
 from tools import room as room_tools
 from tools import taobao as taobao_tools
-from attention.speaker import build_speaker
+from attention.speaker import build_drafter, build_speaker
 from attention.waker import build_waker
 from attention.gate import DailyGate
 #: 哪些 kind 是**关于他自己**的，不该混进「他在惦记你什么」那句话。
@@ -727,6 +727,8 @@ def _build_attention(core: Nox, sessions: "Sessions", db: Store) -> AttentionSer
             live = False
 
         speaker = build_speaker(core, sessions, db, astore) if live else None
+        #: 主动来电的开场白他自己写（10-29）：全管线草稿，不推不落会话
+        drafter = build_drafter(core, sessions, db) if live else None
 
         # 统一开口闸（M5′ a，2026-08-14 重构后职责修正）：
         # 只管「她沉默时的主动开口」——Attention（睡眠）+ 固定时间醒来。
@@ -994,7 +996,8 @@ def _build_attention(core: Nox, sessions: "Sessions", db: Store) -> AttentionSer
                                topics=topics_pool, card_source=card_source,
                                rhythm=rhythm,
                                call_bridge=core.bridge,
-                               call_utility=_call_utility)
+                               call_utility=_call_utility,
+                               call_drafter=drafter)
         # svc 建完才有 longing —— 回填取值函数（rhythm.gap_window 每次现取）
         rhythm.longing_ref = lambda: getattr(svc, "longing", None)
         if _call_source is not None:

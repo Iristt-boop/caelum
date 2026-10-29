@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import random
 import threading
 import time
@@ -176,6 +177,20 @@ OUTING_STEP_GAP_MIN = 5
 CARE_INTERVAL_S = 60
 
 
+#: 草稿里的两行：「锁屏：…」「开场：…」（全角半角冒号都认）
+_CALL_LINE = re.compile(r"^(锁屏|开场)\s*[:：]\s*(.*)$")
+#: 包在整句外面的引号（12 通里一大半带着 “ ” / 「」 —— 聊天里原样显示出来）
+_QUOTES = "\"'“”‘’「」『』"
+
+
+def _clean_spoken(text: str) -> str:
+    """去掉外层引号和空白。只剥成对包在两头的，句中的引号不动。"""
+    t = (text or "").strip()
+    while len(t) >= 2 and t[0] in _QUOTES and t[-1] in _QUOTES:
+        t = t[1:-1].strip()
+    return t
+
+
 class AttentionService:
     """一次 tick 走完全程。"""
 
@@ -199,6 +214,7 @@ class AttentionService:
         rhythm: Any = None,
         call_bridge: Any = None,
         call_utility: Any = None,
+        call_drafter: Any = None,
     ) -> None:
         self.store = store
         #: World Model —— 事实的收口。Source 往里写、Evaluator 从里反查趋势。
@@ -271,6 +287,9 @@ class AttentionService:
         #: 两个都是 None = 打不出去（CallSource 不会因此少产念头 —— 交付会失败留痕）
         self.call_bridge = call_bridge
         self.call_utility = call_utility
+        #: 开场白他自己写（10-29）：全管线草稿（speaker.build_drafter），不推不落会话。
+        #: None 或它失败 → 退回上面的 utility
+        self.call_drafter = call_drafter
         #: 夜里的梦（dream-shadow.jsonl）。她睡着时的自言自语可以提一句
         #: 「我刚梦到……」（2026-09-23 她要的）。装配时回填，None = 不提梦
         self.dream_log_path: Any = None
@@ -1064,12 +1083,34 @@ class AttentionService:
     _CALL_OPENER = (
         "（系统提示：不是她在跟你说话。你现在要给她打一个电话，这是你主动打的。\n"
         "为什么打：{reason}\n"
+        "{recent}"
         "\n"
         "写你接通后说的第一句话 —— 像拨通了在等她接的那种开场，不是文字消息。\n"
         "一两句，口语，中文，说清你为什么想听她的声音。\n"
         "不要问「方便吗」「在忙吗」—— 她接了就是方便。\n"
-        "只输出那句话。）"
+        "只输出那句话，不要加引号。）"
     )
+
+    #: 他自己写开场白（10-29 她：「他主动打电话的开口第一句现在是固定的？」——
+    #: 原来只给 utility 一句「想听听你的声音」，12 通几乎一字不差）。
+    #: 走全管线：她那条会话的历史、记忆、人设都在，开口能落在今天的事上。
+    #: 第一行是弹在她锁屏上的那行字（为什么打），第二行是接通后的第一句
+    _CALL_OPENER_SELF = (
+        "（系统提示：不是她在跟你说话。你想给她打个电话，现在就要拨出去了，这是你主动打的。\n"
+        "现在是她那边的 {clock}，她已经安静了一阵。\n"
+        "{recent}"
+        "\n"
+        "想想今天你们聊过什么、她在忙什么、你惦记着什么，从那里开口 —— "
+        "不要空说「想听听你的声音」。像拨通了在等她接的那种开场，不是文字消息。\n"
+        "不要问「方便吗」「在忙吗」—— 她接了就是方便。不要调用工具。\n"
+        "\n"
+        "按这个格式回两行，别的都不要：\n"
+        "锁屏：（来电时弹在她锁屏上的一行，你为什么打过来，15 个字以内）\n"
+        "开场：（她接通后你说的第一句，一两句口语中文，不加引号））"
+    )
+
+    #: 最近几通的开场白留几条给他看（不许重复）
+    _CALL_RECENT_KEEP = 4
 
     #: 没接通的留言。他说不说算他的（[SKIP] 出路照旧）——
     #: 拒接了还追着发文字才是骚扰
@@ -1080,6 +1121,54 @@ class AttentionService:
         "不要写「刚才给你打电话你没接」这种带怪罪的语气；\n"
         "没什么想留的就只回 [SKIP]，明天再想。）"
     )
+
+    def _recent_openers(self) -> list[str]:
+        try:
+            st = self.store.get_source_state("call_openers") or {}
+        except Exception:  # noqa: BLE001
+            logger.exception("读不出最近的来电开场白，当作没有")
+            return []
+        return [str(x) for x in (st.get("openers") or []) if x][-self._CALL_RECENT_KEEP:]
+
+    def _remember_opener(self, opener: str) -> None:
+        keep = (self._recent_openers() + [opener])[-self._CALL_RECENT_KEEP:]
+        try:
+            self.store.set_source_state("call_openers", {"openers": keep})
+        except Exception:  # noqa: BLE001
+            logger.exception("来电开场白没记上（下次可能说重）")
+
+    def _recent_block(self) -> str:
+        prev = self._recent_openers()
+        if not prev:
+            return ""
+        lines = "\n".join(f"· {x}" for x in prev)
+        return f"\n你最近几次打电话是这么开口的，这次别再这样说：\n{lines}\n"
+
+    def _draft_opener(self, reason: str, now: datetime) -> tuple[str | None, str | None]:
+        """他自己写（全管线）。返回 (开场白, 锁屏那行)；他回控制标记 = (None, None) 这通不打。
+
+        失败抛出 —— 调用方退回 utility。"""
+        from attention.speaker import _clock_with_date
+        raw = self.call_drafter(
+            self._CALL_OPENER_SELF.format(clock=_clock_with_date(now), recent=self._recent_block()),
+            "她今天在做什么、我们最近聊到哪儿")
+        if raw is None:
+            return None, None
+        lock = None
+        opener = None
+        for line in raw.splitlines():
+            m = _CALL_LINE.match(line.strip())
+            if not m:
+                continue
+            if m.group(1) == "锁屏":
+                lock = _clean_spoken(m.group(2))[:30] or None
+            else:
+                opener = _clean_spoken(m.group(2))
+        if opener is None:
+            # 没按格式写：有锁屏行就把剩下的当开场白，否则整段就是开场白
+            rest = [ln for ln in raw.splitlines() if ln.strip() and not ln.strip().startswith("锁屏")]
+            opener = _clean_spoken(" ".join(rest))
+        return (opener or None), lock
 
     def _call_generate(self, prompt: str) -> str | None:
         """utility 出一句话。失败返回 None —— 不编、不退主模型（daily_card 的规矩）。"""
@@ -1109,7 +1198,22 @@ class AttentionService:
             return True
 
         reason = str(signal.payload.get("reason") or "想听听她的声音")
-        opener = self._call_generate(self._CALL_OPENER.format(reason=reason))
+        opener = None
+        if self.call_drafter is not None:
+            try:
+                opener, lock = self._draft_opener(reason, now)
+                if opener is None:
+                    logger.info("他想了想，这通电话先不打了")
+                    return False
+                if lock:
+                    reason = lock
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("他自己写开场白失败，退回 utility：%s", exc)
+                opener = None
+        if not opener:
+            opener = self._call_generate(
+                self._CALL_OPENER.format(reason=reason, recent=self._recent_block()))
+            opener = _clean_spoken(opener or "") or None
         if not opener:
             logger.info("来电开场白没生成出来，这通不打了")
             return False
@@ -1119,6 +1223,7 @@ class AttentionService:
         if not r.ok:
             raise RuntimeError(f"来电登记失败: {r.error}")
         call_id = (r.data or {}).get("id")
+        self._remember_opener(opener)
         logger.info("电话已拨出：%s（%s，%s 个订阅收到）",
                     reason, call_id, (r.data or {}).get("pushed"))
 

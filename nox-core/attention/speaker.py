@@ -256,6 +256,33 @@ def push(core: Any, sid: str, text: str, attachments: list | None = None) -> dic
 _HOLD = re.compile(r"\[\s*(SKIP|PASS|STOP|NEXT|DONE)(?:\s+\d+)?\s*\]", re.IGNORECASE)
 
 
+def build_drafter(core: _Core, sessions: _Sessions, store: Any) -> Callable[[str, str], str | None]:
+    """他打草稿用：走全管线（她那条会话的历史 + 记忆召回 + 人设），但**不推、不落会话**。
+
+    给主动来电写开场白（10-29 她：「他主动打电话的开口第一句现在是固定的？」——
+    原来交给 utility 只看一句「想听听你的声音」，12 通几乎一字不差）。
+    草稿不落会话：她可能不接，没说出口的话不能进他的历史。
+
+    返回去掉控制标记的正文；他回控制标记 = 这次不说，返回 None。失败抛出（调用方兜底）。
+    """
+
+    def draft(prompt: str, recall: str) -> str | None:
+        recent = store.recent(limit=1, clean_only=True)
+        sid = recent[0].id if recent else FALLBACK_SESSION
+        r = core.chat(prompt, sessions.get(sid), session_id=sid, recall=recall,
+                      runtime={"surface": "proactive"})
+        meter.record("call-opener", meter.routed_model(core, r), getattr(r, "usage", None))
+        raw = r.result.text or ""
+        if _HOLD.search(raw):
+            return None
+        text = _FAKE_MARK.sub("", raw).strip()
+        if not text:
+            raise RuntimeError(f"模型没给出文本（{r.result.outcome}）")
+        return text
+
+    return draft
+
+
 def build_speaker(core: _Core, sessions: _Sessions, store: Any,
                   attention_store: Any) -> Callable[[Intent, SchedulerDecision], str | None]:
     """造一个真的会把话发出去的 speaker。
