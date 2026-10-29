@@ -119,8 +119,9 @@ except Exception as e:
 # ── 4) 服务 + 心跳 + 磁盘 ───────────────────────────
 try:
     dead = []
-    for s in ("bridge", "nox-core", "ombre-brain", "co-reading",
-              "co-watching", "eryu", "netease-mcp"):
+    watched = ("bridge", "nox-core", "ombre-brain", "co-reading",
+               "co-watching", "co-listening")
+    for s in watched:
         r = subprocess.run(["systemctl", "is-active", s],
                            capture_output=True, text=True).stdout.strip()
         if r != "active":
@@ -129,7 +130,8 @@ try:
         problems.append("服务挂:" + ",".join(dead))
         parts.append(f"服务✗{len(dead)}挂")
     else:
-        parts.append("服务7/7")
+        # 数从列表来（10-29：列表换成 6 个以后这里还写着 7/7）
+        parts.append(f"服务{len(watched)}/{len(watched)}")
 
     # attention 心跳：attention.db 最近写入
     import os
@@ -185,6 +187,22 @@ try:
         parts.append("手✓稳")
 except Exception as e:
     parts.append("手·查不到")
+
+# ── 5b) 线上和发出去的版本对不对得上（2026-10-29）────
+#
+# 她 10-29：「先治线上和 git 对不上那条」—— 那天对账：5 个文件没提交就在线上跑、
+# 两处安全加固只在线上。现在发文件走 scripts/ship.py，它在 /root/deployed/ 记清单；
+# 这里每天对一遍：有人绕过它 cp 过文件，第二天早上就出现在卡上。
+try:
+    r = subprocess.run(["python3", "/root/check-drift.py"],
+                       capture_output=True, text=True, timeout=120)
+    line = (r.stdout.strip().splitlines() or ["部署·没产出"])[-1]
+    parts.append(line)
+    if r.returncode != 0:
+        problems.append(line)
+except Exception as e:
+    parts.append("部署·查不到")
+    problems.append(f"部署检查炸了:{e}")
 
 # ── 6) 日志里出了什么新问题 ──────────────────────────
 #
