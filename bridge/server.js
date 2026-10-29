@@ -1658,6 +1658,13 @@ async function coreMode(req, res, requestId) {
             res.write(`data: ${JSON.stringify({ type: "skill", ...skill })}\n\n`);
             keepAttachment({ skill });
             console.log(`[Bridge] Core 发装做法提议卡 ${skill.proposalId}`);
+          } else if (ev.kind === "ship" && ev.job_id) {
+            // 上线卡（10-29）。此时**什么都没合、没部署** ——
+            // 她点「上线」走 /api/nox/pc-tasks/:id/ship/confirm。状态是活的，前端现查（同 skill 卡）
+            const ship = { jobId: String(ev.job_id), card: ev.card || {} };
+            res.write(`data: ${JSON.stringify({ type: "ship", ...ship })}\n\n`);
+            keepAttachment({ ship });
+            console.log(`[Bridge] Core 发上线卡 ${ship.jobId}`);
           }
         } else if (ev.type === "tool_start" || ev.type === "tool_end") {
           // 他动手的实时进度（2026-09-07）。原样透传，**不落库** ——
@@ -3926,6 +3933,23 @@ app.post("/api/nox/skills/proposals/:id/:what(confirm|reject)", (req, res) =>
   skillsProxy(req, res, `/proposals/${encodeURIComponent(req.params.id)}/${req.params.what}`, "POST"));
 app.get("/api/nox/skills/:name", (req, res) => skillsProxy(req, res, `/${encodeURIComponent(req.params.name)}`));
 app.patch("/api/nox/skills/:name", (req, res) => skillsProxy(req, res, `/${encodeURIComponent(req.params.name)}`, "PATCH"));
+
+// 上线卡（10-29）：她点「上线」→ Core 叫醒电脑、发 ship。叫电脑可能要一分多钟，超时给足
+async function pcShipProxy(req, res, what, method = "GET") {
+  const path = `/api/nox/pc-tasks/${encodeURIComponent(req.params.id)}/ship${what}`;
+  try {
+    const init = { method, signal: AbortSignal.timeout(method === "GET" ? 40000 : 150000) };
+    if (method !== "GET") init.headers = { "Content-Type": "application/json" };
+    const r = await fetch(`${NOX_CORE_URL}${path}`, init);
+    res.status(r.status).json(await r.json());
+  } catch (e) {
+    console.warn(`[pc-ship] 透传失败 ${method} ${path}:`, e.message);
+    res.status(502).json({ ok: false, error: `core 不可达: ${e.message}` });
+  }
+}
+app.get("/api/nox/pc-tasks/:id/ship", (req, res) => pcShipProxy(req, res, ""));
+app.post("/api/nox/pc-tasks/:id/ship/:what(confirm|reject)", (req, res) =>
+  pcShipProxy(req, res, `/${req.params.what}`, "POST"));
 
 // 播放器的心跳。state: playing | paused | ended
 app.post("/api/watch/state", (req, res) => {

@@ -225,6 +225,13 @@ class ToolContext:
             "type": "skill", "proposal_id": proposal_id, "card": card, **meta,
         })
 
+    def attach_ship(self, job_id: str, card: dict[str, Any], **meta: Any) -> None:
+        """标记「这张上线卡要发到聊天里」（10-29，她：「上线和部署也弹个确认卡」）。
+
+        **此时什么都没合、没部署**：她点「上线」走 /api/nox/pc-tasks/{id}/ship/confirm，模型够不到。
+        """
+        self.attachments.append({"type": "ship", "job_id": job_id, "card": card, **meta})
+
     def attach_meme(self, tag: str, **meta: Any) -> None:
         """标记「这个表情要发到聊天里」。
 

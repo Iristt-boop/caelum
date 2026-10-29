@@ -1397,7 +1397,7 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
         core.pc_tasks = pc_task_tools.PcTasks(
             _pc, (Path(core.cfg.db_path).parent if _db != ":memory:" else Path("/tmp")) / "pc-tasks.json")
         pc_task_tools.register_all(core.loop, core.pc_tasks)
-        logger.info("转活工具已注册（pc_task_start / pc_task_check / pc_task_cancel）")
+        logger.info("转活工具已注册（pc_task_start / pc_task_check / pc_task_cancel / pc_task_ship）")
 
     # 待确认单（2026-09-06）。**独立的库**，和 attention/world/topics 平级。
     #
@@ -4173,6 +4173,36 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
         try:
             return _proposal_out(_skills_store().reject_proposal(pid))
         except ProposalError as exc:
+            raise HTTPException(status_code=exc.status, detail=str(exc)) from None
+
+    # ---- 上线卡（10-29，她：「上线和部署也弹个确认卡」）：他的 pc_task_ship 只出卡，这里是唯一真上线的地方
+    def _pc_tasks():
+        t = getattr(core, "pc_tasks", None)
+        if t is None:
+            raise HTTPException(status_code=503, detail="没配电脑（NOX_PC_MAC）")
+        return t
+
+    @app.get("/api/nox/pc-tasks/{jid}/ship")
+    def nox_pc_task_ship(jid: str) -> dict:
+        s = _pc_tasks().ship_get(jid)
+        if s is None:
+            raise HTTPException(status_code=404, detail="没有这张卡")
+        return {"ok": True, **s}
+
+    @app.post("/api/nox/pc-tasks/{jid}/ship/confirm")
+    def nox_pc_task_ship_confirm(jid: str) -> dict:
+        from tools.pc_tasks import ShipError
+        try:
+            return {"ok": True, **_pc_tasks().ship_confirm(jid)}
+        except ShipError as exc:
+            raise HTTPException(status_code=exc.status, detail=str(exc)) from None
+
+    @app.post("/api/nox/pc-tasks/{jid}/ship/reject")
+    def nox_pc_task_ship_reject(jid: str) -> dict:
+        from tools.pc_tasks import ShipError
+        try:
+            return {"ok": True, **_pc_tasks().ship_reject(jid)}
+        except ShipError as exc:
             raise HTTPException(status_code=exc.status, detail=str(exc)) from None
 
     @app.get("/api/nox/skills/{name}")

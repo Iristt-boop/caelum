@@ -71,6 +71,19 @@ CANCEL_SPEC = ToolSpec(
     parameters={"type": "object", "properties": {"id": {"type": "string"}}, "required": ["id"]},
 )
 
+SHIP_SPEC = ToolSpec(
+    side_effect="write",
+    confirm_via="只出上线卡；她在卡上点「上线」才合进主线 + 部署（端点在 server.py，模型够不到）",
+    name="pc_task_ship",
+    description=(
+        "把电脑上做完的一个活**上线**：她说「上线」「合进去」「部署吧」时用。你这一步只是给她发一张上线卡，"
+        "卡上有它做了什么、改了哪些；**她点了「上线」才真的合进主线、部署到 N150**（测试没过 / 线上被动过会自己停）。\n"
+        "调用后只说「卡发给你了，点一下就上线」，别说已经上线了 —— 上完了你会被叫醒。"
+    ),
+    parameters={"type": "object", "properties": {"id": {"type": "string", "description": "活的编号"}},
+                "required": ["id"]},
+)
+
 
 class PcTasks:
     """run / now 可注入，测试不碰真网络。"""
@@ -194,7 +207,8 @@ class PcTasks:
         self._last_poll = now
         with self._lock:
             jobs = self._load()
-            open_ = [j for j in jobs.values() if not j.get("notified")]
+            open_ = [j for j in jobs.values()
+                     if not j.get("notified") or (j.get("ship") or {}).get("status") == "shipping"]
             if not open_:
                 return []
             ip = self.pc.find_ip()
@@ -203,18 +217,117 @@ class PcTasks:
             told = []
             for j in open_:
                 d = self._ssh(ip, f"status {j['id']}")
-                state = ((d.get("state") or {}).get("state")) if d.get("ok") else None
-                if state not in FINAL:
+                if not d.get("ok"):
                     continue
-                if j.get("session_id"):
-                    book.add_routine(j["session_id"], wake_note(j, d), now)
-                j["notified"] = True
-                j["state"] = state
-                told.append(j["id"])
+                if not j.get("notified"):
+                    state = (d.get("state") or {}).get("state")
+                    if state in FINAL:
+                        if j.get("session_id"):
+                            book.add_routine(j["session_id"], wake_note(j, d), now)
+                        j["notified"] = True
+                        j["state"] = state
+                        told.append(j["id"])
+                    continue
+                # 上线中的：电脑那边收尾了（shipped / failed）就告诉她
+                sh = d.get("ship") or {}
+                if sh.get("state") in SHIP_FINAL:
+                    j["ship"].update(status=sh["state"], step=sh.get("step"), error=sh.get("error"),
+                                     deployed=sh.get("deployed") or [], manual=sh.get("manual") or [])
+                    if j.get("session_id"):
+                        book.add_routine(j["session_id"], ship_note(j, sh), now)
+                    told.append(j["id"])
             if told:
                 self._save(jobs)
                 logger.info("pc_tasks: 收尾了 %s，放了纸条", "、".join(told))
             return told
+
+    # ---------- 上线（10-29）：工具只出卡，她点了才合并 + 部署 ----------
+
+    def ship_propose(self, jid: str, session_id: str | None, user_text: str) -> tuple[str, dict | None]:
+        """返回（给他看的话，卡）。卡是 None 就是没出卡。"""
+        if not her_words(user_text):
+            return "这一轮不是她亲口说的，不出上线卡。", None
+        with self._lock:
+            jobs = self._load()
+            j = jobs.get(jid)
+            if j is None:
+                return f"没有 {jid} 这个活（只能上线交给电脑做的活）。", None
+            sh = j.get("ship") or {}
+            if sh.get("status") in ("shipping", "shipped"):
+                return f"{jid} 已经在上线 / 上过了（{sh.get('status')}）。", None
+        ip = self._ip()
+        if not ip:
+            return "电脑现在关着，看不到这个活的结果，先不出卡。", None
+        d = self._ssh(ip, f"status {jid}")
+        if not d.get("ok"):
+            return f"没看成这个活：{d.get('error')}", None
+        if (d.get("state") or {}).get("state") != "done":
+            return f"这个活还没做完（{(d.get('state') or {}).get('state')}），做完了才能上线。", None
+        r = d.get("result") or {}
+        card = {"task": (j.get("task") or "")[:120], "summary": (r.get("summary") or "")[:300],
+                "diffstat": r.get("diffstat") or "", "commits": len(r.get("commits") or []),
+                "repo": j.get("repo")}
+        with self._lock:
+            jobs = self._load()
+            jobs[jid]["ship"] = {"status": "proposed", "proposed_at": self.now().isoformat(),
+                                 "session_id": session_id, "card": card}
+            self._save(jobs)
+        return (f"上线卡发给她了（{jid}）。她点了「上线」才会合进主线、部署 —— 在那之前别说已经上线了。", card)
+
+    def ship_get(self, jid: str, refresh: bool = True) -> dict | None:
+        """卡上要的状态。上线中的现问一次电脑（卡上显示走到哪一步了）。"""
+        jobs = self._load()
+        j = jobs.get(jid)
+        if j is None or "ship" not in j:
+            return None
+        sh = dict(j["ship"])
+        if refresh and sh.get("status") == "shipping":
+            ip = self.pc.find_ip()
+            d = self._ssh(ip, f"status {jid}") if ip else {}
+            live = (d.get("ship") or {}) if d.get("ok") else {}
+            if live.get("step"):
+                sh["step"] = live["step"]
+        return {"id": jid, **sh}
+
+    def ship_confirm(self, jid: str) -> dict:
+        """她点了「上线」—— **这是唯一真发起合并 + 部署的地方**（他的工具只出卡）。"""
+        with self._lock:
+            jobs = self._load()
+            j = jobs.get(jid)
+            sh = (j or {}).get("ship") or {}
+            if sh.get("status") != "proposed":
+                raise ShipError(f"这张卡不是等你点头的状态（{sh.get('status') or '没有'}）", 409)
+            ip = self._ip(wake=True)
+            if not ip:
+                raise ShipError("电脑叫不醒，没上线", 503)
+            d = self._ssh(ip, f"ship {jid}")
+            if not d.get("ok"):
+                sh.update(status="failed", error=str(d.get("error")))
+                self._save(jobs)
+                raise ShipError(f"电脑那边没接：{d.get('error')}", 502)
+            sh.update(status="shipping", confirmed_at=self.now().isoformat())
+            self._save(jobs)
+            logger.info("pc_tasks: 她点了上线 %s", jid)
+            return {"id": jid, **sh}
+
+    def ship_reject(self, jid: str) -> dict:
+        with self._lock:
+            jobs = self._load()
+            sh = (jobs.get(jid) or {}).get("ship") or {}
+            if sh.get("status") != "proposed":
+                raise ShipError(f"这张卡不是等你点头的状态（{sh.get('status') or '没有'}）", 409)
+            sh.update(status="rejected", decided_at=self.now().isoformat())
+            self._save(jobs)
+            return {"id": jid, **sh}
+
+
+class ShipError(Exception):
+    def __init__(self, msg: str, status: int = 400):
+        super().__init__(msg)
+        self.status = status
+
+
+SHIP_FINAL = ("shipped", "failed")
 
 
 #: 他自己塞进对话的开场白（唤醒链 / 主动开口 / 日记 / 小课堂）都以这些开头（同 attention/lesson_drive.py）
@@ -263,8 +376,25 @@ def wake_note(job: dict, d: dict) -> str:
             "要上线得她亲口说，别替她决定。")
 
 
+def ship_note(job: dict, sh: dict) -> str:
+    """上线收尾的纸条：结论第一句写死（同 wake_note 的教训）。"""
+    jid = job["id"]
+    if sh.get("state") == "shipped":
+        deployed = sh.get("deployed") or []
+        manual = sh.get("manual") or []
+        lines = [f"【上线·{jid}】她点了上线的那个活**已经上线了**（合进了主线"
+                 + (f"，部署到 N150 了：{len(deployed)} 个文件，nox-core 重启过、健康检查通过）" if deployed else "；只改了文档，不用部署）")]
+        if manual:
+            lines.append(f"这几处只合进了主线、**没部署**，要她上电脑弄：{'、'.join(manual[:8])}")
+    else:
+        lines = [f"【上线·{jid}】她点了上线的那个活**没上成**：{sh.get('error') or '原因没写'}"]
+    lines.append(f"她当时交代的：{job.get('task', '')[:120]}")
+    lines.append("现在告诉她：先说结论，再一两句说清楚；没上成就说卡在哪、线上有没有被动过（错误里写了）。别贴代码。")
+    return "\n".join(lines)
+
+
 def register_all(loop, tasks: PcTasks) -> None:
-    """三个工具，顺序固定（工具定义是缓存前缀的一部分）。"""
+    """四个工具，顺序固定（工具定义是缓存前缀的一部分；pc_task_ship 10-29 加在最后）。"""
 
     def start(args: dict) -> str:
         ctx = tool_context.current()
@@ -278,3 +408,20 @@ def register_all(loop, tasks: PcTasks) -> None:
     loop.register(START_SPEC, start)
     loop.register(CHECK_SPEC, lambda args: tasks.check(str(args.get("id") or "").strip() or None))
     loop.register(CANCEL_SPEC, lambda args: tasks.cancel(str(args.get("id", "")).strip()))
+
+    def ship(args: dict) -> str:
+        ctx = tool_context.current()
+        from config import is_test_session
+        sid = ctx.session_id if ctx else None
+        if sid and is_test_session(sid):
+            return "测试会话不出上线卡。"
+        jid = str(args.get("id", "")).strip()
+        msg, card = tasks.ship_propose(jid, sid, ctx.user_text if ctx else "")
+        if card is not None:
+            if ctx is not None:
+                ctx.attach_ship(jid, card)
+            else:
+                logger.warning("上线卡 %s 立了，但不在对话轮次里，卡发不出去", jid)
+        return msg
+
+    loop.register(SHIP_SPEC, ship)

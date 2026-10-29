@@ -39,6 +39,10 @@ class FakeSsh:
     def __init__(self):
         self.calls: list[tuple[str, bytes]] = []
         self.states: dict[str, dict] = {}
+        self.ship_reply: dict | None = None
+
+    def verbs(self, head):
+        return [v for v, _ in self.calls if v.split()[0] == head]
 
     def __call__(self, argv, input=b"", **kw):
         verb = argv[-1]
@@ -50,6 +54,8 @@ class FakeSsh:
             out = self.states.get(parts[1], {"ok": True, "state": {"id": parts[1], "state": "running"}})
         elif parts[0] == "cancel":
             out = {"ok": True, "state": "cancelled"}
+        elif parts[0] == "ship":
+            out = self.ship_reply or {"ok": True, "id": parts[1], "state": "queued"}
         else:
             out = {"ok": True, "items": []}
         return subprocess.CompletedProcess(argv, 0, ("﻿" + json.dumps(out, ensure_ascii=False)).encode(), b"")
@@ -258,3 +264,145 @@ def test_快循环_没收尾不叫(tmp_path):
     svc.care_tick(datetime(2026, 10, 27, 14, 28, tzinfo=timezone.utc))
     assert woke == []
     store.close()
+
+
+# ---------- 上线卡（10-29，她：「你在手机上上线和部署也弹个确认卡吧」）：他只出卡，她点了才动 ----------
+
+def _done_job(env):
+    t, ssh, clock = env
+    t.start("写个文档", "caelum", "s1", "做吧")
+    jid = ssh.calls[-1][0].split()[1]
+    ssh.states[jid] = DONE(jid)
+    t.poll(Book())
+    clock.t += timedelta(minutes=3)
+    return jid
+
+
+def test_上线卡_不是她亲口说的不出(env):
+    t, ssh, _ = env
+    jid = _done_job(env)
+    n = len(ssh.calls)
+    msg, card = t.ship_propose(jid, "s1", "（系统提示：到点了")
+    assert card is None and len(ssh.calls) == n
+
+
+def test_上线卡_没做完不出_不认识的不出(env):
+    t, ssh, _ = env
+    t.start("写个文档", "caelum", "s1", "做吧")
+    jid = ssh.calls[-1][0].split()[1]
+    msg, card = t.ship_propose(jid, "s1", "上线吧")
+    assert card is None and "没做完" in msg
+    msg, card = t.ship_propose("0000-0000-zzzz", "s1", "上线吧")
+    assert card is None and "没有" in msg
+
+
+def test_上线卡_出卡时什么都没动(env):
+    t, ssh, _ = env
+    jid = _done_job(env)
+    msg, card = t.ship_propose(jid, "s1", "上线吧")
+    assert card["summary"] == "加好了，测试也跑了。" and card["commits"] == 1
+    assert "别说已经上线了" in msg
+    assert ssh.verbs("ship") == [], "出卡时就发了 ship —— 她还没点"
+    assert t.ship_get(jid)["status"] == "proposed"
+
+
+def test_上线卡_工具层把卡挂上(env):
+    t, ssh, _ = env
+    jid = _done_job(env)
+    ctx = tool_context.ToolContext(session_id="s1", user_text="上线吧")
+    with tool_context.bind(ctx):
+        out = _handlers(t)["pc_task_ship"]({"id": jid})
+    assert "卡发给她了" in out
+    assert [a for a in ctx.attachments if a["type"] == "ship"][0]["job_id"] == jid
+    assert ssh.verbs("ship") == []
+
+
+def test_上线卡_工具层测试会话不出(env, monkeypatch):
+    t, ssh, _ = env
+    jid = _done_job(env)
+    monkeypatch.setattr("config.is_test_session", lambda sid: True)
+    ctx = tool_context.ToolContext(session_id="test-x", user_text="上线吧")
+    with tool_context.bind(ctx):
+        assert "测试会话" in _handlers(t)["pc_task_ship"]({"id": jid})
+    assert ctx.attachments == []
+
+
+def test_上线卡_她点了才发ship_只发一次(env):
+    t, ssh, _ = env
+    jid = _done_job(env)
+    t.ship_propose(jid, "s1", "上线吧")
+    s = t.ship_confirm(jid)
+    assert s["status"] == "shipping" and ssh.verbs("ship") == [f"ship {jid}"]
+    with pytest.raises(pc_tasks.ShipError) as e:
+        t.ship_confirm(jid)
+    assert e.value.status == 409 and len(ssh.verbs("ship")) == 1
+    # 上线中再出卡也不行
+    assert t.ship_propose(jid, "s1", "再上一次")[1] is None
+
+
+def test_上线卡_没出卡不能点_不要了也不能点(env):
+    t, ssh, _ = env
+    jid = _done_job(env)
+    with pytest.raises(pc_tasks.ShipError):
+        t.ship_confirm(jid)
+    t.ship_propose(jid, "s1", "上线吧")
+    assert t.ship_reject(jid)["status"] == "rejected"
+    with pytest.raises(pc_tasks.ShipError):
+        t.ship_confirm(jid)
+    assert ssh.verbs("ship") == []
+
+
+def test_上线卡_电脑没接就标没上成(env):
+    t, ssh, _ = env
+    jid = _done_job(env)
+    t.ship_propose(jid, "s1", "上线吧")
+    ssh.ship_reply = {"ok": False, "error": "已经在上线 / 上过了（running）"}
+    with pytest.raises(pc_tasks.ShipError) as e:
+        t.ship_confirm(jid)
+    assert e.value.status == 502 and t.ship_get(jid)["status"] == "failed"
+
+
+def test_上线收尾_上成了告诉她_只说一次(env):
+    t, ssh, clock = env
+    jid = _done_job(env)
+    t.ship_propose(jid, "s1", "上线吧")
+    t.ship_confirm(jid)
+    book = Book()
+    ssh.states[jid] = {**DONE(jid), "ship": {"state": "running", "step": "跑 nox-core 的测试"}}
+    assert t.poll(book) == [] and book.notes == []
+    assert t.ship_get(jid)["step"] == "跑 nox-core 的测试"
+    ssh.states[jid] = {**DONE(jid), "ship": {"state": "shipped", "step": "完成",
+                                              "deployed": ["nox-core/tools/x.py"], "manual": ["bridge/server.js"]}}
+    clock.t += timedelta(minutes=3)
+    assert t.poll(book) == [jid]
+    why = book.notes[0][1]
+    assert "**已经上线了**" in why.splitlines()[0] and "1 个文件" in why and "bridge/server.js" in why
+    assert t.ship_get(jid)["status"] == "shipped"
+    clock.t += timedelta(minutes=3)
+    assert t.poll(book) == [] and len(book.notes) == 1
+
+
+def test_上线收尾_没上成也告诉她(env):
+    t, ssh, clock = env
+    jid = _done_job(env)
+    t.ship_propose(jid, "s1", "上线吧")
+    t.ship_confirm(jid)
+    ssh.states[jid] = {**DONE(jid), "ship": {"state": "failed", "error": "测试没过，没合：1 failed"}}
+    book = Book()
+    assert t.poll(book) == [jid]
+    assert "**没上成**" in book.notes[0][1] and "测试没过" in book.notes[0][1]
+
+
+def test_上线工具排在最后_声明是写():
+    names = list(_handlers(PcTasks(FakePc(), "/tmp/x.json")).keys())
+    assert names[-1] == "pc_task_ship" and names[:3] == ["pc_task_start", "pc_task_check", "pc_task_cancel"]
+    assert pc_tasks.SHIP_SPEC.side_effect == "write" and pc_tasks.SHIP_SPEC.confirm_via
+
+
+def test_上线卡_工具层看这一轮的原话(env):
+    t, ssh, _ = env
+    jid = _done_job(env)
+    ctx = tool_context.ToolContext(session_id="s1", user_text="（系统提示：到点了")
+    with tool_context.bind(ctx):
+        _handlers(t)["pc_task_ship"]({"id": jid})
+    assert ctx.attachments == [], "唤醒链那一轮也出了上线卡"

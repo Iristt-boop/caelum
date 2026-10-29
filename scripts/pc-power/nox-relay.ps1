@@ -28,9 +28,10 @@ function Read-State($id) {
 }
 
 # 收尾了的活，计划任务顺手清掉（runner 以她的普通身份跑，删不掉管理员建的计划任务）
-Get-ScheduledTask -TaskName 'NoxJob-*' -ErrorAction SilentlyContinue | Where-Object { $_.State -ne 'Running' } | ForEach-Object {
-    $s = Read-State ($_.TaskName -replace '^NoxJob-', '')
-    if ($null -eq $s -or $s.state -in 'done', 'failed', 'cancelled') {
+@(Get-ScheduledTask -TaskName 'NoxJob-*' -ErrorAction SilentlyContinue) + @(Get-ScheduledTask -TaskName 'NoxShip-*' -ErrorAction SilentlyContinue) |
+    Where-Object { $_ -and $_.State -ne 'Running' } | ForEach-Object {
+    $s = Read-State ($_.TaskName -replace '^Nox(Job|Ship)-', '')
+    if ($null -eq $s -or $s.state -in 'done', 'failed', 'cancelled') {   # 上线任务：活本身是 done，跑完了也一样清
         Unregister-ScheduledTask -TaskName $_.TaskName -Confirm:$false -ErrorAction SilentlyContinue
     }
 }
@@ -67,7 +68,31 @@ switch -Regex ($cmd) {
         $res = Join-Path $jobs "$id\result.json"
         $out = @{ ok = $true; state = $st }
         if (Test-Path $res) { $out.result = Get-Content $res -Raw -Encoding UTF8 | ConvertFrom-Json }
+        $shp = Join-Path $jobs "$id\ship.json"
+        if (Test-Path $shp) { $out.ship = Get-Content $shp -Raw -Encoding UTF8 | ConvertFrom-Json }
         Out-Json $out
+    }
+    "^ship ($ID)$" {
+        # 上线（10-29）：只有她在手机上点了上线卡，N150 的确认端点才会发这个。合并 + 部署是 shipper.ps1 写死的步骤
+        $id = $Matches[1]
+        $st = Read-State $id
+        if ($null -eq $st) { Out-Json @{ ok = $false; error = '没有这个活' }; exit 2 }
+        if ($st.state -ne 'done') { Out-Json @{ ok = $false; error = "这个活没做完（$($st.state)），不能上线" }; exit 2 }
+        $shp = Join-Path $jobs "$id\ship.json"
+        if (Test-Path $shp) {
+            $old = Get-Content $shp -Raw -Encoding UTF8 | ConvertFrom-Json
+            if ($old.state -in 'queued', 'running', 'shipped') { Out-Json @{ ok = $false; error = "已经在上线 / 上过了（$($old.state)）" }; exit 2 }
+        }
+        [IO.File]::WriteAllText($shp, (Out-Json @{ state = 'queued'; created = (Get-Date -Format s) }), (New-Object Text.UTF8Encoding $false))
+        $user = (Get-CimInstance Win32_ComputerSystem).UserName
+        if (-not $user) { $user = "$env:USERDOMAIN\$env:USERNAME" }
+        $a = New-ScheduledTaskAction -Execute 'powershell.exe' `
+            -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$dir\shipper.ps1`" -Id $id" -WorkingDirectory (Join-Path $jobs $id)
+        $p = New-ScheduledTaskPrincipal -UserId $user -LogonType S4U -RunLevel Limited
+        $s = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 120) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+        Register-ScheduledTask -TaskName "NoxShip-$id" -Action $a -Principal $p -Settings $s -Force | Out-Null
+        Start-ScheduledTask -TaskName "NoxShip-$id"
+        Out-Json @{ ok = $true; id = $id; state = 'queued' }
     }
     '^list$' {
         $items = @(Get-ChildItem $jobs -Directory -ErrorAction SilentlyContinue | Sort-Object CreationTime -Descending |
