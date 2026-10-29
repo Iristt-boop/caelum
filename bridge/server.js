@@ -524,6 +524,10 @@ const CALL_LIVE_MS = Number(process.env.CALL_LIVE_MS) || 90 * 60 * 1000;
 const CALL_LOG_MIN_S = 5;
 //: 时长上限：前端算错 / 页面挂了一晚上，不能记出「通话 14 小时」
 const CALL_LOG_MAX_S = 6 * 3600;
+//: 通话 id 的样子（10-29）。她拨的由通话页现生成 call-out-<ms>-<6位>，他打来的是 invite 发的 call-<ms>-<6位>。
+//: 通话里每句话带上它，落库标 meta.inCall —— 手机聊天把整通收进「语音通话 3:24」气泡，点开看全文
+const CALL_ID_RE = /^call-(?:out-)?\d{10,16}-[a-z0-9]{1,8}$/;
+const callIdOf = (v) => (typeof v === "string" && CALL_ID_RE.test(v) ? v : null);
 
 // 未接通的通话条（2026-09-26）：sweep 转 missed / 她按拒接时往会话落一条。
 // 接通那通由 answer 端点落（content=开场白，时长 /api/call/end 回填）。
@@ -1352,6 +1356,8 @@ function runtimeFor(body) {
 // 这层翻译让前端一行都不用改。
 async function coreMode(req, res, requestId) {
   const { message, images, sessionId, voice, scene, model } = req.body;
+  //: 通话里的一句（10-29）：他这句也标 inCall，跟她那句一起收进通话气泡。组件（订单卡等）不标 —— 要她点的留在聊天里
+  const inCall = voice ? callIdOf(req.body.callId) : null;
   let fullReply = "";
   // 分段边界。落库时进 metadata.segments，前端重新拉库时照着拆回几个气泡。
   const segments = [];
@@ -1828,6 +1834,7 @@ async function coreMode(req, res, requestId) {
     // 把另一个空数组也塞进去 —— 前端看到空数组和「没这个 key」行为一样，
     // 白占数据库一行。工具轨迹挂在这一轮的**第一条**文字上（前端的工具块画在回复开头）
     const meta = { ...th, ...us };
+    if (inCall) meta.inCall = inCall;
     if (e.text.length > 1) meta.segments = e.text;
     if (firstText && toolsUsed.length) meta.toolsUsed = toolsUsed;
     if (firstText && toolsTrace.length) meta.toolsTrace = toolsTrace;
@@ -1917,6 +1924,8 @@ app.post("/api/chat", async (req, res) => {
   if (imgUrls.length) userMeta.images = imgUrls;
   if (merged && imgUrls.length) userMeta.merged = true;
   if (meme) userMeta.meme = meme;
+  const inCall = voice ? callIdOf(req.body.callId) : null;
+  if (inCall) userMeta.inCall = inCall;
   if (shown || imgUrls.length || meme) {
     saveMessage(sessionId, "user", shown, Object.keys(userMeta).length ? userMeta : "");
   }
@@ -5807,19 +5816,42 @@ app.post("/api/call/end", (req, res) => {
 });
 
 // 她拨出去的电话挂断时登记一笔（前端通话页 onClose，fire-and-forget）。
-// body: { duration: 秒 }。开始时间 = 现在 - 时长；不接受前端传时间戳（时钟错了就记错一天）。
+// body: { duration: 秒, id?: 通话页生成的这通 id }。开始时间 = 现在 - 时长；不接受前端传时间戳（时钟错了就记错一天）。
+//
+// 10-29 她：「我主动打过去的语音通话也这样做。通话完成后显示『语音通话 3:24』，点击显示通话的所有内容」——
+// 带 id 的往通话里那几句所在的会话落一条通话气泡（她这边，挂断这一刻），前端按 inCall 把那几句收进去。
+// 不带 id 的（旧前端 / OS）照旧只记账。同一个 id 只记一次：重发不会出两个气泡
 app.post("/api/call/log", (req, res) => {
   const dur = Math.round(Number(req.body?.duration));
   if (!Number.isFinite(dur) || dur < CALL_LOG_MIN_S) return res.json({ ok: true, logged: false });
   const seconds = Math.min(dur, CALL_LOG_MAX_S);
   const end = new Date();
   const start = new Date(end.getTime() - seconds * 1000);
-  const id = `call-out-${end.getTime()}-${Math.random().toString(36).slice(2, 8)}`;
+  const given = callIdOf(req.body?.id);
+  if (given && dbAll("SELECT 1 FROM calls WHERE id=?", [given])[0]) {
+    return res.json({ ok: true, logged: false, id: given, duplicate: true });
+  }
+  const id = given || `call-out-${end.getTime()}-${Math.random().toString(36).slice(2, 8)}`;
   dbRun(
     "INSERT INTO calls (id, created_at, status, reason, opener, answered_at, ended_at, duration_s, direction) VALUES (?,?,?,?,?,?,?,?,?)",
     [id, start.toISOString(), "ended", "", "", start.toISOString(), end.toISOString(), seconds, "out"],
   );
-  console.log(`[Call] 她拨出去的通话 ${id}，${seconds}s`);
+  let sid = null;
+  if (given) {
+    // 气泡落进通话那几句所在的会话（她通话中途不会换会话）；一句没说的落最近那条
+    try {
+      sid = dbAll(
+        "SELECT id FROM conversations WHERE json_valid(metadata) AND json_extract(metadata,'$.inCall')=? ORDER BY rowid DESC LIMIT 1",
+        [id],
+      )[0]?.id || latestSessionId();
+    } catch (e) { console.log(`[Call] ${id} 找通话会话失败: ${e.message}`); }
+    if (sid) {
+      saveMessage(sid, "user", "语音通话", { call: { id, status: "ended", direction: "out", duration_s: seconds } });
+    } else {
+      console.log(`[Call] ${id} 没有会话可落通话气泡（只记了账）`);
+    }
+  }
+  console.log(`[Call] 她拨出去的通话 ${id}，${seconds}s${sid ? ` (session=${sid})` : ""}`);
   res.json({ ok: true, logged: true, id });
 });
 
