@@ -18,6 +18,7 @@ $dir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $jd = Join-Path $dir "jobs\$Id"
 $utf8 = New-Object Text.UTF8Encoding $false
 $st = Get-Content "$jd\state.json" -Raw -Encoding UTF8 | ConvertFrom-Json
+. "$dir\card.ps1"   # 上线卡的结构化字段（10-29）：$CARD_SPEC / Get-Card / Get-SummaryText
 function Save-State { [IO.File]::WriteAllText("$jd\state.json", ($st | ConvertTo-Json -Compress -Depth 5), $utf8) }
 function Set-St($k, $v) { $st | Add-Member -NotePropertyName $k -NotePropertyValue $v -Force }
 function Finish($state, $result) {
@@ -59,7 +60,8 @@ try {
 - 没有任何 MCP 工具（记忆 / Notion / GitHub 都没有），别想着 breath / hold / grow。
 - 做完把你的改动提交到当前分支（只提交你自己的改动，提交信息写清楚为什么）。
 - 拿不准她要什么，就做最小、最稳的那一版，在总结里说清楚你的取舍和没做的部分。
-- 最后一条回复是**给糖糖看的总结**：中文，3-8 句，说做了什么、怎么验证的、哪里没把握。不要贴代码。
+
+$CARD_SPEC
 
 她的原话 / Nox 转述的任务：
 $task
@@ -116,23 +118,37 @@ $task
         $modelArgs = "--model sonnet --settings `"$ovr`" "
     }
 
-    $cargs = "/c `"`"$claude`" -p $modelArgs--output-format json --permission-mode acceptEdits --max-turns 120 " +
-        "--strict-mcp-config --mcp-config `"$mcp`" --allowedTools `"$allowed`" --disallowedTools `"$denied`" " +
-        "< `"$jd\prompt.txt`" > `"$jd\claude.json`" 2> `"$jd\claude.err`"`""
-    $proc = Start-Process cmd.exe -ArgumentList $cargs -WorkingDirectory $wt -WindowStyle Hidden -PassThru
-    Set-St 'claude_pid' $proc.Id; Save-State
-    if (-not $proc.WaitForExit(60 * 60 * 1000)) {
-        taskkill.exe /T /F /PID $proc.Id 2>$null | Out-Null
-        throw '超过 60 分钟，掐掉了'
+    function Invoke-Claude($promptFile, $name, $extra, $minutes) {
+        $cargs = "/c `"`"$claude`" -p $modelArgs$extra--output-format json --permission-mode acceptEdits " +
+            "--strict-mcp-config --mcp-config `"$mcp`" --allowedTools `"$allowed`" --disallowedTools `"$denied`" " +
+            "< `"$promptFile`" > `"$jd\$name.json`" 2> `"$jd\$name.err`"`""
+        $proc = Start-Process cmd.exe -ArgumentList $cargs -WorkingDirectory $wt -WindowStyle Hidden -PassThru
+        Set-St 'claude_pid' $proc.Id; Save-State
+        if (-not $proc.WaitForExit($minutes * 60 * 1000)) {
+            taskkill.exe /T /F /PID $proc.Id 2>$null | Out-Null
+            throw "超过 $minutes 分钟，掐掉了"
+        }
+        try { return (Get-Content "$jd\$name.json" -Raw -Encoding UTF8 | ConvertFrom-Json) } catch { return $null }
     }
 
-    $out = $null
-    try { $out = Get-Content "$jd\claude.json" -Raw -Encoding UTF8 | ConvertFrom-Json } catch { }
+    $out = Invoke-Claude "$jd\prompt.txt" 'claude' '--max-turns 120 ' 60
+    $card = if ($out) { Get-Card $out.result } else { $null }
+    if ($out -and -not $out.is_error -and -not $card -and $out.session_id) {
+        # 最后那个 json 块没给 / 给坏了：接着它的会话追问一次，只要卡（10-29）
+        [IO.File]::WriteAllText("$jd\card-prompt.txt", "你最后一条回复里少了上线卡的 json 块（或者格式不对）。现在只回复那个 json 代码块，别的什么都不要做。`n`n$CARD_SPEC", $utf8)
+        $again = Invoke-Claude "$jd\card-prompt.txt" 'claude-card' "--resume $($out.session_id) --max-turns 3 " 5
+        if ($again) { $card = Get-Card $again.result }
+    }
+
     $commits = @(git -C $wt log --oneline "$base..HEAD" 2>$null)
     $stat = (git -C $wt diff --stat "$base..HEAD" 2>$null | Select-Object -Last 1)
     $dirty = @(git -C $wt status --porcelain 2>$null).Count
+    # 改了哪些文件：N150 据此算「点了上线会发生什么」（要不要部署、会不会重启）。quotepath=false：中文名别被转义
+    $files = @(git -C $wt -c core.quotepath=false diff --name-status --no-renames "$base..HEAD" 2>$null | ForEach-Object {
+        $p = $_ -split "`t"; [ordered]@{ status = $p[0]; path = $p[1] } })
     $result = @{
-        summary = if ($out) { $out.result } else { (Get-Content "$jd\claude.err" -Raw -ErrorAction SilentlyContinue) }
+        card = $card; files = $files
+        summary = if ($out) { Get-SummaryText $out.result } else { (Get-Content "$jd\claude.err" -Raw -ErrorAction SilentlyContinue) }
         is_error = if ($out) { [bool]$out.is_error } else { $true }
         turns = if ($out) { $out.num_turns } else { $null }
         # 实际跑的是哪个模型（以回包为准，不以参数为准）

@@ -79,11 +79,14 @@ switch -Regex ($cmd) {
         if ($null -eq $st) { Out-Json @{ ok = $false; error = '没有这个活' }; exit 2 }
         if ($st.state -ne 'done') { Out-Json @{ ok = $false; error = "这个活没做完（$($st.state)），不能上线" }; exit 2 }
         $shp = Join-Path $jobs "$id\ship.json"
+        $new = @{ state = 'queued'; created = (Get-Date -Format s); step = '正在叫电脑开始上线…' }
         if (Test-Path $shp) {
             $old = Get-Content $shp -Raw -Encoding UTF8 | ConvertFrom-Json
             if ($old.state -in 'queued', 'running', 'shipped') { Out-Json @{ ok = $false; error = "已经在上线 / 上过了（$($old.state)）" }; exit 2 }
+            # 重试：上次已经合进主线的，记着合了什么 —— shipper 据此只补部署、不再合一遍
+            if ($old.merged) { $new.merged = $old.merged; $new.base = $old.base; $new.attempt = [int]$old.attempt + 1 }
         }
-        [IO.File]::WriteAllText($shp, (Out-Json @{ state = 'queued'; created = (Get-Date -Format s) }), (New-Object Text.UTF8Encoding $false))
+        [IO.File]::WriteAllText($shp, (Out-Json $new), (New-Object Text.UTF8Encoding $false))
         $user = (Get-CimInstance Win32_ComputerSystem).UserName
         if (-not $user) { $user = "$env:USERDOMAIN\$env:USERNAME" }
         $a = New-ScheduledTaskAction -Execute 'powershell.exe' `

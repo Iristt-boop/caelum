@@ -39,6 +39,7 @@ Copy-Item "$here\nox-pc-power.ps1" "$nox\pc-power.ps1" -Force
 Copy-Item "$here\nox-relay.ps1" "$nox\relay.ps1" -Force
 Copy-Item "$here\nox-runner.ps1" "$nox\runner.ps1" -Force
 Copy-Item "$here\nox-shipper.ps1" "$nox\shipper.ps1" -Force   # 上线（10-29）：她点了上线卡才跑
+Copy-Item "$here\nox-card.ps1" "$nox\card.ps1" -Force         # 上线卡的结构化字段（runner 点源）
 # 钥匙强制跑的脚本是以管理员身份跑的 —— 只许管理员改（不然普通权限的程序改一行就提权了）；
 # jobs 是 runner（以她的普通身份跑）写进度的地方，给她改的权限
 $me = "$env:USERDOMAIN\$env:USERNAME"

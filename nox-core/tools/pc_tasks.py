@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import secrets
 import subprocess
 import threading
@@ -78,7 +79,8 @@ SHIP_SPEC = ToolSpec(
     description=(
         "把电脑上做完的一个活**上线**：她说「上线」「合进去」「部署吧」时用。你这一步只是给她发一张上线卡，"
         "卡上有它做了什么、改了哪些；**她点了「上线」才真的合进主线、部署到 N150**（测试没过 / 线上被动过会自己停）。\n"
-        "调用后只说「卡发给你了，点一下就上线」，别说已经上线了 —— 上完了你会被叫醒。"
+        "调用后只说「卡发给你了」，别说已经上线了，也别把卡上的内容在聊天里再列一遍。"
+        "上线的进度只在卡上走、上完了不会叫醒你；她问起来用 pc_task_check 看。"
     ),
     parameters={"type": "object", "properties": {"id": {"type": "string", "description": "活的编号"}},
                 "required": ["id"]},
@@ -219,7 +221,7 @@ class PcTasks:
             ip = self.pc.find_ip()
             if not ip:
                 return []           # 关着就下回再问；她开机了自然接上
-            told = []
+            told, synced = [], False
             for j in open_:
                 d = self._ssh(ip, f"status {j['id']}")
                 if not d.get("ok"):
@@ -233,23 +235,24 @@ class PcTasks:
                         j["state"] = state
                         told.append(j["id"])
                     continue
-                # 上线中的：电脑那边收尾了（shipped / failed）就告诉她
-                sh = d.get("ship") or {}
-                if sh.get("state") in SHIP_FINAL:
-                    j["ship"].update(status=sh["state"], step=sh.get("step"), error=sh.get("error"),
-                                     deployed=sh.get("deployed") or [], manual=sh.get("manual") or [])
-                    if j.get("session_id"):
-                        book.add_routine(j["session_id"], ship_note(j, sh), stamp)
-                    told.append(j["id"])
-            if told:
+                # 上线中的：电脑那边收尾了就记到卡上。🔴 **不放纸条、不叫他开口**（她 10-29：
+                # 「点上线后聊天流零新增消息，状态全程只在原卡内变化」）
+                if _sync_ship(j, d.get("ship") or {}):
+                    synced = True
+            if told or synced:
                 self._save(jobs)
+            if told:
                 logger.info("pc_tasks: 收尾了 %s，放了纸条", "、".join(told))
             return told
 
     # ---------- 上线（10-29）：工具只出卡，她点了才合并 + 部署 ----------
 
     def ship_propose(self, jid: str, session_id: str | None, user_text: str) -> tuple[str, dict | None]:
-        """返回（给他看的话，卡）。卡是 None 就是没出卡。"""
+        """返回（给他看的话，卡）。卡是 None 就是没出卡。
+
+        卡只回答四个问题（她 10-29 定）：做了什么 / 怎么验的 / 点了会发生什么 / 哪里没把握。
+        字段是电脑上 Claude Code 交的结构化 json（runner 读）+ 改动文件清单（这里算后果）。
+        🔴 缺一块就不出卡 —— 宁可让他告诉她「交付没写清楚」，也不发一张让她盲点的卡。"""
         if not her_words(user_text):
             return "这一轮不是她亲口说的，不出上线卡。", None
         with self._lock:
@@ -268,51 +271,53 @@ class PcTasks:
             return f"没看成这个活：{d.get('error')}", None
         if (d.get("state") or {}).get("state") != "done":
             return f"这个活还没做完（{(d.get('state') or {}).get('state')}），做完了才能上线。", None
-        r = d.get("result") or {}
-        card = {"task": (j.get("task") or "")[:120], "summary": (r.get("summary") or "")[:300],
-                "diffstat": r.get("diffstat") or "", "commits": len(r.get("commits") or []),
-                "repo": j.get("repo")}
+        card, missing = build_card(j, d.get("result") or {})
+        if card is None:
+            return (f"这张上线卡不发：电脑上的 Claude Code 交活时{missing}。卡缺这块她就是盲点，"
+                    "告诉她交付没写清楚，要上电脑看一眼，或者让你重新转一次这个活。"), None
         with self._lock:
             jobs = self._load()
             jobs[jid]["ship"] = {"status": "proposed", "proposed_at": self.now().isoformat(),
                                  "session_id": session_id, "card": card}
             self._save(jobs)
-        return (f"上线卡发给她了（{jid}）。她点了「上线」才会合进主线、部署 —— 在那之前别说已经上线了。", card)
+        return (f"上线卡发给她了（{jid}）。她点了「上线」才会合进主线、部署 —— 在那之前别说已经上线了。"
+                "卡上已经写了改动、验证、风险和点了会怎样，**别在聊天里再列一遍**，一两句陪她就好；"
+                "上线的进度也只在卡上走，上完了你不会被叫醒。", card)
 
     def ship_get(self, jid: str, refresh: bool = True) -> dict | None:
-        """卡上要的状态。上线中的现问一次电脑（卡上显示走到哪一步了）。"""
-        jobs = self._load()
-        j = jobs.get(jid)
-        if j is None or "ship" not in j:
-            return None
-        sh = dict(j["ship"])
-        if refresh and sh.get("status") == "shipping":
-            ip = self.pc.find_ip()
-            d = self._ssh(ip, f"status {jid}") if ip else {}
-            live = (d.get("ship") or {}) if d.get("ok") else {}
-            if live.get("step"):
-                sh["step"] = live["step"]
-        return {"id": jid, **sh}
+        """卡上要的状态。上线中的现问一次电脑：走到哪一步、收尾了没有（收尾了当场记下，不等心跳）。"""
+        with self._lock:
+            jobs = self._load()
+            j = jobs.get(jid)
+            if j is None or "ship" not in j:
+                return None
+            if refresh and j["ship"].get("status") == "shipping":
+                ip = self.pc.find_ip()
+                d = self._ssh(ip, f"status {jid}") if ip else {}
+                if d.get("ok") and _sync_ship(j, d.get("ship") or {}):
+                    self._save(jobs)
+            return {"id": jid, **j["ship"]}
 
     def ship_confirm(self, jid: str) -> dict:
-        """她点了「上线」—— **这是唯一真发起合并 + 部署的地方**（他的工具只出卡）。"""
+        """她点了「上线」（或者没上成后点「重试」）—— **这是唯一真发起合并 + 部署的地方**（他的工具只出卡）。"""
         with self._lock:
             jobs = self._load()
             j = jobs.get(jid)
             sh = (j or {}).get("ship") or {}
-            if sh.get("status") != "proposed":
+            if sh.get("status") not in ("proposed", "failed"):
                 raise ShipError(f"这张卡不是等你点头的状态（{sh.get('status') or '没有'}）", 409)
             ip = self._ip(wake=True)
             if not ip:
                 raise ShipError("电脑叫不醒，没上线", 503)
             d = self._ssh(ip, f"ship {jid}")
             if not d.get("ok"):
-                sh.update(status="failed", error=str(d.get("error")))
+                sh.update(status="failed", step=None, error=f"电脑那边没接：{d.get('error')}")
                 self._save(jobs)
-                raise ShipError(f"电脑那边没接：{d.get('error')}", 502)
-            sh.update(status="shipping", confirmed_at=self.now().isoformat())
+                raise ShipError(sh["error"], 502)
+            sh.update(status="shipping", step="正在叫电脑开始上线…", error=None,
+                      confirmed_at=self.now().isoformat(), attempts=int(sh.get("attempts") or 0) + 1)
             self._save(jobs)
-            logger.info("pc_tasks: 她点了上线 %s", jid)
+            logger.info("pc_tasks: 她点了上线 %s（第 %s 次）", jid, sh["attempts"])
             return {"id": jid, **sh}
 
     def ship_reject(self, jid: str) -> dict:
@@ -324,6 +329,24 @@ class PcTasks:
             sh.update(status="rejected", decided_at=self.now().isoformat())
             self._save(jobs)
             return {"id": jid, **sh}
+
+
+def _sync_ship(job: dict, live: dict) -> bool:
+    """电脑上 ship.json 的进度对到账本里。变了返回 True。只认 shipping 中的卡（她点了以后才有电脑那份）。"""
+    sh = job.get("ship") or {}
+    if sh.get("status") != "shipping" or not live:
+        return False
+    before = dict(sh)
+    state = live.get("state")
+    if live.get("merged"):
+        sh["merged"] = True     # 卡上副标题：部署没成但已经合进主线了，别再写「未合进主线」
+    if state in SHIP_FINAL:
+        sh.update(status=state, step=None, error=live.get("error") if state == "failed" else None,
+                  finished=live.get("finished"), deployed=live.get("deployed") or [],
+                  manual=live.get("manual") or [])
+    elif live.get("step"):
+        sh["step"] = live["step"]
+    return sh != before
 
 
 class ShipError(Exception):
@@ -357,6 +380,12 @@ def describe(d: dict) -> str:
         commits = r.get("commits") or []
         lines.append(f"分支 {r.get('branch')}，{len(commits)} 个提交（{r.get('diffstat') or '无改动'}），"
                      f"没提交的改动 {r.get('uncommitted') or 0} 个")
+    sh = d.get("ship") or {}
+    if sh:
+        # 他查进度时也看得到上线到哪了（上线的结果不再叫醒他说，她问起来他得答得上）
+        head = {"queued": "上线排着队", "running": f"上线中：{sh.get('step') or ''}", "shipped": "已经上线了",
+                "failed": f"上线没成：{sh.get('error') or ''}"}.get(sh.get("state"), f"上线状态 {sh.get('state')}")
+        lines.append(head)
     return "\n".join(lines)
 
 
@@ -381,21 +410,68 @@ def wake_note(job: dict, d: dict) -> str:
             "要上线得她亲口说，别替她决定。")
 
 
-def ship_note(job: dict, sh: dict) -> str:
-    """上线收尾的纸条：结论第一句写死（同 wake_note 的教训）。"""
-    jid = job["id"]
-    if sh.get("state") == "shipped":
-        deployed = sh.get("deployed") or []
-        manual = sh.get("manual") or []
-        lines = [f"【上线·{jid}】她点了上线的那个活**已经上线了**（合进了主线"
-                 + (f"，部署到 N150 了：{len(deployed)} 个文件，nox-core 重启过、健康检查通过）" if deployed else "；只改了文档，不用部署）")]
-        if manual:
-            lines.append(f"这几处只合进了主线、**没部署**，要她上电脑弄：{'、'.join(manual[:8])}")
-    else:
-        lines = [f"【上线·{jid}】她点了上线的那个活**没上成**：{sh.get('error') or '原因没写'}"]
-    lines.append(f"她当时交代的：{job.get('task', '')[:120]}")
-    lines.append("现在告诉她：先说结论，再一两句说清楚；没上成就说卡在哪、线上有没有被动过（错误里写了）。别贴代码。")
-    return "\n".join(lines)
+_MD = re.compile(r"\*\*|__|`")
+_STAT = re.compile(r"(\d+) files? changed(?:, (\d+) insertions?\(\+\))?(?:, (\d+) deletions?\(-\))?")
+
+
+def _clean(items: Any) -> list[str]:
+    return [_MD.sub("", s).strip() for s in (items or []) if isinstance(s, str) and s.strip()]
+
+
+def ship_effects(files: list[dict], repo: str | None) -> list[dict]:
+    """点了「上线」会发生什么 —— 和 shipper.ps1 的分法一模一样（那边真去做，这边先说给她听）。
+
+    warn=True 的是她要掂量**什么时候点**的：会重启 / 会离线 / 要她上电脑弄。"""
+    caelum = repo == "caelum"
+    paths = [(str(f.get("status") or ""), str(f.get("path") or "")) for f in files]
+    doc = lambda p: p.startswith(("docs/", "scratch/")) or p.endswith(".md")  # noqa: E731
+    core = [p for _, p in paths if caelum and p.startswith("nox-core/")]
+    deploy = [p for s, p in paths if caelum and p.startswith("nox-core/")
+              and not p.startswith("nox-core/tests/") and s in ("A", "M")]
+    manual = [p for _, p in paths
+              if not (doc(p) or (caelum and p.startswith("nox-core/tests/")) or p in deploy)]
+    out = [{"text": "合进主线", "warn": False}]
+    if core:
+        out.append({"text": "先跑一遍 nox-core 全量测试（约 4 分钟），没过就停、不合", "warn": False})
+    if deploy:
+        out.append({"text": f"部署到 N150，换上 {len(deploy)} 个文件", "warn": False})
+        out.append({"text": "nox-core 会在你安静 3 分钟后重启，期间短暂离线半分钟左右", "warn": True})
+    if manual:
+        where = "App" if repo == "nox-app" else "、".join(sorted({p.split("/")[0] for p in manual}))
+        out.append({"text": f"{len(manual)} 处改动（{where}）只合进主线、不会部署，要你上电脑弄", "warn": True})
+    if not deploy and not manual:
+        what = "测试" if core and all(p.startswith("nox-core/tests/") or doc(p) for _, p in paths) and \
+            any(p.startswith("nox-core/tests/") for _, p in paths) else "文档"
+        out.append({"text": f"只改了{what}，不用部署、不重启", "warn": False})
+    return out
+
+
+def build_card(job: dict, r: dict) -> tuple[dict | None, str]:
+    """（卡，缺了什么）。字段缺一块就不出卡（她 10-29：副作用和风险缺一块，卡就不许发出来）。"""
+    c = r.get("card") or {}
+    if not c:
+        return None, "没交结构化的卡片字段（可能是改版前转的活，或者它没按格式交）"
+    title = _MD.sub("", str(c.get("title") or "")).strip()
+    changes, verified, unverified = _clean(c.get("changes")), _clean(c.get("verified")), _clean(c.get("unverified"))
+    if not title or not changes:
+        return None, "没写清楚这件活叫什么、改了什么"
+    if not verified and not unverified:
+        return None, "一句没写怎么验证的、哪里没把握"
+    files = [f for f in (r.get("files") or []) if isinstance(f, dict) and f.get("path")]
+    if not files:
+        return None, "没交改动的文件清单，算不出点了上线会发生什么"
+    m = _STAT.search(r.get("diffstat") or "")
+    stat = {"commits": len(r.get("commits") or []), "files": int(m.group(1)) if m else len(files),
+            "plus": int(m.group(2) or 0) if m else 0, "minus": int(m.group(3) or 0) if m else 0}
+    return {
+        "title": title[:40], "branch": r.get("branch") or f"nox/{job['id']}",
+        "changes": changes[:6], "stat": stat,
+        "verified": verified[:6], "unverified": unverified[:6],
+        "effects": ship_effects(files, job.get("repo")),
+        # 详情（折叠）：她当时的原话 + 它写给她的总结
+        "task": (job.get("task") or "")[:500], "summary": (r.get("summary") or "")[:1500],
+        "repo": job.get("repo"),
+    }, ""
 
 
 def register_all(loop, tasks: PcTasks) -> None:

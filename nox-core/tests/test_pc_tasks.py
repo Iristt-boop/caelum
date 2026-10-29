@@ -84,9 +84,16 @@ def env(tmp_path):
     return t, ssh, clock
 
 
-DONE = lambda jid: {"ok": True, "state": {"id": jid, "repo": "caelum", "state": "done"},  # noqa: E731
-                    "result": {"summary": "加好了，测试也跑了。", "commits": ["abc 加按钮"],
-                               "branch": f"nox/{jid}", "diffstat": "1 file changed", "uncommitted": 0}}
+#: 电脑上 Claude Code 交的结构化卡片字段（runner.ps1 + card.ps1 读出来的形状）
+CARD = {"title": "发布按钮改成圆的", "changes": ["把 Moments 的发布按钮改成圆的"],
+        "verified": ["跑了 vitest，全过"], "unverified": ["没在真手机上看过"]}
+
+DONE = lambda jid, card=CARD, files=None: {  # noqa: E731
+    "ok": True, "state": {"id": jid, "repo": "caelum", "state": "done"},
+    "result": {"summary": "加好了，测试也跑了。", "commits": ["abc 加按钮"], "card": card,
+               "files": files if files is not None else [{"status": "M", "path": "nox-core/tools/x.py"}],
+               "branch": f"nox/{jid}", "diffstat": " 1 file changed, 12 insertions(+), 3 deletions(-)",
+               "uncommitted": 0}}
 
 
 def test_她的原话才算():
@@ -300,8 +307,10 @@ def test_上线卡_出卡时什么都没动(env):
     t, ssh, _ = env
     jid = _done_job(env)
     msg, card = t.ship_propose(jid, "s1", "上线吧")
-    assert card["summary"] == "加好了，测试也跑了。" and card["commits"] == 1
-    assert "别说已经上线了" in msg
+    assert card["title"] == "发布按钮改成圆的" and card["changes"] == ["把 Moments 的发布按钮改成圆的"]
+    assert card["verified"] == ["跑了 vitest，全过"] and card["unverified"] == ["没在真手机上看过"]
+    assert card["stat"] == {"commits": 1, "files": 1, "plus": 12, "minus": 3}
+    assert "别说已经上线了" in msg and "别在聊天里再列一遍" in msg
     assert ssh.verbs("ship") == [], "出卡时就发了 ship —— 她还没点"
     assert t.ship_get(jid)["status"] == "proposed"
 
@@ -362,35 +371,90 @@ def test_上线卡_电脑没接就标没上成(env):
     assert e.value.status == 502 and t.ship_get(jid)["status"] == "failed"
 
 
-def test_上线收尾_上成了告诉她_只说一次(env):
+def test_上线进度_只在卡上走_不放纸条(env):
+    """她 10-29：点上线后聊天流零新增消息，状态全程只在原卡内变化。"""
     t, ssh, clock = env
     jid = _done_job(env)
     t.ship_propose(jid, "s1", "上线吧")
     t.ship_confirm(jid)
     book = Book()
-    ssh.states[jid] = {**DONE(jid), "ship": {"state": "running", "step": "跑 nox-core 的测试"}}
-    assert t.poll(book) == [] and book.notes == []
-    assert t.ship_get(jid)["step"] == "跑 nox-core 的测试"
-    ssh.states[jid] = {**DONE(jid), "ship": {"state": "shipped", "step": "完成",
-                                              "deployed": ["nox-core/tools/x.py"], "manual": ["bridge/server.js"]}}
+    ssh.states[jid] = {**DONE(jid), "ship": {"state": "running", "step": "正在跑 nox-core 的全量测试（大约 4 分钟）…"}}
+    assert t.ship_get(jid)["step"] == "正在跑 nox-core 的全量测试（大约 4 分钟）…"
+    ssh.states[jid] = {**DONE(jid), "ship": {"state": "shipped", "finished": "2026-10-29T11:15:30",
+                                              "deployed": ["nox-core/tools/x.py"]}}
     clock.t += timedelta(minutes=3)
-    assert t.poll(book) == [jid]
-    why = book.notes[0][1]
-    assert "**已经上线了**" in why.splitlines()[0] and "1 个文件" in why and "bridge/server.js" in why
+    assert t.poll(book) == [] and book.notes == [], "上线收尾又在聊天里叫他开口了"
+    s = t.ship_get(jid, refresh=False)               # 她没开着 App：心跳自己也得记下
+    assert s["status"] == "shipped" and s["finished"] == "2026-10-29T11:15:30" and not s.get("step")
+
+
+def test_上线进度_卡一查就对齐_不等心跳(env):
+    """收尾了的状态卡上一查就记下（不然卡停在「上线中：完成」—— 她 10-29 截图）。"""
+    t, ssh, _ = env
+    jid = _done_job(env)
+    t.ship_propose(jid, "s1", "上线吧")
+    t.ship_confirm(jid)
+    ssh.states[jid] = {**DONE(jid), "ship": {"state": "shipped", "step": None, "finished": "2026-10-29T11:15:30"}}
     assert t.ship_get(jid)["status"] == "shipped"
-    clock.t += timedelta(minutes=3)
-    assert t.poll(book) == [] and len(book.notes) == 1
+    t.pc.ip = None                                   # 电脑关了也还记得
+    assert t.ship_get(jid)["status"] == "shipped"
 
 
-def test_上线收尾_没上成也告诉她(env):
-    t, ssh, clock = env
+def test_上线没成_卡上看得到原因_能重试(env):
+    t, ssh, _ = env
     jid = _done_job(env)
     t.ship_propose(jid, "s1", "上线吧")
     t.ship_confirm(jid)
-    ssh.states[jid] = {**DONE(jid), "ship": {"state": "failed", "error": "测试没过，没合：1 failed"}}
-    book = Book()
-    assert t.poll(book) == [jid]
-    assert "**没上成**" in book.notes[0][1] and "测试没过" in book.notes[0][1]
+    ssh.states[jid] = {**DONE(jid), "ship": {"state": "failed", "error": "测试没过，没合进主线"}}
+    s = t.ship_get(jid)
+    assert s["status"] == "failed" and s["error"] == "测试没过，没合进主线" and not s.get("merged")
+    again = t.ship_confirm(jid)                      # 重试
+    assert again["status"] == "shipping" and again["error"] is None and again["attempts"] == 2
+    assert ssh.verbs("ship") == [f"ship {jid}", f"ship {jid}"]
+    ssh.states[jid] = {**DONE(jid), "ship": {"state": "failed", "merged": "a9a4105", "error": "已经合进主线了，但部署没成"}}
+    assert t.ship_get(jid)["merged"] is True         # 卡上不能再写「未合进主线」
+
+
+def test_上线卡_不要了不能重试(env):
+    t, ssh, _ = env
+    jid = _done_job(env)
+    t.ship_propose(jid, "s1", "上线吧")
+    t.ship_reject(jid)
+    with pytest.raises(pc_tasks.ShipError):
+        t.ship_confirm(jid)
+
+
+def test_上线卡_字段缺一块就不出(env):
+    """她 10-29：副作用和风险缺一块，卡就不许发出来。"""
+    t, ssh, _ = env
+    for card, files, why in [
+        (None, None, "结构化"),                                                  # 改版前的活 / 没按格式交
+        ({**CARD, "verified": [], "unverified": []}, None, "验证"),              # 一句没说怎么验的
+        ({**CARD, "changes": []}, None, "改了什么"),
+        ({**CARD, "title": ""}, None, "叫什么"),
+        (CARD, [], "文件清单"),                                                  # 算不出点了会怎样
+    ]:
+        t.start("改按钮", "caelum", "s1", "做吧")
+        jid = ssh.calls[-1][0].split()[1]
+        ssh.states[jid] = DONE(jid, card=card, files=files)
+        msg, out = t.ship_propose(jid, "s1", "上线吧")
+        assert out is None and "不发" in msg and why in msg, (why, msg)
+
+
+def test_点了会发生什么_按文件算():
+    eff = lambda files, repo="caelum": [e["text"] for e in pc_tasks.ship_effects(  # noqa: E731
+        [{"status": s, "path": p} for s, p in files], repo)]
+    warn = lambda files, repo="caelum": [e["text"] for e in pc_tasks.ship_effects(  # noqa: E731
+        [{"status": s, "path": p} for s, p in files], repo) if e["warn"]]
+    docs = eff([("A", "docs/Nox-开关糖糖电脑-说明.md"), ("M", "docs/README.md")])
+    assert "只改了文档，不用部署、不重启" in docs and not warn([("A", "docs/x.md")])
+    core = eff([("M", "nox-core/tools/x.py"), ("M", "nox-core/tests/test_x.py")])
+    assert any("全量测试" in s for s in core) and any("换上 1 个文件" in s for s in core)
+    assert any("重启" in s and "离线" in s for s in warn([("M", "nox-core/tools/x.py")]))
+    assert eff([("M", "nox-core/tests/test_x.py")])[-1] == "只改了测试，不用部署、不重启"
+    assert not warn([("M", "nox-core/tests/test_x.py")])                       # 只改测试：不部署、不重启
+    assert any("bridge" in s and "上电脑" in s for s in warn([("M", "bridge/server.js")]))
+    assert any("App" in s and "上电脑" in s for s in warn([("M", "frontend/src/x.jsx")], "nox-app"))
 
 
 def test_上线工具排在最后_声明是写():
