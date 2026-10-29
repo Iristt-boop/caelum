@@ -232,6 +232,12 @@ function ensureApiAuth(req, res, next) {
   if (req.path === "/health") return next();
   // 音乐流带有效签名就放行。签名只对这一首歌有效，过期即失效
   if (req.path === "/music/stream" && verifyMusicSig(req.query)) return next();
+  // 扫码换 cookie 页（2026-10-24）：cookie 每月一死，重扫的入口从 Nox 推送
+  // 里的链接点开 —— 浏览器裸开带不了 app token，照 music/stream 那套签名
+  // 放行（sig 复用 musicSig，id 固定 "qr-login"，7 天有效）。
+  // 签名由 cookie-watch.sh 拿 NOX_TOKEN 算，离了 token 谁也造不出链接。
+  if (req.path.startsWith("/music/proxy/music/qr/")
+      && req.query.id === "qr-login" && verifyMusicSig(req.query)) return next();
   // 🔴 玩具钥匙**只开玩具**。`startsWith("/toy/")` 而不是 includes ——
   // 前者是路径前缀，后者能被 `/api/anything?x=/toy/` 这种糊弄过去
   if (TOY_TOKEN && req.path.startsWith("/toy/") && readAuthToken(req) === TOY_TOKEN) {
@@ -3322,6 +3328,12 @@ if (fs.existsSync(frontendDist)) {
       if (filePath.endsWith(".html")) {
         res.setHeader("Cache-Control", "no-cache, must-revalidate");
       }
+      // sw.js 同理（2026-10-24 补）：没内容哈希，却被上面 1y+immutable
+      // 按年缓存 —— 新 Service Worker 一年都换不下去（实测线上停在
+      // 09-19 的版本）。SW 更新检查受 HTTP 缓存摆布，必须每次回源。
+      if (path.basename(filePath) === "sw.js") {
+        res.setHeader("Cache-Control", "no-cache, must-revalidate");
+      }
     },
   }));
   // 🔴 **静态资源找不到就老实 404，绝不回 index.html。**
@@ -3385,6 +3397,12 @@ const ERYU_PROXY_ALLOW = new Set([
   // 记录页要的（糖糖的设计稿：歌单 / 每日推荐 / 小克给我放过的）
   "/music/playlists",
   "/music/daily",
+  // 扫码换 cookie 页（2026-10-24）：unikey 是登录凭证，这三条只能配合
+  // ensureApiAuth 里的签名旁路进 —— 页面本身照常吃注入的 ERYU token
+  "/music/qr/page",
+  "/music/qr/create",
+  "/music/qr/status",
+  "/music/qr/manual",   // 手动贴 cookie（8821 风控后的路），POST
 ]);
 
 app.all(/^\/api\/music\/proxy(\/.*)$/, async (req, res) => {
@@ -3491,6 +3509,26 @@ app.get("/api/music/netease/playlists", async (req, res) => {
 });
 
 // 某个歌单里的歌。点开歌单、或者拿封面时用
+// 收藏进她自建的网易云歌单（2026-10-24 共听优化设计稿§一）：走
+// add_to_playlist 这条已验证通的普通歌单通道，不碰被风控拦的红心接口。
+// 目标歌单由 App 首次点收藏时自己选（存她设备 localStorage），这里只转发
+app.post("/api/music/netease/collect", async (req, res) => {
+  const playlistId = Number(req.body?.playlist_id);
+  const songIds = String(req.body?.song_ids || "").trim();
+  if (!playlistId || !songIds) {
+    return res.status(400).json({ error: "playlist_id 和 song_ids 都要有" });
+  }
+  try {
+    const text = await neteaseCall("add_to_playlist", {
+      playlist_id: playlistId, song_ids: songIds,
+    });
+    res.json({ ok: true, text: String(text).slice(0, 200) });
+  } catch (e) {
+    console.error("[Bridge] 收藏进网易云歌单失败", e.message);
+    res.status(502).json({ error: String(e) });
+  }
+});
+
 app.get("/api/music/netease/playlist", async (req, res) => {
   const id = String(req.query.id || "");
   if (!/^\d+$/.test(id)) return res.status(400).json({ error: "bad playlist id" });
@@ -3879,45 +3917,6 @@ app.get("/api/nox/lessons", async (req, res) => {
   }
 });
 
-app.get("/api/nox/dreams", async (req, res) => {
-  try {
-    const limit = Math.min(Math.max(parseInt(req.query.limit) || 5, 1), 30);
-    const r = await fetch(`${NOX_CORE_URL}/api/nox/dreams?limit=${limit}`, {
-      signal: AbortSignal.timeout(8000),
-    });
-    res.status(r.status).json(await r.json());
-  } catch (e) {
-    console.warn("[world] 梦透传失败:", e.message);
-    res.status(502).json({ ok: false, error: `core 不可达: ${e.message}` });
-  }
-});
-
-// ==============================================================
-// 🎬 共影观影状态 / 记录（2026-08-22，技术方案 v2.0 的 P1）
-//
-// 在这之前共影是一座孤岛：Movies.jsx 自己拼一段字符串塞进 /api/chat，
-// **Nox 本人不知道有这回事** —— 他在别的对话里提不起「昨天我们看的那部」，
-// Care 也不知道她在看片，可能在高潮处推一条消息进来。
-// 这三个端点就是那座桥。
-// ==============================================================
-
-//: 心跳超过这个岁数就当她已经走了（关了浏览器不会发 ended）。
-//  可配是为了让测试能验"过期"这条分支 —— 它最容易悄悄坏：
-//  过期判断错了的表现是"她明明在看片，Care 却照常推消息"，线上看不出来
-const WATCH_STALE_MS = Number(process.env.WATCH_STALE_MS) || 90 * 1000;
-
-//: 当前这一场（没结束 + 心跳够新）。没有就 null
-function liveWatch() {
-  const row = dbAll(
-    "SELECT * FROM watch_sessions WHERE ended_at IS NULL ORDER BY last_seen_at DESC LIMIT 1"
-  )[0];
-  if (!row) return null;
-  const age = Date.now() - new Date(row.last_seen_at || 0).getTime();
-  // ⚠️ 过期的**不删也不改**：她可能只是合上电脑去倒杯水。
-  // 这里只判断"算不算在看"，清理交给下一次心跳或她自己点结束
-  return age <= WATCH_STALE_MS ? row : null;
-}
-
 // 装着的做法（Skills，10-25 设计稿）：数据在 Core 的 skills.db，纯透传。页面是 OS Studio › Skills（P2）
 async function skillsProxy(req, res, path, method = "GET") {
   try {
@@ -3959,6 +3958,45 @@ async function pcShipProxy(req, res, what, method = "GET") {
 app.get("/api/nox/pc-tasks/:id/ship", (req, res) => pcShipProxy(req, res, ""));
 app.post("/api/nox/pc-tasks/:id/ship/:what(confirm|reject)", (req, res) =>
   pcShipProxy(req, res, `/${req.params.what}`, "POST"));
+
+app.get("/api/nox/dreams", async (req, res) => {
+  try {
+    const limit = Math.min(Math.max(parseInt(req.query.limit) || 5, 1), 30);
+    const r = await fetch(`${NOX_CORE_URL}/api/nox/dreams?limit=${limit}`, {
+      signal: AbortSignal.timeout(8000),
+    });
+    res.status(r.status).json(await r.json());
+  } catch (e) {
+    console.warn("[world] 梦透传失败:", e.message);
+    res.status(502).json({ ok: false, error: `core 不可达: ${e.message}` });
+  }
+});
+
+// ==============================================================
+// 🎬 共影观影状态 / 记录（2026-08-22，技术方案 v2.0 的 P1）
+//
+// 在这之前共影是一座孤岛：Movies.jsx 自己拼一段字符串塞进 /api/chat，
+// **Nox 本人不知道有这回事** —— 他在别的对话里提不起「昨天我们看的那部」，
+// Care 也不知道她在看片，可能在高潮处推一条消息进来。
+// 这三个端点就是那座桥。
+// ==============================================================
+
+//: 心跳超过这个岁数就当她已经走了（关了浏览器不会发 ended）。
+//  可配是为了让测试能验"过期"这条分支 —— 它最容易悄悄坏：
+//  过期判断错了的表现是"她明明在看片，Care 却照常推消息"，线上看不出来
+const WATCH_STALE_MS = Number(process.env.WATCH_STALE_MS) || 90 * 1000;
+
+//: 当前这一场（没结束 + 心跳够新）。没有就 null
+function liveWatch() {
+  const row = dbAll(
+    "SELECT * FROM watch_sessions WHERE ended_at IS NULL ORDER BY last_seen_at DESC LIMIT 1"
+  )[0];
+  if (!row) return null;
+  const age = Date.now() - new Date(row.last_seen_at || 0).getTime();
+  // ⚠️ 过期的**不删也不改**：她可能只是合上电脑去倒杯水。
+  // 这里只判断"算不算在看"，清理交给下一次心跳或她自己点结束
+  return age <= WATCH_STALE_MS ? row : null;
+}
 
 // 播放器的心跳。state: playing | paused | ended
 app.post("/api/watch/state", (req, res) => {
@@ -5715,10 +5753,17 @@ app.post("/api/push/send", async (req, res) => {
     messageId = ids.find((x) => x != null) ?? null;
     saved = messageId != null;
   }
+  // 系统推送的点击路由（2026-10-24）：data 只放行自家域名的 url ——
+  // token 持有者是可信方，但这条通道也不该让她手机弹任意站。
+  // SW 端 notificationclick 对 url 还会再白名单一道
+  const pdata = (req.body?.data?.type === "url"
+    && typeof req.body.data.url === "string"
+    && req.body.data.url.startsWith("https://noxtang.com/"))
+    ? { type: "url", url: req.body.data.url } : undefined;
   const subs = dbAll("SELECT COUNT(*) AS c FROM push_subs")[0]?.c || 0;
   // 没有订阅不是错误 —— 她可能还没在这台设备上装 PWA。如实回报条数，
   // 让调用方能在日志里看出「推了但没人收」，而不是以为成功了
-  await sendPushAll(title, body);
+  await sendPushAll(title, body, pdata);
   console.log(`[Push] 主动推送 -> ${subs} 个订阅${saved ? ` (session=${sid})` : ""}: ${body.slice(0, 40)}`
     + (atts.length ? ` +${atts.map(([a]) => a.type).join(",")}` : ""));
   // message_id 是 conversations 的 rowid，没落库就是 null。转成字符串 ——
