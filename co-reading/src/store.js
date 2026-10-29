@@ -645,6 +645,14 @@ export async function listBooks({ includePrivate = false } = {}) {
     try {
       const manifest = await loadManifest(entry.name);
       const summary = progressSummary(manifest, progress[manifest.bookId] || {});
+      // importedAt = 书籍目录的 mtime。导入之后 chunks 只读不写，
+      // mtime 就约等于入库时间（OS 书架的「最近添加」要用）。
+      let importedAt = null;
+      try {
+        importedAt = (await stat(path.join(booksDir, entry.name))).mtime.toISOString();
+      } catch {
+        // 目录拿不到时间就当没有 —— 排序时沉底
+      }
       books.push({
         bookId: manifest.bookId,
         title: manifest.title,
@@ -656,6 +664,7 @@ export async function listBooks({ includePrivate = false } = {}) {
         lastChunkId: summary.lastChunkId,
         lastReadAt: summary.lastReadAt,
         complete: summary.complete,
+        importedAt,
       });
     } catch {
       // Ignore broken book folders, but keep the server usable.
