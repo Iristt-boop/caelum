@@ -2522,6 +2522,8 @@ def create_app(nox: Nox | None = None, store: Store | None = None) -> FastAPI:
             "model": core.cfg.primary.model,
             "prefix_chars": len(core.system_prompt),
             "tools": list(core.loop.tools),
+            #: R-2（10-29）：登记时撞名、被静默盖掉的工具。晨检看它，非空就红
+            "tool_conflicts": list(getattr(core.loop, "tool_conflicts", []) or []),
             "sessions_cached": len(sessions),
             "store": db.stats(),
             "uptime_s": int((datetime.now(timezone.utc) - started).total_seconds()),

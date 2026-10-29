@@ -145,6 +145,23 @@ try:
     else:
         parts.append("心跳✓")
 
+    # 工具重名（R-2，10-29）：nox.py / api/server.py 两处登记 + 远端 MCP，撞名 = 后者静默盖掉前者。
+    # 只有起好的进程知道整张表，所以问 /health，不是读代码
+    try:
+        import json as _json, urllib.request as _u
+        h = _json.load(_u.urlopen("http://127.0.0.1:8100/health", timeout=10))
+        clash = h.get("tool_conflicts")
+        if clash is None:
+            parts.append("工具·没这个字段")
+        elif clash:
+            problems.append("工具重名:" + ",".join(clash))
+            parts.append(f"工具✗重名{len(clash)}")
+        else:
+            parts.append(f"工具✓{len(h.get('tools') or [])}")
+    except Exception as e:
+        problems.append(f"工具表查不到:{e}")
+        parts.append("工具·查不到")
+
     disk = subprocess.run(["df", "-P", "/"], capture_output=True, text=True)
     pct = disk.stdout.split("\n")[1].split()[4].rstrip("%")
     if int(pct) > 85:

@@ -11,6 +11,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 
 @pytest.fixture(autouse=True)
+def _strict_tool_names(monkeypatch):
+    """R-2（10-29）：测试里工具重名直接炸（线上只记 ERROR + /health，见 AgentLoop.register）。
+    任何一个搭了真 Nox / create_app 的测试都顺带守住「整张工具表没有重名」。"""
+    monkeypatch.setenv("NOX_STRICT_TOOLS", "1")
+
+
+@pytest.fixture(autouse=True)
 def _night_budget_is_two(monkeypatch):
     """她睡着后每晚能自言自语几句是随机 0~2（attention/service.py，2026-10-04）。
 

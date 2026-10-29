@@ -138,6 +138,8 @@ class AgentLoop:
     deadline_s: float | None = None
     #: 会话里他最近真调过哪些工具包（R2「用过就留着」）。每轮收尾记一笔，`Nox` 选工具时读
     used_packs: toolpacks.UsedPacks = field(default_factory=toolpacks.UsedPacks)
+    #: 登记时撞了名的工具（R-2，2026-10-29）。`/health` 带出去、晨检看它；非空 = 有一个工具被静默盖掉了
+    tool_conflicts: list[str] = field(default_factory=list)
 
     def _offered(self, offer: set[str] | None) -> list[Tool]:
         """这一轮给模型看的工具。None = 全量。**保持登记顺序**：顺序一变前缀就变，缓存跟着冷。
@@ -208,6 +210,16 @@ class AgentLoop:
                 f"必须从 {', '.join(sorted(GATED_EFFECTS | {'none', 'read', 'write'}))} 里选一个。"
                 "拿不准就往重了标 —— 标轻了模型能直接碰，标重了只是多一次确认。"
             )
+        if spec.name in self.tools:
+            # 🔴 重名 = 后登记的静默盖掉先登记的（08-05 add_todo 就这么丢过「今天」页）。
+            # 工具登记在 nox.py 和 api/server.py 两处、外加远端 MCP 的名字，静态测试只扫得到一部分。
+            # 线上照旧后者赢（不改行为、不让启动因为远端 MCP 改了个名字就起不来），
+            # 但必须喊出来：ERROR 日志 + /health 的 tool_conflicts + 晨检。
+            # 测试里（NOX_STRICT_TOOLS=1，见 tests/conftest.py）直接炸。
+            self.tool_conflicts.append(spec.name)
+            logger.error("工具重名：%s 已经登记过，后登记的这个会盖掉它", spec.name)
+            if os.environ.get("NOX_STRICT_TOOLS") == "1":
+                raise ValueError(f"工具重名：{spec.name!r} 已经登记过（后登记的会静默盖掉前一个）")
         self.tools[spec.name] = Tool(spec=spec, handler=handler)
 
     def run(

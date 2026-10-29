@@ -59,7 +59,31 @@
 - **按需工具包**（`agent/toolpacks.py`，R2）：核心集常驻；点单 / 电脑 / 花园 / 共听…按「她最近的话有触发词 / 30 分钟内真调过 / 工牌入口」挂上（每轮约 53 / 178 个）。`NOX_TOOL_PACKS=off` 退回全量
 - **共影剧情记忆**（`memory/watched.py`）：一集看完收成「剧情」+「我们一起看的」；World Model 精确取【前情】，OB 只 hold 一起看的
 - **配置层**（`settings_store/` → `settings.db`）：厂商 / 型号 / 用途（Slots）存库，她在 OS 的 Settings › Models 改；前端填的 key 单独 0600 文件，不进库
-- ⚠️ **工具登记有两处**：`Nox.__init__` 一串 + `api/server.py` 再追加一串 —— 工具包、排序、计数要两处都看
+- ⚠️ **工具登记有两处**：`Nox.__init__` 一串 + `api/server.py` 再追加一串 —— 工具包、排序、计数要两处都看。
+  重名不再静默（10-29，R-2）：`AgentLoop.register` 撞名记 ERROR + `/health` 的 `tool_conflicts`，晨检报「工具✓N / ✗重名」；测试里直接炸（`NOX_STRICT_TOOLS=1`）。
+  **完整顺序只认线上** `curl 127.0.0.1:8100/health` 的 `tools`；想不动已有位置就登记在 `create_app` 那串最后
+
+## 一·六、同名不同义（搜代码前看一眼，2026-10-29）
+
+搜到一个名字先对一下是哪个 —— 这些同名的东西彼此**毫无关系**：
+
+| 名字 | 是什么 | 不是什么 |
+|---|---|---|
+| `router/intent.py` | 这一句走轻路径还是完整路径（只认最有把握的） | — |
+| `attention/intent.py` | 这份关心要不要变成一句话、什么时候说（Intent Engine） | — |
+| `temporal/intent.py` | 她话里的时间关系（契约 `CAELUM-Temporal-Intent-Contract.md`） | — |
+| `agent/tasks.py` | 长任务**实体 + runner**（电脑上跑很久的活，tasks.db） | 不是她的待办 |
+| `tools/tasks.py` | 长任务的三个**对话工具**（立 / 看 / 停），背后是上一行 | 不是她的待办 |
+| `tools/daily.py` | **她的待办**（add_todo / complete_todo，走 bridge 的本地清单） | — |
+| `/debug/tasks` | 卡死诊断：列 asyncio 任务悬在哪 | 跟上面三个都无关 |
+| `attention/care/` | Care 层：主动关心的统一决策（快循环） | — |
+| `growth/care_*` | 念叨耐受度 / 健康说法偏好（夜里复盘、shadow） | 不是 Care 层 |
+| `topic_pool/care.py` | 话题池的线头作为一种念头**喂进** Care | 不是 Care 层本身 |
+| `caelum-os/`（外层仓库） | 桌面端的 fork 补丁（`patches/`、`apply-patches.ps1`）+ 设计稿 | 不是桌面 UI 代码 |
+| `nox-app/caelum-os-ui/` | **Caelum OS 桌面 UI**（DESIGN.md v2.0） | — |
+| `caelum-desktop` | `nox-app/desktop/` 的 Electron 包名 | — |
+| 外层仓库 `D:\claude-code` | Caelum 的总仓库（nox-core / bridge / 脚本 / 文档） | nox-app、Ombre-Brain、stackchan-mcp、co-listening 是各自独立的仓库 |
+| 音乐 | `eryu :9090`（共听服务）· `netease :3456`（网易云 API）· bridge `/api/music/*`（转发给前两个）→ 正在收成 **co-listening** | — |
 
 ## 二、边界法则（写死，哨兵盯着）
 
